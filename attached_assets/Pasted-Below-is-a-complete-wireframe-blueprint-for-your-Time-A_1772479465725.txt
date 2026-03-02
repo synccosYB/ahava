@@ -1,0 +1,453 @@
+Below is a **complete wireframe blueprint** for your Time & Attendance / PTO / Alert system (excluding payroll processing).
+
+This includes:
+
+1. 🏗 What it will take to build
+2. 🧱 System architecture overview
+3. 🗂 All application pages (Employee, Manager, Admin)
+4. 📐 Text-based wireframes (screen-by-screen draft layouts)
+5. 🧠 Required backend modules
+6. 🚀 Recommended build stack
+
+---
+
+# 🏗 What It Will Take to Build
+
+### Team Needed
+
+* 1 Full Stack Engineer
+* 1 UI/UX Designer (short term)
+* 1 QA tester
+* 1 Product owner (you)
+
+### Estimated Build Time
+
+* MVP: 8–12 weeks
+* Phase 2: +6–8 weeks
+* Advanced features: +8–12 weeks
+
+---
+
+# 🧱 System Architecture
+
+### Frontend
+
+* React / Next.js
+* Mobile responsive (or React Native for dedicated app)
+* Role-based routing
+
+### Backend
+
+* Node.js / Express
+* PostgreSQL
+* Rule Engine module
+* Event-based alert system
+* Audit logging middleware
+
+### Required Core Services
+
+* Authentication service (JWT + RBAC)
+* Time computation engine
+* Alert engine
+* PTO accrual engine
+* Export service (CSV/API)
+* Audit logging system
+
+---
+
+# 🗂 COMPLETE PAGE LIST
+
+---
+
+# 👤 EMPLOYEE SIDE
+
+---
+
+## 1️⃣ Login Page
+
+```
+----------------------------------
+| Company Logo                   |
+| Email                          |
+| Password                       |
+| [ Login ]                      |
+| Forgot Password?               |
+----------------------------------
+```
+
+---
+
+## 2️⃣ Employee Dashboard (Home)
+
+```
+-------------------------------------------------
+| Header: Clock Status | Notifications Bell     |
+-------------------------------------------------
+| BIG BUTTON: [ CLOCK IN / OUT ]               |
+| Timer: 03:42:15                               |
+| Location Detected: ✔                          |
+-------------------------------------------------
+| Today's Summary                               |
+| Worked: 5h 32m                                |
+| Breaks: 45m                                   |
+| Overtime Risk: Warning                        |
+-------------------------------------------------
+| Quick Links                                   |
+| My Timesheet | Request PTO | Alerts           |
+-------------------------------------------------
+```
+
+---
+
+## 3️⃣ Clock Modal
+
+```
+--------------------------------
+| Confirm Clock In             |
+| Location: 0.3 miles verified |
+| Device: Chrome Desktop       |
+| [ Confirm ]                  |
+--------------------------------
+```
+
+---
+
+## 4️⃣ My Timesheet (Weekly View)
+
+```
+-------------------------------------------------------
+| Week Selector <  Jan 1 - Jan 7  >                  |
+-------------------------------------------------------
+| Mon | 8:00 - 5:00 | 8h | Regular                   |
+| Tue | 8:05 - 5:12 | 8h 7m | OT 7m (!)              |
+| Wed | Missing Punch (!)                            |
+| Thu | PTO - Vacation (8h)                          |
+| Fri | 9h total (1h OT)                             |
+-------------------------------------------------------
+| Total Regular: 38h                                 |
+| Total OT: 2h                                       |
+-------------------------------------------------------
+| [ Submit for Approval ]                            |
+-------------------------------------------------------
+```
+
+---
+
+## 5️⃣ PTO Request Page
+
+```
+-----------------------------------------
+| PTO Type: [Vacation ▼]               |
+| Start Date: 03/20                    |
+| End Date: 03/22                      |
+| Hours: 24                            |
+| Balance Available: 56h               |
+| Notes:                               |
+| [ Submit Request ]                   |
+-----------------------------------------
+```
+
+---
+
+## 6️⃣ Notifications / Alerts Page
+
+```
+---------------------------------------
+| Alerts                               |
+---------------------------------------
+| ⚠ Overtime approaching (38h)        |
+| ⚠ Missed Punch Wed                  |
+| ✓ PTO Approved                      |
+---------------------------------------
+```
+
+---
+
+# 👥 MANAGER SIDE
+
+---
+
+## 7️⃣ Manager Dashboard
+
+```
+---------------------------------------------------------
+| Live Team Status                                     |
+---------------------------------------------------------
+| 12 Clocked In | 3 On Break | 5 Clocked Out         |
+---------------------------------------------------------
+| Overtime Alerts (3)                                  |
+| Missed Punches (2)                                   |
+| Pending PTO (4)                                      |
+---------------------------------------------------------
+| Quick Access:                                        |
+| Approvals | Exceptions | Reports                     |
+---------------------------------------------------------
+```
+
+---
+
+## 8️⃣ Team Live Clock Screen
+
+```
+---------------------------------------------------------
+| Employee | Status     | Time | Location             |
+---------------------------------------------------------
+| John     | Clocked In | 4h   | Site A               |
+| Sarah    | Break      | 15m  | HQ                   |
+| Mike     | OT Risk    | 39h  | Site B (!)           |
+---------------------------------------------------------
+```
+
+---
+
+## 9️⃣ Timesheet Approval Screen
+
+```
+--------------------------------------------------------
+| Employee: John Smith                                |
+| Week: Jan 1 - Jan 7                                 |
+--------------------------------------------------------
+| Day breakdown table                                 |
+--------------------------------------------------------
+| Total Regular: 40h                                  |
+| Total OT: 3h                                        |
+--------------------------------------------------------
+| Exceptions:                                         |
+| - Tue 7 min OT                                      |
+--------------------------------------------------------
+| [ Approve ]   [ Reject ]                            |
+--------------------------------------------------------
+```
+
+---
+
+## 🔟 Exception Queue
+
+```
+--------------------------------------------------------
+| Type           | Employee | Severity | Status       |
+--------------------------------------------------------
+| Missed Punch   | Sarah    | High     | Open         |
+| OT Triggered   | Mike     | Medium   | Acknowledged |
+--------------------------------------------------------
+| [ View ]                                            |
+--------------------------------------------------------
+```
+
+---
+
+## 1️⃣1️⃣ PTO Approvals
+
+```
+--------------------------------------------------------
+| Employee | Type     | Dates      | Hours | Status   |
+--------------------------------------------------------
+| Sarah    | Vacation | Mar 1–3    | 24h   | Pending  |
+--------------------------------------------------------
+| [ Approve ] [ Reject ]                             |
+--------------------------------------------------------
+```
+
+---
+
+# 🏢 ADMIN SIDE
+
+---
+
+## 1️⃣2️⃣ Admin Master Dashboard
+
+```
+---------------------------------------------------------
+| Total Employees: 86                                  |
+| Clocked In Now: 42                                   |
+| Active Exceptions: 17                                |
+| OT This Week: 54h                                    |
+---------------------------------------------------------
+| Charts:                                              |
+| Hours by Department                                  |
+| OT Trend                                             |
+---------------------------------------------------------
+```
+
+---
+
+## 1️⃣3️⃣ Employee Management
+
+```
+---------------------------------------------------------
+| Employee List                                        |
+---------------------------------------------------------
+| Name | Role | Location | Status | Manager           |
+---------------------------------------------------------
+| [ Add Employee ]                                     |
+---------------------------------------------------------
+```
+
+---
+
+## 1️⃣4️⃣ Employee Profile Page
+
+```
+---------------------------------------------------------
+| Personal Info                                        |
+| Role / Manager                                       |
+| Assigned Rule Pack                                   |
+| PTO Policy                                           |
+---------------------------------------------------------
+| Edit Punches | PTO Ledger | Audit Log               |
+---------------------------------------------------------
+```
+
+---
+
+## 1️⃣5️⃣ Rule Pack Configuration
+
+```
+---------------------------------------------------------
+| Overtime Rule                                       |
+| Daily OT After: 8h                                  |
+| Weekly OT After: 40h                                |
+---------------------------------------------------------
+| Rounding Rule                                       |
+| 15 min | Nearest                                     |
+---------------------------------------------------------
+| Break Rule                                          |
+| Required after 6h                                   |
+---------------------------------------------------------
+| [ Save Rule Pack ]                                  |
+---------------------------------------------------------
+```
+
+---
+
+## 1️⃣6️⃣ PTO Policy Builder
+
+```
+---------------------------------------------------------
+| PTO Type: Vacation                                  |
+| Accrual: 1.5h per pay period                        |
+| Max Cap: 120h                                       |
+| Carryover: 40h                                      |
+---------------------------------------------------------
+| [ Save Policy ]                                     |
+---------------------------------------------------------
+```
+
+---
+
+## 1️⃣7️⃣ Pay Period Lock Page
+
+```
+---------------------------------------------------------
+| Pay Period: Jan 1 - Jan 15                          |
+| Status: Open                                        |
+---------------------------------------------------------
+| Employees Submitted: 80/86                          |
+---------------------------------------------------------
+| [ Lock Period ]                                     |
+---------------------------------------------------------
+```
+
+---
+
+## 1️⃣8️⃣ Export Page
+
+```
+---------------------------------------------------------
+| Select Pay Period                                   |
+| Format: CSV                                         |
+| Include: Regular | OT | PTO                         |
+---------------------------------------------------------
+| [ Generate Export ]                                 |
+---------------------------------------------------------
+```
+
+---
+
+## 1️⃣9️⃣ Audit Log Viewer
+
+```
+---------------------------------------------------------
+| Date | User | Action | Before | After | Reason     |
+---------------------------------------------------------
+| 3/1  | Admin | Edited Punch | 8:00 → 8:15 | Missed |
+---------------------------------------------------------
+```
+
+---
+
+# 🔔 ALERT SYSTEM FLOW
+
+Alert Types:
+
+* Overtime Risk
+* Overtime Triggered
+* Missed Punch
+* No Show
+* Geofence Violation
+* Unapproved Timesheet
+* Excessive Edits
+
+Each alert:
+
+* Severity Level
+* Assigned To
+* Status
+* Resolution Notes
+
+---
+
+# 🧠 Backend Modules Required
+
+1. Auth Service (RBAC)
+2. Punch Service
+3. Time Computation Engine
+4. Rule Engine
+5. PTO Accrual Engine
+6. Alert Engine
+7. Audit Service
+8. Reporting Service
+9. Export Service
+10. Notification Service
+
+---
+
+# 🗄 Database Tables (Core)
+
+* employees
+* managers
+* punches
+* time_segments
+* timesheets
+* pay_periods
+* pto_requests
+* accrual_ledger
+* rule_packs
+* alert_events
+* audit_logs
+* devices
+* locations
+
+---
+
+# 🚀 If You Want This Production-Ready
+
+To truly build this properly, you also need:
+
+* Timezone-safe storage (UTC only)
+* State-specific compliance configs
+* Immutable audit trail
+* Soft deletes
+* Role-based query filtering
+* Background job processor (alerts + recalculation)
+
+---
+
+If you want, next I can:
+
+• Turn this into a clickable UX layout structure
+• Write a full developer technical spec
+• Convert into a SaaS multi-tenant architecture
+• Or build a cost estimate breakdown
+
+Tell me which direction you want.
