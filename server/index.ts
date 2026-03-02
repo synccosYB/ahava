@@ -96,16 +96,11 @@ app.use((req, res, next) => {
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
 
-  
-  })
-
   // Serve wireframe documentation
   app.get('/wireframes', (_req: any, res: any) => {
     res.sendFile(path.join(__dirname, '..', 'project-plan-wireframes.html'));
   });
-  
-;
-  
+
   httpServer.listen(
     {
       port,
