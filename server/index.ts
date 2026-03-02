@@ -80,6 +80,11 @@ app.use((req, res, next) => {
     return res.status(status).json({ message });
   });
 
+  // Serve wireframe documentation
+  app.get('/wireframes', (_req: any, res: any) => {
+    res.sendFile(path.resolve('project-plan-wireframes.html'));
+  });
+
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
@@ -95,11 +100,6 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-
-  // Serve wireframe documentation
-  app.get('/wireframes', (_req: any, res: any) => {
-    res.sendFile(path.join(__dirname, '..', 'project-plan-wireframes.html'));
-  });
 
   httpServer.listen(
     {
