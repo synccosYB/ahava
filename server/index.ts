@@ -85,6 +85,11 @@ app.use((req, res, next) => {
     res.sendFile(path.resolve('project-plan-wireframes.html'));
   });
 
+  // Serve kiosk wireframe documentation
+  app.get('/kiosk', (_req: any, res: any) => {
+    res.sendFile(path.resolve('kiosk-wireframes.html'));
+  });
+
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
