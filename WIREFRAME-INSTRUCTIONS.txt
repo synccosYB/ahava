@@ -1,0 +1,36 @@
+
+  VIEW YOUR WIREFRAMES - MOBILE INSTRUCTIONS
+  ==========================================
+
+  Option 1: Download the HTML file
+  ---------------------------------
+  1. In Replit app, find: project-plan-wireframes.html
+  2. Download/Share it
+  3. Open in your phone browser
+
+  Option 2: Use Desktop Browser
+  ------------------------------
+  1. Open replit.com on a computer
+  2. Find your "workspace" project
+  3. Click the green "Run" button
+  4. Visit: https://workspace.yoel14.repl.co/wireframes.html
+
+  Option 3: Direct File Access (if available)
+  -------------------------------------------
+  The HTML file is located at: 
+  /home/runner/workspace/project-plan-wireframes.html
+
+  You can download it from the Replit file browser.
+
+  ═══════════════════════════════════════════
+
+  The wireframe document contains:
+  ✓ 8 detailed wireframes
+  ✓ Complete project plan
+  ✓ Technology stack
+  ✓ Database schema
+  ✓ Print button (works in browser)
+
+  File size: ~50KB
+  Self-contained: No external dependencies
+  
