@@ -123,7 +123,6 @@
               padding: 30px;
               margin: 25px 0;
               background: #fafafa;
-              page-break-inside: avoid;
           }
           
           .wireframe-title {
@@ -238,10 +237,18 @@
               }
               
               .wireframe {
-                  page-break-inside: avoid;
+                  page-break-inside: auto;
               }
               
               .section {
+                  page-break-inside: auto;
+              }
+
+              .wireframe-title {
+                  page-break-after: avoid;
+              }
+
+              .wireframe-element, .table-mock, .wireframe-section {
                   page-break-inside: avoid;
               }
           }
@@ -489,7 +496,7 @@
               </div>
           </div>
 
-          <div class="section" style="page-break-before: always;">
+          <div class="section">
               <h2>Wireframes</h2>
               
               <!-- Wireframe 1 -->
@@ -1037,7 +1044,7 @@
               </div>
           </div>
 
-          <div class="section" style="page-break-before: always;">
+          <div class="section">
               <h2>Database Schema</h2>
               
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
