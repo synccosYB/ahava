@@ -86,7 +86,7 @@ app.use((req, res, next) => {
   });
 
   // Serve kiosk wireframe documentation
-  app.get('/kiosk', (_req: any, res: any) => {
+  app.get('/wireframes/kiosk.html', (_req: any, res: any) => {
     res.sendFile(path.resolve('kiosk-wireframes.html'));
   });
 
