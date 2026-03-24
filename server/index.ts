@@ -84,6 +84,10 @@ app.use((req, res, next) => {
     res.redirect('/wireframes');
   });
 
+  app.get('/ahava-logo.jpg', (_req: any, res: any) => {
+    res.sendFile(path.resolve('attached_assets/Ahava_Primary_Logo_2023_Color_1774360090942.jpg'));
+  });
+
   // Serve wireframe documentation
   app.get('/wireframes', (_req: any, res: any) => {
     res.sendFile(path.resolve('project-plan-wireframes.html'));

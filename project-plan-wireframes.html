@@ -31,61 +31,61 @@
               position: fixed;
               top: 20px;
               right: 20px;
-              background: #2563eb;
+              background: #123047;
               color: white;
               border: none;
               padding: 12px 24px;
               border-radius: 6px;
               cursor: pointer;
               font-size: 16px;
-              box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+              box-shadow: 0 2px 8px rgba(18, 48, 71, 0.3);
               transition: all 0.3s;
               z-index: 1000;
           }
           
           .print-button:hover {
-              background: #1d4ed8;
+              background: #009972;
               transform: translateY(-2px);
-              box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+              box-shadow: 0 4px 12px rgba(0, 153, 114, 0.4);
           }
           
           h1 {
-              color: #1e40af;
-              border-bottom: 4px solid #2563eb;
+              color: #123047;
+              border-bottom: 4px solid #56b9ca;
               padding-bottom: 15px;
               margin-bottom: 30px;
               font-size: 2.5em;
           }
           
           h2 {
-              color: #1e40af;
+              color: #123047;
               margin-top: 40px;
               margin-bottom: 20px;
               font-size: 1.8em;
-              border-left: 5px solid #2563eb;
+              border-left: 5px solid #56b9ca;
               padding-left: 15px;
           }
           
           h3 {
-              color: #3b82f6;
+              color: #1f97d4;
               margin-top: 25px;
               margin-bottom: 15px;
               font-size: 1.3em;
           }
           
           h4 {
-              color: #60a5fa;
+              color: #56b9ca;
               margin-top: 20px;
               margin-bottom: 10px;
               font-size: 1.1em;
           }
           
           .metadata {
-              background: #eff6ff;
+              background: #f0f9fa;
               padding: 20px;
               border-radius: 8px;
               margin-bottom: 30px;
-              border-left: 4px solid #2563eb;
+              border-left: 4px solid #009972;
           }
           
           .metadata p {
@@ -93,7 +93,7 @@
           }
           
           .metadata strong {
-              color: #1e40af;
+              color: #123047;
           }
           
           .section {
@@ -126,7 +126,7 @@
           }
           
           .wireframe-title {
-              background: #2563eb;
+              background: #123047;
               color: white;
               padding: 12px 20px;
               border-radius: 6px;
@@ -144,8 +144,8 @@
           }
           
           .wireframe-element {
-              background: #e0e7ff;
-              border: 1px dashed #6366f1;
+              background: #f0f9fa;
+              border: 1px dashed #65bbd0;
               border-radius: 4px;
               padding: 10px;
               margin: 10px 0;
@@ -161,7 +161,7 @@
           }
           
           .sidebar-mock {
-              background: #1e293b;
+              background: #123047;
               color: white;
               padding: 15px;
               border-radius: 6px;
@@ -202,19 +202,19 @@
           }
           
           .tech-card {
-              background: #eff6ff;
-              border: 1px solid #bfdbfe;
+              background: #f0f9fa;
+              border: 1px solid #b3dbdd;
               border-radius: 6px;
               padding: 15px;
           }
           
           .tech-card h4 {
-              color: #1e40af;
+              color: #123047;
               margin-top: 0;
           }
           
           .tablet-frame {
-              border: 3px solid #1e293b;
+              border: 3px solid #123047;
               border-radius: 20px;
               padding: 30px;
               max-width: 700px;
@@ -257,9 +257,9 @@
           }
 
           .kiosk-button-blue {
-              background: #2563eb;
+              background: #1f97d4;
               color: white;
-              border: 2px solid #1d4ed8;
+              border: 2px solid #123047;
           }
 
           .kiosk-button-gray {
@@ -382,8 +382,11 @@
       <button class="print-button" onclick="window.print()">Print Document</button>
       
       <div class="container">
-          <h1>Ahava Medical Center</h1>
-          <h2 style="margin-top: 0; color: #64748b; font-size: 1.2em; font-weight: normal;">Time & Attendance Management System — Complete Project Plan & Wireframe Specifications</h2>
+          <div style="text-align: center; margin-bottom: 20px;">
+              <img src="/ahava-logo.jpg" alt="Ahava Medical" style="max-width: 400px; height: auto; margin-bottom: 10px;">
+          </div>
+          <h1 style="text-align: center; border-bottom: 4px solid #56b9ca;">Time & Attendance Management System</h1>
+          <p style="text-align: center; color: #64748b; font-size: 1.1em; margin-bottom: 30px;">Complete Project Plan & Wireframe Specifications</p>
           
           <div class="metadata">
               <p><strong>Project Type:</strong> Full-Stack Web Application</p>
@@ -662,7 +665,7 @@
                   <div class="layout-grid">
                       <div class="sidebar-mock">
                           <p style="font-weight: bold; margin-bottom: 15px; font-size: 1.1em;">Navigation</p>
-                          <p style="margin: 10px 0; padding: 8px; background: #3b82f6; border-radius: 4px;">Dashboard</p>
+                          <p style="margin: 10px 0; padding: 8px; background: #56b9ca; border-radius: 4px;">Dashboard</p>
                           <p style="margin: 10px 0;">My Attendance</p>
                           <p style="margin: 10px 0;">Time Off</p>
                           <p style="margin: 10px 0;">Profile</p>
@@ -684,12 +687,12 @@
                           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px;">
                               <div class="wireframe-element" style="text-align: center; padding: 15px;">
                                   <p><strong>Today's Hours</strong></p>
-                                  <p style="font-size: 2em; margin-top: 5px; color: #2563eb;">0.0</p>
+                                  <p style="font-size: 2em; margin-top: 5px; color: #1f97d4;">0.0</p>
                                   <p style="font-size: 0.85em; color: #64748b;">hrs</p>
                               </div>
                               <div class="wireframe-element" style="text-align: center; padding: 15px;">
                                   <p><strong>This Week</strong></p>
-                                  <p style="font-size: 2em; margin-top: 5px; color: #2563eb;">32.5</p>
+                                  <p style="font-size: 2em; margin-top: 5px; color: #1f97d4;">32.5</p>
                                   <p style="font-size: 0.85em; color: #64748b;">hrs</p>
                               </div>
                           </div>
@@ -735,9 +738,9 @@
                       <div class="wireframe-element" style="padding: 15px;">
                           <p><strong>Summary</strong></p>
                           <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 10px; text-align: center;">
-                              <div><p style="color: #64748b; font-size: 0.9em;">Total Hours</p><p style="font-size: 1.5em; font-weight: bold; color: #2563eb;">160.0</p></div>
-                              <div><p style="color: #64748b; font-size: 0.9em;">Days Worked</p><p style="font-size: 1.5em; font-weight: bold; color: #2563eb;">20</p></div>
-                              <div><p style="color: #64748b; font-size: 0.9em;">Daily Average</p><p style="font-size: 1.5em; font-weight: bold; color: #2563eb;">8.0</p></div>
+                              <div><p style="color: #64748b; font-size: 0.9em;">Total Hours</p><p style="font-size: 1.5em; font-weight: bold; color: #1f97d4;">160.0</p></div>
+                              <div><p style="color: #64748b; font-size: 0.9em;">Days Worked</p><p style="font-size: 1.5em; font-weight: bold; color: #1f97d4;">20</p></div>
+                              <div><p style="color: #64748b; font-size: 0.9em;">Daily Average</p><p style="font-size: 1.5em; font-weight: bold; color: #1f97d4;">8.0</p></div>
                           </div>
                       </div>
                       
@@ -781,7 +784,7 @@
                       </table>
                       
                       <div style="text-align: right; margin-top: 15px;">
-                          <div class="wireframe-element" style="display: inline-block; padding: 10px 20px; background: #2563eb; color: white; border: none;">
+                          <div class="wireframe-element" style="display: inline-block; padding: 10px 20px; background: #1f97d4; color: white; border: none;">
                               Export to CSV
                           </div>
                       </div>
@@ -821,7 +824,7 @@
                           </div>
                           
                           <div style="margin-top: 20px; text-align: center;">
-                              <div class="wireframe-element" style="display: inline-block; padding: 12px 30px; background: #2563eb; color: white; border: none; font-weight: bold;">
+                              <div class="wireframe-element" style="display: inline-block; padding: 12px 30px; background: #1f97d4; color: white; border: none; font-weight: bold;">
                                   Submit Request
                               </div>
                           </div>
@@ -872,7 +875,7 @@
                   <div class="layout-grid">
                       <div class="sidebar-mock">
                           <p style="font-weight: bold; margin-bottom: 15px; font-size: 1.1em;">Navigation</p>
-                          <p style="margin: 10px 0; padding: 8px; background: #3b82f6; border-radius: 4px;">Dashboard</p>
+                          <p style="margin: 10px 0; padding: 8px; background: #56b9ca; border-radius: 4px;">Dashboard</p>
                           <p style="margin: 10px 0;">My Attendance</p>
                           <p style="margin: 10px 0;">My Time Off</p>
                           <p style="margin: 10px 0;">Team View</p>
@@ -894,7 +897,7 @@
                           <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 20px;">
                               <div class="wireframe-element" style="text-align: center; padding: 15px;">
                                   <p style="color: #64748b; font-size: 0.9em;">Team Size</p>
-                                  <p style="font-size: 2em; font-weight: bold; color: #2563eb; margin-top: 5px;">12</p>
+                                  <p style="font-size: 2em; font-weight: bold; color: #1f97d4; margin-top: 5px;">12</p>
                               </div>
                               <div class="wireframe-element" style="text-align: center; padding: 15px;">
                                   <p style="color: #64748b; font-size: 0.9em;">Clocked In</p>
@@ -1012,7 +1015,7 @@
                   <div class="layout-grid">
                       <div class="sidebar-mock">
                           <p style="font-weight: bold; margin-bottom: 15px; font-size: 1.1em;">Navigation</p>
-                          <p style="margin: 10px 0; padding: 8px; background: #3b82f6; border-radius: 4px;">Dashboard</p>
+                          <p style="margin: 10px 0; padding: 8px; background: #56b9ca; border-radius: 4px;">Dashboard</p>
                           <p style="margin: 10px 0;">My Attendance</p>
                           <p style="margin: 10px 0;">My Time Off</p>
                           <p style="margin: 10px 0;">Company</p>
@@ -1030,7 +1033,7 @@
                           <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
                               <div class="wireframe-element" style="text-align: center; padding: 12px;">
                                   <p style="font-size: 0.85em; color: #64748b;">Total Employees</p>
-                                  <p style="font-size: 1.8em; font-weight: bold; color: #2563eb;">127</p>
+                                  <p style="font-size: 1.8em; font-weight: bold; color: #1f97d4;">127</p>
                               </div>
                               <div class="wireframe-element" style="text-align: center; padding: 12px;">
                                   <p style="font-size: 0.85em; color: #64748b;">Active Now</p>
@@ -1129,7 +1132,7 @@
                       </div>
                       
                       <div style="margin: 20px 0; text-align: center;">
-                          <div class="wireframe-element" style="display: inline-block; padding: 12px 40px; background: #2563eb; color: white; border: none; font-weight: bold; font-size: 1.05em;">
+                          <div class="wireframe-element" style="display: inline-block; padding: 12px 40px; background: #1f97d4; color: white; border: none; font-weight: bold; font-size: 1.05em;">
                               Generate Report
                           </div>
                       </div>
@@ -1176,7 +1179,7 @@
                           <div class="wireframe-element" style="display: inline-block; padding: 10px 20px; margin-right: 10px;">
                               Download
                           </div>
-                          <div class="wireframe-element" style="display: inline-block; padding: 10px 20px; background: #2563eb; color: white; border: none;">
+                          <div class="wireframe-element" style="display: inline-block; padding: 10px 20px; background: #1f97d4; color: white; border: none;">
                               Email Report
                           </div>
                       </div>
@@ -1240,16 +1243,16 @@
                   <p style="margin-bottom: 15px; color: #64748b;">The default idle screen. Always visible when no employee is using the kiosk.</p>
                   <div class="tablet-frame">
                       <div style="text-align: center; padding-top: 30px;">
-                          <h2 style="border: none; padding: 0; margin: 0 0 5px 0; font-size: 2em; color: #1e40af;">Ahava Medical Center</h2>
+                          <h2 style="border: none; padding: 0; margin: 0 0 5px 0; font-size: 2em; color: #123047;">Ahava Medical Center</h2>
                           <p style="color: #64748b; font-size: 1.1em; margin-bottom: 40px;">Time & Attendance</p>
                           
-                          <div style="font-size: 3em; font-weight: bold; color: #1e293b; margin: 20px 0;">
+                          <div style="font-size: 3em; font-weight: bold; color: #123047; margin: 20px 0;">
                               8:00 AM
                           </div>
                           <p style="color: #64748b; font-size: 1.1em; margin-bottom: 40px;">Monday, March 2, 2026</p>
 
-                          <div style="margin: 20px auto; width: 100px; height: 100px; background: #e0e7ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px dashed #6366f1;">
-                              <span style="font-size: 2.5em; color: #6366f1;">&#9758;</span>
+                          <div style="margin: 20px auto; width: 100px; height: 100px; background: #e0f5f8; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px dashed #56b9ca;">
+                              <span style="font-size: 2.5em; color: #56b9ca;">&#9758;</span>
                           </div>
 
                           <div class="kiosk-button kiosk-button-blue" style="display: block; max-width: 400px; margin: 15px auto 10px auto; padding: 25px; font-size: 1.4em;">
@@ -1271,14 +1274,14 @@
                           <h3 style="text-align: center;">Fingerprint Scan</h3>
                           <div class="tablet-frame" style="min-height: 380px;">
                               <div style="text-align: center; padding-top: 20px;">
-                                  <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                                  <h3 style="margin: 0 0 5px 0; color: #123047;">Ahava Medical Center</h3>
                                   <p style="color: #64748b; margin-bottom: 25px;">Place your finger on the sensor</p>
 
-                                  <div style="margin: 20px auto; width: 120px; height: 120px; background: #dbeafe; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 4px solid #3b82f6;">
-                                      <span style="font-size: 3em; color: #3b82f6;">&#9758;</span>
+                                  <div style="margin: 20px auto; width: 120px; height: 120px; background: #d5f0f4; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 4px solid #56b9ca;">
+                                      <span style="font-size: 3em; color: #1f97d4;">&#9758;</span>
                                   </div>
 
-                                  <div class="wireframe-element" style="max-width: 300px; margin: 20px auto; padding: 12px; background: #dbeafe; border-color: #3b82f6;">
+                                  <div class="wireframe-element" style="max-width: 300px; margin: 20px auto; padding: 12px; background: #d5f0f4; border-color: #1f97d4;">
                                       <p><strong>Scanning...</strong></p>
                                       <p style="font-size: 0.85em; color: #64748b;">Hold still for 2 seconds</p>
                                   </div>
@@ -1292,7 +1295,7 @@
                           <h3 style="text-align: center;">Face Recognition</h3>
                           <div class="tablet-frame" style="min-height: 380px;">
                               <div style="text-align: center; padding-top: 20px;">
-                                  <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                                  <h3 style="margin: 0 0 5px 0; color: #123047;">Ahava Medical Center</h3>
                                   <p style="color: #64748b; margin-bottom: 25px;">Look at the camera</p>
 
                                   <div style="margin: 20px auto; width: 120px; height: 120px; background: #f0fdf4; border-radius: 20px; display: flex; align-items: center; justify-content: center; border: 4px solid #22c55e;">
@@ -1320,14 +1323,14 @@
                           <h3 style="text-align: center;">Step 1: Search by Name</h3>
                           <div class="tablet-frame" style="min-height: 400px;">
                               <div style="text-align: center; padding-top: 10px;">
-                                  <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                                  <h3 style="margin: 0 0 5px 0; color: #123047;">Ahava Medical Center</h3>
                                   <p style="color: #64748b; margin-bottom: 15px;">Search your name, then verify with biometrics</p>
 
                                   <div class="wireframe-element" style="padding: 12px; text-align: left; max-width: 350px; margin: 0 auto;">
                                       Search: [John...]
                                   </div>
                                   <div style="text-align: left; margin-top: 10px; max-width: 350px; margin-left: auto; margin-right: auto;">
-                                      <div class="wireframe-element" style="padding: 12px; border-left: 4px solid #2563eb;">
+                                      <div class="wireframe-element" style="padding: 12px; border-left: 4px solid #56b9ca;">
                                           <strong>John Doe</strong>
                                           <br><span style="font-size: 0.85em; color: #64748b;">Nursing - ID #1042</span>
                                       </div>
@@ -1352,13 +1355,13 @@
                           <h3 style="text-align: center;">Step 2: Verify Identity</h3>
                           <div class="tablet-frame" style="min-height: 400px;">
                               <div style="text-align: center; padding-top: 10px;">
-                                  <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                                  <h3 style="margin: 0 0 5px 0; color: #123047;">Ahava Medical Center</h3>
                                   <p style="color: #64748b; margin-bottom: 15px;">Verify you are <strong>John Doe</strong></p>
 
-                                  <div style="margin: 15px auto; width: 70px; height: 70px; background: #e0e7ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.8em; color: #3b82f6; font-weight: bold;">
+                                  <div style="margin: 15px auto; width: 70px; height: 70px; background: #e0f5f8; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.8em; color: #1f97d4; font-weight: bold;">
                                       JD
                                   </div>
-                                  <p style="font-size: 1.2em; color: #1e293b;"><strong>John Doe</strong></p>
+                                  <p style="font-size: 1.2em; color: #123047;"><strong>John Doe</strong></p>
                                   <p style="color: #64748b; font-size: 0.9em;">Nursing Department</p>
 
                                   <div class="wireframe-element" style="max-width: 300px; margin: 20px auto; padding: 15px; background: #fef3c7; border-color: #f59e0b;">
@@ -1366,8 +1369,8 @@
                                       <p style="font-size: 0.85em; color: #64748b; margin-top: 5px;">Scan fingerprint or look at camera to confirm your identity</p>
                                   </div>
 
-                                  <div style="margin: 15px auto; width: 80px; height: 80px; background: #dbeafe; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid #3b82f6;">
-                                      <span style="font-size: 2em; color: #3b82f6;">&#9758;</span>
+                                  <div style="margin: 15px auto; width: 80px; height: 80px; background: #d5f0f4; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid #56b9ca;">
+                                      <span style="font-size: 2em; color: #1f97d4;">&#9758;</span>
                                   </div>
 
                                   <span class="kiosk-button kiosk-button-gray" style="padding: 8px 20px; font-size: 0.85em;">Not me &mdash; Go Back</span>
@@ -1388,11 +1391,11 @@
                               <div style="text-align: center; padding-top: 10px;">
                                   <p style="color: #64748b; font-size: 0.9em;">Monday, March 2, 2026 &mdash; 8:00 AM</p>
                                   
-                                  <div style="margin: 25px auto; width: 80px; height: 80px; background: #e0e7ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #3b82f6; font-weight: bold;">
+                                  <div style="margin: 25px auto; width: 80px; height: 80px; background: #e0f5f8; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #1f97d4; font-weight: bold;">
                                       JD
                                   </div>
                                   
-                                  <h3 style="margin: 0; font-size: 1.6em; color: #1e293b;">John Doe</h3>
+                                  <h3 style="margin: 0; font-size: 1.6em; color: #123047;">John Doe</h3>
                                   <p style="color: #64748b; margin-top: 5px;">Nursing Department</p>
                                   <p style="color: #64748b;">Employee ID: #1042</p>
                                   
@@ -1416,11 +1419,11 @@
                               <div style="text-align: center; padding-top: 10px;">
                                   <p style="color: #64748b; font-size: 0.9em;">Monday, March 2, 2026 &mdash; 5:05 PM</p>
                                   
-                                  <div style="margin: 25px auto; width: 80px; height: 80px; background: #e0e7ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #3b82f6; font-weight: bold;">
+                                  <div style="margin: 25px auto; width: 80px; height: 80px; background: #e0f5f8; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #1f97d4; font-weight: bold;">
                                       JD
                                   </div>
                                   
-                                  <h3 style="margin: 0; font-size: 1.6em; color: #1e293b;">John Doe</h3>
+                                  <h3 style="margin: 0; font-size: 1.6em; color: #123047;">John Doe</h3>
                                   <p style="color: #64748b; margin-top: 5px;">Nursing Department</p>
                                   <p style="color: #64748b;">Employee ID: #1042</p>
                                   
@@ -1453,7 +1456,7 @@
                                   
                                   <h2 style="border: none; padding: 0; margin: 0; color: #166534; font-size: 1.8em;">Clocked In</h2>
                                   
-                                  <p style="font-size: 1.3em; color: #1e293b; margin-top: 15px;"><strong>John Doe</strong></p>
+                                  <p style="font-size: 1.3em; color: #123047; margin-top: 15px;"><strong>John Doe</strong></p>
                                   
                                   <p style="font-size: 1.5em; color: #166534; margin-top: 10px; font-weight: bold;">8:00 AM</p>
                                   <p style="color: #64748b;">Monday, March 2, 2026</p>
@@ -1471,7 +1474,7 @@
                                   
                                   <h2 style="border: none; padding: 0; margin: 0; color: #991b1b; font-size: 1.8em;">Clocked Out</h2>
                                   
-                                  <p style="font-size: 1.3em; color: #1e293b; margin-top: 15px;"><strong>John Doe</strong></p>
+                                  <p style="font-size: 1.3em; color: #123047; margin-top: 15px;"><strong>John Doe</strong></p>
                                   
                                   <p style="font-size: 1.5em; color: #991b1b; margin-top: 10px; font-weight: bold;">5:05 PM</p>
                                   <p style="color: #64748b;">Monday, March 2, 2026</p>
@@ -1761,11 +1764,13 @@
               </div>
           </div>
 
-          <div style="margin-top: 60px; padding-top: 30px; border-top: 2px solid #e5e7eb; text-align: center; color: #64748b;">
-              <p style="font-size: 1.1em;"><strong>Ahava Medical Center — Time & Attendance Management System</strong></p>
+          <div style="margin-top: 60px; padding-top: 30px; border-top: 2px solid #b3dbdd; text-align: center; color: #64748b;">
+              <div style="margin-bottom: 15px;">
+                  <img src="/ahava-logo.jpg" alt="Ahava Medical" style="max-width: 250px; height: auto;">
+              </div>
+              <p style="font-size: 1.1em; color: #123047;"><strong>Time & Attendance Management System</strong></p>
               <p>Project Plan & Wireframe Document v1.0</p>
               <p style="margin-top: 10px;">Generated: March 2, 2026 — EST</p>
-              <p style="margin-top: 20px; font-size: 0.9em;">This document contains the complete project scope, technical specifications, and visual wireframes.</p>
           </div>
       </div>
       
