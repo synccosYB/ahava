@@ -518,7 +518,9 @@
                       <li><strong>Tablet Kiosk Clock-In System</strong>
                           <ul>
                               <li>Shared device mode — no individual login required</li>
-                              <li>Employee identification via 4-digit PIN or name search</li>
+                              <li>Biometric identification via fingerprint scan or face recognition</li>
+                              <li>Fallback: name search with biometric verification required</li>
+                              <li>Admin-assigned PIN as last-resort backup only</li>
                               <li>Large, touch-friendly UI optimized for 10"+ tablets</li>
                               <li>Auto-timeout and screen reset between users</li>
                               <li>Device registration and location verification</li>
@@ -617,6 +619,7 @@
                           <li>time_off_balances</li>
                           <li>kiosk_devices</li>
                           <li>employee_pins</li>
+                          <li>employee_biometrics</li>
                       </ul>
                   </div>
                   
@@ -1183,12 +1186,15 @@
 
           <div class="section">
               <h2>Tablet Kiosk Clock-In System</h2>
-              <p>The Kiosk Clock-In System is a tablet-based shared station that allows employees to quickly clock in and out of their shifts. Unlike the personal web application, the kiosk is a dedicated device mounted at a fixed location in the facility. Employees identify themselves using a PIN code or name search, then tap to clock in or out. The kiosk is designed for fast, touch-friendly interaction with minimal steps.</p>
+              <p>The Kiosk Clock-In System is a tablet-based shared station that allows employees to quickly clock in and out of their shifts. Unlike the personal web application, the kiosk is a dedicated device mounted at a fixed location in the facility. Employees identify themselves using fingerprint or face recognition, then confirm to clock in or out. The kiosk is designed for fast, touch-friendly interaction with minimal steps and maximum security against buddy punching.</p>
 
               <h3>Key Differences from the Web Application</h3>
               <div class="feature-list">
                   <ul>
-                      <li><strong>Shared Device:</strong> No individual login/logout &mdash; employees identify via PIN or name search</li>
+                      <li><strong>Shared Device:</strong> No individual login/logout &mdash; employees identify via biometrics (fingerprint or face recognition)</li>
+                      <li><strong>Biometric-First:</strong> Fingerprint or face recognition is the primary identification method &mdash; prevents buddy punching (PINs can be shared between employees, biometrics cannot)</li>
+                      <li><strong>Fallback Search:</strong> If biometrics fail, employee can search by name, then must verify identity with fingerprint or face scan</li>
+                      <li><strong>Admin PIN Backup:</strong> Admin can assign a PIN per employee as a last-resort fallback only</li>
                       <li><strong>Single Purpose:</strong> Clock in/out only &mdash; no PTO requests, timesheets, or reports</li>
                       <li><strong>Touch Optimized:</strong> Large buttons, simple layout, designed for quick interactions</li>
                       <li><strong>Auto-Reset:</strong> Returns to home screen after each use (configurable timeout)</li>
@@ -1197,13 +1203,31 @@
                   </ul>
               </div>
 
+              <h3>Authentication Priority</h3>
+              <div class="feature-list">
+                  <ol>
+                      <li><strong>Fingerprint Scan</strong> &mdash; Primary method. Employee places finger on sensor; system identifies them automatically.</li>
+                      <li><strong>Face Recognition</strong> &mdash; Alternative biometric. Employee looks at the tablet camera; system identifies them.</li>
+                      <li><strong>Name Search + Biometric Verification</strong> &mdash; If biometrics don't return a match, employee searches by name, then must verify with fingerprint or face scan.</li>
+                      <li><strong>Admin-Assigned PIN</strong> &mdash; Last-resort fallback only. Admin creates the PIN; employee cannot choose or change it. Used only when biometric hardware is unavailable.</li>
+                  </ol>
+              </div>
+
               <h3>Kiosk User Flow</h3>
               <div class="wireframe-element" style="padding: 20px; text-align: center;">
                   <p style="font-size: 1.1em;">
                       <strong>Home Screen</strong>
-                      &rarr; <strong>Employee Lookup</strong> (PIN or Name Search)
+                      &rarr; <strong>Biometric Scan</strong> (Fingerprint or Face)
+                      &rarr; <strong>Employee Identified</strong>
                       &rarr; <strong>Clock Confirmation</strong> (Review & Tap)
                       &rarr; <strong>Success Screen</strong> (Auto-reset after 5 seconds)
+                  </p>
+                  <p style="font-size: 0.95em; color: #64748b; margin-top: 10px;">
+                      <strong>Fallback:</strong> Home Screen
+                      &rarr; <strong>Name Search</strong>
+                      &rarr; <strong>Biometric Verification</strong>
+                      &rarr; <strong>Clock Confirmation</strong>
+                      &rarr; <strong>Success Screen</strong>
                   </p>
               </div>
           </div>
@@ -1222,54 +1246,88 @@
                           <div style="font-size: 3em; font-weight: bold; color: #1e293b; margin: 20px 0;">
                               8:00 AM
                           </div>
-                          <p style="color: #64748b; font-size: 1.1em; margin-bottom: 50px;">Monday, March 2, 2026</p>
+                          <p style="color: #64748b; font-size: 1.1em; margin-bottom: 40px;">Monday, March 2, 2026</p>
 
-                          <div class="kiosk-button kiosk-button-blue" style="display: block; max-width: 400px; margin: 0 auto 20px auto; padding: 25px; font-size: 1.4em;">
-                              Tap to Clock In / Out
+                          <div style="margin: 20px auto; width: 100px; height: 100px; background: #e0e7ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px dashed #6366f1;">
+                              <span style="font-size: 2.5em; color: #6366f1;">&#9758;</span>
                           </div>
 
-                          <p style="color: #94a3b8; margin-top: 30px; font-size: 0.9em;">Touch anywhere to begin</p>
+                          <div class="kiosk-button kiosk-button-blue" style="display: block; max-width: 400px; margin: 15px auto 10px auto; padding: 25px; font-size: 1.4em;">
+                              Scan Fingerprint to Clock In / Out
+                          </div>
+                          
+                          <p style="color: #94a3b8; margin-top: 15px; font-size: 0.95em;">Place your finger on the sensor or look at the camera</p>
+                          <p style="color: #94a3b8; margin-top: 10px; font-size: 0.85em;">Can't scan? Tap here to search by name</p>
                       </div>
                   </div>
               </div>
 
               <div class="wireframe">
-                  <div class="wireframe-title">Kiosk Screen 2: Employee Identification</div>
-                  <p style="margin-bottom: 15px; color: #64748b;">Employee identifies themselves via PIN entry or name search.</p>
-                  <div class="tablet-frame">
-                      <div style="text-align: center; padding-top: 10px;">
-                          <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
-                          <p style="color: #64748b; margin-bottom: 20px;">Enter your PIN or search your name</p>
-                          
-                          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; text-align: center;">
-                              <div>
-                                  <h4 style="margin-top: 0; color: #1e293b;">Enter PIN</h4>
-                                  <div class="wireframe-element" style="padding: 15px; font-size: 1.5em; letter-spacing: 10px; text-align: center; margin-bottom: 15px;">
-                                      * * * _
-                                  </div>
-                                  <div class="pin-pad">
-                                      <div class="pin-key">1</div>
-                                      <div class="pin-key">2</div>
-                                      <div class="pin-key">3</div>
-                                      <div class="pin-key">4</div>
-                                      <div class="pin-key">5</div>
-                                      <div class="pin-key">6</div>
-                                      <div class="pin-key">7</div>
-                                      <div class="pin-key">8</div>
-                                      <div class="pin-key">9</div>
-                                      <div class="pin-key" style="background: #fee2e2; color: #dc2626;">C</div>
-                                      <div class="pin-key">0</div>
-                                      <div class="pin-key" style="background: #dcfce7; color: #16a34a;">OK</div>
-                                  </div>
-                              </div>
+                  <div class="wireframe-title">Kiosk Screen 2: Biometric Identification</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">Primary method: Employee scans fingerprint or face. System automatically identifies the employee.</p>
 
-                              <div>
-                                  <h4 style="margin-top: 0; color: #1e293b;">Search by Name</h4>
-                                  <div class="wireframe-element" style="padding: 12px; text-align: left;">
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                      <div>
+                          <h3 style="text-align: center;">Fingerprint Scan</h3>
+                          <div class="tablet-frame" style="min-height: 380px;">
+                              <div style="text-align: center; padding-top: 20px;">
+                                  <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                                  <p style="color: #64748b; margin-bottom: 25px;">Place your finger on the sensor</p>
+
+                                  <div style="margin: 20px auto; width: 120px; height: 120px; background: #dbeafe; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 4px solid #3b82f6;">
+                                      <span style="font-size: 3em; color: #3b82f6;">&#9758;</span>
+                                  </div>
+
+                                  <div class="wireframe-element" style="max-width: 300px; margin: 20px auto; padding: 12px; background: #dbeafe; border-color: #3b82f6;">
+                                      <p><strong>Scanning...</strong></p>
+                                      <p style="font-size: 0.85em; color: #64748b;">Hold still for 2 seconds</p>
+                                  </div>
+
+                                  <p style="color: #94a3b8; margin-top: 15px; font-size: 0.85em;">Can't scan? <strong>Search by name</strong></p>
+                              </div>
+                          </div>
+                      </div>
+
+                      <div>
+                          <h3 style="text-align: center;">Face Recognition</h3>
+                          <div class="tablet-frame" style="min-height: 380px;">
+                              <div style="text-align: center; padding-top: 20px;">
+                                  <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                                  <p style="color: #64748b; margin-bottom: 25px;">Look at the camera</p>
+
+                                  <div style="margin: 20px auto; width: 120px; height: 120px; background: #f0fdf4; border-radius: 20px; display: flex; align-items: center; justify-content: center; border: 4px solid #22c55e;">
+                                      <span style="font-size: 3em; color: #22c55e;">&#9786;</span>
+                                  </div>
+
+                                  <div class="wireframe-element" style="max-width: 300px; margin: 20px auto; padding: 12px; background: #f0fdf4; border-color: #22c55e;">
+                                      <p><strong>Scanning...</strong></p>
+                                      <p style="font-size: 0.85em; color: #64748b;">Position your face in the frame</p>
+                                  </div>
+
+                                  <p style="color: #94a3b8; margin-top: 15px; font-size: 0.85em;">Can't scan? <strong>Search by name</strong></p>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+
+              <div class="wireframe">
+                  <div class="wireframe-title">Kiosk Screen 3: Fallback &mdash; Name Search + Biometric Verification</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">If biometric scan doesn't identify the employee, they search by name, then must verify identity with fingerprint or face scan before proceeding.</p>
+
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                      <div>
+                          <h3 style="text-align: center;">Step 1: Search by Name</h3>
+                          <div class="tablet-frame" style="min-height: 400px;">
+                              <div style="text-align: center; padding-top: 10px;">
+                                  <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                                  <p style="color: #64748b; margin-bottom: 15px;">Search your name, then verify with biometrics</p>
+
+                                  <div class="wireframe-element" style="padding: 12px; text-align: left; max-width: 350px; margin: 0 auto;">
                                       Search: [John...]
                                   </div>
-                                  <div style="text-align: left; margin-top: 10px;">
-                                      <div class="wireframe-element" style="padding: 12px; border-left: 4px solid #2563eb; cursor: pointer;">
+                                  <div style="text-align: left; margin-top: 10px; max-width: 350px; margin-left: auto; margin-right: auto;">
+                                      <div class="wireframe-element" style="padding: 12px; border-left: 4px solid #2563eb;">
                                           <strong>John Doe</strong>
                                           <br><span style="font-size: 0.85em; color: #64748b;">Nursing - ID #1042</span>
                                       </div>
@@ -1282,19 +1340,46 @@
                                           <br><span style="font-size: 0.85em; color: #64748b;">Admin - ID #1103</span>
                                       </div>
                                   </div>
+
+                                  <div style="margin-top: 15px;">
+                                      <span class="kiosk-button kiosk-button-gray" style="padding: 10px 25px; font-size: 0.9em;">Cancel</span>
+                                  </div>
                               </div>
                           </div>
+                      </div>
 
-                          <div style="margin-top: 20px;">
-                              <span class="kiosk-button kiosk-button-gray" style="padding: 12px 30px; font-size: 1em;">Cancel</span>
+                      <div>
+                          <h3 style="text-align: center;">Step 2: Verify Identity</h3>
+                          <div class="tablet-frame" style="min-height: 400px;">
+                              <div style="text-align: center; padding-top: 10px;">
+                                  <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                                  <p style="color: #64748b; margin-bottom: 15px;">Verify you are <strong>John Doe</strong></p>
+
+                                  <div style="margin: 15px auto; width: 70px; height: 70px; background: #e0e7ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.8em; color: #3b82f6; font-weight: bold;">
+                                      JD
+                                  </div>
+                                  <p style="font-size: 1.2em; color: #1e293b;"><strong>John Doe</strong></p>
+                                  <p style="color: #64748b; font-size: 0.9em;">Nursing Department</p>
+
+                                  <div class="wireframe-element" style="max-width: 300px; margin: 20px auto; padding: 15px; background: #fef3c7; border-color: #f59e0b;">
+                                      <p><strong>Biometric Verification Required</strong></p>
+                                      <p style="font-size: 0.85em; color: #64748b; margin-top: 5px;">Scan fingerprint or look at camera to confirm your identity</p>
+                                  </div>
+
+                                  <div style="margin: 15px auto; width: 80px; height: 80px; background: #dbeafe; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 3px solid #3b82f6;">
+                                      <span style="font-size: 2em; color: #3b82f6;">&#9758;</span>
+                                  </div>
+
+                                  <span class="kiosk-button kiosk-button-gray" style="padding: 8px 20px; font-size: 0.85em;">Not me &mdash; Go Back</span>
+                              </div>
                           </div>
                       </div>
                   </div>
               </div>
 
               <div class="wireframe">
-                  <div class="wireframe-title">Kiosk Screen 3: Clock In / Out Confirmation</div>
-                  <p style="margin-bottom: 15px; color: #64748b;">Shows employee details and current status. One tap to confirm the punch.</p>
+                  <div class="wireframe-title">Kiosk Screen 4: Clock In / Out Confirmation</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">After biometric identification, shows employee details and current status. One tap to confirm the punch.</p>
                   
                   <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
                       <div>
@@ -1356,7 +1441,7 @@
               </div>
 
               <div class="wireframe">
-                  <div class="wireframe-title">Kiosk Screen 4: Confirmation / Success</div>
+                  <div class="wireframe-title">Kiosk Screen 5: Confirmation / Success</div>
                   <p style="margin-bottom: 15px; color: #64748b;">Confirms the punch. Auto-resets to home screen after 5 seconds.</p>
 
                   <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
@@ -1406,20 +1491,21 @@
               </div>
 
               <div class="wireframe">
-                  <div class="wireframe-title">Kiosk Screen 5: Error / Offline States</div>
-                  <p style="margin-bottom: 15px; color: #64748b;">Handles invalid PIN, network issues, and other error conditions.</p>
+                  <div class="wireframe-title">Kiosk Screen 6: Error / Offline States</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">Handles biometric scan failures, network issues, and other error conditions.</p>
 
                   <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
                       <div>
-                          <h3 style="text-align: center;">Invalid PIN</h3>
+                          <h3 style="text-align: center;">Biometric Not Recognized</h3>
                           <div class="tablet-frame" style="min-height: 250px;">
                               <div style="text-align: center; padding-top: 40px;">
                                   <div style="font-size: 3em; margin-bottom: 15px; color: #ef4444;">&#10007;</div>
-                                  <h3 style="color: #991b1b; margin: 0;">Invalid PIN</h3>
-                                  <p style="color: #64748b; margin-top: 10px;">The PIN you entered does not match any employee.</p>
+                                  <h3 style="color: #991b1b; margin: 0;">Not Recognized</h3>
+                                  <p style="color: #64748b; margin-top: 10px;">Your fingerprint or face was not recognized.</p>
                                   <p style="color: #64748b;">Please try again or search by name.</p>
                                   <div style="margin-top: 25px;">
                                       <span class="kiosk-button kiosk-button-blue" style="padding: 12px 30px; font-size: 1em;">Try Again</span>
+                                      <span class="kiosk-button kiosk-button-gray" style="padding: 12px 30px; font-size: 1em;">Search by Name</span>
                                   </div>
                               </div>
                           </div>
@@ -1450,8 +1536,10 @@
               <h3>Core Functionality</h3>
               <div class="feature-list">
                   <ul>
-                      <li><strong>PIN Entry:</strong> 4-digit numeric PIN assigned to each employee</li>
-                      <li><strong>Name Search:</strong> Type-ahead search by first or last name</li>
+                      <li><strong>Fingerprint Scan:</strong> Primary identification method &mdash; employee places finger on sensor, system identifies them automatically</li>
+                      <li><strong>Face Recognition:</strong> Alternative biometric method &mdash; employee looks at the tablet camera for identification</li>
+                      <li><strong>Name Search Fallback:</strong> Type-ahead search by first or last name, followed by biometric verification to confirm identity</li>
+                      <li><strong>Admin-Assigned PIN:</strong> Last-resort backup &mdash; admin creates PIN for employee; used only when biometric hardware is unavailable</li>
                       <li><strong>One-Tap Punch:</strong> Single button to clock in or out based on current status</li>
                       <li><strong>Shift Summary:</strong> Shows total hours on clock-out confirmation</li>
                       <li><strong>Auto-Reset:</strong> Returns to home screen after 5 seconds (configurable)</li>
@@ -1482,11 +1570,13 @@
               <h3>Security</h3>
               <div class="feature-list">
                   <ul>
-                      <li><strong>PIN-Based Authentication:</strong> Simple but unique per employee</li>
+                      <li><strong>Biometric Authentication:</strong> Fingerprint and face recognition prevent buddy punching &mdash; unlike PINs, biometrics cannot be shared between employees</li>
+                      <li><strong>Two-Step Fallback:</strong> Name search alone is not enough &mdash; employee must also verify with biometrics after selecting their name</li>
+                      <li><strong>Admin-Controlled PINs:</strong> PINs are created and managed by administrators only, not by employees; used as last-resort backup</li>
                       <li><strong>No Sensitive Data Displayed:</strong> Only name, department, and punch status shown</li>
                       <li><strong>Auto-Logout:</strong> Screen resets quickly to prevent unauthorized access</li>
                       <li><strong>Location Verification:</strong> Punches tagged with registered kiosk location</li>
-                      <li><strong>Audit Trail:</strong> All kiosk punches logged with device ID and timestamp</li>
+                      <li><strong>Audit Trail:</strong> All kiosk punches logged with device ID, biometric method used, and timestamp</li>
                   </ul>
               </div>
           </div>
@@ -1504,12 +1594,14 @@
                       </ul>
                   </div>
                   <div class="tech-card">
-                      <h4>Accessories</h4>
+                      <h4>Accessories & Biometric Hardware</h4>
                       <ul style="font-size: 0.9em;">
                           <li>Wall mount or desk stand</li>
                           <li>Continuous power supply (always plugged in)</li>
                           <li>Wi-Fi connection</li>
                           <li>Optional: Ethernet adapter for reliability</li>
+                          <li>USB fingerprint scanner (e.g., DigitalPersona, Futronic)</li>
+                          <li>Front-facing camera for face recognition (built-in or external)</li>
                       </ul>
                   </div>
                   <div class="tech-card">
@@ -1620,10 +1712,23 @@
                           <ul style="list-style: none; margin: 0; padding: 0; font-family: monospace; font-size: 0.9em;">
                               <li>• id (PK)</li>
                               <li>• userId (FK)</li>
-                              <li>• pin (hashed, 4-digit)</li>
+                              <li>• pin (hashed, 4-digit, admin-assigned)</li>
                               <li>• isActive (boolean)</li>
                               <li>• createdAt</li>
                               <li>• updatedAt</li>
+                          </ul>
+                      </div>
+
+                      <h3>employee_biometrics</h3>
+                      <div class="wireframe-element">
+                          <ul style="list-style: none; margin: 0; padding: 0; font-family: monospace; font-size: 0.9em;">
+                              <li>• id (PK)</li>
+                              <li>• userId (FK)</li>
+                              <li>• biometricType (fingerprint / face)</li>
+                              <li>• templateData (encrypted biometric template)</li>
+                              <li>• isActive (boolean)</li>
+                              <li>• enrolledAt</li>
+                              <li>• enrolledBy (FK, admin who enrolled)</li>
                           </ul>
                       </div>
                   </div>
