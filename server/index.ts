@@ -80,6 +80,10 @@ app.use((req, res, next) => {
     return res.status(status).json({ message });
   });
 
+  app.get('/', (_req: any, res: any) => {
+    res.redirect('/wireframes');
+  });
+
   // Serve wireframe documentation
   app.get('/wireframes', (_req: any, res: any) => {
     res.sendFile(path.resolve('project-plan-wireframes.html'));
