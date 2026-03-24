@@ -213,43 +213,167 @@
               margin-top: 0;
           }
           
+          .tablet-frame {
+              border: 3px solid #1e293b;
+              border-radius: 20px;
+              padding: 30px;
+              max-width: 700px;
+              margin: 20px auto;
+              background: #f8fafc;
+              min-height: 500px;
+              position: relative;
+          }
+
+          .tablet-frame::before {
+              content: "";
+              display: block;
+              width: 60px;
+              height: 6px;
+              background: #94a3b8;
+              border-radius: 3px;
+              margin: -15px auto 20px auto;
+          }
+
+          .kiosk-button {
+              display: inline-block;
+              padding: 20px 50px;
+              border-radius: 12px;
+              font-weight: bold;
+              font-size: 1.3em;
+              text-align: center;
+              margin: 10px;
+          }
+
+          .kiosk-button-green {
+              background: #22c55e;
+              color: white;
+              border: 2px solid #16a34a;
+          }
+
+          .kiosk-button-red {
+              background: #ef4444;
+              color: white;
+              border: 2px solid #dc2626;
+          }
+
+          .kiosk-button-blue {
+              background: #2563eb;
+              color: white;
+              border: 2px solid #1d4ed8;
+          }
+
+          .kiosk-button-gray {
+              background: #f1f5f9;
+              color: #334155;
+              border: 2px solid #cbd5e1;
+          }
+
+          .pin-pad {
+              display: grid;
+              grid-template-columns: repeat(3, 1fr);
+              gap: 10px;
+              max-width: 280px;
+              margin: 20px auto;
+          }
+
+          .pin-key {
+              background: #f1f5f9;
+              border: 1px solid #cbd5e1;
+              border-radius: 8px;
+              padding: 18px;
+              text-align: center;
+              font-size: 1.4em;
+              font-weight: bold;
+              color: #334155;
+          }
+
           @media print {
               body {
                   background: white;
                   padding: 0;
+                  font-size: 11pt;
+                  line-height: 1.4;
               }
               
               .container {
                   box-shadow: none;
-                  padding: 20px;
+                  padding: 10px;
               }
               
               .print-button {
                   display: none;
               }
-              
+
               h1 {
                   page-break-after: avoid;
+                  margin-bottom: 15px;
+                  font-size: 1.8em;
               }
               
-              h2, h3 {
+              h2 {
                   page-break-after: avoid;
+                  margin-top: 20px;
+                  margin-bottom: 10px;
+                  font-size: 1.4em;
               }
-              
-              .wireframe {
-                  page-break-inside: auto;
+
+              h3 {
+                  page-break-after: avoid;
+                  margin-top: 15px;
+                  margin-bottom: 8px;
+                  font-size: 1.1em;
               }
-              
+
               .section {
                   page-break-inside: auto;
+                  margin-bottom: 15px;
+              }
+
+              .wireframe {
+                  page-break-inside: auto;
+                  margin: 10px 0;
+                  padding: 15px;
               }
 
               .wireframe-title {
                   page-break-after: avoid;
               }
 
-              .wireframe-element, .table-mock, .wireframe-section {
+              .wireframe-element, .table-mock, .wireframe-section, .tablet-frame {
                   page-break-inside: avoid;
+              }
+
+              .feature-list {
+                  page-break-inside: avoid;
+                  padding: 10px;
+                  margin: 8px 0;
+              }
+
+              .metadata {
+                  page-break-inside: avoid;
+                  padding: 10px;
+                  margin-bottom: 15px;
+              }
+
+              .tech-stack {
+                  page-break-inside: avoid;
+              }
+
+              .layout-grid {
+                  page-break-inside: avoid;
+              }
+
+              ul, ol {
+                  margin-bottom: 8px;
+              }
+
+              li {
+                  margin-bottom: 4px;
+                  line-height: 1.5;
+              }
+
+              p {
+                  margin-bottom: 5px;
               }
           }
       </style>
@@ -390,6 +514,17 @@
                               <li>Real-time status updates</li>
                           </ul>
                       </li>
+
+                      <li><strong>Tablet Kiosk Clock-In System</strong>
+                          <ul>
+                              <li>Shared device mode — no individual login required</li>
+                              <li>Employee identification via 4-digit PIN or name search</li>
+                              <li>Large, touch-friendly UI optimized for 10"+ tablets</li>
+                              <li>Auto-timeout and screen reset between users</li>
+                              <li>Device registration and location verification</li>
+                              <li>Offline punch queuing with auto-sync on reconnect</li>
+                          </ul>
+                      </li>
                   </ol>
               </div>
           </div>
@@ -480,6 +615,8 @@
                           <li>attendance_records</li>
                           <li>time_off_requests</li>
                           <li>time_off_balances</li>
+                          <li>kiosk_devices</li>
+                          <li>employee_pins</li>
                       </ul>
                   </div>
                   
@@ -1045,6 +1182,349 @@
           </div>
 
           <div class="section">
+              <h2>Tablet Kiosk Clock-In System</h2>
+              <p>The Kiosk Clock-In System is a tablet-based shared station that allows employees to quickly clock in and out of their shifts. Unlike the personal web application, the kiosk is a dedicated device mounted at a fixed location in the facility. Employees identify themselves using a PIN code or name search, then tap to clock in or out. The kiosk is designed for fast, touch-friendly interaction with minimal steps.</p>
+
+              <h3>Key Differences from the Web Application</h3>
+              <div class="feature-list">
+                  <ul>
+                      <li><strong>Shared Device:</strong> No individual login/logout &mdash; employees identify via PIN or name search</li>
+                      <li><strong>Single Purpose:</strong> Clock in/out only &mdash; no PTO requests, timesheets, or reports</li>
+                      <li><strong>Touch Optimized:</strong> Large buttons, simple layout, designed for quick interactions</li>
+                      <li><strong>Auto-Reset:</strong> Returns to home screen after each use (configurable timeout)</li>
+                      <li><strong>Fixed Location:</strong> Registered to a specific location for verification</li>
+                      <li><strong>Offline Support:</strong> Queues punches locally if network connection drops</li>
+                  </ul>
+              </div>
+
+              <h3>Kiosk User Flow</h3>
+              <div class="wireframe-element" style="padding: 20px; text-align: center;">
+                  <p style="font-size: 1.1em;">
+                      <strong>Home Screen</strong>
+                      &rarr; <strong>Employee Lookup</strong> (PIN or Name Search)
+                      &rarr; <strong>Clock Confirmation</strong> (Review & Tap)
+                      &rarr; <strong>Success Screen</strong> (Auto-reset after 5 seconds)
+                  </p>
+              </div>
+          </div>
+
+          <div class="section">
+              <h2>Kiosk Wireframes</h2>
+
+              <div class="wireframe">
+                  <div class="wireframe-title">Kiosk Screen 1: Home Screen</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">The default idle screen. Always visible when no employee is using the kiosk.</p>
+                  <div class="tablet-frame">
+                      <div style="text-align: center; padding-top: 30px;">
+                          <h2 style="border: none; padding: 0; margin: 0 0 5px 0; font-size: 2em; color: #1e40af;">Ahava Medical Center</h2>
+                          <p style="color: #64748b; font-size: 1.1em; margin-bottom: 40px;">Time & Attendance</p>
+                          
+                          <div style="font-size: 3em; font-weight: bold; color: #1e293b; margin: 20px 0;">
+                              8:00 AM
+                          </div>
+                          <p style="color: #64748b; font-size: 1.1em; margin-bottom: 50px;">Monday, March 2, 2026</p>
+
+                          <div class="kiosk-button kiosk-button-blue" style="display: block; max-width: 400px; margin: 0 auto 20px auto; padding: 25px; font-size: 1.4em;">
+                              Tap to Clock In / Out
+                          </div>
+
+                          <p style="color: #94a3b8; margin-top: 30px; font-size: 0.9em;">Touch anywhere to begin</p>
+                      </div>
+                  </div>
+              </div>
+
+              <div class="wireframe">
+                  <div class="wireframe-title">Kiosk Screen 2: Employee Identification</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">Employee identifies themselves via PIN entry or name search.</p>
+                  <div class="tablet-frame">
+                      <div style="text-align: center; padding-top: 10px;">
+                          <h3 style="margin: 0 0 5px 0; color: #1e40af;">Ahava Medical Center</h3>
+                          <p style="color: #64748b; margin-bottom: 20px;">Enter your PIN or search your name</p>
+                          
+                          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; text-align: center;">
+                              <div>
+                                  <h4 style="margin-top: 0; color: #1e293b;">Enter PIN</h4>
+                                  <div class="wireframe-element" style="padding: 15px; font-size: 1.5em; letter-spacing: 10px; text-align: center; margin-bottom: 15px;">
+                                      * * * _
+                                  </div>
+                                  <div class="pin-pad">
+                                      <div class="pin-key">1</div>
+                                      <div class="pin-key">2</div>
+                                      <div class="pin-key">3</div>
+                                      <div class="pin-key">4</div>
+                                      <div class="pin-key">5</div>
+                                      <div class="pin-key">6</div>
+                                      <div class="pin-key">7</div>
+                                      <div class="pin-key">8</div>
+                                      <div class="pin-key">9</div>
+                                      <div class="pin-key" style="background: #fee2e2; color: #dc2626;">C</div>
+                                      <div class="pin-key">0</div>
+                                      <div class="pin-key" style="background: #dcfce7; color: #16a34a;">OK</div>
+                                  </div>
+                              </div>
+
+                              <div>
+                                  <h4 style="margin-top: 0; color: #1e293b;">Search by Name</h4>
+                                  <div class="wireframe-element" style="padding: 12px; text-align: left;">
+                                      Search: [John...]
+                                  </div>
+                                  <div style="text-align: left; margin-top: 10px;">
+                                      <div class="wireframe-element" style="padding: 12px; border-left: 4px solid #2563eb; cursor: pointer;">
+                                          <strong>John Doe</strong>
+                                          <br><span style="font-size: 0.85em; color: #64748b;">Nursing - ID #1042</span>
+                                      </div>
+                                      <div class="wireframe-element" style="padding: 12px;">
+                                          <strong>John Miller</strong>
+                                          <br><span style="font-size: 0.85em; color: #64748b;">Radiology - ID #1087</span>
+                                      </div>
+                                      <div class="wireframe-element" style="padding: 12px;">
+                                          <strong>Johnny Park</strong>
+                                          <br><span style="font-size: 0.85em; color: #64748b;">Admin - ID #1103</span>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+
+                          <div style="margin-top: 20px;">
+                              <span class="kiosk-button kiosk-button-gray" style="padding: 12px 30px; font-size: 1em;">Cancel</span>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+
+              <div class="wireframe">
+                  <div class="wireframe-title">Kiosk Screen 3: Clock In / Out Confirmation</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">Shows employee details and current status. One tap to confirm the punch.</p>
+                  
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                      <div>
+                          <h3 style="text-align: center;">Clock IN State</h3>
+                          <div class="tablet-frame" style="min-height: 420px;">
+                              <div style="text-align: center; padding-top: 10px;">
+                                  <p style="color: #64748b; font-size: 0.9em;">Monday, March 2, 2026 &mdash; 8:00 AM</p>
+                                  
+                                  <div style="margin: 25px auto; width: 80px; height: 80px; background: #e0e7ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #3b82f6; font-weight: bold;">
+                                      JD
+                                  </div>
+                                  
+                                  <h3 style="margin: 0; font-size: 1.6em; color: #1e293b;">John Doe</h3>
+                                  <p style="color: #64748b; margin-top: 5px;">Nursing Department</p>
+                                  <p style="color: #64748b;">Employee ID: #1042</p>
+                                  
+                                  <div class="wireframe-element" style="margin: 20px auto; max-width: 300px; padding: 12px; background: #fef2f2; border-color: #fca5a5;">
+                                      <p><strong>Current Status:</strong> Clocked Out</p>
+                                      <p style="font-size: 0.85em; color: #64748b;">Last punch: Mar 1, 5:02 PM</p>
+                                  </div>
+                                  
+                                  <div class="kiosk-button kiosk-button-green" style="display: block; max-width: 350px; margin: 20px auto; padding: 22px;">
+                                      CLOCK IN
+                                  </div>
+                                  
+                                  <span class="kiosk-button kiosk-button-gray" style="padding: 10px 25px; font-size: 0.9em;">Not me - Go Back</span>
+                              </div>
+                          </div>
+                      </div>
+
+                      <div>
+                          <h3 style="text-align: center;">Clock OUT State</h3>
+                          <div class="tablet-frame" style="min-height: 420px;">
+                              <div style="text-align: center; padding-top: 10px;">
+                                  <p style="color: #64748b; font-size: 0.9em;">Monday, March 2, 2026 &mdash; 5:05 PM</p>
+                                  
+                                  <div style="margin: 25px auto; width: 80px; height: 80px; background: #e0e7ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #3b82f6; font-weight: bold;">
+                                      JD
+                                  </div>
+                                  
+                                  <h3 style="margin: 0; font-size: 1.6em; color: #1e293b;">John Doe</h3>
+                                  <p style="color: #64748b; margin-top: 5px;">Nursing Department</p>
+                                  <p style="color: #64748b;">Employee ID: #1042</p>
+                                  
+                                  <div class="wireframe-element" style="margin: 20px auto; max-width: 300px; padding: 12px; background: #dcfce7; border-color: #86efac;">
+                                      <p><strong>Current Status:</strong> Clocked In</p>
+                                      <p style="font-size: 0.85em; color: #64748b;">Clocked in at: 8:00 AM (9h 5m ago)</p>
+                                  </div>
+                                  
+                                  <div class="kiosk-button kiosk-button-red" style="display: block; max-width: 350px; margin: 20px auto; padding: 22px;">
+                                      CLOCK OUT
+                                  </div>
+                                  
+                                  <span class="kiosk-button kiosk-button-gray" style="padding: 10px 25px; font-size: 0.9em;">Not me - Go Back</span>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+
+              <div class="wireframe">
+                  <div class="wireframe-title">Kiosk Screen 4: Confirmation / Success</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">Confirms the punch. Auto-resets to home screen after 5 seconds.</p>
+
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                      <div>
+                          <h3 style="text-align: center;">After Clock IN</h3>
+                          <div class="tablet-frame" style="min-height: 350px; background: #f0fdf4; border-color: #22c55e;">
+                              <div style="text-align: center; padding-top: 50px;">
+                                  <div style="font-size: 4em; margin-bottom: 20px; color: #22c55e;">&#10003;</div>
+                                  
+                                  <h2 style="border: none; padding: 0; margin: 0; color: #166534; font-size: 1.8em;">Clocked In</h2>
+                                  
+                                  <p style="font-size: 1.3em; color: #1e293b; margin-top: 15px;"><strong>John Doe</strong></p>
+                                  
+                                  <p style="font-size: 1.5em; color: #166534; margin-top: 10px; font-weight: bold;">8:00 AM</p>
+                                  <p style="color: #64748b;">Monday, March 2, 2026</p>
+                                  
+                                  <p style="color: #94a3b8; margin-top: 40px;">Returning to home screen in 5 seconds...</p>
+                              </div>
+                          </div>
+                      </div>
+
+                      <div>
+                          <h3 style="text-align: center;">After Clock OUT</h3>
+                          <div class="tablet-frame" style="min-height: 350px; background: #fef2f2; border-color: #ef4444;">
+                              <div style="text-align: center; padding-top: 50px;">
+                                  <div style="font-size: 4em; margin-bottom: 20px; color: #ef4444;">&#10003;</div>
+                                  
+                                  <h2 style="border: none; padding: 0; margin: 0; color: #991b1b; font-size: 1.8em;">Clocked Out</h2>
+                                  
+                                  <p style="font-size: 1.3em; color: #1e293b; margin-top: 15px;"><strong>John Doe</strong></p>
+                                  
+                                  <p style="font-size: 1.5em; color: #991b1b; margin-top: 10px; font-weight: bold;">5:05 PM</p>
+                                  <p style="color: #64748b;">Monday, March 2, 2026</p>
+                                  
+                                  <div class="wireframe-element" style="max-width: 250px; margin: 15px auto; padding: 10px; background: white;">
+                                      <p><strong>Shift Summary</strong></p>
+                                      <p>Total Hours: 9h 5m</p>
+                                      <p>Regular: 8h 0m</p>
+                                      <p>Overtime: 1h 5m</p>
+                                  </div>
+                                  
+                                  <p style="color: #94a3b8; margin-top: 15px;">Returning to home screen in 5 seconds...</p>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+
+              <div class="wireframe">
+                  <div class="wireframe-title">Kiosk Screen 5: Error / Offline States</div>
+                  <p style="margin-bottom: 15px; color: #64748b;">Handles invalid PIN, network issues, and other error conditions.</p>
+
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                      <div>
+                          <h3 style="text-align: center;">Invalid PIN</h3>
+                          <div class="tablet-frame" style="min-height: 250px;">
+                              <div style="text-align: center; padding-top: 40px;">
+                                  <div style="font-size: 3em; margin-bottom: 15px; color: #ef4444;">&#10007;</div>
+                                  <h3 style="color: #991b1b; margin: 0;">Invalid PIN</h3>
+                                  <p style="color: #64748b; margin-top: 10px;">The PIN you entered does not match any employee.</p>
+                                  <p style="color: #64748b;">Please try again or search by name.</p>
+                                  <div style="margin-top: 25px;">
+                                      <span class="kiosk-button kiosk-button-blue" style="padding: 12px 30px; font-size: 1em;">Try Again</span>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+
+                      <div>
+                          <h3 style="text-align: center;">Offline Mode</h3>
+                          <div class="tablet-frame" style="min-height: 250px; border-color: #f59e0b;">
+                              <div style="text-align: center; padding-top: 40px;">
+                                  <div style="font-size: 3em; margin-bottom: 15px; color: #f59e0b;">&#9888;</div>
+                                  <h3 style="color: #92400e; margin: 0;">Offline Mode</h3>
+                                  <p style="color: #64748b; margin-top: 10px;">Network connection unavailable.</p>
+                                  <p style="color: #64748b;">Your punch will be recorded and synced when connection is restored.</p>
+                                  <div class="wireframe-element" style="max-width: 300px; margin: 15px auto; background: #fef3c7; border-color: #f59e0b;">
+                                      <p><strong>3 punches queued</strong></p>
+                                      <p style="font-size: 0.85em;">Waiting for connection...</p>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          </div>
+
+          <div class="section">
+              <h2>Kiosk Features & Requirements</h2>
+              
+              <h3>Core Functionality</h3>
+              <div class="feature-list">
+                  <ul>
+                      <li><strong>PIN Entry:</strong> 4-digit numeric PIN assigned to each employee</li>
+                      <li><strong>Name Search:</strong> Type-ahead search by first or last name</li>
+                      <li><strong>One-Tap Punch:</strong> Single button to clock in or out based on current status</li>
+                      <li><strong>Shift Summary:</strong> Shows total hours on clock-out confirmation</li>
+                      <li><strong>Auto-Reset:</strong> Returns to home screen after 5 seconds (configurable)</li>
+                      <li><strong>Idle Timeout:</strong> Returns to home if no interaction for 30 seconds</li>
+                  </ul>
+              </div>
+
+              <h3>Device Management</h3>
+              <div class="feature-list">
+                  <ul>
+                      <li><strong>Device Registration:</strong> Each kiosk tablet is registered to a specific location</li>
+                      <li><strong>Admin Lock:</strong> Kiosk mode prevents access to other apps on the tablet</li>
+                      <li><strong>Remote Configuration:</strong> Admins can update settings from the web dashboard</li>
+                      <li><strong>Health Monitoring:</strong> Dashboard shows kiosk online/offline status</li>
+                  </ul>
+              </div>
+
+              <h3>Offline Support</h3>
+              <div class="feature-list">
+                  <ul>
+                      <li><strong>Local Punch Queue:</strong> Punches stored locally when network is down</li>
+                      <li><strong>Auto-Sync:</strong> Queued punches automatically sync when connection restores</li>
+                      <li><strong>Offline Indicator:</strong> Visual warning shown to employees when offline</li>
+                      <li><strong>Employee Cache:</strong> PIN and name data cached locally for offline lookup</li>
+                  </ul>
+              </div>
+
+              <h3>Security</h3>
+              <div class="feature-list">
+                  <ul>
+                      <li><strong>PIN-Based Authentication:</strong> Simple but unique per employee</li>
+                      <li><strong>No Sensitive Data Displayed:</strong> Only name, department, and punch status shown</li>
+                      <li><strong>Auto-Logout:</strong> Screen resets quickly to prevent unauthorized access</li>
+                      <li><strong>Location Verification:</strong> Punches tagged with registered kiosk location</li>
+                      <li><strong>Audit Trail:</strong> All kiosk punches logged with device ID and timestamp</li>
+                  </ul>
+              </div>
+          </div>
+
+          <div class="section">
+              <h2>Kiosk Hardware Requirements</h2>
+              <div class="tech-stack">
+                  <div class="tech-card">
+                      <h4>Recommended Tablets</h4>
+                      <ul style="font-size: 0.9em;">
+                          <li>iPad (10th gen or newer)</li>
+                          <li>Samsung Galaxy Tab A8 / A9</li>
+                          <li>Any 10"+ Android tablet</li>
+                          <li>Minimum 10" screen recommended</li>
+                      </ul>
+                  </div>
+                  <div class="tech-card">
+                      <h4>Accessories</h4>
+                      <ul style="font-size: 0.9em;">
+                          <li>Wall mount or desk stand</li>
+                          <li>Continuous power supply (always plugged in)</li>
+                          <li>Wi-Fi connection</li>
+                          <li>Optional: Ethernet adapter for reliability</li>
+                      </ul>
+                  </div>
+                  <div class="tech-card">
+                      <h4>Kiosk Software</h4>
+                      <ul style="font-size: 0.9em;">
+                          <li>Guided Access (iPad) or Kiosk Mode (Android)</li>
+                          <li>Progressive Web App (PWA) &mdash; runs in browser</li>
+                          <li>No app store installation required</li>
+                          <li>Auto-updates via web deployment</li>
+                      </ul>
+                  </div>
+              </div>
+          </div>
+
+          <div class="section">
               <h2>Database Schema</h2>
               
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
@@ -1118,6 +1598,36 @@
                       </div>
                   </div>
               </div>
+
+              <h3 style="margin-top: 30px;">Kiosk Tables</h3>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                  <div>
+                      <h3>kiosk_devices</h3>
+                      <div class="wireframe-element">
+                          <ul style="list-style: none; margin: 0; padding: 0; font-family: monospace; font-size: 0.9em;">
+                              <li>• id (PK)</li>
+                              <li>• deviceName (e.g. "Front Lobby Kiosk")</li>
+                              <li>• locationId (FK)</li>
+                              <li>• status (online / offline)</li>
+                              <li>• lastHeartbeat (timestamp)</li>
+                              <li>• registeredAt</li>
+                          </ul>
+                      </div>
+                  </div>
+                  <div>
+                      <h3>employee_pins</h3>
+                      <div class="wireframe-element">
+                          <ul style="list-style: none; margin: 0; padding: 0; font-family: monospace; font-size: 0.9em;">
+                              <li>• id (PK)</li>
+                              <li>• userId (FK)</li>
+                              <li>• pin (hashed, 4-digit)</li>
+                              <li>• isActive (boolean)</li>
+                              <li>• createdAt</li>
+                              <li>• updatedAt</li>
+                          </ul>
+                      </div>
+                  </div>
+              </div>
           </div>
 
           <div class="section">
@@ -1140,8 +1650,9 @@
                   <p><strong>Week 5-6:</strong> Time-off requests, approval workflow</p>
                   <p><strong>Week 7:</strong> Manager dashboard, team views</p>
                   <p><strong>Week 8:</strong> HR features, reporting</p>
-                  <p><strong>Week 9:</strong> Testing, bug fixes, polish</p>
-                  <p><strong>Week 10:</strong> Deployment, training, docs</p>
+                  <p><strong>Week 9:</strong> Tablet kiosk system (PWA, PIN/name lookup, offline support)</p>
+                  <p><strong>Week 10:</strong> Testing, bug fixes, polish</p>
+                  <p><strong>Week 11:</strong> Deployment, training, docs</p>
               </div>
           </div>
 
