@@ -288,17 +288,26 @@
           }
 
           @media print {
+              * {
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                  color-adjust: exact !important;
+              }
+
               body {
-                  background: white;
+                  background: white !important;
                   padding: 0;
+                  margin: 0;
               }
               
               .container {
                   box-shadow: none;
+                  max-width: 100%;
+                  padding: 20px;
               }
               
               .print-button {
-                  display: none;
+                  display: none !important;
               }
 
               h1, h2, h3 {
@@ -319,6 +328,30 @@
 
               .wireframe-element, .table-mock, .wireframe-section, .tablet-frame, .feature-list, .metadata, .tech-stack, .layout-grid {
                   page-break-inside: avoid;
+              }
+
+              .sidebar-mock {
+                  background: #123047 !important;
+                  color: white !important;
+              }
+
+              .kiosk-button-blue {
+                  background: #1f97d4 !important;
+                  color: white !important;
+              }
+
+              .kiosk-button-green {
+                  background: #009972 !important;
+                  color: white !important;
+              }
+
+              .kiosk-button-gray {
+                  background: #94a3b8 !important;
+                  color: white !important;
+              }
+
+              img {
+                  max-width: 100% !important;
               }
           }
       </style>
