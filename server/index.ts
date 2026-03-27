@@ -3,10 +3,10 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import path from 'path';
+import { setupAuth, registerAuthRoutes } from "./replit_integrations/auth";
 
 const app = express();
 
-// Serve static files
 app.use(express.static('client/public'));
 
 const httpServer = createServer(app);
@@ -41,23 +41,10 @@ export function log(message: string, source = "express") {
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
+      log(`${req.method} ${path} ${res.statusCode} in ${duration}ms`);
     }
   });
 
@@ -65,6 +52,9 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  await setupAuth(app);
+  registerAuthRoutes(app);
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
@@ -80,27 +70,18 @@ app.use((req, res, next) => {
     return res.status(status).json({ message });
   });
 
-  app.get('/', (_req: any, res: any) => {
-    res.redirect('/wireframes');
-  });
-
   app.get('/ahava-logo.jpg', (_req: any, res: any) => {
     res.sendFile(path.resolve('attached_assets/Ahava_Primary_Logo_2023_Color_1774360090942.jpg'));
   });
 
-  // Serve wireframe documentation
   app.get('/wireframes', (_req: any, res: any) => {
     res.sendFile(path.resolve('project-plan-wireframes.html'));
   });
 
-  // Serve kiosk wireframe documentation
   app.get('/wireframes/kiosk.html', (_req: any, res: any) => {
     res.sendFile(path.resolve('kiosk-wireframes.html'));
   });
 
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
   if (process.env.NODE_ENV === "production") {
     serveStatic(app);
   } else {
@@ -108,10 +89,6 @@ app.use((req, res, next) => {
     await setupVite(httpServer, app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
 
   httpServer.listen(
