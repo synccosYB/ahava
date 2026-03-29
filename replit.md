@@ -26,6 +26,9 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 - **attendance_records**: Clock in/out records per user per date (userId FK to users), with breakMinutes, totalHours, source field (web/kiosk)
 - **time_off_requests**: PTO/sick/personal requests with daysRequested and approval workflow (userId, reviewedBy FK to users)
 - **time_off_balances**: Per-user time off allocation and usage tracking per year (userId FK to users)
+- **pto_policies**: Configurable PTO policy definitions with accrual type/rate, yearly/carryover caps, waiting period, sick leave accrual rules (rate per hours worked, yearly cap), holiday pay toggles (paid/unpaid, PTO deduction, OT exclusion), isDefault flag
+- **employee_pto_settings**: Per-employee PTO policy assignment and balance overrides (vacation/sick/personal), hire date for waiting period calculation
+- **audit_logs**: Audit trail for PTO approvals, denials, policy changes, and balance adjustments (action, module, targetId, performedBy, details JSONB)
 - **employee_pins**: Hashed PIN codes for kiosk clock-in (userId FK to users)
 - **kiosk_devices**: Registered kiosk terminals (departmentId FK to departments)
 - **sessions**: Auth session storage
@@ -70,7 +73,7 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 - `GET /api/attendance/records` - Attendance records (supports ?startDate, ?endDate)
 - `POST /api/time-off` - Create time-off request (status forced to pending, daysRequested computed server-side)
 - `GET /api/time-off` - User's time-off requests
-- `GET /api/time-off/balance` - Computed PTO balance
+- `GET /api/time-off/balance` - Computed PTO balance (admin/manager only, supports ?userId query param)
 - `GET /api/time-off/team` - Team time-off (minimized DTO, approved+pending only)
 - `GET /api/time-off/pending` - Pending requests (manager/admin only)
 - `GET /api/users` - All users (admin only)
@@ -121,6 +124,17 @@ Brand colors (Ahava Medical):
 - `GET /api/admin/department-breakdown` - Department breakdown with employee counts
 - `GET /api/admin/recent-activity` - Recent activity feed
 - `POST /api/reports/generate` - Generate report data with filters
+
+## PTO Engine API Endpoints (Milestone 4)
+- `GET /api/pto-policies` - List all PTO policies (admin only)
+- `GET /api/pto-policies/:id` - Get single PTO policy (admin only)
+- `POST /api/pto-policies` - Create PTO policy (admin only)
+- `PATCH /api/pto-policies/:id` - Update PTO policy (admin only)
+- `GET /api/employee-pto-settings/:userId` - Get employee PTO settings (manager/admin)
+- `POST /api/employee-pto-settings` - Create/update employee PTO settings (admin only)
+- `PATCH /api/employee-pto-settings/:userId` - Update employee PTO settings/balance overrides (admin only)
+- `GET /api/employee-pto-policy/:userId` - Get effective PTO policy for employee (manager/admin)
+- `GET /api/audit-logs` - View audit logs (admin only, supports ?module and ?limit query params)
 
 ## Auth & RBAC Notes
 - Custom email/password auth with bcryptjs password hashing (no external OAuth)

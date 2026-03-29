@@ -42,6 +42,15 @@ import {
   type UserPermissionOverride,
   userAccessScopes,
   type UserAccessScope,
+  ptoPolicies,
+  type PtoPolicy,
+  type InsertPtoPolicy,
+  employeePtoSettings,
+  type EmployeePtoSettings,
+  type InsertEmployeePtoSettings,
+  auditLogs,
+  type AuditLog,
+  type InsertAuditLog,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
@@ -123,6 +132,34 @@ export interface IStorage {
   getProcessedTimeOffRequests(reviewerId?: string): Promise<TimeOffRequest[]>;
   getAttendanceByDateRange(startDate: string, endDate: string): Promise<AttendanceRecord[]>;
 
+  getPtoPolicy(id: string): Promise<PtoPolicy | undefined>;
+  getAllPtoPolicies(): Promise<PtoPolicy[]>;
+  getDefaultPtoPolicy(): Promise<PtoPolicy | undefined>;
+  createPtoPolicy(policy: InsertPtoPolicy): Promise<PtoPolicy>;
+  updatePtoPolicy(id: string, policy: Partial<InsertPtoPolicy>): Promise<PtoPolicy | undefined>;
+
+  getEmployeePtoSettings(userId: string): Promise<EmployeePtoSettings | undefined>;
+  createEmployeePtoSettings(settings: InsertEmployeePtoSettings): Promise<EmployeePtoSettings>;
+  updateEmployeePtoSettings(userId: string, settings: Partial<InsertEmployeePtoSettings>): Promise<EmployeePtoSettings | undefined>;
+
+  getEmployeePtoPolicy(userId: string): Promise<PtoPolicy | undefined>;
+  computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }>;
+  computeTotalHoursWorked(userId: string, year: number): Promise<number>;
+
+  createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
+  getAuditLogs(module?: string, limit?: number): Promise<AuditLog[]>;
+
+  getCompany(id: string): Promise<Company | undefined>;
+  getAllCompanies(): Promise<Company[]>;
+  createCompany(company: InsertCompany): Promise<Company>;
+  updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
+  deleteCompany(id: string): Promise<void>;
+
+  getLocation(id: string): Promise<Location | undefined>;
+  getLocationsByCompany(companyId: string): Promise<Location[]>;
+  createLocation(location: InsertLocation): Promise<Location>;
+  updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined>;
+  deleteLocation(id: string): Promise<void>;
   getRole(id: string): Promise<Role | undefined>;
   getAllRoles(): Promise<Role[]>;
   getRolesByCompany(companyId: string | null): Promise<Role[]>;
@@ -788,6 +825,207 @@ export class DatabaseStorage implements IStorage {
 
     const scopedUsers = await db.select().from(users).where(and(...conditions));
     return new Set(scopedUsers.map(u => u.id));
+  }
+
+  async getPtoPolicy(id: string): Promise<PtoPolicy | undefined> {
+    const [policy] = await db.select().from(ptoPolicies).where(eq(ptoPolicies.id, id));
+    return policy;
+  }
+
+  async getAllPtoPolicies(): Promise<PtoPolicy[]> {
+    return db.select().from(ptoPolicies).orderBy(desc(ptoPolicies.createdAt));
+  }
+
+  async getDefaultPtoPolicy(): Promise<PtoPolicy | undefined> {
+    const [policy] = await db.select().from(ptoPolicies)
+      .where(and(eq(ptoPolicies.isDefault, true), eq(ptoPolicies.isActive, true)));
+    return policy;
+  }
+
+  async createPtoPolicy(policy: InsertPtoPolicy): Promise<PtoPolicy> {
+    if (policy.isDefault) {
+      await db.update(ptoPolicies).set({ isDefault: false }).where(eq(ptoPolicies.isDefault, true));
+    }
+    const [created] = await db.insert(ptoPolicies).values(policy).returning();
+    return created;
+  }
+
+  async updatePtoPolicy(id: string, policy: Partial<InsertPtoPolicy>): Promise<PtoPolicy | undefined> {
+    if (policy.isDefault) {
+      await db.update(ptoPolicies).set({ isDefault: false }).where(eq(ptoPolicies.isDefault, true));
+    }
+    const [updated] = await db.update(ptoPolicies)
+      .set({ ...policy, updatedAt: new Date() })
+      .where(eq(ptoPolicies.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getEmployeePtoSettings(userId: string): Promise<EmployeePtoSettings | undefined> {
+    const [settings] = await db.select().from(employeePtoSettings)
+      .where(eq(employeePtoSettings.userId, userId));
+    return settings;
+  }
+
+  async createEmployeePtoSettings(settings: InsertEmployeePtoSettings): Promise<EmployeePtoSettings> {
+    const [created] = await db.insert(employeePtoSettings).values(settings).returning();
+    return created;
+  }
+
+  async updateEmployeePtoSettings(userId: string, settings: Partial<InsertEmployeePtoSettings>): Promise<EmployeePtoSettings | undefined> {
+    const [updated] = await db.update(employeePtoSettings)
+      .set({ ...settings, updatedAt: new Date() })
+      .where(eq(employeePtoSettings.userId, userId))
+      .returning();
+    return updated;
+  }
+
+  async getEmployeePtoPolicy(userId: string): Promise<PtoPolicy | undefined> {
+    const empSettings = await this.getEmployeePtoSettings(userId);
+    if (empSettings?.ptoPolicyId) {
+      const policy = await this.getPtoPolicy(empSettings.ptoPolicyId);
+      if (policy) return policy;
+    }
+    return this.getDefaultPtoPolicy();
+  }
+
+  async computeTotalHoursWorked(userId: string, year: number): Promise<number> {
+    const startDate = `${year}-01-01`;
+    const endDate = `${year}-12-31`;
+    const records = await db.select().from(attendanceRecords)
+      .where(and(
+        eq(attendanceRecords.userId, userId),
+        gte(attendanceRecords.date, startDate),
+        lte(attendanceRecords.date, endDate)
+      ));
+
+    let total = 0;
+    for (const r of records) {
+      if (r.totalHours) {
+        total += r.totalHours;
+      } else if (r.clockIn) {
+        const end = r.clockOut ? new Date(r.clockOut) : new Date();
+        total += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
+      }
+    }
+    return total;
+  }
+
+  async computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }> {
+    const policy = await this.getEmployeePtoPolicy(userId);
+    const empSettings = await this.getEmployeePtoSettings(userId);
+    const currentYear = new Date().getFullYear();
+
+    let annualVacation: number;
+    let annualSick: number;
+    let annualPersonal: number;
+
+    if (policy) {
+      annualVacation = policy.accrualRate;
+
+      if (policy.sickAccrualEnabled) {
+        const hoursWorked = await this.computeTotalHoursWorked(userId, currentYear);
+        const accruedSickHours = Math.floor(hoursWorked / policy.sickAccrualPerHoursWorked) * policy.sickAccrualRatePerHours;
+        const cappedSickHours = Math.min(accruedSickHours, policy.sickYearlyCapHours);
+        annualSick = cappedSickHours / 8;
+      } else {
+        annualSick = 0;
+      }
+
+      annualPersonal = policy.personalDaysPerYear;
+
+      if (policy.holidayPayEnabled && policy.holidayPtoDeduction) {
+        const holidayRequests = await db.select().from(timeOffRequests)
+          .where(and(
+            eq(timeOffRequests.userId, userId),
+            eq(timeOffRequests.type, "holiday"),
+            eq(timeOffRequests.status, "approved")
+          ));
+        let holidayDays = 0;
+        for (const r of holidayRequests) {
+          holidayDays += r.daysRequested || 1;
+        }
+        annualVacation = Math.max(0, annualVacation - holidayDays);
+      }
+    } else {
+      annualVacation = 15;
+      annualSick = 10;
+      annualPersonal = 5;
+    }
+
+    if (empSettings) {
+      if (empSettings.vacationBalanceOverride !== null && empSettings.vacationBalanceOverride !== undefined) {
+        annualVacation = empSettings.vacationBalanceOverride;
+      }
+      if (empSettings.sickBalanceOverride !== null && empSettings.sickBalanceOverride !== undefined) {
+        annualSick = empSettings.sickBalanceOverride;
+      }
+      if (empSettings.personalBalanceOverride !== null && empSettings.personalBalanceOverride !== undefined) {
+        annualPersonal = empSettings.personalBalanceOverride;
+      }
+
+      if (empSettings.hireDate && policy && policy.waitingPeriodDays > 0) {
+        const hireMs = new Date(empSettings.hireDate).getTime();
+        const waitingEnd = hireMs + policy.waitingPeriodDays * 24 * 60 * 60 * 1000;
+        if (Date.now() < waitingEnd) {
+          return { vacation: 0, sick: 0, personal: 0 };
+        }
+      }
+    }
+
+    const requests = await db.select().from(timeOffRequests)
+      .where(eq(timeOffRequests.userId, userId));
+
+    let usedVacation = 0;
+    let usedSick = 0;
+    let usedPersonal = 0;
+
+    for (const r of requests) {
+      if (r.status !== "approved") continue;
+      const days = r.daysRequested || 1;
+      if (r.type === "vacation") usedVacation += days;
+      else if (r.type === "sick") usedSick += days;
+      else if (r.type === "personal") usedPersonal += days;
+    }
+
+    return {
+      vacation: Math.round((annualVacation - usedVacation) * 100) / 100,
+      sick: Math.round((annualSick - usedSick) * 100) / 100,
+      personal: Math.round((annualPersonal - usedPersonal) * 100) / 100,
+    };
+  }
+
+  async getHolidayPayInfo(userId: string): Promise<{
+    holidayPayEnabled: boolean;
+    holidayPtoDeduction: boolean;
+    holidayOtExclusion: boolean;
+  }> {
+    const policy = await this.getEmployeePtoPolicy(userId);
+    if (!policy) {
+      return { holidayPayEnabled: true, holidayPtoDeduction: false, holidayOtExclusion: true };
+    }
+    return {
+      holidayPayEnabled: policy.holidayPayEnabled,
+      holidayPtoDeduction: policy.holidayPtoDeduction,
+      holidayOtExclusion: policy.holidayOtExclusion,
+    };
+  }
+
+  async createAuditLog(log: InsertAuditLog): Promise<AuditLog> {
+    const [created] = await db.insert(auditLogs).values(log).returning();
+    return created;
+  }
+
+  async getAuditLogs(module?: string, limit: number = 50): Promise<AuditLog[]> {
+    if (module) {
+      return db.select().from(auditLogs)
+        .where(eq(auditLogs.module, module))
+        .orderBy(desc(auditLogs.createdAt))
+        .limit(limit);
+    }
+    return db.select().from(auditLogs)
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(limit);
   }
 }
 

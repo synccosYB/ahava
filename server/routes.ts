@@ -4,7 +4,7 @@ import { z } from "zod";
 import { storage } from "./storage";
 import { requireAuth } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema } from "@shared/schema";
 import type { User, AttendanceRecord, TimeOffRequest } from "@shared/schema";
 
 const roleSchema = z.object({
@@ -407,17 +407,23 @@ export async function registerRoutes(
   app.get("/api/attendance/status", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
+      const userRole = req.authUser.role;
       const current = await storage.getCurrentAttendance(userId);
       const todayHours = await storage.getTodayHours(userId);
       const weekHours = await storage.getWeekHours(userId);
-      const ptoBalance = await storage.computeTimeOffBalance(userId);
-      res.json({
+
+      const response: any = {
         isClockedIn: !!current,
         currentRecord: current || null,
         todayHours: Math.round(todayHours * 10) / 10,
         weekHours: Math.round(weekHours * 10) / 10,
-        ptoBalance,
-      });
+      };
+
+      if (userRole === "admin" || userRole === "manager") {
+        response.ptoBalance = await storage.computeTimeOffBalance(userId);
+      }
+
+      res.json(response);
     } catch (error) {
       console.error("Error fetching status:", error);
       res.status(500).json({ message: "Failed to fetch attendance status" });
@@ -490,6 +496,29 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Request must include at least one business day" });
       }
 
+      const empSettings = await storage.getEmployeePtoSettings(userId);
+      const policy = await storage.getEmployeePtoPolicy(userId);
+
+      if (policy && empSettings?.hireDate && policy.waitingPeriodDays > 0) {
+        const hireMs = new Date(empSettings.hireDate).getTime();
+        const waitingEnd = hireMs + policy.waitingPeriodDays * 24 * 60 * 60 * 1000;
+        if (Date.now() < waitingEnd) {
+          return res.status(400).json({ message: "You are still within the waiting period and cannot request time off yet" });
+        }
+      }
+
+      const balance = await storage.computeTimeOffBalance(userId);
+      const requestType = parsed.type as string;
+      const availableBalance = requestType === "vacation" ? balance.vacation
+        : requestType === "sick" ? balance.sick
+        : requestType === "personal" ? balance.personal : null;
+
+      if (availableBalance !== null && computedDays > availableBalance) {
+        return res.status(400).json({
+          message: `Insufficient ${requestType} balance. You have ${availableBalance} day(s) remaining but requested ${computedDays}.`,
+        });
+      }
+
       const request = await storage.createTimeOffRequest({
         ...parsed,
         status: "pending",
@@ -516,10 +545,19 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/time-off/balance", requireAuth, async (req: any, res) => {
+  app.get("/api/time-off/balance", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
     try {
-      const userId = req.authUser.id;
-      const balance = await storage.computeTimeOffBalance(userId);
+      const user = req.authUser as User;
+      const targetUserId = req.query.userId as string || user.id;
+
+      if (targetUserId !== user.id) {
+        const teamIds = await getTeamUserIds(user);
+        if (!teamIds.has(targetUserId)) {
+          return res.status(403).json({ message: "Not authorized to view this employee's balance" });
+        }
+      }
+
+      const balance = await storage.computeTimeOffBalance(targetUserId);
       res.json(balance);
     } catch (error) {
       console.error("Error fetching balance:", error);
@@ -672,6 +710,16 @@ export async function registerRoutes(
       reviewedAt: new Date(),
       ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
     });
+
+    await storage.createAuditLog({
+      action: "pto.approved",
+      module: "pto",
+      targetId: requestId,
+      targetType: "time_off_request",
+      performedBy: user.id,
+      details: { employeeId: request.userId, type: request.type, days: request.daysRequested, comment },
+    });
+
     res.json(updated);
   });
 
@@ -693,6 +741,16 @@ export async function registerRoutes(
       reviewedAt: new Date(),
       ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
     });
+
+    await storage.createAuditLog({
+      action: "pto.denied",
+      module: "pto",
+      targetId: requestId,
+      targetType: "time_off_request",
+      performedBy: user.id,
+      details: { employeeId: request.userId, type: request.type, days: request.daysRequested, comment },
+    });
+
     res.json(updated);
   });
 
@@ -917,6 +975,157 @@ export async function registerRoutes(
     });
 
     res.json(reportData);
+  });
+
+  app.get("/api/pto-policies", requireAuth, requireRole("admin"), async (_req, res) => {
+    try {
+      const policies = await storage.getAllPtoPolicies();
+      res.json(policies);
+    } catch (error) {
+      console.error("Error fetching PTO policies:", error);
+      res.status(500).json({ message: "Failed to fetch PTO policies" });
+    }
+  });
+
+  app.get("/api/pto-policies/:id", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const policy = await storage.getPtoPolicy(req.params.id);
+      if (!policy) return res.status(404).json({ message: "Policy not found" });
+      res.json(policy);
+    } catch (error) {
+      console.error("Error fetching PTO policy:", error);
+      res.status(500).json({ message: "Failed to fetch PTO policy" });
+    }
+  });
+
+  app.post("/api/pto-policies", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const parsed = insertPtoPolicySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid policy data", errors: parsed.error.flatten() });
+      }
+      const policy = await storage.createPtoPolicy(parsed.data);
+
+      await storage.createAuditLog({
+        action: "pto_policy.created",
+        module: "pto",
+        targetId: policy.id,
+        targetType: "pto_policy",
+        performedBy: req.authUser.id,
+        details: { name: policy.name },
+      });
+
+      res.status(201).json(policy);
+    } catch (error) {
+      console.error("Error creating PTO policy:", error);
+      res.status(500).json({ message: "Failed to create PTO policy" });
+    }
+  });
+
+  app.patch("/api/pto-policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const policy = await storage.updatePtoPolicy(req.params.id, req.body);
+      if (!policy) return res.status(404).json({ message: "Policy not found" });
+
+      await storage.createAuditLog({
+        action: "pto_policy.updated",
+        module: "pto",
+        targetId: policy.id,
+        targetType: "pto_policy",
+        performedBy: req.authUser.id,
+        details: { name: policy.name, changes: Object.keys(req.body) },
+      });
+
+      res.json(policy);
+    } catch (error) {
+      console.error("Error updating PTO policy:", error);
+      res.status(500).json({ message: "Failed to update PTO policy" });
+    }
+  });
+
+  app.get("/api/employee-pto-settings/:userId", requireAuth, requireRole("manager", "admin"), async (req, res) => {
+    try {
+      const settings = await storage.getEmployeePtoSettings(req.params.userId);
+      if (!settings) return res.json(null);
+      res.json(settings);
+    } catch (error) {
+      console.error("Error fetching employee PTO settings:", error);
+      res.status(500).json({ message: "Failed to fetch employee PTO settings" });
+    }
+  });
+
+  app.post("/api/employee-pto-settings", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const parsed = insertEmployeePtoSettingsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid settings data", errors: parsed.error.flatten() });
+      }
+
+      const existing = await storage.getEmployeePtoSettings(parsed.data.userId);
+      let settings;
+      if (existing) {
+        settings = await storage.updateEmployeePtoSettings(parsed.data.userId, parsed.data);
+      } else {
+        settings = await storage.createEmployeePtoSettings(parsed.data);
+      }
+
+      await storage.createAuditLog({
+        action: existing ? "employee_pto.updated" : "employee_pto.created",
+        module: "pto",
+        targetId: parsed.data.userId,
+        targetType: "employee_pto_settings",
+        performedBy: req.authUser.id,
+        details: { changes: Object.keys(parsed.data).filter(k => k !== "userId") },
+      });
+
+      res.json(settings);
+    } catch (error) {
+      console.error("Error saving employee PTO settings:", error);
+      res.status(500).json({ message: "Failed to save employee PTO settings" });
+    }
+  });
+
+  app.patch("/api/employee-pto-settings/:userId", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const settings = await storage.updateEmployeePtoSettings(req.params.userId, req.body);
+      if (!settings) return res.status(404).json({ message: "Employee PTO settings not found" });
+
+      await storage.createAuditLog({
+        action: "employee_pto.balance_adjusted",
+        module: "pto",
+        targetId: req.params.userId,
+        targetType: "employee_pto_settings",
+        performedBy: req.authUser.id,
+        details: { changes: req.body },
+      });
+
+      res.json(settings);
+    } catch (error) {
+      console.error("Error updating employee PTO settings:", error);
+      res.status(500).json({ message: "Failed to update employee PTO settings" });
+    }
+  });
+
+  app.get("/api/employee-pto-policy/:userId", requireAuth, requireRole("manager", "admin"), async (req, res) => {
+    try {
+      const policy = await storage.getEmployeePtoPolicy(req.params.userId);
+      res.json(policy || null);
+    } catch (error) {
+      console.error("Error fetching employee PTO policy:", error);
+      res.status(500).json({ message: "Failed to fetch employee PTO policy" });
+    }
+  });
+
+  app.get("/api/audit-logs", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const module = req.query.module as string | undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+      const logs = await storage.getAuditLogs(module, limit);
+      res.json(logs);
+    } catch (error) {
+      console.error("Error fetching audit logs:", error);
+      res.status(500).json({ message: "Failed to fetch audit logs" });
+    }
   });
 
   return httpServer;

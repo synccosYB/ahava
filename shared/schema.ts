@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, date, boolean, real } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import {
@@ -176,6 +176,77 @@ export const insertKioskDeviceSchema = createInsertSchema(kioskDevices).omit({
 export type InsertKioskDevice = z.infer<typeof insertKioskDeviceSchema>;
 export type KioskDevice = typeof kioskDevices.$inferSelect;
 
+export const ptoPolicies = pgTable("pto_policies", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 200 }).notNull(),
+  description: text("description"),
+  companyId: varchar("company_id").references(() => companies.id),
+  accrualType: varchar("accrual_type", { length: 30 }).default("annual").notNull(),
+  accrualRate: real("accrual_rate").default(15).notNull(),
+  yearlyCapHours: real("yearly_cap_hours"),
+  carryoverCapHours: real("carryover_cap_hours").default(0),
+  waitingPeriodDays: integer("waiting_period_days").default(0).notNull(),
+  sickAccrualEnabled: boolean("sick_accrual_enabled").default(true).notNull(),
+  sickAccrualRatePerHours: real("sick_accrual_rate_per_hours").default(1).notNull(),
+  sickAccrualPerHoursWorked: real("sick_accrual_per_hours_worked").default(30).notNull(),
+  sickYearlyCapHours: real("sick_yearly_cap_hours").default(40).notNull(),
+  personalDaysPerYear: real("personal_days_per_year").default(5).notNull(),
+  holidayPayEnabled: boolean("holiday_pay_enabled").default(true).notNull(),
+  holidayPtoDeduction: boolean("holiday_pto_deduction").default(false).notNull(),
+  holidayOtExclusion: boolean("holiday_ot_exclusion").default(true).notNull(),
+  isDefault: boolean("is_default").default(false).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertPtoPolicySchema = createInsertSchema(ptoPolicies).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPtoPolicy = z.infer<typeof insertPtoPolicySchema>;
+export type PtoPolicy = typeof ptoPolicies.$inferSelect;
+
+export const employeePtoSettings = pgTable("employee_pto_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().unique().references(() => users.id),
+  ptoPolicyId: varchar("pto_policy_id").references(() => ptoPolicies.id),
+  vacationBalanceOverride: real("vacation_balance_override"),
+  sickBalanceOverride: real("sick_balance_override"),
+  personalBalanceOverride: real("personal_balance_override"),
+  hireDate: date("hire_date"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertEmployeePtoSettingsSchema = createInsertSchema(employeePtoSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertEmployeePtoSettings = z.infer<typeof insertEmployeePtoSettingsSchema>;
+export type EmployeePtoSettings = typeof employeePtoSettings.$inferSelect;
+
+export const auditLogs = pgTable("audit_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  action: varchar("action", { length: 100 }).notNull(),
+  module: varchar("module", { length: 50 }).notNull(),
+  targetId: varchar("target_id"),
+  targetType: varchar("target_type", { length: 50 }),
+  performedBy: varchar("performed_by").references(() => users.id),
+  details: jsonb("details"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+export type AuditLog = typeof auditLogs.$inferSelect;
+
 export const companiesRelations = relations(companies, ({ many }) => ({
   locations: many(locations),
   users: many(users),
@@ -200,6 +271,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   userRoles: many(userRoles),
   userPermissionOverrides: many(userPermissionOverrides),
   userAccessScopes: many(userAccessScopes),
+  ptoSettings: one(employeePtoSettings, { fields: [users.id], references: [employeePtoSettings.userId] }),
 }));
 
 export const rolesRelations = relations(roles, ({ one, many }) => ({
@@ -265,4 +337,18 @@ export const employeePinsRelations = relations(employeePins, ({ one }) => ({
 
 export const kioskDevicesRelations = relations(kioskDevices, ({ one }) => ({
   department: one(departments, { fields: [kioskDevices.departmentId], references: [departments.id] }),
+}));
+
+export const ptoPoliciesRelations = relations(ptoPolicies, ({ one, many }) => ({
+  company: one(companies, { fields: [ptoPolicies.companyId], references: [companies.id] }),
+  employeePtoSettings: many(employeePtoSettings),
+}));
+
+export const employeePtoSettingsRelations = relations(employeePtoSettings, ({ one }) => ({
+  user: one(users, { fields: [employeePtoSettings.userId], references: [users.id] }),
+  ptoPolicy: one(ptoPolicies, { fields: [employeePtoSettings.ptoPolicyId], references: [ptoPolicies.id] }),
+}));
+
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+  performer: one(users, { fields: [auditLogs.performedBy], references: [users.id] }),
 }));
