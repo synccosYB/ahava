@@ -11,8 +11,17 @@ Employee time tracking and attendance management system for Ahava Medical Center
 
 ## Data Model
 All tables use FK constraints where applicable (userId, managerId, reviewedBy, departmentId reference their parent tables).
-- **users** (shared/models/auth.ts): Auth users with role (employee/manager/admin) and departmentId
-- **departments**: Company departments with manager FK to users
+- **companies** (shared/models/auth.ts): Multi-company support with name, slug, address, phone, email
+- **locations** (shared/models/auth.ts): Company locations with companyId FK
+- **users** (shared/models/auth.ts): Auth users with role, companyId FK, departmentId, passwordHash
+- **departments**: Company departments with manager FK, companyId FK, locationId FK
+- **roles** (shared/models/auth.ts): System and custom roles (isSystem flag, optional companyId)
+- **permissions** (shared/models/auth.ts): Permission keys with module grouping (38 keys)
+- **role_permissions** (shared/models/auth.ts): Maps roles to permissions (M:N)
+- **user_roles** (shared/models/auth.ts): Assigns roles to users (with optional companyId scope)
+- **user_permission_overrides** (shared/models/auth.ts): Per-user permission allow/deny with reason, createdBy, updatedAt
+- **user_access_scopes** (shared/models/auth.ts): Restricts user access by scopeType (company/location/department) with explicit FK columns
+- **policy_types** (shared/models/auth.ts): Policy type definitions with key, name, module, isActive
 - **attendance_records**: Clock in/out records per user per date (userId FK to users), with breakMinutes, totalHours, source field (web/kiosk)
 - **time_off_requests**: PTO/sick/personal requests with daysRequested and approval workflow (userId, reviewedBy FK to users)
 - **time_off_balances**: Per-user time off allocation and usage tracking per year (userId FK to users)
@@ -22,12 +31,14 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 
 ## Key Files
 - `shared/schema.ts` - All Drizzle table definitions with FK relations
-- `shared/models/auth.ts` - Users (with password) and sessions tables
-- `server/storage.ts` - IStorage interface and DatabaseStorage implementation (includes kiosk methods)
+- `shared/models/auth.ts` - Users, sessions, companies, locations, roles, permissions, RBAC tables
+- `server/storage.ts` - IStorage interface and DatabaseStorage implementation (includes kiosk + RBAC methods)
 - `server/routes.ts` - API routes with role-based middleware, Zod validation, and kiosk endpoints
-- `server/replit_integrations/auth/replitAuth.ts` - Session-based auth (login/logout/isAuthenticated)
+- `server/middleware/auth.ts` - JWT token generation and combined JWT+session auth middleware (requireAuth)
+- `server/middleware/rbac.ts` - requirePermission and requireScopedAccess middleware, permission resolution
+- `server/replit_integrations/auth/replitAuth.ts` - Session-based auth (login/logout/isAuthenticated) + JWT token on login
 - `server/index.ts` - Express app setup with auth wiring
-- `server/seed.ts` - Database seed script (creates admin user with password and default department)
+- `server/seed.ts` - Database seed script (admin user, department, 32 permissions, 9 system roles, role_permissions)
 - `client/src/App.tsx` - Main app with auth-gated routing + public /kiosk route
 - `client/src/pages/kiosk.tsx` - Kiosk clock-in interface
 - `client/src/components/app-sidebar.tsx` - Role-based sidebar navigation
@@ -95,12 +106,24 @@ Brand colors (Ahava Medical):
 - `GET /api/admin/recent-activity` - Recent activity feed
 - `POST /api/reports/generate` - Generate report data with filters
 
-## Auth Notes
+## Auth & RBAC Notes
 - Custom email/password auth with bcryptjs password hashing (no external OAuth)
 - Session stored in PostgreSQL via connect-pg-simple
-- `isAuthenticated` middleware sets `req.authUser` with the full user object
+- JWT tokens generated on login (jsonwebtoken, 7-day expiry)
+- `requireAuth` middleware accepts either JWT Bearer token or session cookie
+- `requireAuth` middleware is now used on all API routes (replaces legacy `isAuthenticated`)
+- `requirePermission(key)` middleware resolves effective permissions (role + overrides) and checks
+- `requireScopedAccess(module, scopeResolver)` restricts data by company/location/department scope
+- `requireRole` middleware preserved alongside new system for backward compatibility during migration
+- `resolveUserPermissions(userId)` returns Set of effective permission keys for a user
 - Password field is excluded from all API responses
 - Default admin: admin@ahavamedical.com / admin123
+- 9 system roles: Super Admin, Company Admin, HR Admin, Payroll Admin, Location Manager, Department Manager, Supervisor, Employee, Kiosk Device
+- 43 permission keys using dot notation grouped by module (system.*, company.*, users.* [create/view/edit/deactivate], roles.*, departments.*, attendance.* [view_self/view_team/view_all/clock/edit/manage_rules/approve_corrections], pto.* [request/view_self/view_team/view_all/approve/manage_policies], payroll.* [view_self/view_all/view_batches/manage/mark_sent/export], reports.*, kiosk.*, locations.*, approvals.*, alerts.*, settings.manage, audit.view)
+- 6 policy types seeded with keys: attendance, pto, payroll, approvals, alerts, kiosk
+- user_access_scopes uses scopeType column plus explicit companyId/locationId/departmentId FK columns
+- user_permission_overrides uses `allowed` boolean with optional `reason` and `createdBy` audit fields
+- Both password and passwordHash stripped from all API responses
 
 ## Commands
 - `npm run dev` - Start development server

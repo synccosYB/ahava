@@ -2,7 +2,8 @@ import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage } from "./storage";
-import { isAuthenticated } from "./replit_integrations/auth";
+import { requireAuth } from "./middleware/auth";
+import { requirePermission } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema } from "@shared/schema";
 import type { User, AttendanceRecord, TimeOffRequest } from "@shared/schema";
 
@@ -43,12 +44,12 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  app.get("/api/users", isAuthenticated, requireRole("admin"), async (_req, res) => {
+  app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), async (_req, res) => {
     const users = await storage.getAllUsers();
     res.json(users);
   });
 
-  app.patch("/api/users/:id/role", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.patch("/api/users/:id/role", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const parsed = roleSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid role", errors: parsed.error.flatten() });
@@ -59,12 +60,12 @@ export async function registerRoutes(
     res.json(user);
   });
 
-  app.get("/api/departments", isAuthenticated, async (_req, res) => {
+  app.get("/api/departments", requireAuth, requirePermission("departments.view"), async (_req, res) => {
     const depts = await storage.getAllDepartments();
     res.json(depts);
   });
 
-  app.post("/api/departments", isAuthenticated, requireRole("admin"), async (req, res) => {
+  app.post("/api/departments", requireAuth, requireRole("admin"), requirePermission("departments.create"), async (req, res) => {
     const parsed = insertDepartmentSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid department data", errors: parsed.error.flatten() });
@@ -85,7 +86,7 @@ export async function registerRoutes(
     return new Set();
   }
 
-  app.get("/api/time-off/pending", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+  app.get("/api/time-off/pending", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
     const user = (req as any).authUser as User;
     const teamIds = await getTeamUserIds(user);
     const requests = await storage.getPendingTimeOffRequests();
@@ -205,7 +206,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/attendance/status", isAuthenticated, async (req: any, res) => {
+  app.get("/api/attendance/status", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const current = await storage.getCurrentAttendance(userId);
@@ -225,7 +226,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/attendance/clock-in", isAuthenticated, async (req: any, res) => {
+  app.post("/api/attendance/clock-in", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const current = await storage.getCurrentAttendance(userId);
@@ -240,7 +241,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/attendance/clock-out", isAuthenticated, async (req: any, res) => {
+  app.post("/api/attendance/clock-out", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const record = await storage.clockOut(userId);
@@ -254,7 +255,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/attendance/records", isAuthenticated, async (req: any, res) => {
+  app.get("/api/attendance/records", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const { startDate, endDate } = req.query;
@@ -270,7 +271,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/time-off", isAuthenticated, async (req: any, res) => {
+  app.post("/api/time-off", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const parsed = insertTimeOffRequestSchema.parse({ ...req.body, userId, status: "pending" });
@@ -306,7 +307,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/time-off", isAuthenticated, async (req: any, res) => {
+  app.get("/api/time-off", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const requests = await storage.getTimeOffRequestsByUser(userId);
@@ -317,7 +318,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/time-off/balance", isAuthenticated, async (req: any, res) => {
+  app.get("/api/time-off/balance", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const balance = await storage.computeTimeOffBalance(userId);
@@ -328,7 +329,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/time-off/team", isAuthenticated, async (req: any, res) => {
+  app.get("/api/time-off/team", requireAuth, async (req: any, res) => {
     try {
       const allRequests = await storage.getAllTimeOffRequests();
       const calendarEntries = allRequests
@@ -349,7 +350,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/manager/team-stats", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+  app.get("/api/manager/team-stats", requireAuth, requireRole("manager", "admin"), requirePermission("attendance.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
     const allUsers = await storage.getAllUsers();
     const today = new Date().toISOString().split("T")[0];
@@ -386,7 +387,7 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/manager/team-status", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+  app.get("/api/manager/team-status", requireAuth, requireRole("manager", "admin"), requirePermission("attendance.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
     const today = new Date().toISOString().split("T")[0];
 
@@ -455,18 +456,19 @@ export async function registerRoutes(
     comment: z.string().optional(),
   });
 
-  app.post("/api/time-off/:id/approve", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+  app.post("/api/time-off/:id/approve", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
     const user = (req as any).authUser as User;
     const parsed = approvalSchema.safeParse(req.body);
     const comment = parsed.success ? parsed.data.comment : undefined;
-    const request = await storage.getTimeOffRequest(req.params.id);
+    const requestId = req.params.id as string;
+    const request = await storage.getTimeOffRequest(requestId);
     if (!request) return res.status(404).json({ message: "Request not found" });
     if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
 
     const teamIds = await getTeamUserIds(user);
     if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to approve this request" });
 
-    const updated = await storage.updateTimeOffRequest(req.params.id, {
+    const updated = await storage.updateTimeOffRequest(requestId, {
       status: "approved",
       reviewedBy: user.id,
       reviewedAt: new Date(),
@@ -475,18 +477,19 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.post("/api/time-off/:id/deny", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+  app.post("/api/time-off/:id/deny", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
     const user = (req as any).authUser as User;
     const parsed = approvalSchema.safeParse(req.body);
     const comment = parsed.success ? parsed.data.comment : undefined;
-    const request = await storage.getTimeOffRequest(req.params.id);
+    const requestId = req.params.id as string;
+    const request = await storage.getTimeOffRequest(requestId);
     if (!request) return res.status(404).json({ message: "Request not found" });
     if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
 
     const teamIds = await getTeamUserIds(user);
     if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to deny this request" });
 
-    const updated = await storage.updateTimeOffRequest(req.params.id, {
+    const updated = await storage.updateTimeOffRequest(requestId, {
       status: "denied",
       reviewedBy: user.id,
       reviewedAt: new Date(),
@@ -495,7 +498,7 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.get("/api/time-off/processed", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+  app.get("/api/time-off/processed", requireAuth, requireRole("manager", "admin"), requirePermission("pto.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
     const requests = await storage.getProcessedTimeOffRequests(user.role === "manager" ? user.id : undefined);
     const allUsers = await storage.getAllUsers();
@@ -516,7 +519,7 @@ export async function registerRoutes(
     res.json(enriched);
   });
 
-  app.get("/api/admin/company-stats", isAuthenticated, requireRole("admin"), async (_req, res) => {
+  app.get("/api/admin/company-stats", requireAuth, requireRole("admin"), requirePermission("company.view"), async (_req, res) => {
     const allUsers = await storage.getAllUsers();
     const today = new Date().toISOString().split("T")[0];
     const todayAttendance = await storage.getAttendanceByDate(today);
@@ -536,7 +539,7 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/admin/department-breakdown", isAuthenticated, requireRole("admin"), async (_req, res) => {
+  app.get("/api/admin/department-breakdown", requireAuth, requireRole("admin"), requirePermission("departments.view"), async (_req, res) => {
     const allUsers = await storage.getAllUsers();
     const depts = await storage.getAllDepartments();
     const today = new Date().toISOString().split("T")[0];
@@ -594,7 +597,7 @@ export async function registerRoutes(
     res.json(breakdown);
   });
 
-  app.get("/api/admin/recent-activity", isAuthenticated, requireRole("admin"), async (_req, res) => {
+  app.get("/api/admin/recent-activity", requireAuth, requireRole("admin"), requirePermission("company.view"), async (_req, res) => {
     const allUsers = await storage.getAllUsers();
     const userMap = new Map(allUsers.map(u => [u.id, u]));
     const pendingRequests = await storage.getPendingTimeOffRequests();
@@ -638,7 +641,7 @@ export async function registerRoutes(
     status: z.string().optional(),
   });
 
-  app.post("/api/reports/generate", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+  app.post("/api/reports/generate", requireAuth, requireRole("manager", "admin"), requirePermission("reports.view"), async (req, res) => {
     const user = (req as any).authUser as User;
     const parsed = reportSchema.safeParse(req.body);
     if (!parsed.success) {

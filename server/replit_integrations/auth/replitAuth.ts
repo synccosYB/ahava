@@ -2,7 +2,9 @@ import session from "express-session";
 import type { Express, RequestHandler } from "express";
 import connectPg from "connect-pg-simple";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { authStorage } from "./storage";
+import { generateToken } from "../../middleware/auth";
 
 export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000;
@@ -39,14 +41,21 @@ export async function setupAuth(app: Express) {
     }
 
     const user = await authStorage.getUserByEmail(email);
-    if (!user || !user.password) {
+    if (!user) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    const valid = await bcrypt.compare(password, user.password);
+    const hashToCheck = user.passwordHash || user.password;
+    if (!hashToCheck) {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    const valid = await bcrypt.compare(password, hashToCheck);
     if (!valid) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
+
+    const token = generateToken(user);
 
     (req.session as any).userId = user.id;
     req.session.save((err) => {
@@ -54,9 +63,9 @@ export async function setupAuth(app: Express) {
         console.error("[auth] Session save error:", err);
         return res.status(500).json({ message: "Session error" });
       }
-      console.log("[auth] Session saved, id:", req.sessionID, "userId:", (req.session as any).userId);
-      const { password: _, ...safeUser } = user;
-      res.json(safeUser);
+      console.log("[auth] Session saved for userId:", (req.session as any).userId);
+      const { password: _, passwordHash: _ph, ...safeUser } = user;
+      res.json({ ...safeUser, token });
     });
   });
 
@@ -71,8 +80,20 @@ export async function setupAuth(app: Express) {
   });
 
   app.get("/api/auth/user", async (req, res) => {
-    const userId = (req.session as any)?.userId;
-    console.log("[auth] GET /api/auth/user - sessionID:", req.sessionID, "userId:", userId, "cookie:", req.headers.cookie?.substring(0, 50));
+    let userId = (req.session as any)?.userId;
+
+    if (!userId) {
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith("Bearer ")) {
+        try {
+          const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET || "dev-jwt-secret-not-for-production";
+          const decoded = jwt.verify(authHeader.slice(7), secret) as { userId: string };
+          userId = decoded.userId;
+        } catch {
+        }
+      }
+    }
+
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -80,7 +101,7 @@ export async function setupAuth(app: Express) {
     if (!user) {
       return res.status(401).json({ message: "Unauthorized" });
     }
-    const { password: _, ...safeUser } = user;
+    const { password: _, passwordHash: _ph, ...safeUser } = user;
     res.json(safeUser);
   });
 }

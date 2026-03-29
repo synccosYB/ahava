@@ -2,25 +2,62 @@ import { sql, relations } from "drizzle-orm";
 import { pgTable, text, varchar, timestamp, integer, date, boolean, real } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import { users } from "./models/auth";
+import {
+  users,
+  companies,
+  locations,
+  departments,
+  roles,
+  permissions,
+  rolePermissions,
+  userRoles,
+  userPermissionOverrides,
+  userAccessScopes,
+  policyTypes,
+} from "./models/auth";
 
-export { users, sessions } from "./models/auth";
-export type { User, UpsertUser } from "./models/auth";
-
-export const departments = pgTable("departments", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: varchar("name", { length: 100 }).notNull().unique(),
-  description: text("description"),
-  managerId: varchar("manager_id").references(() => users.id),
-  createdAt: timestamp("created_at").defaultNow(),
-});
-
-export const insertDepartmentSchema = createInsertSchema(departments).omit({
-  id: true,
-  createdAt: true,
-});
-export type InsertDepartment = z.infer<typeof insertDepartmentSchema>;
-export type Department = typeof departments.$inferSelect;
+export {
+  users,
+  sessions,
+  companies,
+  locations,
+  departments,
+  roles,
+  permissions,
+  rolePermissions,
+  userRoles,
+  userPermissionOverrides,
+  userAccessScopes,
+  policyTypes,
+} from "./models/auth";
+export type {
+  User,
+  UpsertUser,
+  Company,
+  InsertCompany,
+  Location,
+  InsertLocation,
+  Department,
+  InsertDepartment,
+  Role,
+  InsertRole,
+  Permission,
+  InsertPermission,
+  RolePermission,
+  UserRole,
+  UserPermissionOverride,
+  UserAccessScope,
+  PolicyType,
+  InsertPolicyType,
+} from "./models/auth";
+export {
+  insertCompanySchema,
+  insertLocationSchema,
+  insertDepartmentSchema,
+  insertRoleSchema,
+  insertPermissionSchema,
+  insertPolicyTypeSchema,
+} from "./models/auth";
 
 export const attendanceRecords = pgTable("attendance_records", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -114,16 +151,67 @@ export const insertKioskDeviceSchema = createInsertSchema(kioskDevices).omit({
 export type InsertKioskDevice = z.infer<typeof insertKioskDeviceSchema>;
 export type KioskDevice = typeof kioskDevices.$inferSelect;
 
+export const companiesRelations = relations(companies, ({ many }) => ({
+  locations: many(locations),
+  users: many(users),
+  departments: many(departments),
+  roles: many(roles),
+}));
+
+export const locationsRelations = relations(locations, ({ one, many }) => ({
+  company: one(companies, { fields: [locations.companyId], references: [companies.id] }),
+  departments: many(departments),
+}));
+
 export const usersRelations = relations(users, ({ one, many }) => ({
+  company: one(companies, { fields: [users.companyId], references: [companies.id] }),
   department: one(departments, { fields: [users.departmentId], references: [departments.id] }),
   attendanceRecords: many(attendanceRecords),
   timeOffRequests: many(timeOffRequests),
   timeOffBalances: many(timeOffBalances),
   employeePin: one(employeePins, { fields: [users.id], references: [employeePins.userId] }),
+  userRoles: many(userRoles),
+  userPermissionOverrides: many(userPermissionOverrides),
+  userAccessScopes: many(userAccessScopes),
+}));
+
+export const rolesRelations = relations(roles, ({ one, many }) => ({
+  company: one(companies, { fields: [roles.companyId], references: [companies.id] }),
+  rolePermissions: many(rolePermissions),
+  userRoles: many(userRoles),
+}));
+
+export const permissionsRelations = relations(permissions, ({ many }) => ({
+  rolePermissions: many(rolePermissions),
+  userPermissionOverrides: many(userPermissionOverrides),
+}));
+
+export const rolePermissionsRelations = relations(rolePermissions, ({ one }) => ({
+  role: one(roles, { fields: [rolePermissions.roleId], references: [roles.id] }),
+  permission: one(permissions, { fields: [rolePermissions.permissionId], references: [permissions.id] }),
+}));
+
+export const userRolesRelations = relations(userRoles, ({ one }) => ({
+  user: one(users, { fields: [userRoles.userId], references: [users.id] }),
+  role: one(roles, { fields: [userRoles.roleId], references: [roles.id] }),
+  company: one(companies, { fields: [userRoles.companyId], references: [companies.id] }),
+}));
+
+export const userPermissionOverridesRelations = relations(userPermissionOverrides, ({ one }) => ({
+  user: one(users, { fields: [userPermissionOverrides.userId], references: [users.id] }),
+  permission: one(permissions, { fields: [userPermissionOverrides.permissionId], references: [permissions.id] }),
+}));
+
+export const userAccessScopesRelations = relations(userAccessScopes, ({ one }) => ({
+  user: one(users, { fields: [userAccessScopes.userId], references: [users.id] }),
+  company: one(companies, { fields: [userAccessScopes.companyId], references: [companies.id] }),
+  location: one(locations, { fields: [userAccessScopes.locationId], references: [locations.id] }),
 }));
 
 export const departmentsRelations = relations(departments, ({ one, many }) => ({
   manager: one(users, { fields: [departments.managerId], references: [users.id] }),
+  company: one(companies, { fields: [departments.companyId], references: [companies.id] }),
+  location: one(locations, { fields: [departments.locationId], references: [locations.id] }),
   kioskDevices: many(kioskDevices),
 }));
 
