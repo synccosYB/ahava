@@ -73,6 +73,9 @@ import {
   payrollAdjustments,
   type PayrollAdjustment,
   type InsertPayrollAdjustment,
+  systemAlerts,
+  type SystemAlert,
+  type InsertSystemAlert,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
@@ -266,6 +269,12 @@ export interface IStorage {
   updatePayrollAdjustment(id: string, data: Partial<InsertPayrollAdjustment>): Promise<PayrollAdjustment | undefined>;
 
   getExportedBatchRecordsByPunchLog(punchLogId: string): Promise<(PayrollBatchRecord & { payrollExport?: PayrollExport })[]>;
+
+  getSystemAlert(id: string): Promise<SystemAlert | undefined>;
+  getAllSystemAlerts(filters?: { type?: string; status?: string; severity?: string }): Promise<SystemAlert[]>;
+  createSystemAlert(alert: InsertSystemAlert): Promise<SystemAlert>;
+  updateSystemAlert(id: string, data: Partial<SystemAlert>): Promise<SystemAlert | undefined>;
+  getAuditLogsFiltered(filters: { actorUserId?: string; action?: string; targetType?: string; startDate?: string; endDate?: string; search?: string; limit?: number; offset?: number }): Promise<{ logs: AuditLog[]; total: number }>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -1177,10 +1186,10 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async getAuditLogs(module?: string, limit: number = 50): Promise<AuditLog[]> {
-    if (module) {
+  async getAuditLogs(targetType?: string, limit: number = 50): Promise<AuditLog[]> {
+    if (targetType) {
       return db.select().from(auditLogs)
-        .where(eq(auditLogs.module, module))
+        .where(eq(auditLogs.targetType, targetType))
         .orderBy(desc(auditLogs.createdAt))
         .limit(limit);
     }
@@ -1364,6 +1373,83 @@ export class DatabaseStorage implements IStorage {
         )
       );
     return results.map(r => ({ ...r.batchRecord, payrollExport: r.payrollExport }));
+  }
+
+  async getSystemAlert(id: string): Promise<SystemAlert | undefined> {
+    const [alert] = await db.select().from(systemAlerts).where(eq(systemAlerts.id, id));
+    return alert;
+  }
+
+  async getAllSystemAlerts(filters?: { type?: string; status?: string; severity?: string }): Promise<SystemAlert[]> {
+    const conditions: any[] = [];
+    if (filters?.type) conditions.push(eq(systemAlerts.type, filters.type));
+    if (filters?.status) conditions.push(eq(systemAlerts.status, filters.status));
+    if (filters?.severity) conditions.push(eq(systemAlerts.severity, filters.severity));
+
+    if (conditions.length > 0) {
+      return db.select().from(systemAlerts).where(and(...conditions)).orderBy(desc(systemAlerts.createdAt));
+    }
+    return db.select().from(systemAlerts).orderBy(desc(systemAlerts.createdAt));
+  }
+
+  async createSystemAlert(alert: InsertSystemAlert): Promise<SystemAlert> {
+    const [created] = await db.insert(systemAlerts).values(alert).returning();
+    return created;
+  }
+
+  async updateSystemAlert(id: string, data: Partial<SystemAlert>): Promise<SystemAlert | undefined> {
+    const [updated] = await db.update(systemAlerts).set(data).where(eq(systemAlerts.id, id)).returning();
+    return updated;
+  }
+
+  async getAuditLogsFiltered(filters: {
+    actorUserId?: string;
+    action?: string;
+    targetType?: string;
+    startDate?: string;
+    endDate?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ logs: AuditLog[]; total: number }> {
+    const conditions: any[] = [];
+    if (filters.actorUserId) conditions.push(eq(auditLogs.actorUserId, filters.actorUserId));
+    if (filters.action) conditions.push(eq(auditLogs.action, filters.action));
+    if (filters.targetType) conditions.push(eq(auditLogs.targetType, filters.targetType));
+    if (filters.startDate) conditions.push(gte(auditLogs.createdAt, new Date(filters.startDate)));
+    if (filters.endDate) {
+      const endDate = new Date(filters.endDate);
+      endDate.setDate(endDate.getDate() + 1);
+      conditions.push(lte(auditLogs.createdAt, endDate));
+    }
+    if (filters.search) {
+      conditions.push(
+        or(
+          ilike(auditLogs.action, `%${filters.search}%`),
+          ilike(auditLogs.targetType, `%${filters.search}%`),
+          ilike(auditLogs.targetId, `%${filters.search}%`)
+        )
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const lim = filters.limit || 50;
+    const off = filters.offset || 0;
+
+    const [totalResult] = await db
+      .select({ count: count() })
+      .from(auditLogs)
+      .where(whereClause);
+
+    const logs = await db
+      .select()
+      .from(auditLogs)
+      .where(whereClause)
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(lim)
+      .offset(off);
+
+    return { logs, total: totalResult?.count || 0 };
   }
 }
 

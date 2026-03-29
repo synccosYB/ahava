@@ -471,6 +471,38 @@ export const policyAssignmentsRelations = relations(policyAssignments, ({ one })
   user: one(users, { fields: [policyAssignments.userId], references: [users.id] }),
 }));
 
+export const systemAlerts = pgTable("system_alerts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: varchar("type", { length: 50 }).notNull(),
+  severity: varchar("severity", { length: 20 }).default("medium").notNull(),
+  status: varchar("status", { length: 20 }).default("open").notNull(),
+  employeeId: varchar("employee_id").references(() => users.id),
+  message: text("message").notNull(),
+  details: jsonb("details"),
+  acknowledgedBy: varchar("acknowledged_by").references(() => users.id),
+  acknowledgedAt: timestamp("acknowledged_at"),
+  resolvedBy: varchar("resolved_by").references(() => users.id),
+  resolvedAt: timestamp("resolved_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertSystemAlertSchema = createInsertSchema(systemAlerts).omit({
+  id: true,
+  createdAt: true,
+  acknowledgedBy: true,
+  acknowledgedAt: true,
+  resolvedBy: true,
+  resolvedAt: true,
+});
+export type InsertSystemAlert = z.infer<typeof insertSystemAlertSchema>;
+export type SystemAlert = typeof systemAlerts.$inferSelect;
+
+export const systemAlertsRelations = relations(systemAlerts, ({ one }) => ({
+  employee: one(users, { fields: [systemAlerts.employeeId], references: [users.id] }),
+  acknowledger: one(users, { fields: [systemAlerts.acknowledgedBy], references: [users.id] }),
+  resolver: one(users, { fields: [systemAlerts.resolvedBy], references: [users.id] }),
+}));
+
 export const payrollExports = pgTable("payroll_exports", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").references(() => companies.id),

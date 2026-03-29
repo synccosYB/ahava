@@ -6,10 +6,12 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest } from "@shared/schema";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES } from "./policyEngine";
+import { runAlertDetection } from "./services/alerts";
+import { WebSocketServer, WebSocket } from "ws";
 
 const roleSchema = z.object({
   role: z.enum(["employee", "manager", "admin"]),
@@ -1333,13 +1335,13 @@ export async function registerRoutes(
       }
       const policy = await storage.createPtoPolicy(parsed.data);
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "pto_policy.created",
-        module: "pto",
         targetId: policy.id,
         targetType: "pto_policy",
-        performedBy: req.authUser.id,
-        details: { name: policy.name },
+        newValue: { name: policy.name },
+        ...getAuditContext(req),
       });
 
       res.status(201).json(policy);
@@ -1354,13 +1356,13 @@ export async function registerRoutes(
       const policy = await storage.updatePtoPolicy(req.params.id, req.body);
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "pto_policy.updated",
-        module: "pto",
         targetId: policy.id,
         targetType: "pto_policy",
-        performedBy: req.authUser.id,
-        details: { name: policy.name, changes: Object.keys(req.body) },
+        newValue: { name: policy.name, changes: Object.keys(req.body) },
+        ...getAuditContext(req),
       });
 
       res.json(policy);
@@ -1396,13 +1398,13 @@ export async function registerRoutes(
         settings = await storage.createEmployeePtoSettings(parsed.data);
       }
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: existing ? "employee_pto.updated" : "employee_pto.created",
-        module: "pto",
         targetId: parsed.data.userId,
         targetType: "employee_pto_settings",
-        performedBy: req.authUser.id,
-        details: { changes: Object.keys(parsed.data).filter(k => k !== "userId") },
+        newValue: { changes: Object.keys(parsed.data).filter(k => k !== "userId") },
+        ...getAuditContext(req),
       });
 
       res.json(settings);
@@ -1417,13 +1419,13 @@ export async function registerRoutes(
       const settings = await storage.updateEmployeePtoSettings(req.params.userId, req.body);
       if (!settings) return res.status(404).json({ message: "Employee PTO settings not found" });
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "employee_pto.balance_adjusted",
-        module: "pto",
         targetId: req.params.userId,
         targetType: "employee_pto_settings",
-        performedBy: req.authUser.id,
-        details: { changes: req.body },
+        newValue: { changes: req.body },
+        ...getAuditContext(req),
       });
 
       res.json(settings);
@@ -1504,13 +1506,13 @@ export async function registerRoutes(
         await storage.upsertPolicyRules(policy.id, req.body.rules);
       }
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "policy.created",
-        module: "policies",
         targetId: policy.id,
         targetType: "policy",
-        performedBy: req.authUser.id,
-        details: { name: policy.name, status: policy.status },
+        newValue: { name: policy.name, status: policy.status },
+        ...getAuditContext(req),
       });
 
       res.status(201).json(policy);
@@ -1530,13 +1532,13 @@ export async function registerRoutes(
         await storage.upsertPolicyRules(policy.id, rules);
       }
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "policy.updated",
-        module: "policies",
         targetId: policy.id,
         targetType: "policy",
-        performedBy: req.authUser.id,
-        details: { name: policy.name, changes: Object.keys(req.body) },
+        newValue: { name: policy.name, changes: Object.keys(req.body) },
+        ...getAuditContext(req),
       });
 
       res.json(policy);
@@ -1551,13 +1553,13 @@ export async function registerRoutes(
       const policy = await storage.updatePolicy(req.params.id, { status: "active" });
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "policy.activated",
-        module: "policies",
         targetId: policy.id,
         targetType: "policy",
-        performedBy: req.authUser.id,
-        details: { name: policy.name },
+        newValue: { name: policy.name },
+        ...getAuditContext(req),
       });
 
       res.json(policy);
@@ -1572,13 +1574,13 @@ export async function registerRoutes(
       const policy = await storage.updatePolicy(req.params.id, { status: "archived" });
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "policy.archived",
-        module: "policies",
         targetId: policy.id,
         targetType: "policy",
-        performedBy: req.authUser.id,
-        details: { name: policy.name },
+        newValue: { name: policy.name },
+        ...getAuditContext(req),
       });
 
       res.json(policy);
@@ -1605,13 +1607,13 @@ export async function registerRoutes(
 
       const rule = await storage.upsertPolicyRules(req.params.id, req.body);
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "policy_rules.updated",
-        module: "policies",
         targetId: policy.id,
         targetType: "policy_rules",
-        performedBy: req.authUser.id,
-        details: { policyName: policy.name, ruleKeys: Object.keys(req.body) },
+        newValue: { policyName: policy.name, ruleKeys: Object.keys(req.body) },
+        ...getAuditContext(req),
       });
 
       res.json(rule);
@@ -1642,13 +1644,13 @@ export async function registerRoutes(
       }
       const assignment = await storage.createPolicyAssignment(parsed.data);
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "policy_assignment.created",
-        module: "policies",
         targetId: assignment.id,
         targetType: "policy_assignment",
-        performedBy: req.authUser.id,
-        details: { policyId: parsed.data.policyId, companyId: parsed.data.companyId, locationId: parsed.data.locationId, departmentId: parsed.data.departmentId, userId: parsed.data.userId },
+        newValue: { policyId: parsed.data.policyId, companyId: parsed.data.companyId, locationId: parsed.data.locationId, departmentId: parsed.data.departmentId, userId: parsed.data.userId },
+        ...getAuditContext(req),
       });
 
       res.status(201).json(assignment);
@@ -1673,13 +1675,12 @@ export async function registerRoutes(
     try {
       await storage.deletePolicyAssignment(req.params.id);
 
-      await storage.createAuditLog({
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
         action: "policy_assignment.deleted",
-        module: "policies",
         targetId: req.params.id,
         targetType: "policy_assignment",
-        performedBy: req.authUser.id,
-        details: {},
+        ...getAuditContext(req),
       });
 
       res.status(204).send();
@@ -2185,6 +2186,380 @@ export async function registerRoutes(
       res.status(500).json({ message: "Failed to check overlap" });
     }
   });
+
+  app.get("/api/alerts", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.view"), async (req, res) => {
+    try {
+      const filters: any = {};
+      if (req.query.type) filters.type = req.query.type as string;
+      if (req.query.status) filters.status = req.query.status as string;
+      if (req.query.severity) filters.severity = req.query.severity as string;
+      const alerts = await storage.getAllSystemAlerts(filters);
+      const allUsers = await storage.getAllUsers();
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+      const enriched = alerts.map(a => ({
+        ...a,
+        employeeName: a.employeeId ? (() => {
+          const u = userMap.get(a.employeeId);
+          return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+        })() : null,
+      }));
+      res.json(enriched);
+    } catch (error) {
+      console.error("Error fetching alerts:", error);
+      res.status(500).json({ message: "Failed to fetch alerts" });
+    }
+  });
+
+  app.post("/api/alerts/detect", requireAuth, requireRole("admin"), requirePermission("alerts.manage"), async (req: any, res) => {
+    try {
+      const detected = await runAlertDetection();
+      const created = [];
+      for (const alert of detected) {
+        const existing = await storage.getAllSystemAlerts({ type: alert.type, status: "open" });
+        const isDuplicate = existing.some(e =>
+          e.employeeId === alert.employeeId && e.message === alert.message
+        );
+        if (!isDuplicate) {
+          const saved = await storage.createSystemAlert({
+            type: alert.type,
+            severity: alert.severity,
+            status: "open",
+            employeeId: alert.employeeId,
+            message: alert.message,
+            details: alert.details,
+          });
+          created.push(saved);
+        }
+      }
+      res.json({ detected: detected.length, created: created.length, alerts: created });
+    } catch (error) {
+      console.error("Error running alert detection:", error);
+      res.status(500).json({ message: "Failed to run alert detection" });
+    }
+  });
+
+  app.post("/api/alerts/:id/acknowledge", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.manage"), async (req: any, res) => {
+    try {
+      const alert = await storage.getSystemAlert(req.params.id);
+      if (!alert) return res.status(404).json({ message: "Alert not found" });
+      const updated = await storage.updateSystemAlert(req.params.id, {
+        status: "acknowledged",
+        acknowledgedBy: req.authUser.id,
+        acknowledgedAt: new Date(),
+      });
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "system_alert",
+        targetId: req.params.id,
+        action: "alert.acknowledged",
+        oldValue: { status: alert.status },
+        newValue: { status: "acknowledged" },
+        ...auditCtx,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error acknowledging alert:", error);
+      res.status(500).json({ message: "Failed to acknowledge alert" });
+    }
+  });
+
+  app.post("/api/alerts/:id/resolve", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.manage"), async (req: any, res) => {
+    try {
+      const alert = await storage.getSystemAlert(req.params.id);
+      if (!alert) return res.status(404).json({ message: "Alert not found" });
+      const updated = await storage.updateSystemAlert(req.params.id, {
+        status: "resolved",
+        resolvedBy: req.authUser.id,
+        resolvedAt: new Date(),
+      });
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "system_alert",
+        targetId: req.params.id,
+        action: "alert.resolved",
+        oldValue: { status: alert.status },
+        newValue: { status: "resolved" },
+        ...auditCtx,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error resolving alert:", error);
+      res.status(500).json({ message: "Failed to resolve alert" });
+    }
+  });
+
+  app.get("/api/audit-logs/filtered", requireAuth, requireRole("admin"), requirePermission("audit.view"), async (req, res) => {
+    try {
+      const filters = {
+        actorUserId: req.query.actorUserId as string | undefined,
+        action: req.query.action as string | undefined,
+        targetType: req.query.targetType as string | undefined,
+        startDate: req.query.startDate as string | undefined,
+        endDate: req.query.endDate as string | undefined,
+        search: req.query.search as string | undefined,
+        limit: req.query.limit ? parseInt(req.query.limit as string) : 50,
+        offset: req.query.offset ? parseInt(req.query.offset as string) : 0,
+      };
+      const result = await storage.getAuditLogsFiltered(filters);
+      const allUsers = await storage.getAllUsers();
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+      const enrichedLogs = result.logs.map(log => ({
+        ...log,
+        actorName: (() => {
+          const u = userMap.get(log.actorUserId);
+          return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+        })(),
+      }));
+      res.json({ logs: enrichedLogs, total: result.total });
+    } catch (error) {
+      console.error("Error fetching filtered audit logs:", error);
+      res.status(500).json({ message: "Failed to fetch audit logs" });
+    }
+  });
+
+  app.get("/api/roles", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req, res) => {
+    try {
+      const allRoles = await storage.getAllRoles();
+      const rolesWithPermissions = await Promise.all(
+        allRoles.map(async (role) => {
+          const perms = await storage.getRolePermissions(role.id);
+          return { ...role, permissions: perms };
+        })
+      );
+      res.json(rolesWithPermissions);
+    } catch (error) {
+      console.error("Error fetching roles:", error);
+      res.status(500).json({ message: "Failed to fetch roles" });
+    }
+  });
+
+  app.post("/api/roles", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+    try {
+      const { permissionIds, ...roleData } = req.body;
+      const parsed = insertRoleSchema.safeParse(roleData);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid role data", errors: parsed.error.flatten() });
+      }
+      const role = await storage.createRole(parsed.data);
+      if (permissionIds && Array.isArray(permissionIds)) {
+        for (const permId of permissionIds) {
+          await storage.addRolePermission(role.id, permId);
+        }
+      }
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "role",
+        targetId: role.id,
+        action: "role.created",
+        newValue: { name: role.name, permissionCount: permissionIds?.length || 0 },
+        ...auditCtx,
+      });
+      const perms = await storage.getRolePermissions(role.id);
+      res.status(201).json({ ...role, permissions: perms });
+    } catch (error) {
+      console.error("Error creating role:", error);
+      res.status(500).json({ message: "Failed to create role" });
+    }
+  });
+
+  app.patch("/api/roles/:id", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+    try {
+      const { permissionIds, ...roleData } = req.body;
+      const role = await storage.updateRole(req.params.id, roleData);
+      if (!role) return res.status(404).json({ message: "Role not found" });
+      if (permissionIds && Array.isArray(permissionIds)) {
+        const currentPerms = await storage.getRolePermissions(role.id);
+        for (const perm of currentPerms) {
+          await storage.removeRolePermission(role.id, perm.id);
+        }
+        for (const permId of permissionIds) {
+          await storage.addRolePermission(role.id, permId);
+        }
+      }
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "role",
+        targetId: role.id,
+        action: "role.updated",
+        newValue: { name: role.name, changes: Object.keys(req.body) },
+        ...auditCtx,
+      });
+      const perms = await storage.getRolePermissions(role.id);
+      res.json({ ...role, permissions: perms });
+    } catch (error) {
+      console.error("Error updating role:", error);
+      res.status(500).json({ message: "Failed to update role" });
+    }
+  });
+
+  app.post("/api/roles/:id/duplicate", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+    try {
+      const sourceRole = await storage.getRole(req.params.id);
+      if (!sourceRole) return res.status(404).json({ message: "Role not found" });
+      const newRole = await storage.createRole({
+        name: `${sourceRole.name} (Copy)`,
+        description: sourceRole.description,
+        isSystem: false,
+        companyId: sourceRole.companyId,
+      });
+      const sourcePerms = await storage.getRolePermissions(sourceRole.id);
+      for (const perm of sourcePerms) {
+        await storage.addRolePermission(newRole.id, perm.id);
+      }
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "role",
+        targetId: newRole.id,
+        action: "role.duplicated",
+        newValue: { name: newRole.name, sourceRoleId: sourceRole.id },
+        ...auditCtx,
+      });
+      const perms = await storage.getRolePermissions(newRole.id);
+      res.status(201).json({ ...newRole, permissions: perms });
+    } catch (error) {
+      console.error("Error duplicating role:", error);
+      res.status(500).json({ message: "Failed to duplicate role" });
+    }
+  });
+
+  app.delete("/api/roles/:id", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+    try {
+      const role = await storage.getRole(req.params.id);
+      if (!role) return res.status(404).json({ message: "Role not found" });
+      if (role.isSystem) return res.status(400).json({ message: "Cannot delete system roles" });
+      await storage.deleteRole(req.params.id);
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "role",
+        targetId: req.params.id,
+        action: "role.deleted",
+        oldValue: { name: role.name },
+        ...auditCtx,
+      });
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting role:", error);
+      res.status(500).json({ message: "Failed to delete role" });
+    }
+  });
+
+  app.get("/api/permissions", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (_req, res) => {
+    try {
+      const allPerms = await storage.getAllPermissions();
+      res.json(allPerms);
+    } catch (error) {
+      console.error("Error fetching permissions:", error);
+      res.status(500).json({ message: "Failed to fetch permissions" });
+    }
+  });
+
+  app.get("/api/kiosk-devices", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (_req, res) => {
+    try {
+      const devices = await storage.getAllKioskDevices();
+      res.json(devices);
+    } catch (error) {
+      console.error("Error fetching kiosk devices:", error);
+      res.status(500).json({ message: "Failed to fetch kiosk devices" });
+    }
+  });
+
+  app.post("/api/kiosk-devices", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+    try {
+      const parsed = insertKioskDeviceSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid device data", errors: parsed.error.flatten() });
+      }
+      const device = await storage.createKioskDevice(parsed.data);
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "kiosk_device",
+        targetId: device.id,
+        action: "kiosk_device.created",
+        newValue: { name: device.name },
+        ...auditCtx,
+      });
+      res.status(201).json(device);
+    } catch (error) {
+      console.error("Error creating kiosk device:", error);
+      res.status(500).json({ message: "Failed to create kiosk device" });
+    }
+  });
+
+  app.patch("/api/kiosk-devices/:id", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+    try {
+      const device = await storage.updateKioskDevice(req.params.id, req.body);
+      if (!device) return res.status(404).json({ message: "Device not found" });
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "kiosk_device",
+        targetId: device.id,
+        action: "kiosk_device.updated",
+        newValue: { name: device.name, changes: Object.keys(req.body) },
+        ...auditCtx,
+      });
+      res.json(device);
+    } catch (error) {
+      console.error("Error updating kiosk device:", error);
+      res.status(500).json({ message: "Failed to update kiosk device" });
+    }
+  });
+
+  app.delete("/api/kiosk-devices/:id", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+    try {
+      const device = await storage.getKioskDevice(req.params.id);
+      if (!device) return res.status(404).json({ message: "Device not found" });
+      await storage.deleteKioskDevice(req.params.id);
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "kiosk_device",
+        targetId: req.params.id,
+        action: "kiosk_device.deleted",
+        oldValue: { name: device.name },
+        ...auditCtx,
+      });
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting kiosk device:", error);
+      res.status(500).json({ message: "Failed to delete kiosk device" });
+    }
+  });
+
+  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  const wsClients = new Set<WebSocket>();
+
+  wss.on("connection", (ws, req) => {
+    const cookies = req.headers.cookie || "";
+    const hasSession = cookies.includes("connect.sid=");
+    const authHeader = req.headers.authorization || "";
+    const hasToken = authHeader.startsWith("Bearer ");
+    if (!hasSession && !hasToken) {
+      ws.close(4001, "Unauthorized");
+      return;
+    }
+    wsClients.add(ws);
+    ws.on("close", () => wsClients.delete(ws));
+    ws.on("error", () => wsClients.delete(ws));
+  });
+
+  function broadcastAttendanceUpdate(data: { type: string; employeeId: string; status: string }) {
+    const message = JSON.stringify({ event: "attendance_update", data });
+    for (const client of wsClients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    }
+  }
+
+  (globalThis as any).__broadcastAttendanceUpdate = broadcastAttendanceUpdate;
 
   return httpServer;
 }

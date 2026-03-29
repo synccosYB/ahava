@@ -15,6 +15,11 @@ import {
   AlertTriangle,
   DollarSign,
   ClipboardList,
+  Bell,
+  FileText,
+  ShieldCheck,
+  Shield,
+  Monitor,
 } from "lucide-react";
 import {
   Sidebar,
@@ -52,6 +57,7 @@ const employeeItems: NavItem[] = [
 const managerItems: NavItem[] = [
   { title: "Team View", href: "/team", icon: Users, roles: ["manager", "admin"] },
   { title: "Requests & Approvals", href: "/requests-approvals", icon: ClipboardList, roles: ["manager", "admin"] },
+  { title: "Alerts", href: "/alerts", icon: Bell, roles: ["manager", "admin"] },
 ];
 
 const adminItems: NavItem[] = [
@@ -63,6 +69,10 @@ const adminItems: NavItem[] = [
   { title: "Alerts & Exceptions", href: "/alerts-exceptions", icon: AlertTriangle, roles: ["admin"] },
   { title: "Payroll Prep", href: "/payroll-prep", icon: DollarSign, roles: ["admin"] },
   { title: "Reports", href: "/reports", icon: BarChart3, roles: ["manager", "admin"] },
+  { title: "Permissions", href: "/permissions", icon: ShieldCheck, roles: ["admin"] },
+  { title: "Roles", href: "/role-management", icon: Shield, roles: ["admin"] },
+  { title: "Kiosks", href: "/kiosk-management", icon: Monitor, roles: ["admin"] },
+  { title: "Audit Log", href: "/audit-log", icon: FileText, roles: ["admin"] },
 ];
 
 function getInitials(firstName?: string | null, lastName?: string | null) {

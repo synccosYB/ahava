@@ -22,6 +22,11 @@ import PtoLeavePage from "@/pages/pto-leave";
 import RulesControlsPage from "@/pages/rules-controls";
 import PayrollPrepPage from "@/pages/payroll-prep";
 import RequestsApprovalsPage from "@/pages/requests-approvals";
+import AlertsPage from "@/pages/alerts";
+import AuditLogPage from "@/pages/audit-log";
+import PermissionsPage from "@/pages/permissions";
+import RoleManagementPage from "@/pages/role-management";
+import KioskManagementPage from "@/pages/kiosk-management";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
@@ -87,6 +92,31 @@ function AuthenticatedRouter() {
         <Route path="/reports">{() => (
           <ProtectedRoute roles={["manager", "admin"]}>
             <ReportsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/alerts">{() => (
+          <ProtectedRoute roles={["manager", "admin"]}>
+            <AlertsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/audit-log">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <AuditLogPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/permissions">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <PermissionsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/role-management">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <RoleManagementPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/kiosk-management">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <KioskManagementPage />
           </ProtectedRoute>
         )}</Route>
         <Route component={NotFound} />
