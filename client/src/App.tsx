@@ -15,6 +15,13 @@ import ManagerDashboardPage from "@/pages/manager-dashboard";
 import ApprovalQueuePage from "@/pages/approval-queue";
 import AdminDashboardPage from "@/pages/admin-dashboard";
 import ReportsPage from "@/pages/reports";
+import EmployeesPage from "@/pages/employees";
+import LocationsDepartmentsPage from "@/pages/locations-departments";
+import AttendanceExceptionsPage from "@/pages/attendance-exceptions";
+import PtoLeavePage from "@/pages/pto-leave";
+import RulesControlsPage from "@/pages/rules-controls";
+import PayrollPrepPage from "@/pages/payroll-prep";
+import RequestsApprovalsPage from "@/pages/requests-approvals";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
@@ -37,19 +44,44 @@ function AuthenticatedRouter() {
             <ApprovalQueuePage />
           </ProtectedRoute>
         )}</Route>
+        <Route path="/requests-approvals">{() => (
+          <ProtectedRoute roles={["manager", "admin"]}>
+            <RequestsApprovalsPage />
+          </ProtectedRoute>
+        )}</Route>
         <Route path="/company">{() => (
           <ProtectedRoute roles={["admin"]}>
             <AdminDashboardPage />
           </ProtectedRoute>
         )}</Route>
-        <Route path="/users">{() => (
+        <Route path="/employees">{() => (
           <ProtectedRoute roles={["admin"]}>
-            <PlaceholderPage title="Users" />
+            <EmployeesPage />
           </ProtectedRoute>
         )}</Route>
-        <Route path="/settings">{() => (
+        <Route path="/locations">{() => (
           <ProtectedRoute roles={["admin"]}>
-            <PlaceholderPage title="Settings" />
+            <LocationsDepartmentsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/alerts-exceptions">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <AttendanceExceptionsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/pto-leave">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <PtoLeavePage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/rules-controls">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <RulesControlsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/payroll-prep">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <PayrollPrepPage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/reports">{() => (

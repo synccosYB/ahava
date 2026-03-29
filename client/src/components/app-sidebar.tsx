@@ -8,10 +8,13 @@ import {
   Users,
   CheckSquare,
   Building2,
-  UserCog,
-  Settings,
+  Settings2,
   BarChart3,
   LogOut,
+  MapPin,
+  AlertTriangle,
+  DollarSign,
+  ClipboardList,
 } from "lucide-react";
 import {
   Sidebar,
@@ -29,7 +32,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
-import type { TimeOffRequest, User } from "@shared/schema";
+import type { TimeOffRequest, AttendanceException } from "@shared/schema";
 
 type NavItem = {
   title: string;
@@ -48,14 +51,18 @@ const employeeItems: NavItem[] = [
 
 const managerItems: NavItem[] = [
   { title: "Team View", href: "/team", icon: Users, roles: ["manager", "admin"] },
-  { title: "Approvals", href: "/approvals", icon: CheckSquare, roles: ["manager", "admin"] },
-  { title: "Reports", href: "/reports", icon: BarChart3, roles: ["manager", "admin"] },
+  { title: "Requests & Approvals", href: "/requests-approvals", icon: ClipboardList, roles: ["manager", "admin"] },
 ];
 
 const adminItems: NavItem[] = [
-  { title: "Company", href: "/company", icon: Building2, roles: ["admin"] },
-  { title: "Users", href: "/users", icon: UserCog, roles: ["admin"] },
-  { title: "Settings", href: "/settings", icon: Settings, roles: ["admin"] },
+  { title: "Admin Dashboard", href: "/company", icon: LayoutDashboard, roles: ["admin"] },
+  { title: "Employees", href: "/employees", icon: Users, roles: ["admin"] },
+  { title: "Locations", href: "/locations", icon: MapPin, roles: ["admin"] },
+  { title: "Time Clock Rules", href: "/rules-controls", icon: Settings2, roles: ["admin"] },
+  { title: "PTO & Leave", href: "/pto-leave", icon: CalendarDays, roles: ["admin"] },
+  { title: "Alerts & Exceptions", href: "/alerts-exceptions", icon: AlertTriangle, roles: ["admin"] },
+  { title: "Payroll Prep", href: "/payroll-prep", icon: DollarSign, roles: ["admin"] },
+  { title: "Reports", href: "/reports", icon: BarChart3, roles: ["manager", "admin"] },
 ];
 
 function getInitials(firstName?: string | null, lastName?: string | null) {
@@ -74,7 +81,13 @@ export function AppSidebar() {
     enabled: role === "manager" || role === "admin",
   });
 
-  const pendingCount = pendingRequests?.length || 0;
+  const { data: pendingExceptions } = useQuery<(AttendanceException & { employeeName?: string })[]>({
+    queryKey: ["/api/attendance/exceptions/pending"],
+    enabled: role === "manager" || role === "admin",
+  });
+
+  const pendingCount = (pendingRequests?.length || 0) + (pendingExceptions?.length || 0);
+  const exceptionCount = pendingExceptions?.length || 0;
 
   const filterByRole = (items: NavItem[]) =>
     items.filter((item) => item.roles.includes(role));
@@ -133,7 +146,7 @@ export function AppSidebar() {
                       <span>{item.title}</span>
                     </Link>
                   </SidebarMenuButton>
-                  {item.title === "Approvals" && pendingCount > 0 && (
+                  {item.title === "Requests & Approvals" && pendingCount > 0 && (
                     <SidebarMenuBadge data-testid="badge-pending-approvals">{pendingCount}</SidebarMenuBadge>
                   )}
                 </SidebarMenuItem>
@@ -148,12 +161,15 @@ export function AppSidebar() {
             <SidebarMenu>
               {visibleAdmin.map((item) => (
                 <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton asChild isActive={location === item.href} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
+                  <SidebarMenuButton asChild isActive={location === item.href || (item.href !== "/" && location.startsWith(item.href))} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
                     <Link href={item.href}>
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
                     </Link>
                   </SidebarMenuButton>
+                  {item.title === "Alerts & Exceptions" && exceptionCount > 0 && (
+                    <SidebarMenuBadge data-testid="badge-pending-exceptions">{exceptionCount}</SidebarMenuBadge>
+                  )}
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
