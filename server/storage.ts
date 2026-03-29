@@ -22,7 +22,7 @@ import {
   type InsertKioskDevice,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, ilike, gte, lte, desc } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc, ne, count, sql } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -77,6 +77,10 @@ export interface IStorage {
   getUserByPin(pin: string): Promise<User | undefined>;
   searchUsersByName(query: string): Promise<User[]>;
   getLatestAttendanceForUser(userId: string): Promise<AttendanceRecord | undefined>;
+
+  getUsersByDepartment(departmentId: string): Promise<User[]>;
+  getProcessedTimeOffRequests(reviewerId?: string): Promise<TimeOffRequest[]>;
+  getAttendanceByDateRange(startDate: string, endDate: string): Promise<AttendanceRecord[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -398,6 +402,32 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(attendanceRecords.createdAt))
       .limit(1);
     return record;
+  }
+
+  async getUsersByDepartment(departmentId: string): Promise<User[]> {
+    return db.select().from(users).where(eq(users.departmentId, departmentId));
+  }
+
+  async getProcessedTimeOffRequests(reviewerId?: string): Promise<TimeOffRequest[]> {
+    if (reviewerId) {
+      return db.select().from(timeOffRequests)
+        .where(and(ne(timeOffRequests.status, "pending"), eq(timeOffRequests.reviewedBy, reviewerId)))
+        .orderBy(desc(timeOffRequests.reviewedAt))
+        .limit(20);
+    }
+    return db.select().from(timeOffRequests)
+      .where(ne(timeOffRequests.status, "pending"))
+      .orderBy(desc(timeOffRequests.reviewedAt))
+      .limit(20);
+  }
+
+  async getAllTimeOffRequests(): Promise<TimeOffRequest[]> {
+    return db.select().from(timeOffRequests).orderBy(desc(timeOffRequests.createdAt));
+  }
+
+  async getAttendanceByDateRange(startDate: string, endDate: string): Promise<AttendanceRecord[]> {
+    return db.select().from(attendanceRecords)
+      .where(and(gte(attendanceRecords.date, startDate), lte(attendanceRecords.date, endDate)));
   }
 }
 

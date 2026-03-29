@@ -49,13 +49,13 @@ const employeeItems: NavItem[] = [
 const managerItems: NavItem[] = [
   { title: "Team View", href: "/team", icon: Users, roles: ["manager", "admin"] },
   { title: "Approvals", href: "/approvals", icon: CheckSquare, roles: ["manager", "admin"] },
+  { title: "Reports", href: "/reports", icon: BarChart3, roles: ["manager", "admin"] },
 ];
 
 const adminItems: NavItem[] = [
   { title: "Company", href: "/company", icon: Building2, roles: ["admin"] },
   { title: "Users", href: "/users", icon: UserCog, roles: ["admin"] },
   { title: "Settings", href: "/settings", icon: Settings, roles: ["admin"] },
-  { title: "Reports", href: "/reports", icon: BarChart3, roles: ["admin"] },
 ];
 
 function getInitials(firstName?: string | null, lastName?: string | null) {

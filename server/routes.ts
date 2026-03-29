@@ -4,7 +4,7 @@ import { z } from "zod";
 import { storage } from "./storage";
 import { isAuthenticated } from "./replit_integrations/auth";
 import { insertDepartmentSchema, insertTimeOffRequestSchema } from "@shared/schema";
-import type { User } from "@shared/schema";
+import type { User, AttendanceRecord, TimeOffRequest } from "@shared/schema";
 
 const roleSchema = z.object({
   role: z.enum(["employee", "manager", "admin"]),
@@ -73,9 +73,33 @@ export async function registerRoutes(
     res.status(201).json(dept);
   });
 
-  app.get("/api/time-off/pending", isAuthenticated, requireRole("manager", "admin"), async (_req, res) => {
+  async function getTeamUserIds(user: User): Promise<Set<string>> {
+    if (user.role === "admin") {
+      const allUsers = await storage.getAllUsers();
+      return new Set(allUsers.filter(u => u.id !== user.id).map(u => u.id));
+    }
+    if (user.departmentId) {
+      const deptUsers = await storage.getUsersByDepartment(user.departmentId);
+      return new Set(deptUsers.filter(u => u.id !== user.id).map(u => u.id));
+    }
+    return new Set();
+  }
+
+  app.get("/api/time-off/pending", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const teamIds = await getTeamUserIds(user);
     const requests = await storage.getPendingTimeOffRequests();
-    res.json(requests);
+    const scopedRequests = requests.filter(r => teamIds.has(r.userId));
+    const allUsers = await storage.getAllUsers();
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
+    const enriched = scopedRequests.map(r => ({
+      ...r,
+      employeeName: (() => {
+        const u = userMap.get(r.userId);
+        return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+      })(),
+    }));
+    res.json(enriched);
   });
 
   async function getDepartmentName(departmentId: string | null): Promise<string> {
@@ -323,6 +347,375 @@ export async function registerRoutes(
       console.error("Error fetching team time off:", error);
       res.status(500).json({ message: "Failed to fetch team time off" });
     }
+  });
+
+  app.get("/api/manager/team-stats", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const allUsers = await storage.getAllUsers();
+    const today = new Date().toISOString().split("T")[0];
+    const todayAttendance = await storage.getAttendanceByDate(today);
+    const pendingRequests = await storage.getPendingTimeOffRequests();
+
+    let teamMembers: User[];
+    if (user.role === "admin") {
+      teamMembers = allUsers.filter(u => u.id !== user.id);
+    } else {
+      teamMembers = user.departmentId
+        ? (await storage.getUsersByDepartment(user.departmentId)).filter(u => u.id !== user.id)
+        : [];
+    }
+
+    const teamIds = new Set(teamMembers.map(u => u.id));
+    const clockedIn = todayAttendance.filter(a => teamIds.has(a.userId) && a.clockIn && !a.clockOut).length;
+
+    const allTimeOff = await storage.getAllTimeOffRequests();
+    const onLeave = allTimeOff.filter(r =>
+      teamIds.has(r.userId) &&
+      r.status === "approved" &&
+      r.startDate <= today &&
+      r.endDate >= today
+    ).length;
+
+    const teamPending = pendingRequests.filter(r => teamIds.has(r.userId)).length;
+
+    res.json({
+      teamSize: teamMembers.length,
+      clockedIn,
+      onLeave,
+      pendingApprovals: teamPending,
+    });
+  });
+
+  app.get("/api/manager/team-status", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const today = new Date().toISOString().split("T")[0];
+
+    let teamMembers: User[];
+    if (user.role === "admin") {
+      teamMembers = (await storage.getAllUsers()).filter(u => u.id !== user.id);
+    } else {
+      teamMembers = user.departmentId
+        ? (await storage.getUsersByDepartment(user.departmentId)).filter(u => u.id !== user.id)
+        : [];
+    }
+
+    const todayAttendance = await storage.getAttendanceByDate(today);
+    const allTimeOff = await storage.getAllTimeOffRequests();
+
+    const weekStart = new Date();
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    const weekStartStr = weekStart.toISOString().split("T")[0];
+    const weekAttendance = await storage.getAttendanceByDateRange(weekStartStr, today);
+
+    const teamStatus = teamMembers.map(member => {
+      const todayRecord = todayAttendance.find(a => a.userId === member.id && a.clockIn && !a.clockOut);
+      const todayRecords = todayAttendance.filter(a => a.userId === member.id);
+      const isOnLeave = allTimeOff.some(r =>
+        r.userId === member.id && r.status === "approved" && r.startDate <= today && r.endDate >= today
+      );
+
+      let todayHours = 0;
+      todayRecords.forEach(r => {
+        if (r.clockIn) {
+          const end = r.clockOut ? new Date(r.clockOut) : new Date();
+          todayHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
+        }
+      });
+
+      let weekHours = 0;
+      const memberWeekRecords = weekAttendance.filter(a => a.userId === member.id);
+      memberWeekRecords.forEach(r => {
+        if (r.clockIn) {
+          const end = r.clockOut ? new Date(r.clockOut) : new Date();
+          weekHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
+        }
+      });
+
+      let status = "Clocked Out";
+      if (isOnLeave) status = "On Leave";
+      else if (todayRecord) {
+        const clockInTime = new Date(todayRecord.clockIn!);
+        status = `Clocked In (${clockInTime.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })})`;
+      }
+
+      return {
+        id: member.id,
+        firstName: member.firstName,
+        lastName: member.lastName,
+        status,
+        todayHours: Math.round(todayHours * 10) / 10,
+        weekHours: Math.round(weekHours * 10) / 10,
+      };
+    });
+
+    res.json(teamStatus);
+  });
+
+  const approvalSchema = z.object({
+    comment: z.string().optional(),
+  });
+
+  app.post("/api/time-off/:id/approve", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const parsed = approvalSchema.safeParse(req.body);
+    const comment = parsed.success ? parsed.data.comment : undefined;
+    const request = await storage.getTimeOffRequest(req.params.id);
+    if (!request) return res.status(404).json({ message: "Request not found" });
+    if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
+
+    const teamIds = await getTeamUserIds(user);
+    if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to approve this request" });
+
+    const updated = await storage.updateTimeOffRequest(req.params.id, {
+      status: "approved",
+      reviewedBy: user.id,
+      reviewedAt: new Date(),
+      ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
+    });
+    res.json(updated);
+  });
+
+  app.post("/api/time-off/:id/deny", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const parsed = approvalSchema.safeParse(req.body);
+    const comment = parsed.success ? parsed.data.comment : undefined;
+    const request = await storage.getTimeOffRequest(req.params.id);
+    if (!request) return res.status(404).json({ message: "Request not found" });
+    if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
+
+    const teamIds = await getTeamUserIds(user);
+    if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to deny this request" });
+
+    const updated = await storage.updateTimeOffRequest(req.params.id, {
+      status: "denied",
+      reviewedBy: user.id,
+      reviewedAt: new Date(),
+      ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
+    });
+    res.json(updated);
+  });
+
+  app.get("/api/time-off/processed", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const requests = await storage.getProcessedTimeOffRequests(user.role === "manager" ? user.id : undefined);
+    const allUsers = await storage.getAllUsers();
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+    const enriched = requests.map(r => ({
+      ...r,
+      employeeName: (() => {
+        const u = userMap.get(r.userId);
+        return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+      })(),
+      reviewerName: (() => {
+        if (!r.reviewedBy) return "N/A";
+        const u = userMap.get(r.reviewedBy);
+        return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+      })(),
+    }));
+    res.json(enriched);
+  });
+
+  app.get("/api/admin/company-stats", isAuthenticated, requireRole("admin"), async (_req, res) => {
+    const allUsers = await storage.getAllUsers();
+    const today = new Date().toISOString().split("T")[0];
+    const todayAttendance = await storage.getAttendanceByDate(today);
+    const pendingRequests = await storage.getPendingTimeOffRequests();
+    const allTimeOff = await storage.getAllTimeOffRequests();
+
+    const activeNow = todayAttendance.filter(a => a.clockIn && !a.clockOut).length;
+    const onLeave = allTimeOff.filter(r =>
+      r.status === "approved" && r.startDate <= today && r.endDate >= today
+    ).length;
+
+    res.json({
+      totalEmployees: allUsers.length,
+      activeNow,
+      onLeave,
+      pendingRequests: pendingRequests.length,
+    });
+  });
+
+  app.get("/api/admin/department-breakdown", isAuthenticated, requireRole("admin"), async (_req, res) => {
+    const allUsers = await storage.getAllUsers();
+    const depts = await storage.getAllDepartments();
+    const today = new Date().toISOString().split("T")[0];
+    const todayAttendance = await storage.getAttendanceByDate(today);
+    const allTimeOff = await storage.getAllTimeOffRequests();
+
+    const weekStart = new Date();
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    const weekStartStr = weekStart.toISOString().split("T")[0];
+    const weekAttendance = await storage.getAttendanceByDateRange(weekStartStr, today);
+
+    const breakdown = depts.map(dept => {
+      const deptUsers = allUsers.filter(u => u.departmentId === dept.id);
+      const deptIds = new Set(deptUsers.map(u => u.id));
+      const active = todayAttendance.filter(a => deptIds.has(a.userId) && a.clockIn && !a.clockOut).length;
+      const onLeave = allTimeOff.filter(r =>
+        deptIds.has(r.userId) && r.status === "approved" && r.startDate <= today && r.endDate >= today
+      ).length;
+
+      let totalHours = 0;
+      let recordCount = 0;
+      weekAttendance.filter(a => deptIds.has(a.userId)).forEach(r => {
+        if (r.clockIn) {
+          const end = r.clockOut ? new Date(r.clockOut) : new Date();
+          totalHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
+          recordCount++;
+        }
+      });
+      const avgHrs = deptUsers.length > 0 ? Math.round((totalHours / deptUsers.length) * 10) / 10 : 0;
+
+      return {
+        id: dept.id,
+        name: dept.name,
+        employees: deptUsers.length,
+        active,
+        onLeave,
+        avgHoursPerWeek: avgHrs,
+      };
+    });
+
+    const unassigned = allUsers.filter(u => !u.departmentId);
+    if (unassigned.length > 0) {
+      const unassignedIds = new Set(unassigned.map(u => u.id));
+      const active = todayAttendance.filter(a => unassignedIds.has(a.userId) && a.clockIn && !a.clockOut).length;
+      breakdown.push({
+        id: "unassigned",
+        name: "Unassigned",
+        employees: unassigned.length,
+        active,
+        onLeave: 0,
+        avgHoursPerWeek: 0,
+      });
+    }
+
+    res.json(breakdown);
+  });
+
+  app.get("/api/admin/recent-activity", isAuthenticated, requireRole("admin"), async (_req, res) => {
+    const allUsers = await storage.getAllUsers();
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
+    const pendingRequests = await storage.getPendingTimeOffRequests();
+    const processed = await storage.getProcessedTimeOffRequests();
+
+    const today = new Date().toISOString().split("T")[0];
+    const todayProcessed = processed.filter(r => {
+      if (!r.reviewedAt) return false;
+      return new Date(r.reviewedAt).toISOString().split("T")[0] === today;
+    });
+
+    const activities: { text: string; timestamp: string }[] = [];
+
+    if (pendingRequests.length > 0) {
+      activities.push({ text: `${pendingRequests.length} pending time-off request(s)`, timestamp: new Date().toISOString() });
+    }
+    if (todayProcessed.length > 0) {
+      const approved = todayProcessed.filter(r => r.status === "approved").length;
+      const denied = todayProcessed.filter(r => r.status === "denied").length;
+      if (approved > 0) activities.push({ text: `${approved} request(s) approved today`, timestamp: new Date().toISOString() });
+      if (denied > 0) activities.push({ text: `${denied} request(s) denied today`, timestamp: new Date().toISOString() });
+    }
+
+    const recentUsers = allUsers
+      .filter(u => u.createdAt)
+      .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime())
+      .slice(0, 3);
+    if (recentUsers.length > 0) {
+      activities.push({ text: `${recentUsers.length} newest employee(s) added`, timestamp: recentUsers[0].createdAt?.toISOString() || new Date().toISOString() });
+    }
+
+    res.json(activities);
+  });
+
+  const reportSchema = z.object({
+    reportType: z.enum(["employee", "team", "company"]),
+    startDate: z.string(),
+    endDate: z.string(),
+    department: z.string().optional(),
+    employeeId: z.string().optional(),
+    status: z.string().optional(),
+  });
+
+  app.post("/api/reports/generate", isAuthenticated, requireRole("manager", "admin"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const parsed = reportSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid report parameters", errors: parsed.error.flatten() });
+    }
+
+    const { reportType, startDate, endDate, department, employeeId, status } = parsed.data;
+    const allUsers = await storage.getAllUsers();
+    const depts = await storage.getAllDepartments();
+    const deptMap = new Map(depts.map(d => [d.id, d.name]));
+    const attendance = await storage.getAttendanceByDateRange(startDate, endDate);
+    const timeOff = await storage.getAllTimeOffRequests();
+
+    const teamIds = await getTeamUserIds(user);
+    let filteredUsers = allUsers.filter(u => teamIds.has(u.id));
+
+    if (reportType === "employee" && employeeId) {
+      filteredUsers = filteredUsers.filter(u => u.id === employeeId);
+    } else if (reportType === "team") {
+      if (user.departmentId) {
+        filteredUsers = filteredUsers.filter(u => u.departmentId === user.departmentId);
+      }
+    }
+
+    if (department && department !== "all") {
+      filteredUsers = filteredUsers.filter(u => u.departmentId === department);
+    }
+    if (employeeId && reportType !== "employee") {
+      filteredUsers = filteredUsers.filter(u => u.id === employeeId);
+    }
+
+    const userIds = new Set(filteredUsers.map(u => u.id));
+    const filteredAttendance = attendance.filter(a => userIds.has(a.userId));
+    let filteredTimeOff = timeOff.filter(r =>
+      userIds.has(r.userId) &&
+      r.startDate <= endDate &&
+      r.endDate >= startDate
+    );
+
+    if (status && status !== "all") {
+      filteredTimeOff = filteredTimeOff.filter(r => r.status === status);
+    }
+
+    const reportData = filteredUsers.map(user => {
+      const userAttendance = filteredAttendance.filter(a => a.userId === user.id);
+      let totalHours = 0;
+      let daysWorked = new Set<string>();
+      userAttendance.forEach(r => {
+        if (r.clockIn) {
+          const end = r.clockOut ? new Date(r.clockOut) : new Date();
+          totalHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
+          daysWorked.add(r.date);
+        }
+      });
+
+      const userTimeOff = filteredTimeOff.filter(r => r.userId === user.id && r.status === "approved");
+      let daysOff = 0;
+      userTimeOff.forEach(r => {
+        const start = new Date(r.startDate);
+        const end = new Date(r.endDate);
+        daysOff += Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+      });
+
+      const overtime = Math.max(0, totalHours - (daysWorked.size * 8));
+
+      return {
+        employeeId: user.id,
+        employeeName: `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Unknown",
+        department: user.departmentId ? (deptMap.get(user.departmentId) || "Unassigned") : "Unassigned",
+        totalHours: Math.round(totalHours * 10) / 10,
+        daysWorked: daysWorked.size,
+        daysOff,
+        overtime: Math.round(overtime * 10) / 10,
+      };
+    });
+
+    res.json(reportData);
   });
 
   return httpServer;

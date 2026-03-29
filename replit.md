@@ -75,8 +75,32 @@ Brand colors (Ahava Medical):
 
 ## User Roles
 - **employee**: Dashboard, My Attendance, Time Off, Profile
-- **manager**: + Team View, Approvals (with pending count badge)
+- **manager**: + Team View, Approvals (with pending count badge), Reports
 - **admin**: + Company, Users, Settings, Reports
+
+## Manager & Admin Pages
+- **Team View** (`/team`): Manager dashboard with team stats (size, clocked in, on leave), pending approvals alert, team status table
+- **Approvals** (`/approvals`): Approval queue with pending time-off requests (approve/deny with comments), recently processed table
+- **Company** (`/company`): Admin dashboard with company-wide stats, department breakdown table, quick actions, recent activity
+- **Reports** (`/reports`): Report generator with type/date range/department filters, preview table, CSV download
+
+## Manager/Admin API Endpoints
+- `GET /api/manager/team-stats` - Team size, clocked in, on leave, pending approvals
+- `GET /api/manager/team-status` - Team member status details
+- `POST /api/time-off/:id/approve` - Approve time-off request with optional comment
+- `POST /api/time-off/:id/deny` - Deny time-off request with optional comment
+- `GET /api/time-off/processed` - Recently processed requests with enriched names
+- `GET /api/admin/company-stats` - Company-wide overview stats
+- `GET /api/admin/department-breakdown` - Department breakdown with employee counts
+- `GET /api/admin/recent-activity` - Recent activity feed
+- `POST /api/reports/generate` - Generate report data with filters
+
+## Auth Notes
+- Custom email/password auth with bcryptjs password hashing (no external OAuth)
+- Session stored in PostgreSQL via connect-pg-simple
+- `isAuthenticated` middleware sets `req.authUser` with the full user object
+- Password field is excluded from all API responses
+- Default admin: admin@ahavamedical.com / admin123
 
 ## Commands
 - `npm run dev` - Start development server

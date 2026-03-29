@@ -11,6 +11,10 @@ import Dashboard from "@/pages/dashboard";
 import MyAttendance from "@/pages/my-attendance";
 import TimeOff from "@/pages/time-off";
 import PlaceholderPage from "@/pages/placeholder";
+import ManagerDashboardPage from "@/pages/manager-dashboard";
+import ApprovalQueuePage from "@/pages/approval-queue";
+import AdminDashboardPage from "@/pages/admin-dashboard";
+import ReportsPage from "@/pages/reports";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
@@ -25,17 +29,17 @@ function AuthenticatedRouter() {
         <Route path="/profile">{() => <PlaceholderPage title="Profile" />}</Route>
         <Route path="/team">{() => (
           <ProtectedRoute roles={["manager", "admin"]}>
-            <PlaceholderPage title="Team View" />
+            <ManagerDashboardPage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/approvals">{() => (
           <ProtectedRoute roles={["manager", "admin"]}>
-            <PlaceholderPage title="Approvals" />
+            <ApprovalQueuePage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/company">{() => (
           <ProtectedRoute roles={["admin"]}>
-            <PlaceholderPage title="Company" />
+            <AdminDashboardPage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/users">{() => (
@@ -49,8 +53,8 @@ function AuthenticatedRouter() {
           </ProtectedRoute>
         )}</Route>
         <Route path="/reports">{() => (
-          <ProtectedRoute roles={["admin"]}>
-            <PlaceholderPage title="Reports" />
+          <ProtectedRoute roles={["manager", "admin"]}>
+            <ReportsPage />
           </ProtectedRoute>
         )}</Route>
         <Route component={NotFound} />
