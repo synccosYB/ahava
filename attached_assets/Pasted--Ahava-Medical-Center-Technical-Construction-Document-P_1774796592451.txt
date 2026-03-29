@@ -1,0 +1,931 @@
+# Ahava Medical Center — Technical Construction Document
+**Project:** Time & Attendance System  
+**Date:** March 4, 2026  
+**Document Type:** Developer Handoff — Build Reference
+
+---
+
+## Table of Contents
+
+1. Project Overview & Stack
+2. Product Requirements (PRD)
+3. User Roles & Permissions
+4. Business Rules (Non-Negotiable)
+5. Admin Rules & Controls Center
+6. Database Schema
+7. API Route Breakdown
+8. Backend Code Structure
+9. Build Order & Milestones
+10. Developer Rules
+
+---
+
+## 1. Project Overview & Stack
+
+Build a multi-location employee time clock and PTO management system. This is an admin-side platform where management controls employees, punch rules, PTO rules, missing punch approvals, alerts, and payroll-prep exports.
+
+This is **not** a payroll processing system. It prepares clean, validated data for export to a payroll provider.
+
+**Stack:**
+- Frontend: React + TypeScript + Tailwind + ShadCN UI
+- Backend: Node.js + Express
+- Database: PostgreSQL
+- ORM: Drizzle
+- Auth: JWT + role-based permissions
+- Realtime: WebSockets (live attendance board)
+
+---
+
+## 2. Product Requirements (PRD)
+
+### 2.1 Objective
+
+Allow administrators to:
+- Manage employees across multiple locations
+- Enforce clock-in / clock-out rules
+- Configure PTO and sick leave policies
+- Handle missing punch requests with an approval workflow
+- Monitor alerts and exceptions
+- Prepare payroll-ready time summaries (export only — no processing)
+
+### 2.2 Scope
+
+**Phase 1 — Included:**
+- Admin authentication and roles
+- Multi-location company structure
+- Employee management
+- Time punch tracking
+- Missing punch request and approval workflow
+- PTO and sick policy engine
+- PTO request workflow
+- Alerts and exception tracking
+- Payroll prep (export and tracking only)
+- Reports
+- Audit logs
+
+**Phase 2+ (excluded from initial build):**
+- Mobile app
+- Geofencing
+- Biometric devices
+- Messaging system
+- Advanced scheduling
+- Payroll processing integrations
+
+### 2.3 Admin Panel Navigation
+
+The admin panel has the following top-level sections:
+
+- Dashboard
+- Employees
+- Locations
+- Time Clock Rules
+- PTO & Leave
+- Requests & Approvals
+- Scheduling (Phase 2)
+- Alerts & Exceptions
+- Payroll Prep
+- Reports
+- Rules & Controls (settings/policy engine)
+
+### 2.4 Dashboard
+
+**KPI Cards (top row):**
+- Employees Clocked In Now
+- Missing Clock Outs
+- PTO Requests Pending
+- Missed Punch Requests Pending
+- Overtime Alerts Today
+- Total Hours Worked Today
+
+**Main content:**
+- Live attendance table: Employee, Location, Clock-In Time, Current Hours, Status (On Time / Late / OT Risk)
+- Exceptions panel: missing punches, late arrivals, unauthorized punches
+- Approval queue (right panel): PTO requests, punch corrections, time edits
+
+**Filters:** All Locations / Specific Location, Department, Date, Employee Type, Active/Inactive
+
+### 2.5 Employee Module
+
+**List columns:** Employee ID, Name, Status, Location, Department, Pay Type, PTO Eligible, Last Punch, Active/Inactive
+
+**Employee Profile Tabs:**
+1. Basic Info — name, ID, phone, email, address, emergency contact, photo
+2. Employment — hire date, status, type (FT/PT/temp), exempt/non-exempt, department, location, manager, payroll group
+3. Pay Setup — pay type, rates, voluntary pay toggle, overtime eligible, double time eligible, holiday pay eligible
+4. Time Clock Settings — allowed punch methods, geofence toggle, rounding rule, grace period, auto meal deduction, shift enforcement
+5. PTO/Leave — eligibility toggles, accrual profile, waiting period, yearly cap, carryover, manual balance adjustments
+6. Schedule — assigned shift template, recurring work days, break windows
+7. Documents — signed policies, handbook acknowledgment
+8. History/Audit — punches, edits, approvals, PTO changes, admin actions
+
+### 2.6 Requests & Approvals Module
+
+**Request types:**
+- PTO request
+- Missing punch request
+- Manual time correction
+- Schedule exception request
+
+**Missing punch request fields (employee submits):**
+- Date
+- Time (clock-in or clock-out)
+- Type (clock-in or clock-out)
+- Reason
+
+Employee cannot directly edit the punch log. Admin approval creates the corrected record.
+
+**PTO request review shows:**
+- Employee, location, requested dates, hours requested, available balance, eligibility check, overlapping shift check, supporting note
+- Actions: Approve / Deny / Partially Approve
+
+### 2.7 Payroll Prep
+
+- Admin selects date range
+- System validates: no missing punches, no unapproved edits
+- Admin exports summary (CSV or formatted)
+- System marks period as exported / sent
+- If same range is re-exported: warning shown
+- If a punch is corrected after export: flagged as "adjustment required — review next payroll"
+
+**Export columns:** Employee, Regular Hours, OT Hours, PTO Hours, Issues flag
+
+### 2.8 Reports
+
+Required reports:
+- Attendance (daily, late arrivals, absences, early departures)
+- Time (total hours by employee, by location, overtime breakdown)
+- PTO (accrued, used, liability, carryover)
+- Missing Punches (per employee — filterable by week / month / year)
+- Exceptions (repeated late, manual edits, suspicious activity)
+- Audit (who changed what, when, old/new value, approvals)
+
+---
+
+## 3. User Roles & Permissions
+
+### 3.1 Roles
+
+| Role | Description |
+|---|---|
+| Super Admin | Full system access |
+| Company Admin | Manage employees, PTO, rules |
+| HR Admin | PTO and employee management |
+| Payroll Admin | Payroll prep and exports only |
+| Location Manager | Manage assigned location only |
+| Department Manager | Manage assigned department only |
+| Supervisor | View team, approve requests |
+| Employee | Self-service only |
+| Kiosk Device | Non-human device role |
+
+### 3.2 Permission Keys
+
+Permissions are action-level keys enforced on every API route:
+
+```
+attendance.view_self
+attendance.view_team
+attendance.view_all
+attendance.edit
+attendance.approve_corrections
+attendance.manage_rules
+pto.request
+pto.view_self
+pto.view_team
+pto.view_all
+pto.approve
+pto.manage_policies
+payroll.export
+payroll.mark_sent
+payroll.view_batches
+users.view
+users.create
+users.edit
+users.deactivate
+roles.manage
+settings.manage
+reports.view
+kiosk.manage
+alerts.manage
+audit.view
+```
+
+### 3.3 Permission Resolution Order
+
+1. Resolve role-level permissions from `role_permissions`
+2. Apply user-level overrides from `user_permission_overrides` (always wins over role)
+3. Enforce scope — users only see data within their assigned company/location/department
+
+### 3.4 Required Middleware
+
+```
+requirePermission(permissionKey)
+requireScopedAccess(module, scopeResolver)
+getEffectivePolicy(companyId, userId, policyType)
+```
+
+### 3.5 Permission Matrix UI
+
+Admin UI must include a permission matrix — a table where each row is a module and each column is an action (view / edit / approve / export), with checkboxes per role. Admin can create, edit, and duplicate roles from this screen.
+
+---
+
+## 4. Business Rules (Non-Negotiable)
+
+These must be implemented exactly as written. All values must be admin-configurable — nothing in this section may be hardcoded.
+
+### Attendance
+- Employees cannot edit punch logs directly under any circumstance
+- Employees submit a missing punch request with: date, time, type (clock-in or clock-out), and reason
+- Admin or manager approval creates or updates the corrected punch record
+- Every approval writes an audit log entry
+- System must prevent double clock-in
+- System must prevent clock-out without an active clock-in
+
+### PTO
+- PTO settings are company-wide defaults, overridable per employee
+- PTO balance is not visible to employees — admin only
+- Employees may request a PTO balance report; admin must approve or provide it
+- All PTO behavior must be driven by the active policy, not hardcoded logic
+
+### Sick Leave
+- Default: 1 hour earned per 30 hours worked
+- Default yearly cap: 40 hours
+- Both the accrual rate and the cap must be configurable per policy
+- Admin can override both values per individual employee
+
+### Holidays
+- Holidays are unpaid by default
+- Paid holidays can be enabled per policy
+- If paid holiday is enabled, hours may optionally deduct from the employee's PTO bank (separate toggle)
+- Holiday pay hours must never count toward overtime thresholds
+
+### Payroll
+- Admin selects a date range and exports a summary
+- Exported ranges are marked as sent and tracked
+- Re-exporting the same range must trigger a warning
+- If a punch is corrected after an export, that date must be flagged as "adjustment required" on the next payroll cycle
+- Payroll export must be blocked if there are unresolved missing punches
+
+### Alerts
+- Auto-generate alerts for: missing clock-out, late clock-in, overtime threshold, unauthorized punch location, repeated attendance issues
+- Each alert type must be configurable: enabled/disabled, notify which roles, escalation behavior
+
+---
+
+## 5. Admin Rules & Controls Center
+
+This is the policy engine that drives all system behavior. Every module reads from it instead of using hardcoded values. Call it "Rules & Controls" in the UI — not "Settings."
+
+### 5.1 Attendance Rules (stored as JSON in policy_rules)
+
+```json
+{
+  "workDayStartTime": "08:00",
+  "earlyClockInMinutes": 15,
+  "lateClockOutMinutes": 15,
+  "gracePeriodMinutes": 7,
+  "autoClockOutEnabled": true,
+  "autoClockOutTime": "23:00",
+  "breakRequiredAfterHours": 6,
+  "breakMinutesDefault": 30,
+  "roundingRule": "15",
+  "overtimeThresholdDaily": 8,
+  "overtimeThresholdWeekly": 40,
+  "allowMultiplePunches": false,
+  "allowManualEdits": false,
+  "requireApprovalForEdits": true,
+  "allowedPunchSources": ["web", "kiosk"]
+}
+```
+
+### 5.2 PTO Rules (stored as JSON in policy_rules)
+
+```json
+{
+  "vacation": {
+    "enabled": true,
+    "accrualType": "yearly",
+    "accrualRate": 80,
+    "maxHoursPerYear": 80,
+    "carryoverAllowed": true,
+    "carryoverLimit": 40,
+    "waitingPeriodDays": 90,
+    "allowNegativeBalance": false,
+    "requiresApproval": true,
+    "autoApproveWithinBalance": false
+  },
+  "sick": {
+    "enabled": true,
+    "accrualType": "hours_worked",
+    "accrualPerHoursWorked": 30,
+    "accrualUnitHours": 1,
+    "maxHoursPerYear": 40
+  },
+  "personal": {
+    "enabled": false
+  },
+  "countsHolidayAgainstBalance": true,
+  "employeeCanSeeBalance": false
+}
+```
+
+### 5.3 Payroll Rules
+
+```json
+{
+  "payrollCycle": "biweekly",
+  "payrollStartDay": "monday",
+  "lockAfterExport": true,
+  "allowRetroChanges": true,
+  "retroHandling": "next_payroll",
+  "warningOnResend": true,
+  "deductionSpreadAllowed": true,
+  "maxDeductionPerPayroll": 150
+}
+```
+
+### 5.4 Approval Workflow Rules
+
+```json
+{
+  "ptoApprovalChain": ["manager", "admin"],
+  "attendanceCorrectionApprovalChain": ["supervisor", "payroll_admin"],
+  "requireCommentOnDeny": true,
+  "requireCommentOnManualEdit": true,
+  "autoEscalationHours": 24
+}
+```
+
+### 5.5 Alert Rules
+
+```json
+{
+  "missingPunch": { "enabled": true, "notifyRoles": ["manager", "payroll_admin"] },
+  "overtime": { "enabled": true, "thresholdHours": 40, "notifyRoles": ["manager"] },
+  "kioskOffline": { "enabled": true, "notifyRoles": ["admin"] },
+  "lateClockIn": { "enabled": true, "notifyRoles": ["manager"] },
+  "noShow": { "enabled": true, "notifyRoles": ["manager", "hr_admin"] }
+}
+```
+
+### 5.6 Policy Assignment Hierarchy
+
+Policies can be assigned at four levels. Lowest level always wins:
+1. Employee (highest priority)
+2. Department
+3. Location
+4. Company default (lowest priority)
+
+Every module that reads business logic must call:
+```
+getEffectivePolicy(companyId, userId, policyType)
+```
+
+### 5.7 Rules & Controls UI Sections
+
+- General (company defaults)
+- Locations
+- Attendance Rules
+- PTO Policies
+- Payroll Rules
+- Approval Workflows
+- Roles & Permissions
+- Alerts & Notifications
+- Kiosk & Devices
+- Audit Logs
+
+---
+
+## 6. Database Schema
+
+### Company Structure
+
+**companies**
+- id, name, legalName, timezone, isActive, createdAt, updatedAt
+
+**locations**
+- id, companyId, name, code, address1, city, state, zip, timezone, isActive, createdAt, updatedAt
+
+**departments**
+- id, companyId, locationId, name, managerUserId, isActive, createdAt, updatedAt
+
+### Users & Access Control
+
+**users**
+- id, companyId, email, passwordHash, firstName, lastName, isActive, createdAt
+
+**roles**
+- id, companyId (nullable for system roles), name, description, isSystem (bool), isActive, createdAt, updatedAt
+
+**permissions**
+- id, key (unique), module, description, createdAt
+
+**role_permissions**
+- id, roleId, permissionId, createdAt — unique(roleId, permissionId)
+
+**user_roles**
+- id, userId, roleId, createdAt — unique(userId, roleId)
+
+**user_permission_overrides**
+- id, userId, permissionId, allowed (bool), reason, createdBy, createdAt, updatedAt — unique(userId, permissionId)
+
+**user_access_scopes**
+- id, userId, companyId, locationId (nullable), departmentId (nullable), scopeType (company/location/department), createdAt
+
+### Employment
+
+**user_employment_profiles**
+- id, userId, companyId, locationId, departmentId, employeeNumber
+- employmentType: full_time / part_time / contractor / per_diem
+- payType: hourly / salary_weekly / salary_daily
+- hourlyRate, weeklySalary, dailySalary (numeric, nullable)
+- overtimeEligible (bool), holidayPayEnabled (bool), voluntaryPayEnabled (bool)
+- isActive, hireDate, terminationDate, createdAt, updatedAt
+
+### Attendance
+
+**punch_logs**
+- id, employeeId, workDate, clockIn (timestamp), clockOut (timestamp)
+- source: web / mobile / kiosk / admin / system
+- approved (bool), hoursWorked (numeric), createdAt
+
+**attendance_exceptions**
+- id, companyId, userId, attendanceRecordId (nullable)
+- type: missing_punch / manual_edit_request / no_show / late_in / early_out / overtime_exception
+- status: open / pending_approval / approved / denied / resolved
+- requestedClockIn (timestamp, nullable), requestedClockOut (timestamp, nullable)
+- reason, submittedBy, reviewedBy, reviewComment, createdAt, updatedAt
+
+### PTO
+
+**pto_policies**
+- id, companyId, name
+- accrualType: per_hours_worked / weekly / monthly / annual_lump_sum
+- accrualRate, hoursPerAccrualUnit, yearlyCapHours, carryoverCapHours, waitingPeriodDays
+- holidaysPaid (bool), paidHolidayDeductsFromPto (bool), holidayExcludedFromOvertime (bool)
+- sickRuleEnabled (bool), sickHoursPerWorkedHours, sickYearlyCapHours
+- isDefault (bool), createdAt, updatedAt
+
+**employee_pto_settings**
+- id, employeeId (unique), policyId, overridePtoBalanceHours, overrideSickBalanceHours, createdAt
+
+**pto_requests**
+- id, employeeId, startDate, endDate, hoursRequested, note
+- status: pending / approved / denied / cancelled
+- approvedByUserId, createdAt
+
+### Rules Engine
+
+**policy_types**
+- id, key (unique), name
+- Seed values: attendance, pto, payroll, approvals, alerts, kiosk
+
+**policies**
+- id, companyId, policyTypeId, name, description
+- status: draft / active / archived
+- version (int), isDefault (bool), createdBy, createdAt, updatedAt
+
+**policy_rules**
+- id, policyId, rules (jsonb), createdAt, updatedAt
+
+**policy_assignments**
+- id, companyId, policyId
+- assignmentLevel: company / location / department / employee
+- locationId (nullable), departmentId (nullable), userId (nullable)
+- effectiveFrom (date), effectiveTo (date), priority (int), createdAt, updatedAt
+
+### Payroll
+
+**payroll_exports**
+- id, companyId, locationId (nullable), name
+- periodStart, periodEnd, exportedAt, exportedBy
+- status: draft / exported / locked / reopened
+- notes, createdAt, updatedAt
+
+**payroll_batch_records**
+- id, payrollBatchId, attendanceRecordId, timeOffRequestId, userId, workDate
+- isPaid (bool), wasModifiedAfterExport (bool), modificationFlagAt, createdAt
+
+**payroll_adjustments**
+- id, employeeId, payrollExportId, adjustmentDate, reason, createdAt
+
+### Alerts
+
+**alerts**
+- id, companyId, locationId, userId
+- alertType, severity: info / warning / critical
+- title, message, metadata (jsonb)
+- status: open / acknowledged / resolved
+- triggeredAt, resolvedAt, resolvedBy
+
+### Audit
+
+**audit_logs**
+- id, companyId, actorUserId, targetType, targetId, action
+- oldValue (jsonb), newValue (jsonb), context (jsonb)
+- ipAddress, userAgent, createdAt
+
+### Kiosk
+
+**kiosk_devices**
+- id, companyId, locationId, name, deviceCode (unique)
+- isActive (bool), lastSeenAt, createdAt, updatedAt
+
+**kiosk_device_rules**
+- id, kioskDeviceId, allowedLocationId (nullable), requirePin (bool)
+- allowNameSearch (bool), restrictToDepartmentId (nullable), isActive, updatedAt
+
+---
+
+## 7. API Route Breakdown
+
+### Authentication
+```
+POST   /api/auth/login
+POST   /api/auth/logout
+GET    /api/auth/me
+```
+
+### Employees
+```
+GET    /api/employees
+POST   /api/employees
+GET    /api/employees/:id
+PATCH  /api/employees/:id
+POST   /api/employees/:id/activate
+POST   /api/employees/:id/deactivate
+GET    /api/employees/:id/employment-profile
+PATCH  /api/employees/:id/employment-profile
+```
+
+### Attendance & Punches
+```
+POST   /api/punches/clock-in
+POST   /api/punches/clock-out
+GET    /api/punches
+GET    /api/attendance/exceptions
+POST   /api/attendance/exceptions
+GET    /api/attendance/exceptions/:id
+POST   /api/attendance/exceptions/:id/approve
+POST   /api/attendance/exceptions/:id/deny
+POST   /api/attendance/exceptions/:id/resolve
+```
+
+### PTO
+```
+POST   /api/pto/request
+GET    /api/pto/requests
+GET    /api/pto/requests/:id
+POST   /api/pto/requests/:id/approve
+POST   /api/pto/requests/:id/deny
+GET    /api/pto-policies
+POST   /api/pto-policies
+GET    /api/pto-policies/:id
+PATCH  /api/pto-policies/:id
+```
+
+### Payroll Prep
+```
+GET    /api/payroll/batches
+POST   /api/payroll/batches
+GET    /api/payroll/batches/:id
+POST   /api/payroll/batches/:id/export
+POST   /api/payroll/batches/:id/lock
+POST   /api/payroll/batches/:id/reopen
+GET    /api/payroll/batches/:id/records
+GET    /api/payroll/summary
+```
+
+### Alerts
+```
+GET    /api/alerts
+GET    /api/alerts/:id
+POST   /api/alerts/:id/acknowledge
+POST   /api/alerts/:id/resolve
+GET    /api/admin/alert-rules
+PUT    /api/admin/alert-rules
+```
+
+### Admin — Roles & Permissions
+```
+GET    /api/admin/roles
+POST   /api/admin/roles
+GET    /api/admin/roles/:id
+PATCH  /api/admin/roles/:id
+POST   /api/admin/roles/:id/duplicate
+GET    /api/admin/roles/:id/permissions
+PUT    /api/admin/roles/:id/permissions
+GET    /api/admin/permissions
+GET    /api/admin/users/:id/roles
+PUT    /api/admin/users/:id/roles
+GET    /api/admin/users/:id/permission-overrides
+PUT    /api/admin/users/:id/permission-overrides
+GET    /api/admin/users/:id/access-scopes
+PUT    /api/admin/users/:id/access-scopes
+POST   /api/admin/users/:id/activate
+POST   /api/admin/users/:id/deactivate
+```
+
+### Admin — Company Structure
+```
+GET    /api/admin/companies
+POST   /api/admin/companies
+GET    /api/admin/companies/:id
+PATCH  /api/admin/companies/:id
+GET    /api/admin/locations
+POST   /api/admin/locations
+GET    /api/admin/locations/:id
+PATCH  /api/admin/locations/:id
+GET    /api/admin/departments
+POST   /api/admin/departments
+GET    /api/admin/departments/:id
+PATCH  /api/admin/departments/:id
+```
+
+### Admin — Rules Engine (Policies)
+```
+GET    /api/admin/policy-types
+GET    /api/admin/policies
+POST   /api/admin/policies
+GET    /api/admin/policies/:id
+PATCH  /api/admin/policies/:id
+POST   /api/admin/policies/:id/activate
+POST   /api/admin/policies/:id/archive
+GET    /api/admin/policies/:id/rules
+PUT    /api/admin/policies/:id/rules
+GET    /api/admin/policy-assignments
+POST   /api/admin/policy-assignments
+PATCH  /api/admin/policy-assignments/:id
+DELETE /api/admin/policy-assignments/:id
+GET    /api/admin/effective-policy?userId=...&policyType=attendance
+```
+
+### Admin — Kiosk
+```
+GET    /api/admin/kiosk/devices
+POST   /api/admin/kiosk/devices
+GET    /api/admin/kiosk/devices/:id
+PATCH  /api/admin/kiosk/devices/:id
+POST   /api/admin/kiosk/devices/:id/activate
+POST   /api/admin/kiosk/devices/:id/deactivate
+PUT    /api/admin/kiosk/devices/:id/rules
+```
+
+### Reports & Audit
+```
+GET    /api/reports/missing-punches
+GET    /api/reports/attendance
+GET    /api/reports/pto-usage
+GET    /api/reports/overtime
+GET    /api/admin/audit-logs
+GET    /api/admin/audit-logs/:id
+```
+
+---
+
+## 8. Backend Code Structure
+
+```
+server/
+  index.ts
+  routes/
+    auth.routes.ts
+    attendance.routes.ts
+    timeoff.routes.ts
+    kiosk.routes.ts
+    admin/
+      roles.routes.ts
+      permissions.routes.ts
+      users.routes.ts
+      companies.routes.ts
+      locations.routes.ts
+      departments.routes.ts
+      employment-profiles.routes.ts
+      policies.routes.ts
+      policy-assignments.routes.ts
+      alerts.routes.ts
+      audit.routes.ts
+      kiosk-admin.routes.ts
+    payroll/
+      payroll-batches.routes.ts
+    attendance/
+      exceptions.routes.ts
+
+  middleware/
+    requireAuth.ts
+    requirePermission.ts
+    requireScopedAccess.ts
+    errorHandler.ts
+
+  services/
+    auth/
+      auth.service.ts
+    access/
+      permission.service.ts
+      scope.service.ts
+      role.service.ts
+    policies/
+      policy.service.ts
+      policy-resolution.service.ts       ← getEffectivePolicy lives here
+      attendance-policy.service.ts
+      pto-policy.service.ts
+      payroll-policy.service.ts
+      approval-policy.service.ts
+      alert-policy.service.ts
+      kiosk-policy.service.ts
+    attendance/
+      attendance.service.ts
+      attendance-exception.service.ts
+      attendance-validation.service.ts
+    payroll/
+      payroll-batch.service.ts
+      payroll-export.service.ts
+    alerts/
+      alert-engine.service.ts
+      alert-dispatch.service.ts
+    audit/
+      audit-log.service.ts
+    kiosk/
+      kiosk-admin.service.ts
+
+  db/
+    schema/
+      auth.schema.ts
+      core-company.schema.ts
+      access-control.schema.ts
+      policy.schema.ts
+      attendance.schema.ts
+      payroll.schema.ts
+      alert.schema.ts
+      kiosk.schema.ts
+      audit.schema.ts
+    migrations/
+
+  lib/
+    enums.ts
+    constants.ts
+    logger.ts
+
+  validators/
+    admin/
+      roles.validators.ts
+      permissions.validators.ts
+      users.validators.ts
+      policies.validators.ts
+      payroll.validators.ts
+      kiosk.validators.ts
+    attendance/
+      exceptions.validators.ts
+
+  seed/
+    seed-permissions.ts
+    seed-roles.ts
+    seed-policy-types.ts
+
+client/src/
+  pages/
+    admin/
+      roles/
+        roles-list.tsx
+        role-detail.tsx
+      users/
+        users-list.tsx
+        user-access-detail.tsx
+      company/
+        companies-page.tsx
+        locations-page.tsx
+        departments-page.tsx
+      policies/
+        policies-list.tsx
+        policy-detail.tsx
+        policy-assignment-page.tsx
+        effective-policy-preview.tsx
+      payroll/
+        payroll-batches-page.tsx
+        payroll-batch-detail.tsx
+      alerts/
+        alerts-page.tsx
+        alert-rules-page.tsx
+      audit/
+        audit-log-page.tsx
+      kiosk/
+        kiosk-devices-page.tsx
+
+  components/
+    admin/
+      permission-matrix.tsx
+      role-form.tsx
+      user-role-editor.tsx
+      user-permission-overrides.tsx
+      access-scope-editor.tsx
+      policy-assignment-form.tsx
+      policy-json-editor.tsx
+      effective-policy-card.tsx
+      payroll-batch-warning-panel.tsx
+      audit-log-table.tsx
+
+  hooks/
+    use-permissions.ts
+    use-effective-policy.ts
+    use-access-scope.ts
+
+  lib/
+    permission-gates.tsx
+    api.ts
+```
+
+---
+
+## 9. Build Order & Milestones
+
+Build in this sequence. Do not start UI for any module before its backend service is stable and tested.
+
+### Milestone 1 — Foundation
+- Drizzle schema and migrations
+- JWT authentication
+- Roles, permissions, role_permissions tables seeded
+- `requirePermission` middleware
+- Admin route protection applied
+
+### Milestone 2 — Company Structure
+- Companies, locations, departments CRUD
+- Employment profiles CRUD
+- User access scopes
+- Scoped data filtering on all queries
+
+### Milestone 3 — Attendance Core
+- Punch logs (clock-in / clock-out)
+- Double clock-in prevention
+- Missing punch request submission
+- Missing punch approval — creates/updates punch record
+- Audit log written on every approval
+
+### Milestone 4 — PTO Engine
+- PTO policy CRUD
+- Sick accrual rule (configurable rate and cap)
+- PTO request and approval workflow
+- Holiday pay logic (paid/unpaid toggle, OT exclusion)
+- Per-employee overrides
+
+### Milestone 5 — Rules Engine
+- policy_types, policies, policy_rules, policy_assignments tables
+- `getEffectivePolicy` resolver
+- Refactor attendance and PTO modules to read from resolver
+- No hardcoded thresholds, rates, or chains remain after this milestone
+
+### Milestone 6 — Payroll Prep
+- Payroll batch creation and export
+- Sent-status tracking
+- Re-export warning
+- Modified-after-export detection and flagging
+- Payroll adjustment records generated automatically
+
+### Milestone 7 — Admin UI
+Build screens in this order:
+1. Employees list and profile
+2. Locations and departments
+3. Attendance exception queue
+4. PTO policy setup
+5. Rules & Controls center
+6. Payroll prep and export
+7. Dashboard (KPIs, live attendance, approval queue)
+8. Reports
+
+### Milestone 8 — Alerts, Audit, and Hardening
+- Alert engine (cron-based detection)
+- Alert routing driven by alert rules config
+- Audit log views
+- Permission matrix UI
+- Role management UI
+- End-to-end QA and UAT
+
+---
+
+## 10. Developer Rules
+
+These are non-negotiable. Review before writing code.
+
+**1. No hardcoded business logic.**
+Grace periods, PTO caps, sick accrual rates, holiday behavior, approval chains, and payroll locking must all be read from `getEffectivePolicy`. If admin might ever want to change it, it must be configurable.
+
+**2. Backend is the source of truth.**
+Frontend may hide pages and buttons based on permissions, but every API endpoint must independently enforce permissions server-side. Frontend-only access control is not acceptable.
+
+**3. Scope every query.**
+Users must only see data within their assigned company, location, or department unless explicitly granted global access. A location manager must never see another location's data.
+
+**4. Employees cannot edit punch logs directly.**
+Employees submit a missing punch request. Admin or manager approval creates the corrected record. There is no direct edit path for employees under any condition.
+
+**5. Audit everything sensitive.**
+Any change to rules, permissions, payroll status, punch records, PTO approvals, or employee data must write an audit log row: actor, action, entity, old value, new value, timestamp.
+
+**6. Extend, do not replace.**
+If existing attendance, PTO, kiosk, and reporting flows are already working, refactor them to read from the rules engine rather than rebuilding from scratch.
+
+**7. Build backend before UI.**
+No admin screen should be built before its corresponding backend service and validation logic is stable and tested.
+
+---
+
+*End of Technical Construction Document — Ahava Medical Center Time & Attendance System*
