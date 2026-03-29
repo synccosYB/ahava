@@ -14,9 +14,15 @@ import {
   userEmploymentProfiles,
   type EmploymentProfile,
   type InsertEmploymentProfile,
-  attendanceRecords,
-  type AttendanceRecord,
-  type InsertAttendanceRecord,
+  punchLogs,
+  type PunchLog,
+  type InsertPunchLog,
+  attendanceExceptions,
+  type AttendanceException,
+  type InsertAttendanceException,
+  auditLogs,
+  type AuditLog,
+  type InsertAuditLog,
   timeOffRequests,
   type TimeOffRequest,
   type InsertTimeOffRequest,
@@ -55,6 +61,9 @@ import {
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
 
+export type AttendanceRecord = PunchLog;
+export type InsertAttendanceRecord = InsertPunchLog;
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -87,18 +96,34 @@ export interface IStorage {
   createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile>;
   updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined>;
 
-  getAttendanceRecord(id: string): Promise<AttendanceRecord | undefined>;
-  getAttendanceByUser(userId: string): Promise<AttendanceRecord[]>;
-  getAttendanceByDate(date: string): Promise<AttendanceRecord[]>;
-  createAttendanceRecord(record: InsertAttendanceRecord): Promise<AttendanceRecord>;
-  updateAttendanceRecord(id: string, record: Partial<InsertAttendanceRecord>): Promise<AttendanceRecord | undefined>;
+  getPunchLog(id: string): Promise<PunchLog | undefined>;
+  getPunchLogsByEmployee(employeeId: string): Promise<PunchLog[]>;
+  getPunchLogsByDate(date: string): Promise<PunchLog[]>;
+  createPunchLog(record: InsertPunchLog): Promise<PunchLog>;
+  updatePunchLog(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
 
-  clockIn(userId: string): Promise<AttendanceRecord>;
-  clockOut(userId: string): Promise<AttendanceRecord | undefined>;
-  getCurrentAttendance(userId: string): Promise<AttendanceRecord | undefined>;
-  getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<AttendanceRecord[]>;
+  getAttendanceRecord(id: string): Promise<PunchLog | undefined>;
+  getAttendanceByUser(userId: string): Promise<PunchLog[]>;
+  getAttendanceByDate(date: string): Promise<PunchLog[]>;
+  createAttendanceRecord(record: InsertPunchLog): Promise<PunchLog>;
+  updateAttendanceRecord(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
+
+  clockIn(userId: string, source?: string): Promise<PunchLog>;
+  clockOut(userId: string): Promise<PunchLog | undefined>;
+  getCurrentAttendance(userId: string): Promise<PunchLog | undefined>;
+  getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<PunchLog[]>;
   getTodayHours(userId: string): Promise<number>;
   getWeekHours(userId: string): Promise<number>;
+
+  getAttendanceException(id: string): Promise<AttendanceException | undefined>;
+  getAttendanceExceptionsByEmployee(employeeId: string): Promise<AttendanceException[]>;
+  getPendingAttendanceExceptions(): Promise<AttendanceException[]>;
+  getAllAttendanceExceptions(): Promise<AttendanceException[]>;
+  createAttendanceException(exception: InsertAttendanceException): Promise<AttendanceException>;
+  updateAttendanceException(id: string, data: Partial<AttendanceException>): Promise<AttendanceException | undefined>;
+
+  createAuditLog(entry: InsertAuditLog): Promise<AuditLog>;
+  getAuditLogs(targetType?: string, targetId?: string): Promise<AuditLog[]>;
 
   getTimeOffRequest(id: string): Promise<TimeOffRequest | undefined>;
   getTimeOffRequestsByUser(userId: string): Promise<TimeOffRequest[]>;
@@ -126,11 +151,11 @@ export interface IStorage {
 
   getUserByPin(pin: string): Promise<User | undefined>;
   searchUsersByName(query: string): Promise<User[]>;
-  getLatestAttendanceForUser(userId: string): Promise<AttendanceRecord | undefined>;
+  getLatestAttendanceForUser(userId: string): Promise<PunchLog | undefined>;
 
   getUsersByDepartment(departmentId: string): Promise<User[]>;
   getProcessedTimeOffRequests(reviewerId?: string): Promise<TimeOffRequest[]>;
-  getAttendanceByDateRange(startDate: string, endDate: string): Promise<AttendanceRecord[]>;
+  getAttendanceByDateRange(startDate: string, endDate: string): Promise<PunchLog[]>;
 
   getPtoPolicy(id: string): Promise<PtoPolicy | undefined>;
   getAllPtoPolicies(): Promise<PtoPolicy[]>;
@@ -188,6 +213,15 @@ export interface IStorage {
   removeUserAccessScope(id: string): Promise<void>;
 
   getScopedUserIds(user: User): Promise<Set<string>>;
+}
+
+function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
+  return {
+    ...log,
+    userId: log.employeeId,
+    date: log.workDate,
+    totalHours: log.hoursWorked,
+  };
 }
 
 export class DatabaseStorage implements IStorage {
@@ -311,42 +345,66 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async getAttendanceRecord(id: string): Promise<AttendanceRecord | undefined> {
-    const [record] = await db.select().from(attendanceRecords).where(eq(attendanceRecords.id, id));
-    return record;
+  async getPunchLog(id: string): Promise<PunchLog | undefined> {
+    const [record] = await db.select().from(punchLogs).where(eq(punchLogs.id, id));
+    return record ? punchLogToLegacy(record) : undefined;
   }
 
-  async getAttendanceByUser(userId: string): Promise<AttendanceRecord[]> {
-    return db.select().from(attendanceRecords).where(eq(attendanceRecords.userId, userId));
+  async getPunchLogsByEmployee(employeeId: string): Promise<PunchLog[]> {
+    const records = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, employeeId));
+    return records.map(punchLogToLegacy);
   }
 
-  async getAttendanceByDate(date: string): Promise<AttendanceRecord[]> {
-    return db.select().from(attendanceRecords).where(eq(attendanceRecords.date, date));
+  async getPunchLogsByDate(date: string): Promise<PunchLog[]> {
+    const records = await db.select().from(punchLogs).where(eq(punchLogs.workDate, date));
+    return records.map(punchLogToLegacy);
   }
 
-  async createAttendanceRecord(record: InsertAttendanceRecord): Promise<AttendanceRecord> {
-    const [created] = await db.insert(attendanceRecords).values(record).returning();
-    return created;
+  async createPunchLog(record: InsertPunchLog): Promise<PunchLog> {
+    const [created] = await db.insert(punchLogs).values(record).returning();
+    return punchLogToLegacy(created);
   }
 
-  async updateAttendanceRecord(id: string, record: Partial<InsertAttendanceRecord>): Promise<AttendanceRecord | undefined> {
-    const [updated] = await db.update(attendanceRecords).set(record).where(eq(attendanceRecords.id, id)).returning();
-    return updated;
+  async updatePunchLog(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined> {
+    const [updated] = await db.update(punchLogs).set(record).where(eq(punchLogs.id, id)).returning();
+    return updated ? punchLogToLegacy(updated) : undefined;
   }
 
-  async clockIn(userId: string): Promise<AttendanceRecord> {
+  async getAttendanceRecord(id: string): Promise<PunchLog | undefined> {
+    return this.getPunchLog(id);
+  }
+
+  async getAttendanceByUser(userId: string): Promise<PunchLog[]> {
+    return this.getPunchLogsByEmployee(userId);
+  }
+
+  async getAttendanceByDate(date: string): Promise<PunchLog[]> {
+    return this.getPunchLogsByDate(date);
+  }
+
+  async createAttendanceRecord(record: InsertPunchLog): Promise<PunchLog> {
+    return this.createPunchLog(record);
+  }
+
+  async updateAttendanceRecord(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined> {
+    return this.updatePunchLog(id, record);
+  }
+
+  async clockIn(userId: string, source: string = "web"): Promise<PunchLog> {
     const now = new Date();
     const dateStr = now.toISOString().split("T")[0];
-    const [record] = await db.insert(attendanceRecords).values({
-      userId,
-      date: dateStr,
+    const [record] = await db.insert(punchLogs).values({
+      employeeId: userId,
+      workDate: dateStr,
       clockIn: now,
       status: "in-progress",
+      source,
+      approved: true,
     }).returning();
-    return record;
+    return punchLogToLegacy(record);
   }
 
-  async clockOut(userId: string): Promise<AttendanceRecord | undefined> {
+  async clockOut(userId: string): Promise<PunchLog | undefined> {
     const current = await this.getCurrentAttendance(userId);
     if (!current || !current.clockIn) return undefined;
 
@@ -354,49 +412,50 @@ export class DatabaseStorage implements IStorage {
     const clockInTime = new Date(current.clockIn).getTime();
     const totalMs = now.getTime() - clockInTime;
     const breakMs = (current.breakMinutes || 0) * 60 * 1000;
-    const totalHours = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+    const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
 
     const [updated] = await db
-      .update(attendanceRecords)
-      .set({ clockOut: now, totalHours, status: totalHours > 8 ? "overtime" : "complete" })
-      .where(eq(attendanceRecords.id, current.id))
+      .update(punchLogs)
+      .set({ clockOut: now, hoursWorked, status: hoursWorked > 8 ? "overtime" : "complete" })
+      .where(eq(punchLogs.id, current.id))
       .returning();
-    return updated;
+    return punchLogToLegacy(updated);
   }
 
-  async getCurrentAttendance(userId: string): Promise<AttendanceRecord | undefined> {
+  async getCurrentAttendance(userId: string): Promise<PunchLog | undefined> {
     const [record] = await db
       .select()
-      .from(attendanceRecords)
-      .where(and(eq(attendanceRecords.userId, userId), eq(attendanceRecords.status, "in-progress")))
-      .orderBy(desc(attendanceRecords.clockIn))
+      .from(punchLogs)
+      .where(and(eq(punchLogs.employeeId, userId), eq(punchLogs.status, "in-progress")))
+      .orderBy(desc(punchLogs.clockIn))
       .limit(1);
-    return record;
+    return record ? punchLogToLegacy(record) : undefined;
   }
 
-  async getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<AttendanceRecord[]> {
-    const conditions = [eq(attendanceRecords.userId, userId)];
-    if (startDate) conditions.push(gte(attendanceRecords.date, startDate));
-    if (endDate) conditions.push(lte(attendanceRecords.date, endDate));
+  async getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<PunchLog[]> {
+    const conditions = [eq(punchLogs.employeeId, userId)];
+    if (startDate) conditions.push(gte(punchLogs.workDate, startDate));
+    if (endDate) conditions.push(lte(punchLogs.workDate, endDate));
 
-    return db
+    const records = await db
       .select()
-      .from(attendanceRecords)
+      .from(punchLogs)
       .where(and(...conditions))
-      .orderBy(desc(attendanceRecords.date));
+      .orderBy(desc(punchLogs.workDate));
+    return records.map(punchLogToLegacy);
   }
 
   async getTodayHours(userId: string): Promise<number> {
     const today = new Date().toISOString().split("T")[0];
     const records = await db
       .select()
-      .from(attendanceRecords)
-      .where(and(eq(attendanceRecords.userId, userId), eq(attendanceRecords.date, today)));
+      .from(punchLogs)
+      .where(and(eq(punchLogs.employeeId, userId), eq(punchLogs.workDate, today)));
 
     let total = 0;
     for (const r of records) {
-      if (r.totalHours) {
-        total += r.totalHours;
+      if (r.hoursWorked) {
+        total += r.hoursWorked;
       } else if (r.status === "in-progress" && r.clockIn) {
         const elapsed = (Date.now() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
         total += Math.round(elapsed * 100) / 100;
@@ -414,19 +473,65 @@ export class DatabaseStorage implements IStorage {
 
     const records = await db
       .select()
-      .from(attendanceRecords)
-      .where(and(eq(attendanceRecords.userId, userId), gte(attendanceRecords.date, startDate)));
+      .from(punchLogs)
+      .where(and(eq(punchLogs.employeeId, userId), gte(punchLogs.workDate, startDate)));
 
     let total = 0;
     for (const r of records) {
-      if (r.totalHours) {
-        total += r.totalHours;
+      if (r.hoursWorked) {
+        total += r.hoursWorked;
       } else if (r.status === "in-progress" && r.clockIn) {
         const elapsed = (Date.now() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
         total += Math.round(elapsed * 100) / 100;
       }
     }
     return total;
+  }
+
+  async getAttendanceException(id: string): Promise<AttendanceException | undefined> {
+    const [record] = await db.select().from(attendanceExceptions).where(eq(attendanceExceptions.id, id));
+    return record;
+  }
+
+  async getAttendanceExceptionsByEmployee(employeeId: string): Promise<AttendanceException[]> {
+    return db.select().from(attendanceExceptions)
+      .where(eq(attendanceExceptions.employeeId, employeeId))
+      .orderBy(desc(attendanceExceptions.createdAt));
+  }
+
+  async getPendingAttendanceExceptions(): Promise<AttendanceException[]> {
+    return db.select().from(attendanceExceptions)
+      .where(eq(attendanceExceptions.status, "pending"))
+      .orderBy(desc(attendanceExceptions.createdAt));
+  }
+
+  async getAllAttendanceExceptions(): Promise<AttendanceException[]> {
+    return db.select().from(attendanceExceptions).orderBy(desc(attendanceExceptions.createdAt));
+  }
+
+  async createAttendanceException(exception: InsertAttendanceException): Promise<AttendanceException> {
+    const [created] = await db.insert(attendanceExceptions).values(exception).returning();
+    return created;
+  }
+
+  async updateAttendanceException(id: string, data: Partial<AttendanceException>): Promise<AttendanceException | undefined> {
+    const [updated] = await db.update(attendanceExceptions).set(data).where(eq(attendanceExceptions.id, id)).returning();
+    return updated;
+  }
+
+  async createAuditLog(entry: InsertAuditLog): Promise<AuditLog> {
+    const [created] = await db.insert(auditLogs).values(entry).returning();
+    return created;
+  }
+
+  async getAuditLogs(targetType?: string, targetId?: string): Promise<AuditLog[]> {
+    const conditions = [];
+    if (targetType) conditions.push(eq(auditLogs.targetType, targetType));
+    if (targetId) conditions.push(eq(auditLogs.targetId, targetId));
+    if (conditions.length > 0) {
+      return db.select().from(auditLogs).where(and(...conditions)).orderBy(desc(auditLogs.createdAt));
+    }
+    return db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(100);
   }
 
   async getTimeOffRequest(id: string): Promise<TimeOffRequest | undefined> {
@@ -574,14 +679,14 @@ export class DatabaseStorage implements IStorage {
       );
   }
 
-  async getLatestAttendanceForUser(userId: string): Promise<AttendanceRecord | undefined> {
+  async getLatestAttendanceForUser(userId: string): Promise<PunchLog | undefined> {
     const [record] = await db
       .select()
-      .from(attendanceRecords)
-      .where(eq(attendanceRecords.userId, userId))
-      .orderBy(desc(attendanceRecords.createdAt))
+      .from(punchLogs)
+      .where(eq(punchLogs.employeeId, userId))
+      .orderBy(desc(punchLogs.createdAt))
       .limit(1);
-    return record;
+    return record ? punchLogToLegacy(record) : undefined;
   }
 
   async getUsersByDepartment(departmentId: string): Promise<User[]> {
@@ -601,9 +706,10 @@ export class DatabaseStorage implements IStorage {
       .limit(20);
   }
 
-  async getAttendanceByDateRange(startDate: string, endDate: string): Promise<AttendanceRecord[]> {
-    return db.select().from(attendanceRecords)
-      .where(and(gte(attendanceRecords.date, startDate), lte(attendanceRecords.date, endDate)));
+  async getAttendanceByDateRange(startDate: string, endDate: string): Promise<PunchLog[]> {
+    const records = await db.select().from(punchLogs)
+      .where(and(gte(punchLogs.workDate, startDate), lte(punchLogs.workDate, endDate)));
+    return records.map(punchLogToLegacy);
   }
 
   async getCompany(id: string): Promise<Company | undefined> {

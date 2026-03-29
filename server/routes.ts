@@ -4,8 +4,9 @@ import { z } from "zod";
 import { storage } from "./storage";
 import { requireAuth } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema } from "@shared/schema";
-import type { User, AttendanceRecord, TimeOffRequest } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema } from "@shared/schema";
+import type { User, PunchLog, InsertPunchLog, TimeOffRequest } from "@shared/schema";
+import { writeAuditLog, getAuditContext } from "./services/audit";
 
 const roleSchema = z.object({
   role: z.enum(["employee", "manager", "admin"]),
@@ -28,6 +29,15 @@ function sanitizeUserForKiosk(user: User, departmentName?: string) {
     lastName: user.lastName || "",
     department: departmentName || "Unassigned",
     employeeId: user.id,
+  };
+}
+
+function punchLogToApiResponse(record: any) {
+  return {
+    ...record,
+    userId: record.employeeId || record.userId,
+    date: record.workDate || record.date,
+    totalHours: record.hoursWorked ?? record.totalHours ?? null,
   };
 }
 
@@ -375,15 +385,16 @@ export async function registerRoutes(
 
     if (type === "clock_in") {
       const lastRecord = await storage.getLatestAttendanceForUser(user.id);
-      if (lastRecord && lastRecord.clockIn && !lastRecord.clockOut && lastRecord.date === today) {
+      if (lastRecord && lastRecord.clockIn && !lastRecord.clockOut && lastRecord.workDate === today) {
         return res.status(400).json({ error: "Employee is already clocked in" });
       }
       const record = await storage.createAttendanceRecord({
-        userId: user.id,
-        date: today,
+        employeeId: user.id,
+        workDate: today,
         clockIn: new Date(),
         status: "present",
         source: "kiosk",
+        approved: true,
       });
       return res.json({
         record: { id: record.id, type: "clock_in", timestamp: record.clockIn },
@@ -394,8 +405,16 @@ export async function registerRoutes(
       if (!lastRecord || !lastRecord.clockIn || lastRecord.clockOut) {
         return res.status(400).json({ error: "Employee is not clocked in" });
       }
-      const updated = await storage.updateAttendanceRecord(lastRecord.id, {
-        clockOut: new Date(),
+      const now = new Date();
+      const clockInTime = new Date(lastRecord.clockIn).getTime();
+      const totalMs = now.getTime() - clockInTime;
+      const breakMs = (lastRecord.breakMinutes || 0) * 60 * 1000;
+      const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+
+      const updated = await storage.updatePunchLog(lastRecord.id, {
+        clockOut: now,
+        hoursWorked,
+        status: hoursWorked > 8 ? "overtime" : "complete",
       });
       return res.json({
         record: { id: updated?.id, type: "clock_out", timestamp: updated?.clockOut },
@@ -414,7 +433,7 @@ export async function registerRoutes(
 
       const response: any = {
         isClockedIn: !!current,
-        currentRecord: current || null,
+        currentRecord: current ? punchLogToApiResponse(current) : null,
         todayHours: Math.round(todayHours * 10) / 10,
         weekHours: Math.round(weekHours * 10) / 10,
       };
@@ -437,8 +456,8 @@ export async function registerRoutes(
       if (current) {
         return res.status(400).json({ message: "Already clocked in" });
       }
-      const record = await storage.clockIn(userId);
-      res.json(record);
+      const record = await storage.clockIn(userId, "web");
+      res.json(punchLogToApiResponse(record));
     } catch (error) {
       console.error("Error clocking in:", error);
       res.status(500).json({ message: "Failed to clock in" });
@@ -452,7 +471,7 @@ export async function registerRoutes(
       if (!record) {
         return res.status(400).json({ message: "Not currently clocked in" });
       }
-      res.json(record);
+      res.json(punchLogToApiResponse(record));
     } catch (error) {
       console.error("Error clocking out:", error);
       res.status(500).json({ message: "Failed to clock out" });
@@ -468,10 +487,248 @@ export async function registerRoutes(
         startDate as string | undefined,
         endDate as string | undefined
       );
-      res.json(records);
+      res.json(records.map(punchLogToApiResponse));
     } catch (error) {
       console.error("Error fetching records:", error);
       res.status(500).json({ message: "Failed to fetch attendance records" });
+    }
+  });
+
+  app.post("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const { exceptionDate, exceptionTime, type, reason } = req.body;
+
+      if (!exceptionDate || !type || !reason) {
+        return res.status(400).json({ message: "Date, type, and reason are required" });
+      }
+
+      const validTypes = ["missing_punch", "time_correction", "forgotten_clock_in", "forgotten_clock_out"];
+      if (!validTypes.includes(type)) {
+        return res.status(400).json({ message: `Invalid type. Must be one of: ${validTypes.join(", ")}` });
+      }
+
+      const exception = await storage.createAttendanceException({
+        employeeId: userId,
+        exceptionDate,
+        exceptionTime: exceptionTime ? new Date(exceptionTime) : null,
+        type,
+        reason,
+        status: "pending",
+      });
+      res.status(201).json(exception);
+    } catch (error) {
+      console.error("Error creating attendance exception:", error);
+      res.status(500).json({ message: "Failed to create attendance exception" });
+    }
+  });
+
+  app.get("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const user = req.authUser as User;
+
+      if (user.role === "admin" || user.role === "manager") {
+        const all = await storage.getAllAttendanceExceptions();
+        const allUsers = await storage.getAllUsers();
+        const userMap = new Map(allUsers.map(u => [u.id, u]));
+        const enriched = all.map(e => ({
+          ...e,
+          employeeName: (() => {
+            const u = userMap.get(e.employeeId);
+            return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+          })(),
+        }));
+        return res.json(enriched);
+      }
+
+      const exceptions = await storage.getAttendanceExceptionsByEmployee(userId);
+      res.json(exceptions);
+    } catch (error) {
+      console.error("Error fetching attendance exceptions:", error);
+      res.status(500).json({ message: "Failed to fetch attendance exceptions" });
+    }
+  });
+
+  app.get("/api/attendance/exceptions/pending", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+    try {
+      const user = req.authUser as User;
+      const teamIds = await getTeamUserIds(user);
+      const pending = await storage.getPendingAttendanceExceptions();
+      const scopedPending = pending.filter(e => teamIds.has(e.employeeId));
+      const allUsers = await storage.getAllUsers();
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+      const enriched = scopedPending.map(e => ({
+        ...e,
+        employeeName: (() => {
+          const u = userMap.get(e.employeeId);
+          return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+        })(),
+      }));
+      res.json(enriched);
+    } catch (error) {
+      console.error("Error fetching pending exceptions:", error);
+      res.status(500).json({ message: "Failed to fetch pending exceptions" });
+    }
+  });
+
+  const exceptionReviewSchema = z.object({
+    action: z.enum(["approve", "deny"]),
+    reviewNotes: z.string().optional(),
+    correctedTime: z.string().optional(),
+  });
+
+  app.post("/api/attendance/exceptions/:id/resolve", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+    try {
+      const reviewer = req.authUser as User;
+      const exceptionId = req.params.id as string;
+      const parsed = exceptionReviewSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid review data", errors: parsed.error.flatten() });
+      }
+
+      const exception = await storage.getAttendanceException(exceptionId);
+      if (!exception) {
+        return res.status(404).json({ message: "Exception not found" });
+      }
+      if (exception.status !== "pending") {
+        return res.status(400).json({ message: "Exception already processed" });
+      }
+
+      const teamIds = await getTeamUserIds(reviewer);
+      if (!teamIds.has(exception.employeeId)) {
+        return res.status(403).json({ message: "Not authorized to resolve this exception" });
+      }
+
+      const { action, reviewNotes, correctedTime } = parsed.data;
+      const auditCtx = getAuditContext(req);
+
+      if (action === "deny") {
+        const updated = await storage.updateAttendanceException(exceptionId, {
+          status: "denied",
+          reviewedBy: reviewer.id,
+          reviewedAt: new Date(),
+          reviewNotes: reviewNotes || null,
+        });
+
+        await writeAuditLog({
+          actorUserId: reviewer.id,
+          targetType: "attendance_exception",
+          targetId: exceptionId,
+          action: "exception.denied",
+          oldValue: { status: "pending" },
+          newValue: { status: "denied" },
+          context: { reviewNotes },
+          ...auditCtx,
+        });
+
+        return res.json(updated);
+      }
+
+      if (exception.type === "time_correction" && !correctedTime) {
+        return res.status(400).json({ message: "correctedTime is required for time_correction exceptions" });
+      }
+
+      let punchLog: PunchLog | undefined | null = null;
+      const correctedTimestamp = correctedTime ? new Date(correctedTime) : exception.exceptionTime;
+
+      if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+        const existingOpen = await storage.getCurrentAttendance(exception.employeeId);
+        if (existingOpen && existingOpen.workDate === exception.exceptionDate) {
+          return res.status(400).json({ message: "Employee already has an open punch for this date" });
+        }
+
+        punchLog = await storage.createPunchLog({
+          employeeId: exception.employeeId,
+          workDate: exception.exceptionDate,
+          clockIn: correctedTimestamp || new Date(),
+          status: "present",
+          source: "exception",
+          approved: true,
+        });
+      } else if (exception.type === "forgotten_clock_out") {
+        const latestRecord = await storage.getLatestAttendanceForUser(exception.employeeId);
+        if (latestRecord && latestRecord.clockIn && !latestRecord.clockOut && latestRecord.workDate === exception.exceptionDate) {
+          const clockOutTime = correctedTimestamp || new Date();
+          const clockInTime = new Date(latestRecord.clockIn).getTime();
+          const totalMs = clockOutTime.getTime() - clockInTime;
+          const breakMs = (latestRecord.breakMinutes || 0) * 60 * 1000;
+          const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+
+          punchLog = await storage.updatePunchLog(latestRecord.id, {
+            clockOut: clockOutTime,
+            hoursWorked,
+            status: hoursWorked > 8 ? "overtime" : "complete",
+          });
+        } else {
+          return res.status(400).json({ message: "No open punch record found for this date to close" });
+        }
+      } else if (exception.type === "time_correction") {
+        const latestRecord = await storage.getLatestAttendanceForUser(exception.employeeId);
+        if (!latestRecord || latestRecord.workDate !== exception.exceptionDate) {
+          return res.status(400).json({ message: "No punch record found for this date to correct" });
+        }
+
+        const oldValue = {
+          clockIn: latestRecord.clockIn,
+          clockOut: latestRecord.clockOut,
+          hoursWorked: latestRecord.hoursWorked,
+        };
+
+        const updateData: Partial<InsertPunchLog> = {};
+        if (!latestRecord.clockOut) {
+          updateData.clockIn = correctedTimestamp!;
+        } else {
+          updateData.clockOut = correctedTimestamp!;
+          const clockInTime = new Date(latestRecord.clockIn!).getTime();
+          const totalMs = correctedTimestamp!.getTime() - clockInTime;
+          const breakMs = (latestRecord.breakMinutes || 0) * 60 * 1000;
+          const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+          updateData.hoursWorked = hoursWorked;
+          updateData.status = hoursWorked > 8 ? "overtime" : "complete";
+        }
+
+        punchLog = await storage.updatePunchLog(latestRecord.id, updateData);
+
+        await writeAuditLog({
+          actorUserId: reviewer.id,
+          targetType: "punch_log",
+          targetId: latestRecord.id,
+          action: "punch_log.corrected",
+          oldValue,
+          newValue: {
+            clockIn: punchLog?.clockIn,
+            clockOut: punchLog?.clockOut,
+            hoursWorked: punchLog?.hoursWorked,
+          },
+          context: { exceptionId, reason: exception.reason },
+          ...auditCtx,
+        });
+      }
+
+      const updated = await storage.updateAttendanceException(exceptionId, {
+        status: "approved",
+        reviewedBy: reviewer.id,
+        reviewedAt: new Date(),
+        reviewNotes: reviewNotes || null,
+        punchLogId: punchLog?.id || null,
+      });
+
+      await writeAuditLog({
+        actorUserId: reviewer.id,
+        targetType: "attendance_exception",
+        targetId: exceptionId,
+        action: "exception.approved",
+        oldValue: { status: "pending" },
+        newValue: { status: "approved", punchLogId: punchLog?.id },
+        context: { reviewNotes, exceptionType: exception.type },
+        ...auditCtx,
+      });
+
+      return res.json(updated);
+    } catch (error) {
+      console.error("Error resolving attendance exception:", error);
+      res.status(500).json({ message: "Failed to resolve attendance exception" });
     }
   });
 
@@ -603,7 +860,7 @@ export async function registerRoutes(
     }
 
     const teamIds = new Set(teamMembers.map(u => u.id));
-    const clockedIn = todayAttendance.filter(a => teamIds.has(a.userId) && a.clockIn && !a.clockOut).length;
+    const clockedIn = todayAttendance.filter(a => teamIds.has(a.employeeId) && a.clockIn && !a.clockOut).length;
 
     const allTimeOff = await storage.getAllTimeOffRequests();
     const onLeave = allTimeOff.filter(r =>
@@ -645,8 +902,8 @@ export async function registerRoutes(
     const weekAttendance = await storage.getAttendanceByDateRange(weekStartStr, today);
 
     const teamStatus = teamMembers.map(member => {
-      const todayRecord = todayAttendance.find(a => a.userId === member.id && a.clockIn && !a.clockOut);
-      const todayRecords = todayAttendance.filter(a => a.userId === member.id);
+      const todayRecord = todayAttendance.find(a => a.employeeId === member.id && a.clockIn && !a.clockOut);
+      const todayRecords = todayAttendance.filter(a => a.employeeId === member.id);
       const isOnLeave = allTimeOff.some(r =>
         r.userId === member.id && r.status === "approved" && r.startDate <= today && r.endDate >= today
       );
@@ -660,7 +917,7 @@ export async function registerRoutes(
       });
 
       let weekHours = 0;
-      const memberWeekRecords = weekAttendance.filter(a => a.userId === member.id);
+      const memberWeekRecords = weekAttendance.filter(a => a.employeeId === member.id);
       memberWeekRecords.forEach(r => {
         if (r.clockIn) {
           const end = r.clockOut ? new Date(r.clockOut) : new Date();
@@ -711,13 +968,16 @@ export async function registerRoutes(
       ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
     });
 
-    await storage.createAuditLog({
-      action: "pto.approved",
-      module: "pto",
-      targetId: requestId,
+    const auditCtx = getAuditContext(req);
+    await writeAuditLog({
+      actorUserId: user.id,
       targetType: "time_off_request",
-      performedBy: user.id,
-      details: { employeeId: request.userId, type: request.type, days: request.daysRequested, comment },
+      targetId: requestId,
+      action: "time_off.approved",
+      oldValue: { status: "pending" },
+      newValue: { status: "approved" },
+      context: { comment, employeeId: request.userId, type: request.type, days: request.daysRequested },
+      ...auditCtx,
     });
 
     res.json(updated);
@@ -742,13 +1002,16 @@ export async function registerRoutes(
       ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
     });
 
-    await storage.createAuditLog({
-      action: "pto.denied",
-      module: "pto",
-      targetId: requestId,
+    const auditCtx = getAuditContext(req);
+    await writeAuditLog({
+      actorUserId: user.id,
       targetType: "time_off_request",
-      performedBy: user.id,
-      details: { employeeId: request.userId, type: request.type, days: request.daysRequested, comment },
+      targetId: requestId,
+      action: "time_off.denied",
+      oldValue: { status: "pending" },
+      newValue: { status: "denied" },
+      context: { comment, employeeId: request.userId, type: request.type, days: request.daysRequested },
+      ...auditCtx,
     });
 
     res.json(updated);
@@ -810,14 +1073,14 @@ export async function registerRoutes(
     const breakdown = depts.map(dept => {
       const deptUsers = allUsers.filter(u => u.departmentId === dept.id);
       const deptIds = new Set(deptUsers.map(u => u.id));
-      const active = todayAttendance.filter(a => deptIds.has(a.userId) && a.clockIn && !a.clockOut).length;
+      const active = todayAttendance.filter(a => deptIds.has(a.employeeId) && a.clockIn && !a.clockOut).length;
       const onLeave = allTimeOff.filter(r =>
         deptIds.has(r.userId) && r.status === "approved" && r.startDate <= today && r.endDate >= today
       ).length;
 
       let totalHours = 0;
       let recordCount = 0;
-      weekAttendance.filter(a => deptIds.has(a.userId)).forEach(r => {
+      weekAttendance.filter(a => deptIds.has(a.employeeId)).forEach(r => {
         if (r.clockIn) {
           const end = r.clockOut ? new Date(r.clockOut) : new Date();
           totalHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
@@ -839,7 +1102,7 @@ export async function registerRoutes(
     const unassigned = allUsers.filter(u => !u.departmentId);
     if (unassigned.length > 0) {
       const unassignedIds = new Set(unassigned.map(u => u.id));
-      const active = todayAttendance.filter(a => unassignedIds.has(a.userId) && a.clockIn && !a.clockOut).length;
+      const active = todayAttendance.filter(a => unassignedIds.has(a.employeeId) && a.clockIn && !a.clockOut).length;
       breakdown.push({
         id: "unassigned",
         name: "Unassigned",
@@ -930,7 +1193,7 @@ export async function registerRoutes(
     }
 
     const userIds = new Set(filteredUsers.map(u => u.id));
-    const filteredAttendance = attendance.filter(a => userIds.has(a.userId));
+    const filteredAttendance = attendance.filter(a => userIds.has(a.employeeId));
     let filteredTimeOff = timeOff.filter(r =>
       userIds.has(r.userId) &&
       r.startDate <= endDate &&
@@ -942,14 +1205,14 @@ export async function registerRoutes(
     }
 
     const reportData = filteredUsers.map(user => {
-      const userAttendance = filteredAttendance.filter(a => a.userId === user.id);
+      const userAttendance = filteredAttendance.filter(a => a.employeeId === user.id);
       let totalHours = 0;
       let daysWorked = new Set<string>();
       userAttendance.forEach(r => {
         if (r.clockIn) {
           const end = r.clockOut ? new Date(r.clockOut) : new Date();
           totalHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
-          daysWorked.add(r.date);
+          daysWorked.add(r.workDate);
         }
       });
 

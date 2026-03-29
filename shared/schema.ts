@@ -84,27 +84,84 @@ export const insertEmploymentProfileSchema = createInsertSchema(userEmploymentPr
 export type InsertEmploymentProfile = z.infer<typeof insertEmploymentProfileSchema>;
 export type EmploymentProfile = typeof userEmploymentProfiles.$inferSelect;
 
-export const attendanceRecords = pgTable("attendance_records", {
+export const punchLogs = pgTable("punch_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id),
-  date: date("date").notNull(),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  workDate: date("work_date").notNull(),
   clockIn: timestamp("clock_in"),
   clockOut: timestamp("clock_out"),
   breakMinutes: integer("break_minutes").default(0),
-  totalHours: real("total_hours"),
+  hoursWorked: real("hours_worked"),
   status: varchar("status", { length: 20 }).default("present").notNull(),
   notes: text("notes"),
   source: varchar("source", { length: 20 }).default("web").notNull(),
+  approved: boolean("approved").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const insertAttendanceRecordSchema = createInsertSchema(attendanceRecords).omit({
+export const attendanceRecords = punchLogs;
+
+export const insertPunchLogSchema = createInsertSchema(punchLogs).omit({
   id: true,
   createdAt: true,
-  totalHours: true,
 });
-export type InsertAttendanceRecord = z.infer<typeof insertAttendanceRecordSchema>;
-export type AttendanceRecord = typeof attendanceRecords.$inferSelect;
+export type InsertPunchLog = z.infer<typeof insertPunchLogSchema>;
+export type PunchLog = typeof punchLogs.$inferSelect;
+
+export const insertAttendanceRecordSchema = insertPunchLogSchema;
+export type InsertAttendanceRecord = InsertPunchLog;
+export type AttendanceRecord = PunchLog & {
+  userId: string;
+  date: string;
+  totalHours: number | null;
+};
+
+export const attendanceExceptions = pgTable("attendance_exceptions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  exceptionDate: date("exception_date").notNull(),
+  exceptionTime: timestamp("exception_time"),
+  type: varchar("type", { length: 30 }).notNull(),
+  reason: text("reason").notNull(),
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
+  reviewedBy: varchar("reviewed_by").references(() => users.id),
+  reviewedAt: timestamp("reviewed_at"),
+  reviewNotes: text("review_notes"),
+  punchLogId: varchar("punch_log_id").references(() => punchLogs.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertAttendanceExceptionSchema = createInsertSchema(attendanceExceptions).omit({
+  id: true,
+  createdAt: true,
+  reviewedBy: true,
+  reviewedAt: true,
+  reviewNotes: true,
+  punchLogId: true,
+});
+export type InsertAttendanceException = z.infer<typeof insertAttendanceExceptionSchema>;
+export type AttendanceException = typeof attendanceExceptions.$inferSelect;
+
+export const auditLogs = pgTable("audit_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  actorUserId: varchar("actor_user_id").notNull().references(() => users.id),
+  targetType: varchar("target_type", { length: 50 }).notNull(),
+  targetId: varchar("target_id", { length: 255 }).notNull(),
+  action: varchar("action", { length: 100 }).notNull(),
+  oldValue: jsonb("old_value"),
+  newValue: jsonb("new_value"),
+  context: jsonb("context"),
+  ipAddress: varchar("ip_address", { length: 45 }),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+export type AuditLog = typeof auditLogs.$inferSelect;
 
 export const timeOffRequests = pgTable("time_off_requests", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -229,24 +286,6 @@ export const insertEmployeePtoSettingsSchema = createInsertSchema(employeePtoSet
 export type InsertEmployeePtoSettings = z.infer<typeof insertEmployeePtoSettingsSchema>;
 export type EmployeePtoSettings = typeof employeePtoSettings.$inferSelect;
 
-export const auditLogs = pgTable("audit_logs", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  action: varchar("action", { length: 100 }).notNull(),
-  module: varchar("module", { length: 50 }).notNull(),
-  targetId: varchar("target_id"),
-  targetType: varchar("target_type", { length: 50 }),
-  performedBy: varchar("performed_by").references(() => users.id),
-  details: jsonb("details"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
-
-export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
-  id: true,
-  createdAt: true,
-});
-export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
-export type AuditLog = typeof auditLogs.$inferSelect;
-
 export const companiesRelations = relations(companies, ({ many }) => ({
   locations: many(locations),
   users: many(users),
@@ -263,7 +302,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   company: one(companies, { fields: [users.companyId], references: [companies.id] }),
   location: one(locations, { fields: [users.locationId], references: [locations.id] }),
   department: one(departments, { fields: [users.departmentId], references: [departments.id] }),
-  attendanceRecords: many(attendanceRecords),
+  punchLogs: many(punchLogs),
   timeOffRequests: many(timeOffRequests),
   timeOffBalances: many(timeOffBalances),
   employeePin: one(employeePins, { fields: [users.id], references: [employeePins.userId] }),
@@ -272,6 +311,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   userPermissionOverrides: many(userPermissionOverrides),
   userAccessScopes: many(userAccessScopes),
   ptoSettings: one(employeePtoSettings, { fields: [users.id], references: [employeePtoSettings.userId] }),
+  attendanceExceptions: many(attendanceExceptions),
 }));
 
 export const rolesRelations = relations(roles, ({ one, many }) => ({
@@ -318,8 +358,18 @@ export const employmentProfilesRelations = relations(userEmploymentProfiles, ({ 
   user: one(users, { fields: [userEmploymentProfiles.userId], references: [users.id] }),
 }));
 
-export const attendanceRecordsRelations = relations(attendanceRecords, ({ one }) => ({
-  user: one(users, { fields: [attendanceRecords.userId], references: [users.id] }),
+export const punchLogsRelations = relations(punchLogs, ({ one }) => ({
+  employee: one(users, { fields: [punchLogs.employeeId], references: [users.id] }),
+}));
+
+export const attendanceExceptionsRelations = relations(attendanceExceptions, ({ one }) => ({
+  employee: one(users, { fields: [attendanceExceptions.employeeId], references: [users.id] }),
+  reviewer: one(users, { fields: [attendanceExceptions.reviewedBy], references: [users.id] }),
+  punchLog: one(punchLogs, { fields: [attendanceExceptions.punchLogId], references: [punchLogs.id] }),
+}));
+
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+  actor: one(users, { fields: [auditLogs.actorUserId], references: [users.id] }),
 }));
 
 export const timeOffRequestsRelations = relations(timeOffRequests, ({ one }) => ({
@@ -347,8 +397,4 @@ export const ptoPoliciesRelations = relations(ptoPolicies, ({ one, many }) => ({
 export const employeePtoSettingsRelations = relations(employeePtoSettings, ({ one }) => ({
   user: one(users, { fields: [employeePtoSettings.userId], references: [users.id] }),
   ptoPolicy: one(ptoPolicies, { fields: [employeePtoSettings.ptoPolicyId], references: [ptoPolicies.id] }),
-}));
-
-export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
-  performer: one(users, { fields: [auditLogs.performedBy], references: [users.id] }),
 }));

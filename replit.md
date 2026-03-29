@@ -23,7 +23,9 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 - **user_access_scopes** (shared/models/auth.ts): Restricts user access by scopeType (company/location/department) with explicit FK columns
 - **policy_types** (shared/models/auth.ts): Policy type definitions with key, name, module, isActive
 - **user_employment_profiles** (shared/schema.ts): Employment details per user (employmentType, payType, hourlyRate, weeklySalary, dailySalary, overtimeEligible, holidayPayEnabled, voluntaryPayEnabled, hireDate, terminationDate)
-- **attendance_records**: Clock in/out records per user per date (userId FK to users), with breakMinutes, totalHours, source field (web/kiosk)
+- **punch_logs**: Clock in/out records per employee per date (employeeId FK to users), with breakMinutes, hoursWorked, source field (web/kiosk/exception), approved flag. Migrated from attendance_records. Code alias: `attendanceRecords = punchLogs` for backward compat.
+- **attendance_exceptions**: Missing punch/time correction requests from employees (employeeId, exceptionDate, type, reason, status). Approval creates/updates punch_logs and writes audit_logs.
+- **audit_logs**: Audit trail for sensitive operations (actorUserId, targetType, targetId, action, oldValue/newValue as JSONB, context, ipAddress, userAgent)
 - **time_off_requests**: PTO/sick/personal requests with daysRequested and approval workflow (userId, reviewedBy FK to users)
 - **time_off_balances**: Per-user time off allocation and usage tracking per year (userId FK to users)
 - **pto_policies**: Configurable PTO policy definitions with accrual type/rate, yearly/carryover caps, waiting period, sick leave accrual rules (rate per hours worked, yearly cap), holiday pay toggles (paid/unpaid, PTO deduction, OT exclusion), isDefault flag
@@ -36,8 +38,9 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 ## Key Files
 - `shared/schema.ts` - All Drizzle table definitions with FK relations
 - `shared/models/auth.ts` - Users, sessions, companies, locations, roles, permissions, RBAC tables
-- `server/storage.ts` - IStorage interface and DatabaseStorage implementation (includes kiosk + RBAC + employment profile methods)
-- `server/routes.ts` - API routes with role-based middleware, Zod validation, and kiosk endpoints
+- `server/storage.ts` - IStorage interface and DatabaseStorage implementation (includes kiosk + RBAC + employment profile + attendance exceptions + audit log methods)
+- `server/routes.ts` - API routes with role-based middleware, Zod validation, kiosk, and attendance exception endpoints
+- `server/services/audit.ts` - Audit logging service (writeAuditLog, getAuditContext)
 - `server/middleware/auth.ts` - JWT token generation and combined JWT+session auth middleware (requireAuth)
 - `server/middleware/rbac.ts` - requirePermission and requireScopedAccess middleware, permission resolution
 - `server/replit_integrations/auth/replitAuth.ts` - Session-based auth (login/logout/isAuthenticated) + JWT token on login
@@ -62,7 +65,7 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
   - `GET /api/kiosk/employee/:id` - Get employee details + last attendance
   - `POST /api/kiosk/punch` - Record clock in/out (validates punch sequence)
 - PIN values are never exposed in API responses (sanitized server-side)
-- Kiosk uses the same `attendance_records` table with source="kiosk"
+- Kiosk uses the `punch_logs` table with source="kiosk"
 - Touch-optimized UI with large buttons for 10"+ tablets
 
 ## API Endpoints
@@ -71,6 +74,10 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 - `POST /api/attendance/clock-in` - Clock in
 - `POST /api/attendance/clock-out` - Clock out
 - `GET /api/attendance/records` - Attendance records (supports ?startDate, ?endDate)
+- `POST /api/attendance/exceptions` - Submit attendance exception request (missing_punch, time_correction, forgotten_clock_in, forgotten_clock_out)
+- `GET /api/attendance/exceptions` - Get exceptions (own for employees, all for managers/admins)
+- `GET /api/attendance/exceptions/pending` - Pending exceptions for team (manager/admin, scope-checked)
+- `POST /api/attendance/exceptions/:id/resolve` - Approve/deny exception (manager/admin, scope-checked, creates/updates punch_logs + audit_logs)
 - `POST /api/time-off` - Create time-off request (status forced to pending, daysRequested computed server-side)
 - `GET /api/time-off` - User's time-off requests
 - `GET /api/time-off/balance` - Computed PTO balance (admin/manager only, supports ?userId query param)
