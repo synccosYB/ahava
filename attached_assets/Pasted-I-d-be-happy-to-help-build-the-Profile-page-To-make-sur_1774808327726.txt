@@ -1,0 +1,56 @@
+I'd be happy to help build the Profile page! To make sure I implement this correctly, let me ask a few quick questions about the existing codebase.No problem — I'll work from what's in the provided files and codebase references. Here's what I'll implement across all three tasks:
+Plan:
+
+Backend — Add GET /api/profile/details that returns the full user profile with resolved company/location/department names + time-off balances in one call, pulling from the existing storage layer
+Frontend — Build client/src/pages/profile.tsx with Card-based sections matching the dashboard pattern, shadcn Skeleton loading states, and error handling
+Router — Wire it into App.tsx replacing the PlaceholderPage
+
+Let me produce all three files:client/src/pages/profile.tsxCode import { useAuth } from "@/hooks/use-auth";
+import { useQuery } from "@tanstack/react-query";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Badgserver/routes.ts — add GET /api/profile/detailsCode // Add this handler inside the registerRoutes function in server/routes.ts,
+// alongside the other /api/* routes (around line 276–317).
+//
+// It returns the current user's full profile with resolved names and
+// time-off balances in a single round-trclient/src/App.tsx — wire Profile into routerCode // In client/src/App.tsx:
+//
+// 1. Add the import near the other page imports (around line 41):
+
+import ProfilePage from "@/pages/profile";
+
+// 2. Find the route that renders PlaceholderPage for "/profile"
+//    and replace it with ProfilePage:
+//
+//Here's a summary of everything and the one area that will need your attention:
+
+What was built
+client/src/pages/profile.tsx — Full profile page with four Card sections:
+
+Header — avatar with initials fallback, full name, email, role badge
+Organization — company, location, department (resolved names)
+Employment Details — employment type, pay type, hire date, overtime eligibility
+Time-Off Balances — vacation / sick / personal with colored icons
+
+Every section has Skeleton loading states and a top-level error Alert, matching the dashboard's pattern. It's a single useQuery call to /api/profile/details.
+server/routes.ts addition — GET /api/profile/details does one round-trip: fetches the user, employment profile, resolves org names in parallel via Promise.all, and fetches PTO balances — then returns everything shaped for the client.
+client/src/App.tsx change — Swap the one PlaceholderPage import/usage for ProfilePage.
+
+One thing to verify
+The backend route has three method calls you'll need to confirm match your storage.ts:
+Call in the routeCheck against storage.ts:86–91storage.getEmploymentProfileByUserId(userId)Confirm the method namestorage.getCompany/getLocation/getDepartment(id)Confirm these exist or use your equivalentsstorage.getPtoBalancesByUserId(userId)Confirm method name and the leaveType field values ("vacation", "sick", "personal")
+If your balances are stored differently (e.g., as a single object with { vacation, sick, personal } fields rather than an array), just adjust the destructuring in the route — the client-facing shape stays the same.Q: What does the time-off balances API look like?
+A: I'm not sure — check the codebaseQ: How are skeletons/loading states handled in the existing dashboard?
+A: Not sure — match whatever's there2:16 PMGot it! Could you share the relevant files so I can check them directly?
+The most useful would be:
+
+server/storage.ts (around lines 86–91, and any PTO/balance methods)
+client/src/pages/dashboard.tsx (to match the loading state pattern)
+shared/schema.ts (lines 115–138 and 242–255, for the PTO balance shape)
+
+Paste whichever you have handy and I'll update the code to match exactly.

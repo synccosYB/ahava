@@ -1,0 +1,67 @@
+// Add this handler inside the registerRoutes function in server/routes.ts,
+// alongside the other /api/* routes (around line 276–317).
+//
+// It returns the current user's full profile with resolved names and
+// time-off balances in a single round-trip, so the client needs only
+// one useQuery call.
+
+app.get("/api/profile/details", async (req, res) => {
+  if (!req.isAuthenticated()) return res.sendStatus(401);
+
+  const userId = req.user!.id;
+
+  try {
+    // 1. Core user record (already in session, but fetch for freshness)
+    const user = await storage.getUser(userId);
+    if (!user) return res.sendStatus(404);
+
+    // 2. Employment profile
+    const emp = await storage.getEmploymentProfileByUserId(userId);
+
+    // 3. Resolve org names from IDs stored on the user record
+    //    Adjust property names to match your actual schema fields.
+    const [company, location, department] = await Promise.all([
+      user.companyId   ? storage.getCompany(user.companyId)     : null,
+      user.locationId  ? storage.getLocation(user.locationId)   : null,
+      user.departmentId? storage.getDepartment(user.departmentId): null,
+    ]);
+
+    // 4. Time-off balances
+    //    Replace with your actual storage method if it differs.
+    const balances = await storage.getPtoBalancesByUserId(userId);
+
+    // Pull individual balance values; default to 0 if not found
+    const vacationBalance  = balances?.find(b => b.leaveType === "vacation")?.balance  ?? 0;
+    const sickBalance      = balances?.find(b => b.leaveType === "sick")?.balance      ?? 0;
+    const personalBalance  = balances?.find(b => b.leaveType === "personal")?.balance  ?? 0;
+
+    return res.json({
+      // Personal
+      id:        user.id,
+      username:  user.username,
+      email:     user.email,
+      firstName: user.firstName,
+      lastName:  user.lastName,
+      role:      user.role,
+
+      // Org (resolved)
+      companyName:    company?.name    ?? "—",
+      locationName:   location?.name   ?? "—",
+      departmentName: department?.name ?? "—",
+
+      // Employment
+      employmentType:   emp?.employmentType  ?? "—",
+      payType:          emp?.payType         ?? "—",
+      hireDate:         emp?.hireDate        ?? null,
+      overtimeEligible: emp?.overtimeEligible ?? false,
+
+      // Time-off
+      vacationBalance,
+      sickBalance,
+      personalBalance,
+    });
+  } catch (err) {
+    console.error("[GET /api/profile/details]", err);
+    return res.status(500).json({ message: "Failed to load profile details" });
+  }
+});

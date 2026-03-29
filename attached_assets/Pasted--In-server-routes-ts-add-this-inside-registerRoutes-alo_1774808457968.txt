@@ -1,0 +1,65 @@
+// In server/routes.ts, add this inside registerRoutes alongside the other
+// /api/* routes (around line 276–317).
+//
+// Uses the same patterns as existing routes in this file:
+//   - requireAuth middleware (from server/middleware/auth.ts)
+//   - (req as any).authUser for the current user (not req.user)
+//   - storage method names that match storage.ts exactly
+
+app.get("/api/profile/details", requireAuth, async (req, res) => {
+  const userId = (req as any).authUser.id;
+
+  try {
+    // 1. Core user record
+    const user = await storage.getUser(userId);
+    if (!user) return res.sendStatus(404);
+
+    // 2. Employment profile
+    const emp = await storage.getEmploymentProfile(userId);
+
+    // 3. Resolve org names from IDs in parallel
+    const [company, location, department] = await Promise.all([
+      user.companyId    ? storage.getCompany(user.companyId)      : null,
+      user.locationId   ? storage.getLocation(user.locationId)    : null,
+      user.departmentId ? storage.getDepartment(user.departmentId): null,
+    ]);
+
+    // 4. Time-off balances for the current year
+    //    Each balance has .type, .totalDays, .usedDays
+    const year = new Date().getFullYear();
+    const balances = await storage.getTimeOffBalancesByUser(userId, year);
+
+    const find = (type: string) => {
+      const b = balances?.find(b => b.type === type);
+      return b ? b.totalDays - b.usedDays : 0;
+    };
+
+    return res.json({
+      // Personal
+      id:        user.id,
+      email:     user.email,
+      firstName: user.firstName,
+      lastName:  user.lastName,
+      role:      user.role,
+
+      // Org (resolved names)
+      companyName:    company?.name    ?? "—",
+      locationName:   location?.name   ?? "—",
+      departmentName: department?.name ?? "—",
+
+      // Employment
+      employmentType:   emp?.employmentType   ?? "—",
+      payType:          emp?.payType          ?? "—",
+      hireDate:         emp?.hireDate         ?? null,
+      overtimeEligible: emp?.overtimeEligible ?? false,
+
+      // Time-off (remaining days)
+      vacationBalance: find("vacation"),
+      sickBalance:     find("sick"),
+      personalBalance: find("personal"),
+    });
+  } catch (err) {
+    console.error("[GET /api/profile/details]", err);
+    return res.status(500).json({ message: "Failed to load profile details" });
+  }
+});
