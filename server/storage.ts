@@ -54,9 +54,16 @@ import {
   employeePtoSettings,
   type EmployeePtoSettings,
   type InsertEmployeePtoSettings,
-  auditLogs,
-  type AuditLog,
-  type InsertAuditLog,
+  policies,
+  type Policy,
+  type InsertPolicy,
+  policyRules,
+  type PolicyRule,
+  type InsertPolicyRule,
+  policyAssignments,
+  type PolicyAssignment,
+  type InsertPolicyAssignment,
+  policyTypes,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
@@ -109,7 +116,7 @@ export interface IStorage {
   updateAttendanceRecord(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
 
   clockIn(userId: string, source?: string): Promise<PunchLog>;
-  clockOut(userId: string): Promise<PunchLog | undefined>;
+  clockOut(userId: string, otThresholdDaily?: number): Promise<PunchLog | undefined>;
   getCurrentAttendance(userId: string): Promise<PunchLog | undefined>;
   getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<PunchLog[]>;
   getTodayHours(userId: string): Promise<number>;
@@ -213,6 +220,25 @@ export interface IStorage {
   removeUserAccessScope(id: string): Promise<void>;
 
   getScopedUserIds(user: User): Promise<Set<string>>;
+
+  getPolicy(id: string): Promise<Policy | undefined>;
+  getPoliciesByCompany(companyId: string | null): Promise<Policy[]>;
+  getAllPolicies(): Promise<Policy[]>;
+  createPolicy(policy: InsertPolicy): Promise<Policy>;
+  updatePolicy(id: string, policy: Partial<InsertPolicy>): Promise<Policy | undefined>;
+
+  getPolicyRulesByPolicy(policyId: string): Promise<PolicyRule[]>;
+  upsertPolicyRules(policyId: string, rules: Record<string, any>): Promise<PolicyRule>;
+
+  getPolicyAssignment(id: string): Promise<PolicyAssignment | undefined>;
+  getPolicyAssignmentsByPolicy(policyId: string): Promise<PolicyAssignment[]>;
+  getAllPolicyAssignments(): Promise<PolicyAssignment[]>;
+  createPolicyAssignment(assignment: InsertPolicyAssignment): Promise<PolicyAssignment>;
+  updatePolicyAssignment(id: string, assignment: Partial<InsertPolicyAssignment>): Promise<PolicyAssignment | undefined>;
+  deletePolicyAssignment(id: string): Promise<void>;
+
+  getPolicyTypeByKey(key: string): Promise<{ id: string; key: string; name: string } | undefined>;
+  getAllPolicyTypes(): Promise<{ id: string; key: string; name: string; description: string | null; module: string | null; isActive: boolean }[]>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -404,7 +430,7 @@ export class DatabaseStorage implements IStorage {
     return punchLogToLegacy(record);
   }
 
-  async clockOut(userId: string): Promise<PunchLog | undefined> {
+  async clockOut(userId: string, otThresholdDaily?: number): Promise<PunchLog | undefined> {
     const current = await this.getCurrentAttendance(userId);
     if (!current || !current.clockIn) return undefined;
 
@@ -414,9 +440,11 @@ export class DatabaseStorage implements IStorage {
     const breakMs = (current.breakMinutes || 0) * 60 * 1000;
     const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
 
+    const threshold = otThresholdDaily ?? 8;
+
     const [updated] = await db
       .update(punchLogs)
-      .set({ clockOut: now, hoursWorked, status: hoursWorked > 8 ? "overtime" : "complete" })
+      .set({ clockOut: now, hoursWorked, status: hoursWorked > threshold ? "overtime" : "complete" })
       .where(eq(punchLogs.id, current.id))
       .returning();
     return punchLogToLegacy(updated);
@@ -998,17 +1026,17 @@ export class DatabaseStorage implements IStorage {
   async computeTotalHoursWorked(userId: string, year: number): Promise<number> {
     const startDate = `${year}-01-01`;
     const endDate = `${year}-12-31`;
-    const records = await db.select().from(attendanceRecords)
+    const records = await db.select().from(punchLogs)
       .where(and(
-        eq(attendanceRecords.userId, userId),
-        gte(attendanceRecords.date, startDate),
-        lte(attendanceRecords.date, endDate)
+        eq(punchLogs.employeeId, userId),
+        gte(punchLogs.workDate, startDate),
+        lte(punchLogs.workDate, endDate)
       ));
 
     let total = 0;
     for (const r of records) {
-      if (r.totalHours) {
-        total += r.totalHours;
+      if (r.hoursWorked) {
+        total += r.hoursWorked;
       } else if (r.clockIn) {
         const end = r.clockOut ? new Date(r.clockOut) : new Date();
         total += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
@@ -1132,6 +1160,91 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(auditLogs)
       .orderBy(desc(auditLogs.createdAt))
       .limit(limit);
+  }
+
+  async getPolicy(id: string): Promise<Policy | undefined> {
+    const [policy] = await db.select().from(policies).where(eq(policies.id, id));
+    return policy;
+  }
+
+  async getPoliciesByCompany(companyId: string | null): Promise<Policy[]> {
+    if (companyId === null) {
+      return db.select().from(policies).where(sql`${policies.companyId} IS NULL`).orderBy(desc(policies.createdAt));
+    }
+    return db.select().from(policies).where(eq(policies.companyId, companyId)).orderBy(desc(policies.createdAt));
+  }
+
+  async getAllPolicies(): Promise<Policy[]> {
+    return db.select().from(policies).orderBy(desc(policies.createdAt));
+  }
+
+  async createPolicy(policy: InsertPolicy): Promise<Policy> {
+    const [created] = await db.insert(policies).values(policy).returning();
+    return created;
+  }
+
+  async updatePolicy(id: string, policy: Partial<InsertPolicy>): Promise<Policy | undefined> {
+    const [updated] = await db.update(policies)
+      .set({ ...policy, updatedAt: new Date() })
+      .where(eq(policies.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getPolicyRulesByPolicy(policyId: string): Promise<PolicyRule[]> {
+    return db.select().from(policyRules).where(eq(policyRules.policyId, policyId));
+  }
+
+  async upsertPolicyRules(policyId: string, rules: Record<string, any>): Promise<PolicyRule> {
+    const existing = await db.select().from(policyRules).where(eq(policyRules.policyId, policyId));
+    if (existing.length > 0) {
+      const [updated] = await db.update(policyRules)
+        .set({ rules, updatedAt: new Date() })
+        .where(eq(policyRules.id, existing[0].id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(policyRules).values({ policyId, rules }).returning();
+    return created;
+  }
+
+  async getPolicyAssignment(id: string): Promise<PolicyAssignment | undefined> {
+    const [assignment] = await db.select().from(policyAssignments).where(eq(policyAssignments.id, id));
+    return assignment;
+  }
+
+  async getPolicyAssignmentsByPolicy(policyId: string): Promise<PolicyAssignment[]> {
+    return db.select().from(policyAssignments).where(eq(policyAssignments.policyId, policyId));
+  }
+
+  async getAllPolicyAssignments(): Promise<PolicyAssignment[]> {
+    return db.select().from(policyAssignments);
+  }
+
+  async createPolicyAssignment(assignment: InsertPolicyAssignment): Promise<PolicyAssignment> {
+    const [created] = await db.insert(policyAssignments).values(assignment).returning();
+    return created;
+  }
+
+  async updatePolicyAssignment(id: string, assignment: Partial<InsertPolicyAssignment>): Promise<PolicyAssignment | undefined> {
+    const [updated] = await db.update(policyAssignments)
+      .set(assignment)
+      .where(eq(policyAssignments.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deletePolicyAssignment(id: string): Promise<void> {
+    await db.delete(policyAssignments).where(eq(policyAssignments.id, id));
+  }
+
+  async getPolicyTypeByKey(key: string): Promise<{ id: string; key: string; name: string } | undefined> {
+    const [pt] = await db.select().from(policyTypes).where(eq(policyTypes.key, key));
+    return pt ? { id: pt.id, key: pt.key, name: pt.name } : undefined;
+  }
+
+  async getAllPolicyTypes(): Promise<{ id: string; key: string; name: string; description: string | null; module: string | null; isActive: boolean }[]> {
+    return db.select().from(policyTypes);
   }
 }
 

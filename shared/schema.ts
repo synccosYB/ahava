@@ -59,6 +59,59 @@ export {
   insertPolicyTypeSchema,
 } from "./models/auth";
 
+export const policies = pgTable("policies", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").references(() => companies.id),
+  policyTypeId: varchar("policy_type_id").notNull().references(() => policyTypes.id),
+  name: varchar("name", { length: 200 }).notNull(),
+  description: text("description"),
+  status: varchar("status", { length: 20 }).default("draft").notNull(),
+  version: integer("version").default(1).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertPolicySchema = createInsertSchema(policies).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPolicy = z.infer<typeof insertPolicySchema>;
+export type Policy = typeof policies.$inferSelect;
+
+export const policyRules = pgTable("policy_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  policyId: varchar("policy_id").notNull().references(() => policies.id),
+  rules: jsonb("rules").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertPolicyRuleSchema = createInsertSchema(policyRules).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPolicyRule = z.infer<typeof insertPolicyRuleSchema>;
+export type PolicyRule = typeof policyRules.$inferSelect;
+
+export const policyAssignments = pgTable("policy_assignments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  policyId: varchar("policy_id").notNull().references(() => policies.id),
+  companyId: varchar("company_id").references(() => companies.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  departmentId: varchar("department_id").references(() => departments.id),
+  userId: varchar("user_id").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPolicyAssignmentSchema = createInsertSchema(policyAssignments).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertPolicyAssignment = z.infer<typeof insertPolicyAssignmentSchema>;
+export type PolicyAssignment = typeof policyAssignments.$inferSelect;
+
 export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique().references(() => users.id),
@@ -397,4 +450,23 @@ export const ptoPoliciesRelations = relations(ptoPolicies, ({ one, many }) => ({
 export const employeePtoSettingsRelations = relations(employeePtoSettings, ({ one }) => ({
   user: one(users, { fields: [employeePtoSettings.userId], references: [users.id] }),
   ptoPolicy: one(ptoPolicies, { fields: [employeePtoSettings.ptoPolicyId], references: [ptoPolicies.id] }),
+}));
+
+export const policiesRelations = relations(policies, ({ one, many }) => ({
+  company: one(companies, { fields: [policies.companyId], references: [companies.id] }),
+  policyType: one(policyTypes, { fields: [policies.policyTypeId], references: [policyTypes.id] }),
+  policyRules: many(policyRules),
+  policyAssignments: many(policyAssignments),
+}));
+
+export const policyRulesRelations = relations(policyRules, ({ one }) => ({
+  policy: one(policies, { fields: [policyRules.policyId], references: [policies.id] }),
+}));
+
+export const policyAssignmentsRelations = relations(policyAssignments, ({ one }) => ({
+  policy: one(policies, { fields: [policyAssignments.policyId], references: [policies.id] }),
+  company: one(companies, { fields: [policyAssignments.companyId], references: [companies.id] }),
+  location: one(locations, { fields: [policyAssignments.locationId], references: [locations.id] }),
+  department: one(departments, { fields: [policyAssignments.departmentId], references: [departments.id] }),
+  user: one(users, { fields: [policyAssignments.userId], references: [users.id] }),
 }));

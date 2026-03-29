@@ -45,7 +45,8 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 - `server/middleware/rbac.ts` - requirePermission and requireScopedAccess middleware, permission resolution
 - `server/replit_integrations/auth/replitAuth.ts` - Session-based auth (login/logout/isAuthenticated) + JWT token on login
 - `server/index.ts` - Express app setup with auth wiring
-- `server/seed.ts` - Database seed script (admin user, department, 32 permissions, 9 system roles, role_permissions)
+- `server/policyEngine.ts` - Policy resolution engine (getEffectivePolicy, default rule sets for all 6 policy types)
+- `server/seed.ts` - Database seed script (admin user, department, 32 permissions, 9 system roles, role_permissions, default policies)
 - `client/src/App.tsx` - Main app with auth-gated routing + public /kiosk route
 - `client/src/pages/kiosk.tsx` - Kiosk clock-in interface
 - `client/src/components/app-sidebar.tsx` - Role-based sidebar navigation
@@ -142,6 +143,33 @@ Brand colors (Ahava Medical):
 - `PATCH /api/employee-pto-settings/:userId` - Update employee PTO settings/balance overrides (admin only)
 - `GET /api/employee-pto-policy/:userId` - Get effective PTO policy for employee (manager/admin)
 - `GET /api/audit-logs` - View audit logs (admin only, supports ?module and ?limit query params)
+
+## Policy Engine (Milestone 5)
+- **policies** (shared/schema.ts): Policy definitions with companyId FK, policyTypeId FK, name, description, status (draft/active/archived), version
+- **policy_rules** (shared/schema.ts): JSON rule objects per policy (policyId FK, rules JSONB)
+- **policy_assignments** (shared/schema.ts): Assignment at 4 levels: company, location, department, employee (companyId/locationId/departmentId/userId FKs)
+- **Policy Engine** (`server/policyEngine.ts`): `getEffectivePolicy(companyId, userId, policyType, user)` walks hierarchy: employee → department → location → company → global default (lowest/most-specific level wins)
+- Default rule sets defined for all 6 policy types: attendance, pto, payroll, approvals, alerts, kiosk
+- Attendance clock-in/clock-out reads OT thresholds, allowed punch sources from resolved attendance policy
+- PTO time-off request reads waiting period, max consecutive days from resolved PTO policy
+- 6 default policies seeded (one per policy type) with global assignments
+
+### Policy Engine API Endpoints
+- `GET /api/policy-types` - List all policy types
+- `GET /api/policies` - List all policies (admin, optional ?companyId filter)
+- `GET /api/policies/:id` - Get policy with rules and assignments (admin)
+- `POST /api/policies` - Create policy with optional rules (admin)
+- `PATCH /api/policies/:id` - Update policy and/or rules (admin)
+- `POST /api/policies/:id/activate` - Activate policy (admin)
+- `POST /api/policies/:id/archive` - Archive policy (admin)
+- `GET /api/policies/:id/rules` - Get policy rules JSON (admin)
+- `PUT /api/policies/:id/rules` - Upsert policy rules JSON (admin)
+- `GET /api/policy-assignments` - List assignments (admin, optional ?policyId filter)
+- `POST /api/policy-assignments` - Create assignment at any level (admin)
+- `PATCH /api/policy-assignments/:id` - Update assignment (admin)
+- `DELETE /api/policy-assignments/:id` - Delete assignment (admin)
+- `GET /api/effective-policy?policyType=X&userId=Y` - Preview resolved effective policy for a user
+- `GET /api/policy-defaults/:policyType` - Get default rule set for a policy type (admin)
 
 ## Auth & RBAC Notes
 - Custom email/password auth with bcryptjs password hashing (no external OAuth)

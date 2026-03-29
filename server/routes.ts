@@ -4,9 +4,10 @@ import { z } from "zod";
 import { storage } from "./storage";
 import { requireAuth } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest } from "@shared/schema";
 import { writeAuditLog, getAuditContext } from "./services/audit";
+import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES } from "./policyEngine";
 
 const roleSchema = z.object({
   role: z.enum(["employee", "manager", "admin"]),
@@ -452,11 +453,21 @@ export async function registerRoutes(
   app.post("/api/attendance/clock-in", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
+      const user = req.authUser as User;
       const current = await storage.getCurrentAttendance(userId);
       if (current) {
         return res.status(400).json({ message: "Already clocked in" });
       }
-      const record = await storage.clockIn(userId, "web");
+
+      const source = req.body?.source || "web";
+      const attendancePolicy = await getEffectivePolicy(user.companyId, userId, "attendance", user);
+      const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+      const allowedSources: string[] = rules.allowedPunchSources || ["web", "kiosk", "mobile"];
+      if (!allowedSources.includes(source)) {
+        return res.status(403).json({ message: `Punch source '${source}' is not allowed by attendance policy` });
+      }
+
+      const record = await storage.clockIn(userId, source);
       res.json(punchLogToApiResponse(record));
     } catch (error) {
       console.error("Error clocking in:", error);
@@ -467,7 +478,13 @@ export async function registerRoutes(
   app.post("/api/attendance/clock-out", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
-      const record = await storage.clockOut(userId);
+      const user = req.authUser as User;
+
+      const attendancePolicy = await getEffectivePolicy(user.companyId, userId, "attendance", user);
+      const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+      const otThreshold = rules.otThresholdDaily ?? 8;
+
+      const record = await storage.clockOut(userId, otThreshold);
       if (!record) {
         return res.status(400).json({ message: "Not currently clocked in" });
       }
@@ -735,6 +752,7 @@ export async function registerRoutes(
   app.post("/api/time-off", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
+      const user = req.authUser as User;
       const parsed = insertTimeOffRequestSchema.parse({ ...req.body, userId, status: "pending" });
 
       const startMs = new Date(parsed.startDate + "T00:00:00Z").getTime();
@@ -753,15 +771,26 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Request must include at least one business day" });
       }
 
-      const empSettings = await storage.getEmployeePtoSettings(userId);
-      const policy = await storage.getEmployeePtoPolicy(userId);
+      const ptoPolicy = await getEffectivePolicy(user.companyId, userId, "pto", user);
+      const ptoRules = ptoPolicy?.rules || DEFAULT_PTO_RULES;
 
-      if (policy && empSettings?.hireDate && policy.waitingPeriodDays > 0) {
+      const empSettings = await storage.getEmployeePtoSettings(userId);
+      const legacyPolicy = await storage.getEmployeePtoPolicy(userId);
+
+      const waitingPeriodDays = ptoRules.waitingPeriodDays ?? legacyPolicy?.waitingPeriodDays ?? 0;
+      if (empSettings?.hireDate && waitingPeriodDays > 0) {
         const hireMs = new Date(empSettings.hireDate).getTime();
-        const waitingEnd = hireMs + policy.waitingPeriodDays * 24 * 60 * 60 * 1000;
+        const waitingEnd = hireMs + waitingPeriodDays * 24 * 60 * 60 * 1000;
         if (Date.now() < waitingEnd) {
           return res.status(400).json({ message: "You are still within the waiting period and cannot request time off yet" });
         }
+      }
+
+      const maxConsecutiveDays = ptoRules.maxConsecutiveDays ?? 10;
+      if (computedDays > maxConsecutiveDays) {
+        return res.status(400).json({
+          message: `Request exceeds the maximum consecutive days allowed (${maxConsecutiveDays}).`,
+        });
       }
 
       const balance = await storage.computeTimeOffBalance(userId);
@@ -1388,6 +1417,310 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching audit logs:", error);
       res.status(500).json({ message: "Failed to fetch audit logs" });
+    }
+  });
+
+  app.get("/api/policy-types", requireAuth, async (_req, res) => {
+    try {
+      const types = await storage.getAllPolicyTypes();
+      res.json(types);
+    } catch (error) {
+      console.error("Error fetching policy types:", error);
+      res.status(500).json({ message: "Failed to fetch policy types" });
+    }
+  });
+
+  app.get("/api/policies", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const companyId = req.query.companyId as string | undefined;
+      const policies = companyId
+        ? await storage.getPoliciesByCompany(companyId)
+        : await storage.getAllPolicies();
+      res.json(policies);
+    } catch (error) {
+      console.error("Error fetching policies:", error);
+      res.status(500).json({ message: "Failed to fetch policies" });
+    }
+  });
+
+  app.get("/api/policies/:id", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const policy = await storage.getPolicy(req.params.id);
+      if (!policy) return res.status(404).json({ message: "Policy not found" });
+
+      const rules = await storage.getPolicyRulesByPolicy(policy.id);
+      const assignments = await storage.getPolicyAssignmentsByPolicy(policy.id);
+      res.json({ ...policy, rules: rules[0]?.rules || {}, assignments });
+    } catch (error) {
+      console.error("Error fetching policy:", error);
+      res.status(500).json({ message: "Failed to fetch policy" });
+    }
+  });
+
+  app.post("/api/policies", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const parsed = insertPolicySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid policy data", errors: parsed.error.flatten() });
+      }
+      const policy = await storage.createPolicy(parsed.data);
+
+      if (req.body.rules) {
+        await storage.upsertPolicyRules(policy.id, req.body.rules);
+      }
+
+      await storage.createAuditLog({
+        action: "policy.created",
+        module: "policies",
+        targetId: policy.id,
+        targetType: "policy",
+        performedBy: req.authUser.id,
+        details: { name: policy.name, status: policy.status },
+      });
+
+      res.status(201).json(policy);
+    } catch (error) {
+      console.error("Error creating policy:", error);
+      res.status(500).json({ message: "Failed to create policy" });
+    }
+  });
+
+  app.patch("/api/policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const { rules, ...policyData } = req.body;
+      const policy = await storage.updatePolicy(req.params.id, policyData);
+      if (!policy) return res.status(404).json({ message: "Policy not found" });
+
+      if (rules) {
+        await storage.upsertPolicyRules(policy.id, rules);
+      }
+
+      await storage.createAuditLog({
+        action: "policy.updated",
+        module: "policies",
+        targetId: policy.id,
+        targetType: "policy",
+        performedBy: req.authUser.id,
+        details: { name: policy.name, changes: Object.keys(req.body) },
+      });
+
+      res.json(policy);
+    } catch (error) {
+      console.error("Error updating policy:", error);
+      res.status(500).json({ message: "Failed to update policy" });
+    }
+  });
+
+  app.post("/api/policies/:id/activate", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const policy = await storage.updatePolicy(req.params.id, { status: "active" });
+      if (!policy) return res.status(404).json({ message: "Policy not found" });
+
+      await storage.createAuditLog({
+        action: "policy.activated",
+        module: "policies",
+        targetId: policy.id,
+        targetType: "policy",
+        performedBy: req.authUser.id,
+        details: { name: policy.name },
+      });
+
+      res.json(policy);
+    } catch (error) {
+      console.error("Error activating policy:", error);
+      res.status(500).json({ message: "Failed to activate policy" });
+    }
+  });
+
+  app.post("/api/policies/:id/archive", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const policy = await storage.updatePolicy(req.params.id, { status: "archived" });
+      if (!policy) return res.status(404).json({ message: "Policy not found" });
+
+      await storage.createAuditLog({
+        action: "policy.archived",
+        module: "policies",
+        targetId: policy.id,
+        targetType: "policy",
+        performedBy: req.authUser.id,
+        details: { name: policy.name },
+      });
+
+      res.json(policy);
+    } catch (error) {
+      console.error("Error archiving policy:", error);
+      res.status(500).json({ message: "Failed to archive policy" });
+    }
+  });
+
+  app.get("/api/policies/:id/rules", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const rules = await storage.getPolicyRulesByPolicy(req.params.id);
+      res.json(rules[0]?.rules || {});
+    } catch (error) {
+      console.error("Error fetching policy rules:", error);
+      res.status(500).json({ message: "Failed to fetch policy rules" });
+    }
+  });
+
+  app.put("/api/policies/:id/rules", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const policy = await storage.getPolicy(req.params.id);
+      if (!policy) return res.status(404).json({ message: "Policy not found" });
+
+      const rule = await storage.upsertPolicyRules(req.params.id, req.body);
+
+      await storage.createAuditLog({
+        action: "policy_rules.updated",
+        module: "policies",
+        targetId: policy.id,
+        targetType: "policy_rules",
+        performedBy: req.authUser.id,
+        details: { policyName: policy.name, ruleKeys: Object.keys(req.body) },
+      });
+
+      res.json(rule);
+    } catch (error) {
+      console.error("Error updating policy rules:", error);
+      res.status(500).json({ message: "Failed to update policy rules" });
+    }
+  });
+
+  app.get("/api/policy-assignments", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const policyId = req.query.policyId as string | undefined;
+      const assignments = policyId
+        ? await storage.getPolicyAssignmentsByPolicy(policyId)
+        : await storage.getAllPolicyAssignments();
+      res.json(assignments);
+    } catch (error) {
+      console.error("Error fetching policy assignments:", error);
+      res.status(500).json({ message: "Failed to fetch policy assignments" });
+    }
+  });
+
+  app.post("/api/policy-assignments", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const parsed = insertPolicyAssignmentSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid assignment data", errors: parsed.error.flatten() });
+      }
+      const assignment = await storage.createPolicyAssignment(parsed.data);
+
+      await storage.createAuditLog({
+        action: "policy_assignment.created",
+        module: "policies",
+        targetId: assignment.id,
+        targetType: "policy_assignment",
+        performedBy: req.authUser.id,
+        details: { policyId: parsed.data.policyId, companyId: parsed.data.companyId, locationId: parsed.data.locationId, departmentId: parsed.data.departmentId, userId: parsed.data.userId },
+      });
+
+      res.status(201).json(assignment);
+    } catch (error) {
+      console.error("Error creating policy assignment:", error);
+      res.status(500).json({ message: "Failed to create policy assignment" });
+    }
+  });
+
+  app.patch("/api/policy-assignments/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const assignment = await storage.updatePolicyAssignment(req.params.id, req.body);
+      if (!assignment) return res.status(404).json({ message: "Policy assignment not found" });
+      res.json(assignment);
+    } catch (error) {
+      console.error("Error updating policy assignment:", error);
+      res.status(500).json({ message: "Failed to update policy assignment" });
+    }
+  });
+
+  app.delete("/api/policy-assignments/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      await storage.deletePolicyAssignment(req.params.id);
+
+      await storage.createAuditLog({
+        action: "policy_assignment.deleted",
+        module: "policies",
+        targetId: req.params.id,
+        targetType: "policy_assignment",
+        performedBy: req.authUser.id,
+        details: {},
+      });
+
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting policy assignment:", error);
+      res.status(500).json({ message: "Failed to delete policy assignment" });
+    }
+  });
+
+  app.get("/api/effective-policy", requireAuth, async (req: any, res) => {
+    try {
+      const user = req.authUser as User;
+      const targetUserId = (req.query.userId as string) || user.id;
+      const policyTypeKey = req.query.policyType as string;
+
+      if (!policyTypeKey) {
+        return res.status(400).json({ message: "policyType query parameter is required" });
+      }
+
+      if (targetUserId !== user.id) {
+        if (user.role === "admin") {
+        } else if (user.role === "manager") {
+          const scopedIds = await storage.getScopedUserIds(user);
+          if (!scopedIds.has(targetUserId)) {
+            return res.status(403).json({ message: "Not authorized to view this user's effective policy" });
+          }
+        } else {
+          return res.status(403).json({ message: "Not authorized to view this user's effective policy" });
+        }
+      }
+
+      let targetUser: User | undefined;
+      if (targetUserId === user.id) {
+        targetUser = user;
+      } else {
+        targetUser = await storage.getUser(targetUserId);
+        if (!targetUser) {
+          return res.status(404).json({ message: "User not found" });
+        }
+      }
+
+      const effectivePolicy = await getEffectivePolicy(
+        targetUser.companyId,
+        targetUserId,
+        policyTypeKey,
+        targetUser
+      );
+
+      if (!effectivePolicy) {
+        const defaultRules = getDefaultRulesForType(policyTypeKey);
+        return res.json({
+          policyId: null,
+          policyName: `Default ${policyTypeKey} policy`,
+          policyTypeKey,
+          assignmentLevel: "default",
+          rules: defaultRules,
+        });
+      }
+
+      res.json(effectivePolicy);
+    } catch (error) {
+      console.error("Error fetching effective policy:", error);
+      res.status(500).json({ message: "Failed to fetch effective policy" });
+    }
+  });
+
+  app.get("/api/policy-defaults/:policyType", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const defaults = getDefaultRulesForType(req.params.policyType);
+      if (Object.keys(defaults).length === 0) {
+        return res.status(404).json({ message: "Unknown policy type" });
+      }
+      res.json(defaults);
+    } catch (error) {
+      console.error("Error fetching policy defaults:", error);
+      res.status(500).json({ message: "Failed to fetch policy defaults" });
     }
   });
 
