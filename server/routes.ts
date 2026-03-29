@@ -273,6 +273,55 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
+  app.get("/api/profile/details", requireAuth, async (req, res) => {
+    const authUser = (req as any).authUser as User;
+    const userId = authUser.id;
+
+    try {
+      const user = await storage.getUser(userId);
+      if (!user) return res.sendStatus(404);
+
+      const emp = await storage.getEmploymentProfile(userId);
+
+      const [company, location, department] = await Promise.all([
+        user.companyId ? storage.getCompany(user.companyId) : null,
+        user.locationId ? storage.getLocation(user.locationId) : null,
+        user.departmentId ? storage.getDepartment(user.departmentId) : null,
+      ]);
+
+      const year = new Date().getFullYear();
+      const balances = await storage.getTimeOffBalancesByUser(userId, year);
+
+      const vacationBalance = balances?.find(b => b.type === "vacation");
+      const sickBalance = balances?.find(b => b.type === "sick");
+      const personalBalance = balances?.find(b => b.type === "personal");
+
+      return res.json({
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+
+        companyName: company?.name ?? "—",
+        locationName: location?.name ?? "—",
+        departmentName: department?.name ?? "—",
+
+        employmentType: emp?.employmentType ?? "—",
+        payType: emp?.payType ?? "—",
+        hireDate: emp?.hireDate ?? null,
+        overtimeEligible: emp?.overtimeEligible ?? false,
+
+        vacationBalance: vacationBalance ? vacationBalance.totalDays - vacationBalance.usedDays : 0,
+        sickBalance: sickBalance ? sickBalance.totalDays - sickBalance.usedDays : 0,
+        personalBalance: personalBalance ? personalBalance.totalDays - personalBalance.usedDays : 0,
+      });
+    } catch (err) {
+      console.error("[GET /api/profile/details]", err);
+      return res.status(500).json({ message: "Failed to load profile details" });
+    }
+  });
+
   app.get("/api/employment-profiles/:userId", requireAuth, async (req, res) => {
     const authUser = (req as any).authUser as User;
     const targetUserId = req.params.userId;

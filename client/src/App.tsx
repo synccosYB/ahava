@@ -10,7 +10,7 @@ import LoginPage from "@/pages/login";
 import Dashboard from "@/pages/dashboard";
 import MyAttendance from "@/pages/my-attendance";
 import TimeOff from "@/pages/time-off";
-import PlaceholderPage from "@/pages/placeholder";
+import ProfilePage from "@/pages/profile";
 import ManagerDashboardPage from "@/pages/manager-dashboard";
 import ApprovalQueuePage from "@/pages/approval-queue";
 import AdminDashboardPage from "@/pages/admin-dashboard";
@@ -38,7 +38,7 @@ function AuthenticatedRouter() {
         <Route path="/" component={Dashboard} />
         <Route path="/attendance" component={MyAttendance} />
         <Route path="/time-off" component={TimeOff} />
-        <Route path="/profile">{() => <PlaceholderPage title="Profile" />}</Route>
+        <Route path="/profile" component={ProfilePage} />
         <Route path="/team">{() => (
           <ProtectedRoute roles={["manager", "admin"]}>
             <ManagerDashboardPage />
