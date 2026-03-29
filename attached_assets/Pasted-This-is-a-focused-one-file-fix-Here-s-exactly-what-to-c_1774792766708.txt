@@ -1,0 +1,50 @@
+This is a focused one-file fix. Here's exactly what to change:
+server/replit_integrations/auth/replitAuth.ts — lines 16–27
+ts// BEFORE
+cookie: {
+  secure: true,
+  sameSite: "none",
+  maxAge: 24 * 60 * 60 * 1000,
+  httpOnly: true,
+}
+
+// AFTER
+const isProd = process.env.NODE_ENV === "production";
+
+cookie: {
+  secure: isProd,
+  sameSite: isProd ? "none" : "lax",
+  maxAge: 24 * 60 * 60 * 1000,
+  httpOnly: true,
+}
+That's the entire fix for Task 1. secure: true tells the browser to only send the cookie over HTTPS — in local dev you're on HTTP, so the browser silently drops it, which is why you get a clean 200 on login immediately followed by a 401 on the next request.
+
+Task 2 — Verify the seed user exists
+Check server/seed.ts and confirm it's being called from server/index.ts at startup. It should look something like this in index.ts:
+tsimport { seed } from "./seed";
+
+// near the top of the startup block, before routes are registered:
+await seed();
+If seed() is already being called, you're done. If not, add that call. The seed script just needs to be idempotent — check if the admin user exists before inserting so re-runs don't throw a duplicate key error:
+ts// inside seed.ts — guard before insert
+const existing = await db.query.users.findFirst({
+  where: eq(users.email, "admin@ahavamedical.com")
+});
+if (!existing) {
+  await db.insert(users).values({
+    email: "admin@ahavamedical.com",
+    password: await hashPassword("admin123"),
+    role: "admin",
+    // ...other required fields
+  });
+}
+
+Task 3 — Quick end-to-end smoke test checklist
+Once the change is deployed, verify these in order:
+
+Open DevTools → Application → Cookies, then POST login — confirm a cookie appears with the session name
+Hard refresh (Cmd+Shift+R) — confirm GET /api/auth/user returns 200, not 401
+Close and reopen the tab — session should still be alive (within the 24h maxAge window)
+When you eventually deploy to production, NODE_ENV=production will automatically flip back to secure: true / sameSite: "none" for cross-origin cookie compatibility
+
+No other files need to change.
