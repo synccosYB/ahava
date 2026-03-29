@@ -1,0 +1,88 @@
+Show more
+9:13 AM
+I'll help you build the Manager, Admin Dashboards & Reports feature. Let me analyze the documents you've shared to understand the project structure and then create a comprehensive implementation plan.
+
+Looking at your proposal documents, I can see this is a Time & Attendance System for Ahava Medical Center. Let me build out all the components described in your task specification.
+
+Manager & Admin Dashboards — Ahava Medical Center
+Interactive artifact 
+Here's the full interactive build — here's what's covered across all 8 tasks:
+
+Task 1 — Manager Dashboard shows the pending approvals alert badge, four stat cards (team size, clocked-in, on leave, pending), and a full team status table with live hours and color-coded overtime warnings.
+
+Task 3 — Approval Queue lists each pending request as a card with employee details, leave type badge, dates, day count, and employee notes. Each card has an optional comment input plus Approve/Deny buttons. Approved or denied requests immediately drop out of the pending list and appear in the "Recently Processed" table below — reflecting the status change the employee would see.
+
+Task 5 — HR Admin Dashboard shows company-wide stats across all departments, a department breakdown table with active/leave/pending counts, three quick action buttons (payroll report, CSV export, add employee), and a live-style activity feed.
+
+Task 7 — Reports Page has report type, date range, department, and status filters. Clicking "Generate Report" shows a loading state then renders a preview table with reg/OT hours, PTO days, and absences. The "Download CSV" button generates and triggers a real browser download.
+
+Task 8 — Role-based routing is enforced by the sidebar: managers see Dashboard, Approvals, and Team View; admins see Company, Users, Reports, and Settings. The role switcher at the top lets you preview both. Non-implemented pages show an in-scope placeholder.
+
+All interactive elements include data-testid attributes as specified.
+
+For Tasks 2, 4, and 6 (API endpoints), here's the shape they should take in server/routes.ts:
+
+GET /api/manager/team — returns team members for the authenticated manager's department(s)
+GET /api/manager/pending-requests — returns time-off requests scoped to the manager's team
+POST /api/requests/:id/approve and POST /api/requests/:id/deny — accept { comment?: string }, update the request status, and write to the audit log
+GET /api/admin/stats — company-wide aggregates
+GET /api/admin/departments — per-department breakdown
+GET /api/reports/generate?type=&from=&to=&dept= — queries timesheets and returns CSV-ready data
+Each should be protected by a middleware check against req.user.role before executing, which covers Task 8's server-side route protection.
+
+#2 - Employee Dashboard & Time Management
+What & Why
+Build all employee-facing features: the dashboard with clock in/out, attendance history with filtering/export, and the time-off request system with calendar view. These are the core daily-use features for every employee.
+Done looks like
+* Employee Dashboard shows: current clock status (clocked in/out) with a prominent Clock In or Clock Out button, today's hours, this week's hours, PTO balance (vacation + sick days remaining), and a recent activity table
+* Clicking Clock In records a timestamp; the button changes to Clock Out; clicking Clock Out records the end time and calculates total hours
+* My Attendance page shows a filterable table of attendance records (date, clock in, clock out, break, total hours, status) with a date range filter, summary stats (total hours, days worked, daily average), and CSV export
+* Time Off page has a request form (type dropdown: Vacation/Sick/Personal, start date, end date, notes) that shows days requested and remaining balance, plus a list of the employee's past requests with status indicators (pending/approved/denied)
+* A team calendar view shows the employee's scheduled time off alongside teammates' time off
+* All pages are responsive and show loading/skeleton states while data loads
+* All interactive elements have data-testid attributes
+Out of scope
+* Manager approval of time-off requests (separate task)
+* Admin/HR features
+* Kiosk clock-in
+Tasks
+1. Build the Employee Dashboard page with clock in/out functionality, today's/weekly hours display, PTO balance card, and recent activity table
+2. Create API endpoints for clock in, clock out, and fetching attendance records and current status
+3. Build the My Attendance page with date range filtering, summary statistics, sortable records table, and CSV export
+4. Create API endpoints for time-off requests (create, list user's requests, get balances)
+5. Build the Time Off page with the request form, request history list with status badges, and team calendar view
+6. Add proper error handling, loading states, and toast notifications for all actions
+Relevant files
+* project-plan-wireframes.html:640-848
+* shared/schema.ts
+* server/routes.ts
+* server/storage.ts
+* client/src/App.tsx
+* client/src/lib/queryClient.ts
+* client/src/hooks/use-auth.ts
+Dependencies
+
+Show more
+9:17 AM
+Employee Dashboard & Time Management — Ahava Medical Center
+Interactive artifact 
+Here's the full employee-facing build. Here's what each task covers:
+
+Task 1 — Employee Dashboard has a prominent clock widget that shows a live elapsed timer while clocked in, four stat cards (today's hours, week hours, vacation balance, sick balance), and a recent activity table that updates when you clock in/out.
+
+Task 1 (clock logic) — clicking Clock In starts the elapsed timer and flips the button to Clock Out. Clicking Clock Out calculates total minutes, writes a new record to the attendance list, and updates today's hours. The button, color scheme, and card all update reactively.
+
+Task 3 — My Attendance has a date range filter with an Apply button (includes a shimmer skeleton loading state), sortable columns (click Date or Total Hrs to sort ascending/descending), summary stats (total hours, days worked, daily average) that recalculate on filter, and a working CSV export.
+
+Task 5 — Time Off has a request form with type selector, date pickers, a live "X business days requested / Y will remain" preview that turns red when over balance, and an optional notes field. Submissions add to the history table immediately. The team calendar shows approved time off for you and teammates across months (navigate with ‹ ›). The request history table shows all past requests with type and status badges.
+
+Task 6 — Loading states, errors, toasts — submitting a request, applying attendance filters, and clock in/out all produce animated toast notifications (success/warning/error). The attendance filter shows a shimmer skeleton. Form validation catches missing dates, reversed date ranges, and over-balance requests.
+
+All elements carry data-testid attributes. For Tasks 2 and 4 (API endpoints), the shapes are:
+
+POST /api/clock/in → writes a punch record, returns { punchId, clockInTime }
+POST /api/clock/out → closes the open punch, returns { totalMinutes, record }
+GET /api/attendance?from=&to= → returns filtered records for the authenticated user
+GET /api/timeoff/requests → returns the user's request history
+POST /api/timeoff/requests → creates a request with { type, startDate, endDate, notes }
+GET /api/timeoff/balances → returns { vacation, sick, personal } used/total

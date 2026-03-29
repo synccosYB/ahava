@@ -1,0 +1,36 @@
+#4 - Tablet Kiosk Clock-In System
+What & Why
+Build the dedicated kiosk mode for shared tablet devices at facility entrances. This is a separate, single-purpose interface optimized for fast clock in/out via PIN entry or name search, with auto-reset between uses. It runs at a separate route (/kiosk) and does not require individual login.
+
+Done looks like
+Kiosk Home Screen shows Ahava Medical branding, current time (live-updating), current date, and a large "Tap to Clock In / Out" button; a small "search by name" link is visible below
+PIN Entry screen shows a large numeric keypad (0-9, Clear, OK) with PIN dots display; entering a valid admin-assigned PIN identifies the employee
+Name Search screen has a search input with real-time filtering; selecting a name shows the employee's info and department
+Clock Confirmation screen shows the identified employee's avatar/initials, name, department, employee ID, current status (clocked in/out with last punch time), and a large green "CLOCK IN" or red "CLOCK OUT" button; a "Not me — Go Back" option is available
+Success Screen shows a checkmark, the employee name, punch time, and auto-resets to the home screen after 5 seconds
+The kiosk interface is touch-optimized with large buttons and simple layout, designed for 10"+ tablets
+Kiosk has a configurable auto-timeout that resets to home screen after inactivity
+The kiosk route (/kiosk) does not show the normal app sidebar/navigation
+All clock punches from kiosk are recorded in the same attendance_records table as web punches
+All interactive elements have data-testid attributes
+Out of scope
+Biometric/fingerprint scanning (hardware-dependent, not implementable in a web app — UI will show PIN and name search as primary methods)
+Offline punch queuing (phase 2)
+Device registration and location verification (phase 2)
+Kiosk admin configuration panel (phase 2)
+Tasks
+Add kiosk-specific API endpoints: lookup employee by PIN, search employees by name, clock in/out from kiosk (no auth required but validates PIN/employee ID)
+Build the Kiosk Home Screen with live clock, date display, and entry button
+Build the Employee Identification screen with PIN keypad entry and name search with results list
+Build the Clock Confirmation screen showing employee details, current status, and Clock In/Out button
+Build the Success screen with confirmation details and auto-reset countdown
+Add the /kiosk route to the app router, ensuring it renders without the main app sidebar/layout
+Style the entire kiosk flow for touch-optimized tablet use (large touch targets, simple layout)
+Relevant files
+project-plan-wireframes.html:1168-1765
+kiosk-wireframes.html
+shared/schema.ts
+server/routes.ts
+server/storage.ts
+client/src/App.tsx
+Dependencies

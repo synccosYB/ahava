@@ -1,0 +1,411 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ── Design tokens (kiosk-specific — high-contrast, large-scale) ───────────────
+const K = {
+  bg:          "#0f172a",
+  surface:     "#1e293b",
+  surfaceHigh: "#273449",
+  border:      "#334155",
+  blue:        "#3b82f6",
+  blueD:       "#2563eb",
+  green:       "#22c55e",
+  greenD:      "#16a34a",
+  red:         "#ef4444",
+  redD:        "#dc2626",
+  amber:       "#f59e0b",
+  text:        "#f1f5f9",
+  textSub:     "#94a3b8",
+  textMuted:   "#64748b",
+  white:       "#ffffff",
+};
+
+// ── Mock employee data ─────────────────────────────────────────────────────────
+const EMPLOYEES = [
+  { id: "E001", name: "Maria Santos",   dept: "ICU",        role: "RN",           pin: "1234", initials: "MS", color: K.blue   },
+  { id: "E002", name: "David Kim",      dept: "ER",         role: "Physician",    pin: "2345", initials: "DK", color: "#a855f7" },
+  { id: "E003", name: "Priya Nair",     dept: "Lab",        role: "Medical Tech", pin: "3456", initials: "PN", color: K.amber  },
+  { id: "E004", name: "James Okafor",   dept: "ICU",        role: "CNA",          pin: "4567", initials: "JO", color: K.green  },
+  { id: "E005", name: "Leah Chen",      dept: "Pharmacy",   role: "Pharmacist",   pin: "5678", initials: "LC", color: "#ec4899" },
+  { id: "E006", name: "Tom Rivera",     dept: "Facilities", role: "Maintenance",  pin: "6789", initials: "TR", color: K.red    },
+  { id: "E007", name: "Rachel Moore",   dept: "Lab",        role: "Lab Tech",     pin: "7890", initials: "RM", color: "#14b8a6" },
+  { id: "E008", name: "Carlos Vega",    dept: "ER",         role: "Paramedic",    pin: "8901", initials: "CV", color: "#f97316" },
+];
+
+// Simulated punch state (who's currently clocked in)
+const INIT_PUNCHED = { "E001": true, "E003": false, "E004": true, "E007": false };
+const LAST_PUNCH_TIMES = {
+  "E001": "7:02 AM", "E002": "—", "E003": "3:06 PM (yesterday)",
+  "E004": "7:15 AM", "E005": "—", "E006": "—", "E007": "2:48 PM (yesterday)", "E008": "—",
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const pad2 = n => String(n).padStart(2, "0");
+const fmtTime = d => {
+  let h = d.getHours(), m = d.getMinutes(), s = d.getSeconds();
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${h}:${pad2(m)}:${pad2(s)} ${ampm}`;
+};
+const fmtDate = d => d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+const fmtShort = d => { let h = d.getHours(), m = d.getMinutes(); const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12; return `${h}:${pad2(m)} ${ap}`; };
+
+// ── INACTIVITY HOOK ───────────────────────────────────────────────────────────
+function useInactivity(seconds, onReset, active) {
+  const timer = useRef(null);
+  const reset = useCallback(() => {
+    if (!active) return;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(onReset, seconds * 1000);
+  }, [seconds, onReset, active]);
+
+  useEffect(() => {
+    if (!active) return;
+    const events = ["mousedown", "touchstart", "keydown"];
+    events.forEach(e => window.addEventListener(e, reset));
+    reset();
+    return () => { events.forEach(e => window.removeEventListener(e, reset)); clearTimeout(timer.current); };
+  }, [reset, active]);
+}
+
+// ── LIVE CLOCK ────────────────────────────────────────────────────────────────
+function LiveClock({ size = 56, subSize = 20, color = K.text }) {
+  const [now, setNow] = useState(new Date());
+  useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
+  return (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontSize: size, fontWeight: 900, color, letterSpacing: 2, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{fmtTime(now)}</div>
+      <div style={{ fontSize: subSize, color: K.textSub, marginTop: 6, letterSpacing: 1 }}>{fmtDate(now)}</div>
+    </div>
+  );
+}
+
+// ── AVATAR ────────────────────────────────────────────────────────────────────
+const KAvatar = ({ emp, size = 80 }) => (
+  <div style={{ width: size, height: size, borderRadius: "50%", background: emp.color + "33", border: `3px solid ${emp.color}`, color: emp.color, fontWeight: 900, fontSize: size * 0.35, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+    {emp.initials}
+  </div>
+);
+
+// ── SCREEN: HOME ──────────────────────────────────────────────────────────────
+function HomeScreen({ onPIN, onSearch }) {
+  return (
+    <div data-testid="kiosk-home" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 40, gap: 48 }}>
+      {/* Branding */}
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 13, color: K.textMuted, letterSpacing: 3, textTransform: "uppercase", marginBottom: 8 }}>Ahava Medical Center</div>
+        <div style={{ fontSize: 28, fontWeight: 900, color: K.text, letterSpacing: 1 }}>Time & Attendance Kiosk</div>
+      </div>
+
+      <LiveClock size={72} subSize={22} />
+
+      {/* Primary CTA */}
+      <button data-testid="tap-to-clockin-btn" onClick={onPIN}
+        style={{ background: `linear-gradient(135deg, ${K.blue}, ${K.blueD})`, color: K.white, border: "none", borderRadius: 24, padding: "36px 72px", fontSize: 32, fontWeight: 900, cursor: "pointer", letterSpacing: 1, boxShadow: `0 8px 40px ${K.blue}55`, minWidth: 420 }}>
+        Tap to Clock In / Out
+      </button>
+
+      {/* Search link */}
+      <button data-testid="search-by-name-btn" onClick={onSearch}
+        style={{ background: "transparent", border: `1px solid ${K.border}`, borderRadius: 12, color: K.textSub, padding: "16px 32px", fontSize: 18, cursor: "pointer", letterSpacing: 0.5 }}>
+        🔍 Search by name instead
+      </button>
+
+      <div style={{ position: "absolute", bottom: 24, fontSize: 12, color: K.textMuted, letterSpacing: 1 }}>
+        DEVICE ID: KIOSK-01 · ICU ENTRANCE
+      </div>
+    </div>
+  );
+}
+
+// ── SCREEN: PIN ENTRY ─────────────────────────────────────────────────────────
+function PINScreen({ onIdentified, onSearchFallback, onBack }) {
+  const [digits, setDigits] = useState([]);
+  const [shake,  setShake]  = useState(false);
+  const [hint,   setHint]   = useState("");
+  const MAX = 4;
+
+  const press = (val) => {
+    if (val === "CLR") { setDigits([]); setHint(""); return; }
+    if (val === "OK") {
+      const pin = digits.join("");
+      if (pin.length < MAX) { setHint("Enter your 4-digit PIN"); return; }
+      const emp = EMPLOYEES.find(e => e.pin === pin);
+      if (emp) { onIdentified(emp); }
+      else { setShake(true); setHint("PIN not recognized. Try again."); setDigits([]); setTimeout(() => setShake(false), 500); }
+      return;
+    }
+    if (digits.length < MAX) setDigits(d => [...d, val]);
+  };
+
+  // auto-submit when 4 digits entered
+  useEffect(() => { if (digits.length === MAX) setTimeout(() => press("OK"), 200); }, [digits]);
+
+  const KEYS = ["1","2","3","4","5","6","7","8","9","CLR","0","OK"];
+
+  return (
+    <div data-testid="pin-screen" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 40, gap: 32 }}>
+      <button data-testid="pin-back-btn" onClick={onBack} style={{ position: "absolute", top: 32, left: 32, background: K.surface, border: `1px solid ${K.border}`, color: K.textSub, borderRadius: 12, padding: "12px 24px", fontSize: 16, cursor: "pointer" }}>← Back</button>
+
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 26, fontWeight: 900, color: K.text }}>Enter Your PIN</div>
+        <div style={{ fontSize: 17, color: K.textSub, marginTop: 8 }}>Enter your 4-digit employee PIN</div>
+      </div>
+
+      {/* PIN dots */}
+      <div data-testid="pin-dots" style={{ display: "flex", gap: 20, animation: shake ? "shake 0.4s ease" : "none" }}>
+        {[0,1,2,3].map(i => (
+          <div key={i} style={{ width: 22, height: 22, borderRadius: "50%", background: i < digits.length ? K.blue : "transparent", border: `3px solid ${i < digits.length ? K.blue : K.border}`, transition: "all 0.15s" }} />
+        ))}
+      </div>
+
+      {hint && <div data-testid="pin-hint" style={{ color: K.red, fontSize: 16, fontWeight: 600 }}>{hint}</div>}
+
+      {/* Keypad */}
+      <div data-testid="pin-keypad" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+        {KEYS.map(k => {
+          const isOK  = k === "OK";
+          const isCLR = k === "CLR";
+          return (
+            <button key={k} data-testid={`key-${k}`} onClick={() => press(k)}
+              style={{ width: 110, height: 110, borderRadius: 18, border: "none", fontSize: isOK ? 22 : isCLR ? 18 : 36, fontWeight: 800, cursor: "pointer", background: isOK ? K.green : isCLR ? K.surfaceHigh : K.surface, color: isOK ? K.white : isCLR ? K.textSub : K.text, boxShadow: "0 4px 14px rgba(0,0,0,0.3)", transition: "transform 0.08s, opacity 0.08s", letterSpacing: isOK || isCLR ? 1 : 0 }}
+              onMouseDown={e => e.currentTarget.style.transform = "scale(0.94)"}
+              onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
+              onTouchStart={e => e.currentTarget.style.transform = "scale(0.94)"}
+              onTouchEnd={e => e.currentTarget.style.transform = "scale(1)"}>
+              {k}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Hint PINs for demo */}
+      <div style={{ fontSize: 13, color: K.textMuted, textAlign: "center", lineHeight: 1.8 }}>
+        Demo PINs: Maria = <strong style={{color:K.textSub}}>1234</strong> · James = <strong style={{color:K.textSub}}>4567</strong> · Tom = <strong style={{color:K.textSub}}>6789</strong>
+      </div>
+
+      <button data-testid="switch-to-search-btn" onClick={onSearchFallback} style={{ background: "transparent", border: "none", color: K.blue, fontSize: 17, cursor: "pointer", textDecoration: "underline" }}>
+        Don't know your PIN? Search by name
+      </button>
+    </div>
+  );
+}
+
+// ── SCREEN: NAME SEARCH ───────────────────────────────────────────────────────
+function SearchScreen({ onIdentified, onBack }) {
+  const [query, setQuery] = useState("");
+  const inputRef = useRef(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const results = query.trim().length > 0
+    ? EMPLOYEES.filter(e => e.name.toLowerCase().includes(query.toLowerCase()) || e.dept.toLowerCase().includes(query.toLowerCase()))
+    : [];
+
+  return (
+    <div data-testid="search-screen" style={{ display: "flex", flexDirection: "column", alignItems: "center", minHeight: "100vh", padding: "48px 40px", gap: 28 }}>
+      <button data-testid="search-back-btn" onClick={onBack} style={{ alignSelf: "flex-start", background: K.surface, border: `1px solid ${K.border}`, color: K.textSub, borderRadius: 12, padding: "12px 24px", fontSize: 16, cursor: "pointer" }}>← Back</button>
+
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 26, fontWeight: 900, color: K.text }}>Search by Name</div>
+        <div style={{ fontSize: 17, color: K.textSub, marginTop: 6 }}>Type your name or department</div>
+      </div>
+
+      <input ref={inputRef} data-testid="name-search-input" value={query} onChange={e => setQuery(e.target.value)}
+        placeholder="Start typing your name…"
+        style={{ width: "100%", maxWidth: 560, border: `2px solid ${K.border}`, borderRadius: 18, padding: "22px 28px", fontSize: 24, background: K.surface, color: K.text, outline: "none", letterSpacing: 0.5 }}
+        onFocus={e => e.target.style.borderColor = K.blue}
+        onBlur={e => e.target.style.borderColor = K.border} />
+
+      {/* Results */}
+      <div style={{ width: "100%", maxWidth: 560, display: "flex", flexDirection: "column", gap: 12 }} data-testid="search-results">
+        {results.length === 0 && query.trim().length > 0 && (
+          <div style={{ textAlign: "center", color: K.textMuted, fontSize: 18, padding: 32 }}>No employees found.</div>
+        )}
+        {results.map(emp => (
+          <button key={emp.id} data-testid={`result-${emp.id}`} onClick={() => onIdentified(emp)}
+            style={{ display: "flex", alignItems: "center", gap: 20, background: K.surface, border: `1px solid ${K.border}`, borderRadius: 18, padding: "18px 24px", cursor: "pointer", textAlign: "left", transition: "background 0.15s" }}
+            onMouseEnter={e => e.currentTarget.style.background = K.surfaceHigh}
+            onMouseLeave={e => e.currentTarget.style.background = K.surface}>
+            <KAvatar emp={emp} size={60} />
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: K.text }}>{emp.name}</div>
+              <div style={{ fontSize: 15, color: K.textSub, marginTop: 3 }}>{emp.role} · {emp.dept}</div>
+            </div>
+            <div style={{ marginLeft: "auto", color: K.textMuted, fontSize: 22 }}>›</div>
+          </button>
+        ))}
+      </div>
+
+      {query.trim().length === 0 && (
+        <div style={{ color: K.textMuted, fontSize: 16 }}>Start typing to search employees…</div>
+      )}
+    </div>
+  );
+}
+
+// ── SCREEN: CONFIRMATION ──────────────────────────────────────────────────────
+function ConfirmScreen({ emp, punchState, onConfirm, onBack }) {
+  const isClockedIn = punchState[emp.id] ?? false;
+  const lastPunch   = LAST_PUNCH_TIMES[emp.id] ?? "—";
+  const action      = isClockedIn ? "CLOCK OUT" : "CLOCK IN";
+  const actionColor = isClockedIn ? K.red : K.green;
+  const actionColorD = isClockedIn ? K.redD : K.greenD;
+
+  return (
+    <div data-testid="confirm-screen" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 40, gap: 36 }}>
+      <KAvatar emp={emp} size={120} />
+
+      <div style={{ textAlign: "center" }}>
+        <div data-testid="confirm-name" style={{ fontSize: 36, fontWeight: 900, color: K.text }}>{emp.name}</div>
+        <div data-testid="confirm-dept" style={{ fontSize: 20, color: K.textSub, marginTop: 6 }}>{emp.role} · {emp.dept}</div>
+        <div data-testid="confirm-id"   style={{ fontSize: 14, color: K.textMuted, marginTop: 4, letterSpacing: 2 }}>ID: {emp.id}</div>
+      </div>
+
+      {/* Status pill */}
+      <div data-testid="confirm-status"
+        style={{ background: isClockedIn ? K.green + "22" : K.surfaceHigh, border: `1px solid ${isClockedIn ? K.green : K.border}`, borderRadius: 999, padding: "12px 28px", display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ width: 10, height: 10, borderRadius: "50%", background: isClockedIn ? K.green : K.textMuted }} />
+        <span style={{ fontSize: 18, fontWeight: 700, color: isClockedIn ? K.green : K.textSub }}>
+          {isClockedIn ? "Currently Clocked In" : "Currently Clocked Out"}
+        </span>
+        {lastPunch !== "—" && <span style={{ fontSize: 14, color: K.textMuted }}>· Last punch: {lastPunch}</span>}
+      </div>
+
+      {/* Action button */}
+      <button data-testid="confirm-action-btn" onClick={() => onConfirm(emp, isClockedIn)}
+        style={{ background: `linear-gradient(135deg, ${actionColor}, ${actionColorD})`, color: K.white, border: "none", borderRadius: 22, padding: "30px 80px", fontSize: 30, fontWeight: 900, cursor: "pointer", letterSpacing: 2, boxShadow: `0 8px 36px ${actionColor}55`, minWidth: 360 }}>
+        {action}
+      </button>
+
+      <button data-testid="not-me-btn" onClick={onBack}
+        style={{ background: "transparent", border: `1px solid ${K.border}`, borderRadius: 14, color: K.textSub, padding: "16px 36px", fontSize: 18, cursor: "pointer" }}>
+        Not me — Go Back
+      </button>
+    </div>
+  );
+}
+
+// ── SCREEN: SUCCESS ───────────────────────────────────────────────────────────
+function SuccessScreen({ emp, action, punchTime, onReset }) {
+  const [secs, setSecs] = useState(5);
+  useEffect(() => {
+    const t = setInterval(() => setSecs(s => { if (s <= 1) { clearInterval(t); onReset(); return 0; } return s - 1; }), 1000);
+    return () => clearInterval(t);
+  }, [onReset]);
+
+  const isIn = action === "in";
+
+  return (
+    <div data-testid="success-screen" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 40, gap: 36, background: isIn ? "#0a1f0f" : "#1a0a0a" }}>
+      {/* Checkmark */}
+      <div style={{ width: 120, height: 120, borderRadius: "50%", background: isIn ? K.green + "22" : K.red + "22", border: `4px solid ${isIn ? K.green : K.red}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 56 }}>
+        {isIn ? "✓" : "✓"}
+      </div>
+
+      <div style={{ textAlign: "center" }}>
+        <div data-testid="success-action" style={{ fontSize: 42, fontWeight: 900, color: isIn ? K.green : K.red, letterSpacing: 2 }}>
+          {isIn ? "CLOCKED IN" : "CLOCKED OUT"}
+        </div>
+        <div data-testid="success-name" style={{ fontSize: 28, fontWeight: 700, color: K.text, marginTop: 10 }}>{emp.name}</div>
+        <div data-testid="success-time" style={{ fontSize: 22, color: K.textSub, marginTop: 6 }}>{fmtShort(punchTime)}</div>
+        <div style={{ fontSize: 16, color: K.textMuted, marginTop: 4 }}>{emp.dept} · {emp.id}</div>
+      </div>
+
+      {/* Countdown ring */}
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 56, fontWeight: 900, color: K.textMuted, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{secs}</div>
+        <div data-testid="success-countdown" style={{ fontSize: 16, color: K.textMuted, marginTop: 4 }}>Returning to home screen…</div>
+      </div>
+
+      <button data-testid="success-home-btn" onClick={onReset}
+        style={{ background: K.surface, border: `1px solid ${K.border}`, color: K.textSub, borderRadius: 14, padding: "16px 36px", fontSize: 18, cursor: "pointer" }}>
+        Return Now
+      </button>
+    </div>
+  );
+}
+
+// ── INACTIVITY OVERLAY ────────────────────────────────────────────────────────
+function InactivityBanner({ visible }) {
+  if (!visible) return null;
+  return (
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, background: K.amber, color: "#78350f", textAlign: "center", padding: "10px 0", fontSize: 14, fontWeight: 700, zIndex: 999, letterSpacing: 1 }}>
+      ⚠ Session will reset due to inactivity…
+    </div>
+  );
+}
+
+// ── ROOT KIOSK APP ────────────────────────────────────────────────────────────
+export default function KioskApp() {
+  const [screen, setScreen]       = useState("home"); // home | pin | search | confirm | success
+  const [employee, setEmployee]   = useState(null);
+  const [punchState, setPunchState] = useState(INIT_PUNCHED);
+  const [punchTime, setPunchTime] = useState(null);
+  const [punchAction, setPunchAction] = useState(null);
+  const [idleWarn, setIdleWarn]   = useState(false);
+
+  const goHome = useCallback(() => { setScreen("home"); setEmployee(null); setIdleWarn(false); }, []);
+
+  // Inactivity: warn at 25s, reset at 30s
+  const idleTimer   = useRef(null);
+  const warnTimer   = useRef(null);
+  const resetIdle   = useCallback(() => {
+    if (screen === "home" || screen === "success") return;
+    clearTimeout(idleTimer.current);
+    clearTimeout(warnTimer.current);
+    setIdleWarn(false);
+    warnTimer.current = setTimeout(() => setIdleWarn(true), 25000);
+    idleTimer.current = setTimeout(() => goHome(), 30000);
+  }, [screen, goHome]);
+
+  useEffect(() => {
+    if (screen === "home" || screen === "success") { clearTimeout(idleTimer.current); clearTimeout(warnTimer.current); setIdleWarn(false); return; }
+    const events = ["mousedown", "touchstart", "keydown", "mousemove"];
+    events.forEach(e => window.addEventListener(e, resetIdle));
+    resetIdle();
+    return () => { events.forEach(e => window.removeEventListener(e, resetIdle)); clearTimeout(idleTimer.current); clearTimeout(warnTimer.current); };
+  }, [screen, resetIdle]);
+
+  const handleIdentified = (emp) => { setEmployee(emp); setScreen("confirm"); };
+  const handleConfirm    = (emp, wasClockedIn) => {
+    const now = new Date();
+    setPunchState(p => ({ ...p, [emp.id]: !wasClockedIn }));
+    setPunchTime(now);
+    setPunchAction(wasClockedIn ? "out" : "in");
+    setScreen("success");
+  };
+
+  const screens = {
+    home:    <HomeScreen    onPIN={() => setScreen("pin")} onSearch={() => setScreen("search")} />,
+    pin:     <PINScreen     onIdentified={handleIdentified} onSearchFallback={() => setScreen("search")} onBack={goHome} />,
+    search:  <SearchScreen  onIdentified={handleIdentified} onBack={goHome} />,
+    confirm: employee ? <ConfirmScreen emp={employee} punchState={punchState} onConfirm={handleConfirm} onBack={() => setScreen("pin")} /> : null,
+    success: employee ? <SuccessScreen emp={employee} action={punchAction} punchTime={punchTime} onReset={goHome} /> : null,
+  };
+
+  return (
+    <>
+      <style>{`
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: ${K.bg}; }
+        @keyframes shake {
+          0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-10px)} 40%,80%{transform:translateX(10px)}
+        }
+        button:active { opacity: 0.85; }
+      `}</style>
+      <div data-testid="kiosk-root"
+        style={{ fontFamily: "'Segoe UI', sans-serif", background: K.bg, color: K.text, minHeight: "100vh", position: "relative", userSelect: "none" }}>
+        <InactivityBanner visible={idleWarn} />
+        {screens[screen]}
+
+        {/* Dev nav — simulates /kiosk route isolation note */}
+        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.6)", borderTop: `1px solid ${K.border}`, padding: "8px 20px", display: "flex", gap: 10, alignItems: "center", justifyContent: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: K.textMuted, letterSpacing: 1 }}>ROUTE: /kiosk · No sidebar/nav · Touch-optimized · Screen:</span>
+          {["home","pin","search"].map(s => (
+            <button key={s} onClick={() => { setScreen(s); setEmployee(null); }}
+              style={{ background: screen === s ? K.blue : K.surface, color: screen === s ? K.white : K.textMuted, border: `1px solid ${K.border}`, borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>{s}</button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}

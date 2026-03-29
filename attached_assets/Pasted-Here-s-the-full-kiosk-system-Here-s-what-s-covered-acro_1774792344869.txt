@@ -1,0 +1,15 @@
+Here's the full kiosk system. Here's what's covered across all 7 tasks:
+Task 2 — Home Screen has Ahava Medical branding, a live clock with seconds ticking in real time, the full date, and a large "Tap to Clock In / Out" primary button. The name search link sits below it. A device ID footer grounds the kiosk to a physical location.
+Task 3 — PIN Entry shows a large 110px numeric keypad built for fat-finger touch accuracy. As you enter digits the PIN dots fill in blue, and when the 4th digit is entered it auto-submits (no need to hit OK). A wrong PIN triggers a horizontal shake animation and clears the field. A "Don't know your PIN?" escape hatch drops into name search. Name Search has a real-time filtered results list — type any name or department to see matching employees as large tappable cards.
+Task 4 — Confirmation Screen shows the employee's colored avatar/initials, full name, role, department, employee ID, and a live status pill (green "Currently Clocked In" or neutral "Clocked Out") with last punch time. The action button is full-width green for Clock In or red for Clock Out. A "Not me — Go Back" escape is always visible.
+Task 5 — Success Screen shows a large checkmark in green (clock-in) or red (clock-out), the employee name, punch time, and a live countdown from 5 that auto-resets to home. A "Return Now" button skips the wait.
+Task 6 — Route isolation — the kiosk renders with no sidebar, no app nav, no header. The bottom dev bar shows the /kiosk route label and lets you jump between screens during review.
+Task 7 — Touch optimization — every tap target is at minimum 60px tall, keypad keys are 110×110px, all interactive states include press-shrink feedback via onMouseDown/onTouchStart, and fonts are large throughout (22–72px).
+Inactivity timeout — after 25 seconds without interaction an amber warning banner appears; at 30 seconds the session hard-resets to home. Any touch or mouse movement resets the timer.
+For Task 1 (API endpoints), the three kiosk-specific routes in server/routes.ts:
+ts// No auth middleware — validated by PIN/ID instead
+POST /api/kiosk/identify/pin    body: { pin: string }       → { employee } | 404
+POST /api/kiosk/identify/search query: { q: string }        → { employees[] }
+POST /api/kiosk/punch           body: { employeeId, method: "pin"|"search" }
+                                → writes to attendance_records, returns { action, punchTime, totalHours? }
+The punch endpoint uses the same attendance_records insert as the web clock-in, just with source: "kiosk" on the record so audit logs can distinguish kiosk punches from web punches.
