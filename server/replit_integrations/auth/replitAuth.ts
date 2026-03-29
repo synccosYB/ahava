@@ -22,6 +22,7 @@ export function getSession() {
       httpOnly: true,
       secure: true,
       sameSite: "none" as const,
+      partitioned: true,
       maxAge: sessionTtl,
     },
   });
@@ -50,8 +51,10 @@ export async function setupAuth(app: Express) {
     (req.session as any).userId = user.id;
     req.session.save((err) => {
       if (err) {
+        console.error("[auth] Session save error:", err);
         return res.status(500).json({ message: "Session error" });
       }
+      console.log("[auth] Session saved, id:", req.sessionID, "userId:", (req.session as any).userId);
       const { password: _, ...safeUser } = user;
       res.json(safeUser);
     });
@@ -69,6 +72,7 @@ export async function setupAuth(app: Express) {
 
   app.get("/api/auth/user", async (req, res) => {
     const userId = (req.session as any)?.userId;
+    console.log("[auth] GET /api/auth/user - sessionID:", req.sessionID, "userId:", userId, "cookie:", req.headers.cookie?.substring(0, 50));
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
     }

@@ -26,9 +26,9 @@ export default function LoginPage() {
       }
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (userData) => {
       setError("");
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.setQueryData(["/api/auth/user"], userData);
     },
     onError: (err: Error) => {
       setError(err.message);

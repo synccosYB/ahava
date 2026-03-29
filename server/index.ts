@@ -4,6 +4,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import path from 'path';
 import { setupAuth, registerAuthRoutes } from "./replit_integrations/auth";
+import { seed } from "./seed";
 
 const app = express();
 
@@ -52,6 +53,8 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  await seed().catch((err) => console.error("Seed warning:", err));
+
   await setupAuth(app);
   registerAuthRoutes(app);
 
