@@ -11,6 +11,7 @@ import DashboardPage from "@/pages/dashboard";
 import PlaceholderPage from "@/pages/placeholder";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
+import KioskPage from "@/pages/kiosk";
 
 function AuthenticatedRouter() {
   return (
@@ -79,7 +80,12 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <AppContent />
+        <Switch>
+          <Route path="/kiosk" component={KioskPage} />
+          <Route>
+            {() => <AppContent />}
+          </Route>
+        </Switch>
       </TooltipProvider>
     </QueryClientProvider>
   );

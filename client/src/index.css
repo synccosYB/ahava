@@ -296,3 +296,498 @@
     inset: -1px;
   }
 }
+
+.kiosk-container {
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 50%, #f0f7ff 100%);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.kiosk-screen {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 40px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.kiosk-brand {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #1e3a5f;
+  margin: 0 0 4px 0;
+  letter-spacing: -0.02em;
+}
+
+.kiosk-brand-sm {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #1e3a5f;
+  margin: 0 0 4px 0;
+}
+
+.kiosk-subtitle {
+  font-size: 1.1rem;
+  color: #64748b;
+  margin: 0 0 40px 0;
+}
+
+.kiosk-subtitle-sm {
+  font-size: 1rem;
+  color: #64748b;
+  margin: 0 0 24px 0;
+}
+
+.kiosk-clock {
+  font-size: 3.5rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 8px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.kiosk-date {
+  font-size: 1.1rem;
+  color: #64748b;
+  margin: 0 0 48px 0;
+}
+
+.kiosk-hint {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  margin-top: 32px;
+}
+
+.kiosk-btn {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  padding: 20px 32px;
+  border-radius: 14px;
+  font-weight: 700;
+  font-size: 1.3rem;
+  text-align: center;
+  cursor: pointer;
+  border: none;
+  transition: transform 0.1s, box-shadow 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.kiosk-btn:active {
+  transform: scale(0.98);
+}
+
+.kiosk-btn-primary {
+  background: #2563eb;
+  color: white;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+}
+
+.kiosk-btn-primary:active {
+  background: #1d4ed8;
+}
+
+.kiosk-btn-cancel {
+  background: #f1f5f9;
+  color: #475569;
+  border: 2px solid #cbd5e1;
+  font-size: 1rem;
+  padding: 14px 32px;
+  margin-top: 24px;
+}
+
+.kiosk-btn-punch {
+  margin-top: 20px;
+  font-size: 1.5rem;
+  padding: 22px 32px;
+}
+
+.kiosk-btn-punch.punch-in {
+  background: #22c55e;
+  color: white;
+  box-shadow: 0 4px 14px rgba(34, 197, 94, 0.35);
+}
+
+.kiosk-btn-punch.punch-in:active {
+  background: #16a34a;
+}
+
+.kiosk-btn-punch.punch-out {
+  background: #ef4444;
+  color: white;
+  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.35);
+}
+
+.kiosk-btn-punch.punch-out:active {
+  background: #dc2626;
+}
+
+.kiosk-btn-goback {
+  background: transparent;
+  color: #64748b;
+  font-size: 0.95rem;
+  padding: 12px 24px;
+  margin-top: 16px;
+  border: 1px solid #e2e8f0;
+}
+
+.kiosk-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 24px;
+  background: #e2e8f0;
+  border-radius: 12px;
+  padding: 4px;
+  width: 100%;
+  max-width: 400px;
+}
+
+.kiosk-tab {
+  flex: 1;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 10px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+  background: transparent;
+  color: #64748b;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.kiosk-tab.active {
+  background: white;
+  color: #1e293b;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.kiosk-pin-section {
+  width: 100%;
+  max-width: 320px;
+}
+
+.kiosk-pin-display {
+  font-size: 2rem;
+  letter-spacing: 12px;
+  padding: 16px;
+  background: white;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  margin-bottom: 8px;
+  color: #1e293b;
+  font-weight: 600;
+}
+
+.kiosk-error {
+  color: #ef4444;
+  font-size: 0.9rem;
+  margin: 4px 0 8px 0;
+  font-weight: 500;
+}
+
+.kiosk-pin-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.kiosk-pin-key {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 18px;
+  text-align: center;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #334155;
+  cursor: pointer;
+  transition: background 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.kiosk-pin-key:active {
+  background: #f1f5f9;
+}
+
+.kiosk-pin-clear {
+  background: #fef2f2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+.kiosk-pin-clear:active {
+  background: #fee2e2;
+}
+
+.kiosk-pin-ok {
+  background: #f0fdf4;
+  color: #16a34a;
+  border-color: #bbf7d0;
+}
+
+.kiosk-pin-ok:active {
+  background: #dcfce7;
+}
+
+.kiosk-search-section {
+  width: 100%;
+  max-width: 440px;
+}
+
+.kiosk-search-input {
+  width: 100%;
+  padding: 16px 20px;
+  font-size: 1.1rem;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  background: white;
+  color: #1e293b;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.kiosk-search-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.kiosk-search-input::placeholder {
+  color: #94a3b8;
+}
+
+.kiosk-search-results {
+  margin-top: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.kiosk-searching,
+.kiosk-no-results {
+  color: #94a3b8;
+  padding: 20px;
+  font-size: 0.95rem;
+}
+
+.kiosk-search-result {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s, border-color 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.kiosk-search-result:active {
+  background: #f0f7ff;
+  border-color: #2563eb;
+}
+
+.kiosk-result-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e0e7ff;
+  color: #3b82f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.kiosk-result-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.kiosk-result-name {
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 1.05rem;
+}
+
+.kiosk-result-detail {
+  color: #64748b;
+  font-size: 0.85rem;
+  margin-top: 2px;
+}
+
+.kiosk-avatar {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  background: #e0e7ff;
+  color: #3b82f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 2.2rem;
+  margin-bottom: 16px;
+}
+
+.kiosk-confirm-date {
+  color: #64748b;
+  font-size: 0.95rem;
+  margin: 0 0 24px 0;
+}
+
+.kiosk-confirm-name {
+  font-size: 1.7rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 6px 0;
+}
+
+.kiosk-confirm-dept {
+  color: #64748b;
+  margin: 0 0 4px 0;
+  font-size: 1rem;
+}
+
+.kiosk-confirm-id {
+  color: #64748b;
+  margin: 0 0 20px 0;
+  font-size: 0.95rem;
+}
+
+.kiosk-status {
+  padding: 14px 24px;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 340px;
+  margin-bottom: 8px;
+}
+
+.kiosk-status.clocked-in {
+  background: #dcfce7;
+  border: 1px solid #86efac;
+}
+
+.kiosk-status.clocked-out {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+}
+
+.kiosk-status-label {
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0 0 4px 0;
+}
+
+.kiosk-status-time {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin: 0;
+}
+
+.kiosk-success {
+  min-height: 100vh;
+  justify-content: center;
+  padding: 40px 24px;
+}
+
+.kiosk-success.success-in {
+  background: #f0fdf4;
+}
+
+.kiosk-success.success-out {
+  background: #fef2f2;
+}
+
+.kiosk-check {
+  font-size: 4.5rem;
+  margin-bottom: 20px;
+  line-height: 1;
+}
+
+.kiosk-check.check-green {
+  color: #22c55e;
+}
+
+.kiosk-check.check-red {
+  color: #ef4444;
+}
+
+.kiosk-success-title {
+  font-size: 2rem;
+  font-weight: 700;
+  margin: 0 0 12px 0;
+}
+
+.kiosk-success-title.title-green {
+  color: #166534;
+}
+
+.kiosk-success-title.title-red {
+  color: #991b1b;
+}
+
+.kiosk-success-name {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0 0 12px 0;
+}
+
+.kiosk-success-time {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin: 0 0 4px 0;
+}
+
+.kiosk-success-time.time-green {
+  color: #166534;
+}
+
+.kiosk-success-time.time-red {
+  color: #991b1b;
+}
+
+.kiosk-success-date {
+  color: #64748b;
+  margin: 0 0 40px 0;
+}
+
+.kiosk-countdown {
+  color: #94a3b8;
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+@media (max-width: 480px) {
+  .kiosk-clock {
+    font-size: 2.5rem;
+  }
+  .kiosk-brand {
+    font-size: 1.5rem;
+  }
+  .kiosk-btn {
+    font-size: 1.1rem;
+    padding: 16px 24px;
+  }
+  .kiosk-pin-key {
+    padding: 14px;
+    font-size: 1.2rem;
+  }
+}

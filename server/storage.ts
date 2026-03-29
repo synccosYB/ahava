@@ -22,7 +22,7 @@ import {
   type InsertKioskDevice,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or, ilike, desc } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -64,6 +64,10 @@ export interface IStorage {
   createKioskDevice(device: InsertKioskDevice): Promise<KioskDevice>;
   updateKioskDevice(id: string, device: Partial<InsertKioskDevice>): Promise<KioskDevice | undefined>;
   deleteKioskDevice(id: string): Promise<void>;
+
+  getUserByPin(pin: string): Promise<User | undefined>;
+  searchUsersByName(query: string): Promise<User[]>;
+  getLatestAttendanceForUser(userId: string): Promise<AttendanceRecord | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -223,6 +227,38 @@ export class DatabaseStorage implements IStorage {
 
   async deleteKioskDevice(id: string): Promise<void> {
     await db.delete(kioskDevices).where(eq(kioskDevices.id, id));
+  }
+
+  async getUserByPin(pin: string): Promise<User | undefined> {
+    const results = await db
+      .select({ user: users })
+      .from(employeePins)
+      .innerJoin(users, eq(employeePins.userId, users.id))
+      .where(eq(employeePins.pin, pin));
+    return results[0]?.user;
+  }
+
+  async searchUsersByName(query: string): Promise<User[]> {
+    const pattern = `%${query}%`;
+    return db
+      .select()
+      .from(users)
+      .where(
+        or(
+          ilike(users.firstName, pattern),
+          ilike(users.lastName, pattern)
+        )
+      );
+  }
+
+  async getLatestAttendanceForUser(userId: string): Promise<AttendanceRecord | undefined> {
+    const [record] = await db
+      .select()
+      .from(attendanceRecords)
+      .where(eq(attendanceRecords.userId, userId))
+      .orderBy(desc(attendanceRecords.createdAt))
+      .limit(1);
+    return record;
   }
 }
 

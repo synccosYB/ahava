@@ -30,6 +30,7 @@ export const attendanceRecords = pgTable("attendance_records", {
   clockOut: timestamp("clock_out"),
   status: varchar("status", { length: 20 }).default("present").notNull(),
   notes: text("notes"),
+  source: varchar("source", { length: 20 }).default("web").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
