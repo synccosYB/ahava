@@ -2,6 +2,8 @@ import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage } from "./storage";
+import { db } from "./db";
+import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema } from "@shared/schema";
@@ -12,6 +14,35 @@ import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, D
 const roleSchema = z.object({
   role: z.enum(["employee", "manager", "admin"]),
 });
+
+async function checkPostExportModification(punchLogId: string, modifiedBy: string) {
+  try {
+    const exportedRecords = await storage.getExportedBatchRecordsByPunchLog(punchLogId);
+    for (const record of exportedRecords) {
+      if (record.payrollExport) {
+        const existingAdjustments = await storage.getPayrollAdjustmentsByExport(record.payrollExport.id);
+        const alreadyFlagged = existingAdjustments.some(
+          a => a.punchLogId === punchLogId && a.status === "pending"
+        );
+        if (alreadyFlagged) continue;
+
+        const punchLog = await storage.getPunchLog(punchLogId);
+        await storage.createPayrollAdjustment({
+          payrollExportId: record.payrollExport.id,
+          employeeId: record.employeeId,
+          punchLogId,
+          adjustmentDate: punchLog?.workDate || new Date().toISOString().split("T")[0],
+          reason: "Record modified after payroll export — review in next payroll cycle",
+          status: "pending",
+          reviewedBy: null,
+          reviewedAt: null,
+        });
+      }
+    }
+  } catch (error) {
+    console.error("Error checking post-export modification:", error);
+  }
+}
 
 export const requireRole = (...roles: string[]): RequestHandler => {
   return async (req, res, next) => {
@@ -417,6 +448,7 @@ export async function registerRoutes(
         hoursWorked,
         status: hoursWorked > 8 ? "overtime" : "complete",
       });
+      await checkPostExportModification(lastRecord.id, user.id);
       return res.json({
         record: { id: updated?.id, type: "clock_out", timestamp: updated?.clockOut },
         employee: sanitizeUserForKiosk(user, deptName),
@@ -488,6 +520,7 @@ export async function registerRoutes(
       if (!record) {
         return res.status(400).json({ message: "Not currently clocked in" });
       }
+      await checkPostExportModification(record.id, userId);
       res.json(punchLogToApiResponse(record));
     } catch (error) {
       console.error("Error clocking out:", error);
@@ -677,6 +710,7 @@ export async function registerRoutes(
             hoursWorked,
             status: hoursWorked > 8 ? "overtime" : "complete",
           });
+          await checkPostExportModification(latestRecord.id, reviewer.id);
         } else {
           return res.status(400).json({ message: "No open punch record found for this date to close" });
         }
@@ -706,6 +740,7 @@ export async function registerRoutes(
         }
 
         punchLog = await storage.updatePunchLog(latestRecord.id, updateData);
+        await checkPostExportModification(latestRecord.id, reviewer.id);
 
         await writeAuditLog({
           actorUserId: reviewer.id,
@@ -1721,6 +1756,433 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching policy defaults:", error);
       res.status(500).json({ message: "Failed to fetch policy defaults" });
+    }
+  });
+
+  const payrollBatchCreateSchema = z.object({
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    companyId: z.string().optional(),
+    notes: z.string().optional(),
+  });
+
+  app.get("/api/payroll/exports", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const companyId = req.query.companyId as string | undefined;
+      const exports = await storage.getPayrollExports(companyId);
+      res.json(exports);
+    } catch (error) {
+      console.error("Error fetching payroll exports:", error);
+      res.status(500).json({ message: "Failed to fetch payroll exports" });
+    }
+  });
+
+  app.get("/api/payroll/exports/:id", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const exp = await storage.getPayrollExport(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+      res.json(exp);
+    } catch (error) {
+      console.error("Error fetching payroll export:", error);
+      res.status(500).json({ message: "Failed to fetch payroll export" });
+    }
+  });
+
+  app.post("/api/payroll/exports", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const parsed = payrollBatchCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid payroll batch data", errors: parsed.error.flatten() });
+      }
+
+      const { startDate, endDate, companyId, notes } = parsed.data;
+      const adminUser = req.authUser as User;
+
+      if (startDate > endDate) {
+        return res.status(400).json({ message: "Start date must be before end date" });
+      }
+
+      const unresolvedExceptions = await storage.getPendingAttendanceExceptions();
+      const attendanceRecords = await storage.getAttendanceByDateRange(startDate, endDate);
+      const allUsers = await storage.getAllUsers();
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+      const missingPunches = attendanceRecords.filter(
+        r => r.clockIn && !r.clockOut && r.status !== "in-progress"
+      );
+
+      const dateRangeExceptions = unresolvedExceptions.filter(
+        e => e.exceptionDate >= startDate && e.exceptionDate <= endDate
+      );
+
+      if (dateRangeExceptions.length > 0) {
+        return res.status(400).json({
+          message: `Cannot create payroll batch: ${dateRangeExceptions.length} unresolved attendance exception(s) in date range`,
+          unresolvedExceptions: dateRangeExceptions.length,
+        });
+      }
+
+      if (missingPunches.length > 0) {
+        return res.status(400).json({
+          message: `Cannot create payroll batch: ${missingPunches.length} record(s) with missing clock-out in date range`,
+          missingPunches: missingPunches.length,
+        });
+      }
+
+      const unapprovedEdits = attendanceRecords.filter(r => !r.approved);
+      if (unapprovedEdits.length > 0) {
+        return res.status(400).json({
+          message: `Cannot create payroll batch: ${unapprovedEdits.length} unapproved attendance record(s) in date range`,
+          unapprovedEdits: unapprovedEdits.length,
+        });
+      }
+
+      const overlapping = await storage.getOverlappingPayrollExports(startDate, endDate, companyId);
+      let overlapWarning: string | undefined;
+      if (overlapping.length > 0) {
+        overlapWarning = `Warning: ${overlapping.length} existing export(s) overlap with this date range`;
+      }
+
+      const timeOffRequests = await storage.getAllTimeOffRequests();
+      const approvedTimeOff = timeOffRequests.filter(
+        r => r.status === "approved" && r.startDate <= endDate && r.endDate >= startDate
+      );
+
+      const totalRecordCount = attendanceRecords.length + approvedTimeOff.length;
+
+      const payrollExport = await db.transaction(async (tx) => {
+        const [created] = await tx.insert(payrollExportsTable).values({
+          startDate,
+          endDate,
+          companyId: companyId || null,
+          status: "draft",
+          notes: notes || null,
+          createdBy: adminUser.id,
+          recordCount: totalRecordCount,
+          exportedAt: null,
+          exportedBy: null,
+          lockedAt: null,
+          lockedBy: null,
+          reopenedAt: null,
+          reopenedBy: null,
+        }).returning();
+
+        for (const record of attendanceRecords) {
+          const hours = record.hoursWorked || 0;
+          const hasIssue = !record.clockIn || (!record.clockOut && record.status !== "in-progress");
+
+          await tx.insert(payrollBatchRecordsTable).values({
+            payrollExportId: created.id,
+            employeeId: record.employeeId,
+            punchLogId: record.id,
+            timeOffRequestId: null,
+            recordType: "attendance",
+            workDate: record.workDate,
+            regularHours: Math.min(hours, 8),
+            overtimeHours: Math.max(0, hours - 8),
+            ptoHours: 0,
+            hasIssues: hasIssue,
+            issueDescription: hasIssue ? `Missing punch data on ${record.workDate}` : null,
+          });
+        }
+
+        for (const tor of approvedTimeOff) {
+          const ptoHours = (tor.daysRequested || 1) * 8;
+          const effectiveStart = tor.startDate > startDate ? tor.startDate : startDate;
+
+          await tx.insert(payrollBatchRecordsTable).values({
+            payrollExportId: created.id,
+            employeeId: tor.userId,
+            punchLogId: null,
+            timeOffRequestId: tor.id,
+            recordType: "pto",
+            workDate: effectiveStart,
+            regularHours: 0,
+            overtimeHours: 0,
+            ptoHours,
+            hasIssues: false,
+            issueDescription: null,
+          });
+        }
+
+        return created;
+      });
+
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "payroll_export",
+        targetId: payrollExport.id,
+        action: "payroll_export.created",
+        newValue: { startDate, endDate, recordCount: attendanceRecords.length + approvedTimeOff.length },
+        ...auditCtx,
+      });
+
+      res.status(201).json({
+        ...payrollExport,
+        recordCount: attendanceRecords.length + approvedTimeOff.length,
+        overlapWarning,
+      });
+    } catch (error) {
+      console.error("Error creating payroll batch:", error);
+      res.status(500).json({ message: "Failed to create payroll batch" });
+    }
+  });
+
+  app.get("/api/payroll/exports/:id/records", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const exp = await storage.getPayrollExport(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+
+      const records = await storage.getPayrollBatchRecords(req.params.id);
+      res.json(records);
+    } catch (error) {
+      console.error("Error fetching batch records:", error);
+      res.status(500).json({ message: "Failed to fetch batch records" });
+    }
+  });
+
+  app.get("/api/payroll/exports/:id/summary", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const exp = await storage.getPayrollExport(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+
+      const records = await storage.getPayrollBatchRecords(req.params.id);
+      const allUsers = await storage.getAllUsers();
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+      const summary = new Map<string, { employeeId: string; employeeName: string; regularHours: number; overtimeHours: number; ptoHours: number; hasIssues: boolean }>();
+
+      for (const r of records) {
+        if (!summary.has(r.employeeId)) {
+          const user = userMap.get(r.employeeId);
+          summary.set(r.employeeId, {
+            employeeId: r.employeeId,
+            employeeName: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Unknown",
+            regularHours: 0,
+            overtimeHours: 0,
+            ptoHours: 0,
+            hasIssues: false,
+          });
+        }
+        const emp = summary.get(r.employeeId)!;
+        emp.regularHours += r.regularHours || 0;
+        emp.overtimeHours += r.overtimeHours || 0;
+        emp.ptoHours += r.ptoHours || 0;
+        if (r.hasIssues) emp.hasIssues = true;
+      }
+
+      res.json(Array.from(summary.values()));
+    } catch (error) {
+      console.error("Error fetching payroll summary:", error);
+      res.status(500).json({ message: "Failed to fetch payroll summary" });
+    }
+  });
+
+  app.post("/api/payroll/exports/:id/export-csv", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const exp = await storage.getPayrollExport(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+
+      if (exp.status === "locked") {
+        return res.status(400).json({ message: "Cannot export a locked payroll batch. Reopen it first." });
+      }
+
+      const records = await storage.getPayrollBatchRecords(req.params.id);
+      const allUsers = await storage.getAllUsers();
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+      const summary = new Map<string, { employeeName: string; regularHours: number; overtimeHours: number; ptoHours: number; hasIssues: boolean }>();
+
+      for (const r of records) {
+        if (!summary.has(r.employeeId)) {
+          const user = userMap.get(r.employeeId);
+          summary.set(r.employeeId, {
+            employeeName: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Unknown",
+            regularHours: 0,
+            overtimeHours: 0,
+            ptoHours: 0,
+            hasIssues: false,
+          });
+        }
+        const emp = summary.get(r.employeeId)!;
+        emp.regularHours += r.regularHours || 0;
+        emp.overtimeHours += r.overtimeHours || 0;
+        emp.ptoHours += r.ptoHours || 0;
+        if (r.hasIssues) emp.hasIssues = true;
+      }
+
+      const overlapping = await storage.getOverlappingPayrollExports(exp.startDate, exp.endDate, exp.companyId || undefined);
+      const previousExports = overlapping.filter(o => o.id !== exp.id);
+      let reexportWarning: string | undefined;
+      if (previousExports.length > 0) {
+        reexportWarning = `Warning: Re-exporting data that overlaps with ${previousExports.length} previous export(s)`;
+      }
+
+      let csv = "Employee,Regular Hours,OT Hours,PTO Hours,Issues\n";
+      for (const [, emp] of summary) {
+        const issueFlag = emp.hasIssues ? "Yes" : "No";
+        csv += `"${emp.employeeName}",${Math.round(emp.regularHours * 100) / 100},${Math.round(emp.overtimeHours * 100) / 100},${Math.round(emp.ptoHours * 100) / 100},${issueFlag}\n`;
+      }
+
+      const adminUser = req.authUser as User;
+      await storage.updatePayrollExport(exp.id, {
+        status: "exported",
+        exportedAt: new Date(),
+        exportedBy: adminUser.id,
+      });
+
+      if (reexportWarning) {
+        res.setHeader("X-Payroll-Overlap-Warning", reexportWarning);
+      }
+
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "payroll_export",
+        targetId: exp.id,
+        action: "payroll_export.exported",
+        newValue: { status: "exported", employeeCount: summary.size },
+        ...auditCtx,
+      });
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename="payroll_${exp.startDate}_to_${exp.endDate}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error("Error exporting payroll CSV:", error);
+      res.status(500).json({ message: "Failed to export payroll CSV" });
+    }
+  });
+
+  app.post("/api/payroll/exports/:id/lock", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const exp = await storage.getPayrollExport(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+
+      if (exp.status !== "exported") {
+        return res.status(400).json({ message: "Only exported batches can be locked" });
+      }
+
+      const adminUser = req.authUser as User;
+      const updated = await storage.updatePayrollExport(exp.id, {
+        status: "locked",
+        lockedAt: new Date(),
+        lockedBy: adminUser.id,
+      });
+
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "payroll_export",
+        targetId: exp.id,
+        action: "payroll_export.locked",
+        oldValue: { status: "exported" },
+        newValue: { status: "locked" },
+        ...auditCtx,
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error locking payroll batch:", error);
+      res.status(500).json({ message: "Failed to lock payroll batch" });
+    }
+  });
+
+  app.post("/api/payroll/exports/:id/reopen", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const exp = await storage.getPayrollExport(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+
+      if (exp.status !== "locked" && exp.status !== "exported") {
+        return res.status(400).json({ message: "Only locked or exported batches can be reopened" });
+      }
+
+      const adminUser = req.authUser as User;
+      const updated = await storage.updatePayrollExport(exp.id, {
+        status: "reopened",
+        reopenedAt: new Date(),
+        reopenedBy: adminUser.id,
+      });
+
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "payroll_export",
+        targetId: exp.id,
+        action: "payroll_export.reopened",
+        oldValue: { status: exp.status },
+        newValue: { status: "reopened" },
+        ...auditCtx,
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error reopening payroll batch:", error);
+      res.status(500).json({ message: "Failed to reopen payroll batch" });
+    }
+  });
+
+  app.get("/api/payroll/exports/:id/adjustments", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const exp = await storage.getPayrollExport(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+
+      const adjustments = await storage.getPayrollAdjustmentsByExport(req.params.id);
+      res.json(adjustments);
+    } catch (error) {
+      console.error("Error fetching payroll adjustments:", error);
+      res.status(500).json({ message: "Failed to fetch payroll adjustments" });
+    }
+  });
+
+  app.get("/api/payroll/adjustments/pending", requireAuth, requireRole("admin"), async (_req, res) => {
+    try {
+      const adjustments = await storage.getPendingPayrollAdjustments();
+      res.json(adjustments);
+    } catch (error) {
+      console.error("Error fetching pending adjustments:", error);
+      res.status(500).json({ message: "Failed to fetch pending adjustments" });
+    }
+  });
+
+  app.post("/api/payroll/adjustments/:id/acknowledge", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const adjustment = await storage.getPayrollAdjustment(req.params.id);
+      if (!adjustment) return res.status(404).json({ message: "Adjustment not found" });
+
+      const adminUser = req.authUser as User;
+      const updated = await storage.updatePayrollAdjustment(adjustment.id, {
+        status: "acknowledged",
+        reviewedBy: adminUser.id,
+        reviewedAt: new Date(),
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error acknowledging adjustment:", error);
+      res.status(500).json({ message: "Failed to acknowledge adjustment" });
+    }
+  });
+
+  app.get("/api/payroll/overlap-check", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const startDate = req.query.startDate as string;
+      const endDate = req.query.endDate as string;
+      const companyId = req.query.companyId as string | undefined;
+
+      if (!startDate || !endDate) {
+        return res.status(400).json({ message: "startDate and endDate are required" });
+      }
+
+      const overlapping = await storage.getOverlappingPayrollExports(startDate, endDate, companyId);
+      res.json({
+        hasOverlap: overlapping.length > 0,
+        overlappingExports: overlapping,
+      });
+    } catch (error) {
+      console.error("Error checking overlap:", error);
+      res.status(500).json({ message: "Failed to check overlap" });
     }
   });
 

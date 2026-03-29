@@ -31,6 +31,9 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 - **pto_policies**: Configurable PTO policy definitions with accrual type/rate, yearly/carryover caps, waiting period, sick leave accrual rules (rate per hours worked, yearly cap), holiday pay toggles (paid/unpaid, PTO deduction, OT exclusion), isDefault flag
 - **employee_pto_settings**: Per-employee PTO policy assignment and balance overrides (vacation/sick/personal), hire date for waiting period calculation
 - **audit_logs**: Audit trail for PTO approvals, denials, policy changes, and balance adjustments (action, module, targetId, performedBy, details JSONB)
+- **payroll_exports**: Payroll batch exports with status tracking (draft/exported/locked/reopened), date range, exportedAt/By, lockedAt/By, reopenedAt/By, recordCount
+- **payroll_batch_records**: Individual records in a payroll batch (attendance or PTO), linked to payrollExportId, employeeId, punchLogId, timeOffRequestId, with regularHours, overtimeHours, ptoHours, hasIssues flag
+- **payroll_adjustments**: Auto-flagged when punch records are modified after export (payrollExportId, employeeId, punchLogId, adjustmentDate, reason, status pending/acknowledged)
 - **employee_pins**: Hashed PIN codes for kiosk clock-in (userId FK to users)
 - **kiosk_devices**: Registered kiosk terminals (departmentId FK to departments)
 - **sessions**: Auth session storage

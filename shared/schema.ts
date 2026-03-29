@@ -470,3 +470,92 @@ export const policyAssignmentsRelations = relations(policyAssignments, ({ one })
   department: one(departments, { fields: [policyAssignments.departmentId], references: [departments.id] }),
   user: one(users, { fields: [policyAssignments.userId], references: [users.id] }),
 }));
+
+export const payrollExports = pgTable("payroll_exports", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").references(() => companies.id),
+  startDate: date("start_date").notNull(),
+  endDate: date("end_date").notNull(),
+  status: varchar("status", { length: 20 }).default("draft").notNull(),
+  exportedAt: timestamp("exported_at"),
+  exportedBy: varchar("exported_by").references(() => users.id),
+  lockedAt: timestamp("locked_at"),
+  lockedBy: varchar("locked_by").references(() => users.id),
+  reopenedAt: timestamp("reopened_at"),
+  reopenedBy: varchar("reopened_by").references(() => users.id),
+  notes: text("notes"),
+  recordCount: integer("record_count").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export const insertPayrollExportSchema = createInsertSchema(payrollExports).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertPayrollExport = z.infer<typeof insertPayrollExportSchema>;
+export type PayrollExport = typeof payrollExports.$inferSelect;
+
+export const payrollBatchRecords = pgTable("payroll_batch_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  payrollExportId: varchar("payroll_export_id").notNull().references(() => payrollExports.id),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  punchLogId: varchar("punch_log_id").references(() => punchLogs.id),
+  timeOffRequestId: varchar("time_off_request_id").references(() => timeOffRequests.id),
+  recordType: varchar("record_type", { length: 20 }).notNull(),
+  workDate: date("work_date").notNull(),
+  regularHours: real("regular_hours").default(0),
+  overtimeHours: real("overtime_hours").default(0),
+  ptoHours: real("pto_hours").default(0),
+  hasIssues: boolean("has_issues").default(false).notNull(),
+  issueDescription: text("issue_description"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPayrollBatchRecordSchema = createInsertSchema(payrollBatchRecords).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertPayrollBatchRecord = z.infer<typeof insertPayrollBatchRecordSchema>;
+export type PayrollBatchRecord = typeof payrollBatchRecords.$inferSelect;
+
+export const payrollAdjustments = pgTable("payroll_adjustments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  payrollExportId: varchar("payroll_export_id").notNull().references(() => payrollExports.id),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  punchLogId: varchar("punch_log_id").references(() => punchLogs.id),
+  adjustmentDate: date("adjustment_date").notNull(),
+  reason: text("reason").notNull(),
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
+  reviewedBy: varchar("reviewed_by").references(() => users.id),
+  reviewedAt: timestamp("reviewed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPayrollAdjustmentSchema = createInsertSchema(payrollAdjustments).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertPayrollAdjustment = z.infer<typeof insertPayrollAdjustmentSchema>;
+export type PayrollAdjustment = typeof payrollAdjustments.$inferSelect;
+
+export const payrollExportsRelations = relations(payrollExports, ({ one, many }) => ({
+  company: one(companies, { fields: [payrollExports.companyId], references: [companies.id] }),
+  exporter: one(users, { fields: [payrollExports.exportedBy], references: [users.id] }),
+  creator: one(users, { fields: [payrollExports.createdBy], references: [users.id] }),
+  batchRecords: many(payrollBatchRecords),
+  adjustments: many(payrollAdjustments),
+}));
+
+export const payrollBatchRecordsRelations = relations(payrollBatchRecords, ({ one }) => ({
+  payrollExport: one(payrollExports, { fields: [payrollBatchRecords.payrollExportId], references: [payrollExports.id] }),
+  employee: one(users, { fields: [payrollBatchRecords.employeeId], references: [users.id] }),
+  punchLog: one(punchLogs, { fields: [payrollBatchRecords.punchLogId], references: [punchLogs.id] }),
+  timeOffRequest: one(timeOffRequests, { fields: [payrollBatchRecords.timeOffRequestId], references: [timeOffRequests.id] }),
+}));
+
+export const payrollAdjustmentsRelations = relations(payrollAdjustments, ({ one }) => ({
+  payrollExport: one(payrollExports, { fields: [payrollAdjustments.payrollExportId], references: [payrollExports.id] }),
+  employee: one(users, { fields: [payrollAdjustments.employeeId], references: [users.id] }),
+  punchLog: one(punchLogs, { fields: [payrollAdjustments.punchLogId], references: [punchLogs.id] }),
+}));

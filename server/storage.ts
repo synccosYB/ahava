@@ -64,6 +64,15 @@ import {
   type PolicyAssignment,
   type InsertPolicyAssignment,
   policyTypes,
+  payrollExports,
+  type PayrollExport,
+  type InsertPayrollExport,
+  payrollBatchRecords,
+  type PayrollBatchRecord,
+  type InsertPayrollBatchRecord,
+  payrollAdjustments,
+  type PayrollAdjustment,
+  type InsertPayrollAdjustment,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
@@ -239,6 +248,24 @@ export interface IStorage {
 
   getPolicyTypeByKey(key: string): Promise<{ id: string; key: string; name: string } | undefined>;
   getAllPolicyTypes(): Promise<{ id: string; key: string; name: string; description: string | null; module: string | null; isActive: boolean }[]>;
+
+  getPayrollExport(id: string): Promise<PayrollExport | undefined>;
+  getPayrollExports(companyId?: string): Promise<PayrollExport[]>;
+  getOverlappingPayrollExports(startDate: string, endDate: string, companyId?: string): Promise<PayrollExport[]>;
+  createPayrollExport(data: InsertPayrollExport): Promise<PayrollExport>;
+  updatePayrollExport(id: string, data: Partial<InsertPayrollExport>): Promise<PayrollExport | undefined>;
+
+  getPayrollBatchRecords(exportId: string): Promise<PayrollBatchRecord[]>;
+  createPayrollBatchRecord(data: InsertPayrollBatchRecord): Promise<PayrollBatchRecord>;
+  deletePayrollBatchRecords(exportId: string): Promise<void>;
+
+  getPayrollAdjustment(id: string): Promise<PayrollAdjustment | undefined>;
+  getPayrollAdjustmentsByExport(exportId: string): Promise<PayrollAdjustment[]>;
+  getPendingPayrollAdjustments(): Promise<PayrollAdjustment[]>;
+  createPayrollAdjustment(data: InsertPayrollAdjustment): Promise<PayrollAdjustment>;
+  updatePayrollAdjustment(id: string, data: Partial<InsertPayrollAdjustment>): Promise<PayrollAdjustment | undefined>;
+
+  getExportedBatchRecordsByPunchLog(punchLogId: string): Promise<(PayrollBatchRecord & { payrollExport?: PayrollExport })[]>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -1245,6 +1272,98 @@ export class DatabaseStorage implements IStorage {
 
   async getAllPolicyTypes(): Promise<{ id: string; key: string; name: string; description: string | null; module: string | null; isActive: boolean }[]> {
     return db.select().from(policyTypes);
+  }
+
+  async getPayrollExport(id: string): Promise<PayrollExport | undefined> {
+    const [record] = await db.select().from(payrollExports).where(eq(payrollExports.id, id));
+    return record;
+  }
+
+  async getPayrollExports(companyId?: string): Promise<PayrollExport[]> {
+    if (companyId) {
+      return db.select().from(payrollExports)
+        .where(eq(payrollExports.companyId, companyId))
+        .orderBy(desc(payrollExports.createdAt));
+    }
+    return db.select().from(payrollExports).orderBy(desc(payrollExports.createdAt));
+  }
+
+  async getOverlappingPayrollExports(startDate: string, endDate: string, companyId?: string): Promise<PayrollExport[]> {
+    const conditions = [
+      lte(payrollExports.startDate, endDate),
+      gte(payrollExports.endDate, startDate),
+      ne(payrollExports.status, "draft"),
+    ];
+    if (companyId) {
+      conditions.push(eq(payrollExports.companyId, companyId));
+    }
+    return db.select().from(payrollExports).where(and(...conditions));
+  }
+
+  async createPayrollExport(data: InsertPayrollExport): Promise<PayrollExport> {
+    const [created] = await db.insert(payrollExports).values(data).returning();
+    return created;
+  }
+
+  async updatePayrollExport(id: string, data: Partial<InsertPayrollExport>): Promise<PayrollExport | undefined> {
+    const [updated] = await db.update(payrollExports).set(data).where(eq(payrollExports.id, id)).returning();
+    return updated;
+  }
+
+  async getPayrollBatchRecords(exportId: string): Promise<PayrollBatchRecord[]> {
+    return db.select().from(payrollBatchRecords)
+      .where(eq(payrollBatchRecords.payrollExportId, exportId))
+      .orderBy(payrollBatchRecords.employeeId, payrollBatchRecords.workDate);
+  }
+
+  async createPayrollBatchRecord(data: InsertPayrollBatchRecord): Promise<PayrollBatchRecord> {
+    const [created] = await db.insert(payrollBatchRecords).values(data).returning();
+    return created;
+  }
+
+  async deletePayrollBatchRecords(exportId: string): Promise<void> {
+    await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exportId));
+  }
+
+  async getPayrollAdjustment(id: string): Promise<PayrollAdjustment | undefined> {
+    const [record] = await db.select().from(payrollAdjustments).where(eq(payrollAdjustments.id, id));
+    return record;
+  }
+
+  async getPayrollAdjustmentsByExport(exportId: string): Promise<PayrollAdjustment[]> {
+    return db.select().from(payrollAdjustments)
+      .where(eq(payrollAdjustments.payrollExportId, exportId))
+      .orderBy(desc(payrollAdjustments.createdAt));
+  }
+
+  async getPendingPayrollAdjustments(): Promise<PayrollAdjustment[]> {
+    return db.select().from(payrollAdjustments)
+      .where(eq(payrollAdjustments.status, "pending"))
+      .orderBy(desc(payrollAdjustments.createdAt));
+  }
+
+  async createPayrollAdjustment(data: InsertPayrollAdjustment): Promise<PayrollAdjustment> {
+    const [created] = await db.insert(payrollAdjustments).values(data).returning();
+    return created;
+  }
+
+  async updatePayrollAdjustment(id: string, data: Partial<InsertPayrollAdjustment>): Promise<PayrollAdjustment | undefined> {
+    const [updated] = await db.update(payrollAdjustments).set(data).where(eq(payrollAdjustments.id, id)).returning();
+    return updated;
+  }
+
+  async getExportedBatchRecordsByPunchLog(punchLogId: string): Promise<(PayrollBatchRecord & { payrollExport?: PayrollExport })[]> {
+    const results = await db
+      .select({ batchRecord: payrollBatchRecords, payrollExport: payrollExports })
+      .from(payrollBatchRecords)
+      .innerJoin(payrollExports, eq(payrollExports.id, payrollBatchRecords.payrollExportId))
+      .where(
+        and(
+          eq(payrollBatchRecords.punchLogId, punchLogId),
+          or(eq(payrollExports.status, "exported"), eq(payrollExports.status, "locked"))
+        )
+      );
+    return results.map(r => ({ ...r.batchRecord, payrollExport: r.payrollExport }));
   }
 }
 
