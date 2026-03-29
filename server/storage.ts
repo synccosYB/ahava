@@ -22,7 +22,7 @@ import {
   type InsertKioskDevice,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, ilike, desc } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -43,9 +43,17 @@ export interface IStorage {
   createAttendanceRecord(record: InsertAttendanceRecord): Promise<AttendanceRecord>;
   updateAttendanceRecord(id: string, record: Partial<InsertAttendanceRecord>): Promise<AttendanceRecord | undefined>;
 
+  clockIn(userId: string): Promise<AttendanceRecord>;
+  clockOut(userId: string): Promise<AttendanceRecord | undefined>;
+  getCurrentAttendance(userId: string): Promise<AttendanceRecord | undefined>;
+  getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<AttendanceRecord[]>;
+  getTodayHours(userId: string): Promise<number>;
+  getWeekHours(userId: string): Promise<number>;
+
   getTimeOffRequest(id: string): Promise<TimeOffRequest | undefined>;
   getTimeOffRequestsByUser(userId: string): Promise<TimeOffRequest[]>;
   getPendingTimeOffRequests(): Promise<TimeOffRequest[]>;
+  getAllTimeOffRequests(): Promise<TimeOffRequest[]>;
   createTimeOffRequest(request: InsertTimeOffRequest): Promise<TimeOffRequest>;
   updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date }>): Promise<TimeOffRequest | undefined>;
 
@@ -53,6 +61,7 @@ export interface IStorage {
   getTimeOffBalancesByUser(userId: string, year: number): Promise<TimeOffBalance[]>;
   createTimeOffBalance(balance: InsertTimeOffBalance): Promise<TimeOffBalance>;
   updateTimeOffBalance(id: string, balance: Partial<InsertTimeOffBalance>): Promise<TimeOffBalance | undefined>;
+  computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }>;
 
   getEmployeePin(userId: string): Promise<EmployeePin | undefined>;
   createEmployeePin(pin: InsertEmployeePin): Promise<EmployeePin>;
@@ -141,17 +150,118 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  async clockIn(userId: string): Promise<AttendanceRecord> {
+    const now = new Date();
+    const dateStr = now.toISOString().split("T")[0];
+    const [record] = await db.insert(attendanceRecords).values({
+      userId,
+      date: dateStr,
+      clockIn: now,
+      status: "in-progress",
+    }).returning();
+    return record;
+  }
+
+  async clockOut(userId: string): Promise<AttendanceRecord | undefined> {
+    const current = await this.getCurrentAttendance(userId);
+    if (!current || !current.clockIn) return undefined;
+
+    const now = new Date();
+    const clockInTime = new Date(current.clockIn).getTime();
+    const totalMs = now.getTime() - clockInTime;
+    const breakMs = (current.breakMinutes || 0) * 60 * 1000;
+    const totalHours = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+
+    const [updated] = await db
+      .update(attendanceRecords)
+      .set({ clockOut: now, totalHours, status: totalHours > 8 ? "overtime" : "complete" })
+      .where(eq(attendanceRecords.id, current.id))
+      .returning();
+    return updated;
+  }
+
+  async getCurrentAttendance(userId: string): Promise<AttendanceRecord | undefined> {
+    const [record] = await db
+      .select()
+      .from(attendanceRecords)
+      .where(and(eq(attendanceRecords.userId, userId), eq(attendanceRecords.status, "in-progress")))
+      .orderBy(desc(attendanceRecords.clockIn))
+      .limit(1);
+    return record;
+  }
+
+  async getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<AttendanceRecord[]> {
+    const conditions = [eq(attendanceRecords.userId, userId)];
+    if (startDate) conditions.push(gte(attendanceRecords.date, startDate));
+    if (endDate) conditions.push(lte(attendanceRecords.date, endDate));
+
+    return db
+      .select()
+      .from(attendanceRecords)
+      .where(and(...conditions))
+      .orderBy(desc(attendanceRecords.date));
+  }
+
+  async getTodayHours(userId: string): Promise<number> {
+    const today = new Date().toISOString().split("T")[0];
+    const records = await db
+      .select()
+      .from(attendanceRecords)
+      .where(and(eq(attendanceRecords.userId, userId), eq(attendanceRecords.date, today)));
+
+    let total = 0;
+    for (const r of records) {
+      if (r.totalHours) {
+        total += r.totalHours;
+      } else if (r.status === "in-progress" && r.clockIn) {
+        const elapsed = (Date.now() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
+        total += Math.round(elapsed * 100) / 100;
+      }
+    }
+    return total;
+  }
+
+  async getWeekHours(userId: string): Promise<number> {
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+    const startDate = monday.toISOString().split("T")[0];
+
+    const records = await db
+      .select()
+      .from(attendanceRecords)
+      .where(and(eq(attendanceRecords.userId, userId), gte(attendanceRecords.date, startDate)));
+
+    let total = 0;
+    for (const r of records) {
+      if (r.totalHours) {
+        total += r.totalHours;
+      } else if (r.status === "in-progress" && r.clockIn) {
+        const elapsed = (Date.now() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
+        total += Math.round(elapsed * 100) / 100;
+      }
+    }
+    return total;
+  }
+
   async getTimeOffRequest(id: string): Promise<TimeOffRequest | undefined> {
     const [request] = await db.select().from(timeOffRequests).where(eq(timeOffRequests.id, id));
     return request;
   }
 
   async getTimeOffRequestsByUser(userId: string): Promise<TimeOffRequest[]> {
-    return db.select().from(timeOffRequests).where(eq(timeOffRequests.userId, userId));
+    return db.select().from(timeOffRequests)
+      .where(eq(timeOffRequests.userId, userId))
+      .orderBy(desc(timeOffRequests.createdAt));
   }
 
   async getPendingTimeOffRequests(): Promise<TimeOffRequest[]> {
     return db.select().from(timeOffRequests).where(eq(timeOffRequests.status, "pending"));
+  }
+
+  async getAllTimeOffRequests(): Promise<TimeOffRequest[]> {
+    return db.select().from(timeOffRequests).orderBy(desc(timeOffRequests.createdAt));
   }
 
   async createTimeOffRequest(request: InsertTimeOffRequest): Promise<TimeOffRequest> {
@@ -185,6 +295,35 @@ export class DatabaseStorage implements IStorage {
   async updateTimeOffBalance(id: string, balance: Partial<InsertTimeOffBalance>): Promise<TimeOffBalance | undefined> {
     const [updated] = await db.update(timeOffBalances).set(balance).where(eq(timeOffBalances.id, id)).returning();
     return updated;
+  }
+
+  async computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }> {
+    const ANNUAL_VACATION = 15;
+    const ANNUAL_SICK = 10;
+    const ANNUAL_PERSONAL = 5;
+
+    const requests = await db
+      .select()
+      .from(timeOffRequests)
+      .where(eq(timeOffRequests.userId, userId));
+
+    let usedVacation = 0;
+    let usedSick = 0;
+    let usedPersonal = 0;
+
+    for (const r of requests) {
+      if (r.status !== "approved") continue;
+      const days = r.daysRequested || 1;
+      if (r.type === "vacation") usedVacation += days;
+      else if (r.type === "sick") usedSick += days;
+      else if (r.type === "personal") usedPersonal += days;
+    }
+
+    return {
+      vacation: ANNUAL_VACATION - usedVacation,
+      sick: ANNUAL_SICK - usedSick,
+      personal: ANNUAL_PERSONAL - usedPersonal,
+    };
   }
 
   async getEmployeePin(userId: string): Promise<EmployeePin | undefined> {

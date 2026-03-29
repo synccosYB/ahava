@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import type { TimeOffRequest, User } from "@shared/schema";
 
@@ -161,30 +162,36 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="p-4">
-        <div className="flex items-center gap-3">
-          <Avatar className="h-8 w-8" data-testid="img-user-avatar">
-            <AvatarImage src={user?.profileImageUrl || undefined} />
-            <AvatarFallback className="text-xs bg-sidebar-accent text-sidebar-accent-foreground">
-              {getInitials(user?.firstName, user?.lastName)}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex flex-col flex-1 min-w-0">
-            <span className="text-sm font-medium text-sidebar-foreground truncate" data-testid="text-user-name">
-              {user?.firstName} {user?.lastName}
-            </span>
-            <Badge variant="outline" className="w-fit text-[10px] px-1.5 py-0 text-sidebar-foreground/60 border-sidebar-foreground/20" data-testid="badge-user-role">
-              {role}
-            </Badge>
+        {user ? (
+          <div className="flex items-center gap-3">
+            <Avatar className="h-8 w-8" data-testid="img-user-avatar">
+              <AvatarImage src={user?.profileImageUrl || undefined} />
+              <AvatarFallback className="text-xs bg-sidebar-accent text-sidebar-accent-foreground">
+                {getInitials(user?.firstName, user?.lastName)}
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className="text-sm font-medium text-sidebar-foreground truncate" data-testid="text-user-name">
+                {user?.firstName} {user?.lastName}
+              </span>
+              <Badge variant="outline" className="w-fit text-[10px] px-1.5 py-0 text-sidebar-foreground/60 border-sidebar-foreground/20" data-testid="badge-user-role">
+                {role}
+              </Badge>
+            </div>
+            <button
+              onClick={() => logout()}
+              className="text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
+              title="Sign out"
+              data-testid="button-logout"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
           </div>
-          <button
-            onClick={() => logout()}
-            className="text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
-            title="Sign out"
-            data-testid="button-logout"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
-        </div>
+        ) : (
+          <a href="/api/login" data-testid="link-login">
+            <Button variant="outline" className="w-full">Sign In</Button>
+          </a>
+        )}
       </SidebarFooter>
     </Sidebar>
   );

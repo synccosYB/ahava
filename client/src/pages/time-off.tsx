@@ -1,0 +1,382 @@
+import { useState, useMemo } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useAuth } from "@/hooks/use-auth";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/hooks/use-toast";
+import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
+import type { TimeOffRequest } from "@shared/schema";
+
+interface PtoBalance {
+  vacation: number;
+  sick: number;
+  personal: number;
+}
+
+export default function TimeOff() {
+  const { user, isAuthenticated } = useAuth();
+  const { toast } = useToast();
+
+  const [type, setType] = useState("vacation");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [reason, setReason] = useState("");
+
+  const { data: requests, isLoading: requestsLoading } = useQuery<TimeOffRequest[]>({
+    queryKey: ["/api/time-off"],
+    enabled: isAuthenticated,
+  });
+
+  const { data: balance, isLoading: balanceLoading } = useQuery<PtoBalance>({
+    queryKey: ["/api/time-off/balance"],
+    enabled: isAuthenticated,
+  });
+
+  const { data: teamRequests, isLoading: teamLoading } = useQuery<TimeOffRequest[]>({
+    queryKey: ["/api/time-off/team"],
+    enabled: isAuthenticated,
+  });
+
+  const submitMutation = useMutation({
+    mutationFn: async () => {
+      const daysRequested = calculateDays();
+      return apiRequest("POST", "/api/time-off", {
+        type,
+        startDate,
+        endDate,
+        daysRequested,
+        reason: reason || null,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/time-off/balance"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
+      setType("vacation");
+      setStartDate("");
+      setEndDate("");
+      setReason("");
+      toast({ title: "Request Submitted", description: "Your time off request has been submitted." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const calculateDays = () => {
+    if (!startDate || !endDate) return 0;
+    const parts1 = startDate.split("-").map(Number);
+    const parts2 = endDate.split("-").map(Number);
+    if (parts1.length !== 3 || parts2.length !== 3) return 0;
+    const start = new Date(Date.UTC(parts1[0], parts1[1] - 1, parts1[2]));
+    const end = new Date(Date.UTC(parts2[0], parts2[1] - 1, parts2[2]));
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
+    if (end < start) return 0;
+    let count = 0;
+    const current = new Date(start);
+    while (current <= end) {
+      const day = current.getUTCDay();
+      if (day !== 0 && day !== 6) count++;
+      current.setUTCDate(current.getUTCDate() + 1);
+    }
+    return count;
+  };
+
+  const daysRequested = calculateDays();
+
+  const remainingBalance = useMemo(() => {
+    if (!balance) return 0;
+    if (type === "vacation") return balance.vacation;
+    if (type === "sick") return balance.sick;
+    if (type === "personal") return balance.personal;
+    return 0;
+  }, [balance, type]);
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case "pending":
+        return <Badge variant="secondary" className="bg-amber-100 text-amber-800 border-amber-300" data-testid="badge-status-pending">Pending</Badge>;
+      case "approved":
+        return <Badge variant="default" className="bg-green-600" data-testid="badge-status-approved">Approved</Badge>;
+      case "denied":
+        return <Badge variant="destructive" data-testid="badge-status-denied">Denied</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
+  const getStatusBorderColor = (status: string) => {
+    switch (status) {
+      case "pending": return "border-l-amber-500";
+      case "approved": return "border-l-green-500";
+      case "denied": return "border-l-red-500";
+      default: return "border-l-gray-300";
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-5xl">
+      <h2 className="text-2xl font-bold" data-testid="text-page-title">Time Off</h2>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card data-testid="card-new-request">
+          <CardHeader>
+            <CardTitle>New Request</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-1">
+              <Label>Request Type</Label>
+              <Select value={type} onValueChange={setType}>
+                <SelectTrigger data-testid="select-request-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="vacation">Vacation</SelectItem>
+                  <SelectItem value="sick">Sick Leave</SelectItem>
+                  <SelectItem value="personal">Personal</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="time-off-start">Start Date</Label>
+              <Input
+                id="time-off-start"
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                data-testid="input-start-date"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="time-off-end">End Date</Label>
+              <Input
+                id="time-off-end"
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                data-testid="input-end-date"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="time-off-reason">Reason (Optional)</Label>
+              <Textarea
+                id="time-off-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Add a reason..."
+                data-testid="input-reason"
+              />
+            </div>
+
+            {startDate && endDate && daysRequested > 0 && (
+              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-days-summary">
+                <p className="font-semibold">Days Requested: {daysRequested}</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Remaining Balance: {remainingBalance - daysRequested} days
+                </p>
+              </div>
+            )}
+
+            <Button
+              onClick={() => submitMutation.mutate()}
+              disabled={!startDate || !endDate || daysRequested === 0 || submitMutation.isPending}
+              className="w-full"
+              data-testid="button-submit-request"
+            >
+              {submitMutation.isPending ? "Submitting..." : "Submit Request"}
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-my-requests">
+          <CardHeader>
+            <CardTitle>My Requests</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {requestsLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}
+              </div>
+            ) : !requests || requests.length === 0 ? (
+              <p className="text-center text-muted-foreground py-4" data-testid="text-no-requests">
+                No time off requests yet.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {requests.map((request) => (
+                  <div
+                    key={request.id}
+                    className={`border-l-4 ${getStatusBorderColor(request.status)} border rounded-md p-3`}
+                    data-testid={`card-request-${request.id}`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      {getStatusBadge(request.status)}
+                    </div>
+                    <p className="font-semibold mt-2">
+                      {formatDateRange(request.startDate, request.endDate)}
+                    </p>
+                    <p className="text-sm text-muted-foreground capitalize">
+                      {request.type} &bull; {request.daysRequested} day{request.daysRequested > 1 ? "s" : ""}
+                    </p>
+                    {request.status === "pending" && (
+                      <p className="text-sm text-amber-600 mt-1">Awaiting manager approval</p>
+                    )}
+                    {request.status === "approved" && (
+                      <p className="text-sm text-green-600 mt-1">Approved</p>
+                    )}
+                    {request.reason && (
+                      <p className="text-xs text-muted-foreground mt-1 italic">{request.reason}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <TeamCalendar
+        teamRequests={teamRequests || []}
+        isLoading={teamLoading}
+        currentUserId={user?.id}
+      />
+    </div>
+  );
+}
+
+function formatDateRange(start: string, end: string): string {
+  const startD = new Date(start + "T00:00:00");
+  const endD = new Date(end + "T00:00:00");
+  const options: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
+  if (start === end) return startD.toLocaleDateString("en-US", options);
+  return `${startD.toLocaleDateString("en-US", { month: "short", day: "numeric" })} - ${endD.toLocaleDateString("en-US", options)}`;
+}
+
+function TeamCalendar({
+  teamRequests,
+  isLoading,
+  currentUserId,
+}: {
+  teamRequests: TimeOffRequest[];
+  isLoading: boolean;
+  currentUserId?: string;
+}) {
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+
+  const year = currentMonth.getFullYear();
+  const month = currentMonth.getMonth();
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayOfWeek = new Date(year, month, 1).getDay();
+
+  const prevMonth = () => setCurrentMonth(new Date(year, month - 1, 1));
+  const nextMonth = () => setCurrentMonth(new Date(year, month + 1, 1));
+
+  const approvedRequests = teamRequests.filter((r) => r.status === "approved" || r.status === "pending");
+
+  const getRequestsForDay = (day: number) => {
+    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    return approvedRequests.filter((r) => r.startDate <= dateStr && r.endDate >= dateStr);
+  };
+
+  const monthName = currentMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  return (
+    <Card data-testid="card-team-calendar">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Calendar className="h-5 w-5" />
+            Team Calendar
+          </CardTitle>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="icon" onClick={prevMonth} data-testid="button-prev-month">
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <span className="text-sm font-medium min-w-[140px] text-center" data-testid="text-calendar-month">
+              {monthName}
+            </span>
+            <Button variant="outline" size="icon" onClick={nextMonth} data-testid="button-next-month">
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-64 w-full" />
+        ) : (
+          <>
+            <div className="grid grid-cols-7 gap-px bg-border rounded-md overflow-hidden">
+              {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+                <div key={d} className="bg-muted p-2 text-center text-xs font-semibold text-muted-foreground">
+                  {d}
+                </div>
+              ))}
+              {Array.from({ length: firstDayOfWeek }).map((_, i) => (
+                <div key={`empty-${i}`} className="bg-card p-2 min-h-[60px]" />
+              ))}
+              {Array.from({ length: daysInMonth }).map((_, i) => {
+                const day = i + 1;
+                const dayRequests = getRequestsForDay(day);
+                const isToday =
+                  day === new Date().getDate() &&
+                  month === new Date().getMonth() &&
+                  year === new Date().getFullYear();
+
+                return (
+                  <div
+                    key={day}
+                    className={`bg-card p-1 min-h-[60px] ${isToday ? "ring-2 ring-primary ring-inset" : ""}`}
+                    data-testid={`calendar-day-${day}`}
+                  >
+                    <span className={`text-xs ${isToday ? "font-bold text-primary" : ""}`}>{day}</span>
+                    <div className="mt-1 space-y-0.5">
+                      {dayRequests.slice(0, 2).map((req) => (
+                        <div
+                          key={req.id}
+                          className={`text-[10px] px-1 py-0.5 rounded truncate ${
+                            req.userId === currentUserId
+                              ? "bg-primary/20 text-primary font-medium"
+                              : "bg-muted text-muted-foreground"
+                          }`}
+                          title={`${req.type} - ${req.userId === currentUserId ? "You" : "Team member"}`}
+                        >
+                          {req.userId === currentUserId ? "You" : "Team"}
+                        </div>
+                      ))}
+                      {dayRequests.length > 2 && (
+                        <div className="text-[10px] text-muted-foreground">+{dayRequests.length - 2}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex gap-4 mt-4 text-xs">
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded bg-primary/20" />
+                <span>Your time off</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded bg-muted" />
+                <span>Team members' time off</span>
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

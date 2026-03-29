@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, date, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, date, boolean, real } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { users } from "./models/auth";
@@ -28,6 +28,8 @@ export const attendanceRecords = pgTable("attendance_records", {
   date: date("date").notNull(),
   clockIn: timestamp("clock_in"),
   clockOut: timestamp("clock_out"),
+  breakMinutes: integer("break_minutes").default(0),
+  totalHours: real("total_hours"),
   status: varchar("status", { length: 20 }).default("present").notNull(),
   notes: text("notes"),
   source: varchar("source", { length: 20 }).default("web").notNull(),
@@ -37,6 +39,7 @@ export const attendanceRecords = pgTable("attendance_records", {
 export const insertAttendanceRecordSchema = createInsertSchema(attendanceRecords).omit({
   id: true,
   createdAt: true,
+  totalHours: true,
 });
 export type InsertAttendanceRecord = z.infer<typeof insertAttendanceRecordSchema>;
 export type AttendanceRecord = typeof attendanceRecords.$inferSelect;
@@ -47,6 +50,7 @@ export const timeOffRequests = pgTable("time_off_requests", {
   type: varchar("type", { length: 30 }).notNull(),
   startDate: date("start_date").notNull(),
   endDate: date("end_date").notNull(),
+  daysRequested: integer("days_requested").notNull().default(1),
   status: varchar("status", { length: 20 }).default("pending").notNull(),
   reason: text("reason"),
   reviewedBy: varchar("reviewed_by").references(() => users.id),

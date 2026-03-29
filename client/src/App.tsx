@@ -7,7 +7,9 @@ import { useAuth } from "@/hooks/use-auth";
 import { AppLayout } from "@/components/app-layout";
 import { ProtectedRoute } from "@/components/protected-route";
 import LoginPage from "@/pages/login";
-import DashboardPage from "@/pages/dashboard";
+import Dashboard from "@/pages/dashboard";
+import MyAttendance from "@/pages/my-attendance";
+import TimeOff from "@/pages/time-off";
 import PlaceholderPage from "@/pages/placeholder";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
@@ -17,9 +19,9 @@ function AuthenticatedRouter() {
   return (
     <AppLayout>
       <Switch>
-        <Route path="/" component={DashboardPage} />
-        <Route path="/attendance">{() => <PlaceholderPage title="My Attendance" />}</Route>
-        <Route path="/time-off">{() => <PlaceholderPage title="Time Off" />}</Route>
+        <Route path="/" component={Dashboard} />
+        <Route path="/attendance" component={MyAttendance} />
+        <Route path="/time-off" component={TimeOff} />
         <Route path="/profile">{() => <PlaceholderPage title="Profile" />}</Route>
         <Route path="/team">{() => (
           <ProtectedRoute roles={["manager", "admin"]}>
