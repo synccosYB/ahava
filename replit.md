@@ -10,11 +10,11 @@ Employee time tracking and attendance management system for Ahava Medical Center
 - **Auth**: Replit Auth (OpenID Connect) with session-based sessions
 
 ## Data Model
-All tables use FK constraints where applicable (userId, managerId, reviewedBy, departmentId reference their parent tables).
-- **companies** (shared/models/auth.ts): Multi-company support with name, slug, address, phone, email
-- **locations** (shared/models/auth.ts): Company locations with companyId FK
-- **users** (shared/models/auth.ts): Auth users with role, companyId FK, departmentId, passwordHash
-- **departments**: Company departments with manager FK, companyId FK, locationId FK
+All tables use FK constraints where applicable (userId, managerId, reviewedBy, departmentId, companyId, locationId reference their parent tables).
+- **companies** (shared/models/auth.ts): Multi-company support with name, slug, legalName, address, phone, email, timezone
+- **locations** (shared/models/auth.ts): Company locations with companyId FK, code, address fields, timezone
+- **users** (shared/models/auth.ts): Auth users with role (employee/manager/admin), companyId FK, locationId FK, departmentId, passwordHash
+- **departments**: Company departments with manager FK, companyId FK, locationId FK, unique constraint on (companyId, name)
 - **roles** (shared/models/auth.ts): System and custom roles (isSystem flag, optional companyId)
 - **permissions** (shared/models/auth.ts): Permission keys with module grouping (38 keys)
 - **role_permissions** (shared/models/auth.ts): Maps roles to permissions (M:N)
@@ -22,6 +22,7 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 - **user_permission_overrides** (shared/models/auth.ts): Per-user permission allow/deny with reason, createdBy, updatedAt
 - **user_access_scopes** (shared/models/auth.ts): Restricts user access by scopeType (company/location/department) with explicit FK columns
 - **policy_types** (shared/models/auth.ts): Policy type definitions with key, name, module, isActive
+- **user_employment_profiles** (shared/schema.ts): Employment details per user (employmentType, payType, hourlyRate, weeklySalary, dailySalary, overtimeEligible, holidayPayEnabled, voluntaryPayEnabled, hireDate, terminationDate)
 - **attendance_records**: Clock in/out records per user per date (userId FK to users), with breakMinutes, totalHours, source field (web/kiosk)
 - **time_off_requests**: PTO/sick/personal requests with daysRequested and approval workflow (userId, reviewedBy FK to users)
 - **time_off_balances**: Per-user time off allocation and usage tracking per year (userId FK to users)
@@ -32,7 +33,7 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 ## Key Files
 - `shared/schema.ts` - All Drizzle table definitions with FK relations
 - `shared/models/auth.ts` - Users, sessions, companies, locations, roles, permissions, RBAC tables
-- `server/storage.ts` - IStorage interface and DatabaseStorage implementation (includes kiosk + RBAC methods)
+- `server/storage.ts` - IStorage interface and DatabaseStorage implementation (includes kiosk + RBAC + employment profile methods)
 - `server/routes.ts` - API routes with role-based middleware, Zod validation, and kiosk endpoints
 - `server/middleware/auth.ts` - JWT token generation and combined JWT+session auth middleware (requireAuth)
 - `server/middleware/rbac.ts` - requirePermission and requireScopedAccess middleware, permission resolution
@@ -74,8 +75,23 @@ All tables use FK constraints where applicable (userId, managerId, reviewedBy, d
 - `GET /api/time-off/pending` - Pending requests (manager/admin only)
 - `GET /api/users` - All users (admin only)
 - `PATCH /api/users/:id/role` - Update user role (admin only)
-- `GET /api/departments` - All departments
-- `POST /api/departments` - Create department (admin only)
+- `GET /api/companies` - Companies (scoped by user access)
+- `GET /api/companies/:id` - Get company by ID (scoped)
+- `POST /api/companies` - Create company (admin only)
+- `PATCH /api/companies/:id` - Update company (admin only)
+- `DELETE /api/companies/:id` - Delete company (admin only)
+- `GET /api/locations` - Locations (scoped by user access, optional ?companyId filter)
+- `GET /api/locations/:id` - Get location by ID (scoped)
+- `POST /api/locations` - Create location (admin only)
+- `PATCH /api/locations/:id` - Update location (admin only)
+- `DELETE /api/locations/:id` - Delete location (admin only)
+- `GET /api/departments` - Departments (scoped by user company/location, optional ?companyId/?locationId)
+- `POST /api/departments` - Create department (admin only, validates location belongs to company)
+- `PATCH /api/departments/:id` - Update department (admin only)
+- `DELETE /api/departments/:id` - Delete department (admin only)
+- `GET /api/employment-profiles/:userId` - Get employment profile (admin, self, or scoped manager)
+- `POST /api/employment-profiles` - Create employment profile (admin only)
+- `PATCH /api/employment-profiles/:userId` - Update employment profile (admin only)
 
 ## Theming
 Brand colors (Ahava Medical):

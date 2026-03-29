@@ -4,7 +4,7 @@ import { z } from "zod";
 import { storage } from "./storage";
 import { requireAuth } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema } from "@shared/schema";
 import type { User, AttendanceRecord, TimeOffRequest } from "@shared/schema";
 
 const roleSchema = z.object({
@@ -60,8 +60,142 @@ export async function registerRoutes(
     res.json(user);
   });
 
-  app.get("/api/departments", requireAuth, requirePermission("departments.view"), async (_req, res) => {
-    const depts = await storage.getAllDepartments();
+  app.get("/api/companies", requireAuth, requirePermission("company.view"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    if (user.role === "admin") {
+      const allCompanies = await storage.getAllCompanies();
+      return res.json(allCompanies);
+    }
+    if (user.companyId) {
+      const company = await storage.getCompany(user.companyId);
+      return res.json(company ? [company] : []);
+    }
+    return res.json([]);
+  });
+
+  app.get("/api/companies/:id", requireAuth, requirePermission("company.view"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const company = await storage.getCompany(req.params.id);
+    if (!company) return res.status(404).json({ message: "Company not found" });
+    if (user.role !== "admin" && user.companyId !== company.id) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    res.json(company);
+  });
+
+  app.post("/api/companies", requireAuth, requireRole("admin"), requirePermission("company.create"), async (req, res) => {
+    const parsed = insertCompanySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid company data", errors: parsed.error.flatten() });
+    }
+    const company = await storage.createCompany(parsed.data);
+    res.status(201).json(company);
+  });
+
+  app.patch("/api/companies/:id", requireAuth, requireRole("admin"), requirePermission("company.edit"), async (req, res) => {
+    const parsed = insertCompanySchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid company data", errors: parsed.error.flatten() });
+    }
+    const company = await storage.updateCompany(req.params.id, parsed.data);
+    if (!company) return res.status(404).json({ message: "Company not found" });
+    res.json(company);
+  });
+
+  app.delete("/api/companies/:id", requireAuth, requireRole("admin"), requirePermission("company.edit"), async (req, res) => {
+    const company = await storage.getCompany(req.params.id);
+    if (!company) return res.status(404).json({ message: "Company not found" });
+    await storage.deleteCompany(req.params.id);
+    res.status(204).send();
+  });
+
+  app.get("/api/locations", requireAuth, requirePermission("locations.view"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const companyId = req.query.companyId as string | undefined;
+
+    if (user.role === "admin") {
+      if (companyId) {
+        return res.json(await storage.getLocationsByCompany(companyId));
+      }
+      return res.json(await storage.getAllLocations());
+    }
+    if (user.companyId) {
+      const locs = await storage.getLocationsByCompany(user.companyId);
+      if (user.locationId) {
+        return res.json(locs.filter(l => l.id === user.locationId));
+      }
+      return res.json(locs);
+    }
+    return res.json([]);
+  });
+
+  app.get("/api/locations/:id", requireAuth, requirePermission("locations.view"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const location = await storage.getLocation(req.params.id);
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    if (user.role !== "admin" && user.companyId !== location.companyId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    if (user.role !== "admin" && user.locationId && user.locationId !== location.id) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    res.json(location);
+  });
+
+  app.post("/api/locations", requireAuth, requireRole("admin"), requirePermission("locations.create"), async (req, res) => {
+    const parsed = insertLocationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
+    }
+    const location = await storage.createLocation(parsed.data);
+    res.status(201).json(location);
+  });
+
+  app.patch("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.edit"), async (req, res) => {
+    const parsed = insertLocationSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
+    }
+    const location = await storage.updateLocation(req.params.id, parsed.data);
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    res.json(location);
+  });
+
+  app.delete("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.edit"), async (req, res) => {
+    const location = await storage.getLocation(req.params.id);
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    await storage.deleteLocation(req.params.id);
+    res.status(204).send();
+  });
+
+  app.get("/api/departments", requireAuth, requirePermission("departments.view"), async (req, res) => {
+    const user = (req as any).authUser as User;
+    const companyId = req.query.companyId as string | undefined;
+    const locationId = req.query.locationId as string | undefined;
+
+    if (user.role === "admin") {
+      if (locationId) {
+        return res.json(await storage.getDepartmentsByLocation(locationId));
+      }
+      if (companyId) {
+        return res.json(await storage.getDepartmentsByCompany(companyId));
+      }
+      return res.json(await storage.getAllDepartments());
+    }
+
+    if (user.departmentId && !user.companyId && !user.locationId) {
+      const dept = await storage.getDepartment(user.departmentId);
+      return res.json(dept ? [dept] : []);
+    }
+
+    if (!user.companyId) {
+      return res.json([]);
+    }
+
+    let depts = await storage.getDepartmentsByCompany(user.companyId);
+    if (user.locationId) {
+      depts = depts.filter(d => d.locationId === user.locationId);
+    }
     res.json(depts);
   });
 
@@ -70,8 +204,72 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid department data", errors: parsed.error.flatten() });
     }
+    if (parsed.data.locationId && parsed.data.companyId) {
+      const location = await storage.getLocation(parsed.data.locationId);
+      if (!location || location.companyId !== parsed.data.companyId) {
+        return res.status(400).json({ message: "Location does not belong to the specified company" });
+      }
+    }
     const dept = await storage.createDepartment(parsed.data);
     res.status(201).json(dept);
+  });
+
+  app.patch("/api/departments/:id", requireAuth, requireRole("admin"), requirePermission("departments.edit"), async (req, res) => {
+    const parsed = insertDepartmentSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid department data", errors: parsed.error.flatten() });
+    }
+    const dept = await storage.updateDepartment(req.params.id, parsed.data);
+    if (!dept) return res.status(404).json({ message: "Department not found" });
+    res.json(dept);
+  });
+
+  app.delete("/api/departments/:id", requireAuth, requireRole("admin"), requirePermission("departments.edit"), async (req, res) => {
+    await storage.deleteDepartment(req.params.id);
+    res.status(204).send();
+  });
+
+  app.get("/api/employment-profiles/:userId", requireAuth, async (req, res) => {
+    const authUser = (req as any).authUser as User;
+    const targetUserId = req.params.userId;
+
+    if (authUser.role !== "admin" && authUser.id !== targetUserId) {
+      if (authUser.role === "manager") {
+        const scopedIds = await storage.getScopedUserIds(authUser);
+        if (!scopedIds.has(targetUserId)) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+      } else {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+    }
+
+    const profile = await storage.getEmploymentProfile(targetUserId);
+    if (!profile) return res.status(404).json({ message: "Employment profile not found" });
+    res.json(profile);
+  });
+
+  app.post("/api/employment-profiles", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertEmploymentProfileSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
+    }
+    const existing = await storage.getEmploymentProfile(parsed.data.userId);
+    if (existing) {
+      return res.status(409).json({ message: "Employment profile already exists for this user" });
+    }
+    const profile = await storage.createEmploymentProfile(parsed.data);
+    res.status(201).json(profile);
+  });
+
+  app.patch("/api/employment-profiles/:userId", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertEmploymentProfileSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
+    }
+    const profile = await storage.updateEmploymentProfile(req.params.userId, parsed.data);
+    if (!profile) return res.status(404).json({ message: "Employment profile not found" });
+    res.json(profile);
   });
 
   async function getTeamUserIds(user: User): Promise<Set<string>> {

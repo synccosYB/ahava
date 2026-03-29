@@ -59,6 +59,31 @@ export {
   insertPolicyTypeSchema,
 } from "./models/auth";
 
+export const userEmploymentProfiles = pgTable("user_employment_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().unique().references(() => users.id),
+  employmentType: varchar("employment_type", { length: 30 }).default("full_time").notNull(),
+  payType: varchar("pay_type", { length: 20 }).default("hourly").notNull(),
+  hourlyRate: real("hourly_rate"),
+  weeklySalary: real("weekly_salary"),
+  dailySalary: real("daily_salary"),
+  overtimeEligible: boolean("overtime_eligible").default(false).notNull(),
+  holidayPayEnabled: boolean("holiday_pay_enabled").default(false).notNull(),
+  voluntaryPayEnabled: boolean("voluntary_pay_enabled").default(false).notNull(),
+  hireDate: date("hire_date"),
+  terminationDate: date("termination_date"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertEmploymentProfileSchema = createInsertSchema(userEmploymentProfiles).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertEmploymentProfile = z.infer<typeof insertEmploymentProfileSchema>;
+export type EmploymentProfile = typeof userEmploymentProfiles.$inferSelect;
+
 export const attendanceRecords = pgTable("attendance_records", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id),
@@ -165,11 +190,13 @@ export const locationsRelations = relations(locations, ({ one, many }) => ({
 
 export const usersRelations = relations(users, ({ one, many }) => ({
   company: one(companies, { fields: [users.companyId], references: [companies.id] }),
+  location: one(locations, { fields: [users.locationId], references: [locations.id] }),
   department: one(departments, { fields: [users.departmentId], references: [departments.id] }),
   attendanceRecords: many(attendanceRecords),
   timeOffRequests: many(timeOffRequests),
   timeOffBalances: many(timeOffBalances),
   employeePin: one(employeePins, { fields: [users.id], references: [employeePins.userId] }),
+  employmentProfile: one(userEmploymentProfiles, { fields: [users.id], references: [userEmploymentProfiles.userId] }),
   userRoles: many(userRoles),
   userPermissionOverrides: many(userPermissionOverrides),
   userAccessScopes: many(userAccessScopes),
@@ -213,6 +240,10 @@ export const departmentsRelations = relations(departments, ({ one, many }) => ({
   company: one(companies, { fields: [departments.companyId], references: [companies.id] }),
   location: one(locations, { fields: [departments.locationId], references: [locations.id] }),
   kioskDevices: many(kioskDevices),
+}));
+
+export const employmentProfilesRelations = relations(userEmploymentProfiles, ({ one }) => ({
+  user: one(users, { fields: [userEmploymentProfiles.userId], references: [users.id] }),
 }));
 
 export const attendanceRecordsRelations = relations(attendanceRecords, ({ one }) => ({

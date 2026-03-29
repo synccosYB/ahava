@@ -2,9 +2,18 @@ import {
   type User,
   type UpsertUser,
   users,
+  companies,
+  type Company,
+  type InsertCompany,
+  locations,
+  type Location,
+  type InsertLocation,
   departments,
   type Department,
   type InsertDepartment,
+  userEmploymentProfiles,
+  type EmploymentProfile,
+  type InsertEmploymentProfile,
   attendanceRecords,
   type AttendanceRecord,
   type InsertAttendanceRecord,
@@ -20,12 +29,6 @@ import {
   kioskDevices,
   type KioskDevice,
   type InsertKioskDevice,
-  companies,
-  type Company,
-  type InsertCompany,
-  locations,
-  type Location,
-  type InsertLocation,
   roles,
   type Role,
   type InsertRole,
@@ -41,7 +44,7 @@ import {
   type UserAccessScope,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, ilike, gte, lte, desc, ne, count, sql } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -50,11 +53,30 @@ export interface IStorage {
   updateUserRole(id: string, role: string): Promise<User | undefined>;
   updateUserDepartment(id: string, departmentId: string): Promise<User | undefined>;
 
+  getCompany(id: string): Promise<Company | undefined>;
+  getAllCompanies(): Promise<Company[]>;
+  createCompany(company: InsertCompany): Promise<Company>;
+  updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
+  deleteCompany(id: string): Promise<void>;
+
+  getLocation(id: string): Promise<Location | undefined>;
+  getLocationsByCompany(companyId: string): Promise<Location[]>;
+  getAllLocations(): Promise<Location[]>;
+  createLocation(location: InsertLocation): Promise<Location>;
+  updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined>;
+  deleteLocation(id: string): Promise<void>;
+
   getDepartment(id: string): Promise<Department | undefined>;
   getAllDepartments(): Promise<Department[]>;
+  getDepartmentsByCompany(companyId: string): Promise<Department[]>;
+  getDepartmentsByLocation(locationId: string): Promise<Department[]>;
   createDepartment(dept: InsertDepartment): Promise<Department>;
   updateDepartment(id: string, dept: Partial<InsertDepartment>): Promise<Department | undefined>;
   deleteDepartment(id: string): Promise<void>;
+
+  getEmploymentProfile(userId: string): Promise<EmploymentProfile | undefined>;
+  createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile>;
+  updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined>;
 
   getAttendanceRecord(id: string): Promise<AttendanceRecord | undefined>;
   getAttendanceByUser(userId: string): Promise<AttendanceRecord[]>;
@@ -101,18 +123,6 @@ export interface IStorage {
   getProcessedTimeOffRequests(reviewerId?: string): Promise<TimeOffRequest[]>;
   getAttendanceByDateRange(startDate: string, endDate: string): Promise<AttendanceRecord[]>;
 
-  getCompany(id: string): Promise<Company | undefined>;
-  getAllCompanies(): Promise<Company[]>;
-  createCompany(company: InsertCompany): Promise<Company>;
-  updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
-  deleteCompany(id: string): Promise<void>;
-
-  getLocation(id: string): Promise<Location | undefined>;
-  getLocationsByCompany(companyId: string): Promise<Location[]>;
-  createLocation(location: InsertLocation): Promise<Location>;
-  updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined>;
-  deleteLocation(id: string): Promise<void>;
-
   getRole(id: string): Promise<Role | undefined>;
   getAllRoles(): Promise<Role[]>;
   getRolesByCompany(companyId: string | null): Promise<Role[]>;
@@ -139,6 +149,8 @@ export interface IStorage {
   getUserAccessScopes(userId: string): Promise<UserAccessScope[]>;
   addUserAccessScope(userId: string, scopeType: string, scope: { companyId?: string; locationId?: string; departmentId?: string }): Promise<UserAccessScope>;
   removeUserAccessScope(id: string): Promise<void>;
+
+  getScopedUserIds(user: User): Promise<Set<string>>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -166,6 +178,56 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
+  async getCompany(id: string): Promise<Company | undefined> {
+    const [company] = await db.select().from(companies).where(eq(companies.id, id));
+    return company;
+  }
+
+  async getAllCompanies(): Promise<Company[]> {
+    return db.select().from(companies);
+  }
+
+  async createCompany(company: InsertCompany): Promise<Company> {
+    const [created] = await db.insert(companies).values(company).returning();
+    return created;
+  }
+
+  async updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined> {
+    const [updated] = await db.update(companies).set(company).where(eq(companies.id, id)).returning();
+    return updated;
+  }
+
+  async deleteCompany(id: string): Promise<void> {
+    await db.delete(companies).where(eq(companies.id, id));
+  }
+
+  async getLocation(id: string): Promise<Location | undefined> {
+    const [location] = await db.select().from(locations).where(eq(locations.id, id));
+    return location;
+  }
+
+  async getLocationsByCompany(companyId: string): Promise<Location[]> {
+    return db.select().from(locations).where(eq(locations.companyId, companyId));
+  }
+
+  async getAllLocations(): Promise<Location[]> {
+    return db.select().from(locations);
+  }
+
+  async createLocation(location: InsertLocation): Promise<Location> {
+    const [created] = await db.insert(locations).values(location).returning();
+    return created;
+  }
+
+  async updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined> {
+    const [updated] = await db.update(locations).set(location).where(eq(locations.id, id)).returning();
+    return updated;
+  }
+
+  async deleteLocation(id: string): Promise<void> {
+    await db.delete(locations).where(eq(locations.id, id));
+  }
+
   async getDepartment(id: string): Promise<Department | undefined> {
     const [dept] = await db.select().from(departments).where(eq(departments.id, id));
     return dept;
@@ -173,6 +235,14 @@ export class DatabaseStorage implements IStorage {
 
   async getAllDepartments(): Promise<Department[]> {
     return db.select().from(departments);
+  }
+
+  async getDepartmentsByCompany(companyId: string): Promise<Department[]> {
+    return db.select().from(departments).where(eq(departments.companyId, companyId));
+  }
+
+  async getDepartmentsByLocation(locationId: string): Promise<Department[]> {
+    return db.select().from(departments).where(eq(departments.locationId, locationId));
   }
 
   async createDepartment(dept: InsertDepartment): Promise<Department> {
@@ -187,6 +257,21 @@ export class DatabaseStorage implements IStorage {
 
   async deleteDepartment(id: string): Promise<void> {
     await db.delete(departments).where(eq(departments.id, id));
+  }
+
+  async getEmploymentProfile(userId: string): Promise<EmploymentProfile | undefined> {
+    const [profile] = await db.select().from(userEmploymentProfiles).where(eq(userEmploymentProfiles.userId, userId));
+    return profile;
+  }
+
+  async createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile> {
+    const [created] = await db.insert(userEmploymentProfiles).values(profile).returning();
+    return created;
+  }
+
+  async updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined> {
+    const [updated] = await db.update(userEmploymentProfiles).set({ ...profile, updatedAt: new Date() }).where(eq(userEmploymentProfiles.userId, userId)).returning();
+    return updated;
   }
 
   async getAttendanceRecord(id: string): Promise<AttendanceRecord | undefined> {
@@ -677,6 +762,32 @@ export class DatabaseStorage implements IStorage {
 
   async removeUserAccessScope(id: string): Promise<void> {
     await db.delete(userAccessScopes).where(eq(userAccessScopes.id, id));
+  }
+
+  async getScopedUserIds(user: User): Promise<Set<string>> {
+    if (user.role === "admin") {
+      const allUsers = await this.getAllUsers();
+      return new Set(allUsers.map(u => u.id));
+    }
+
+    const conditions: any[] = [];
+
+    if (user.companyId) {
+      conditions.push(eq(users.companyId, user.companyId));
+    }
+    if (user.locationId) {
+      conditions.push(eq(users.locationId, user.locationId));
+    }
+    if (user.departmentId) {
+      conditions.push(eq(users.departmentId, user.departmentId));
+    }
+
+    if (conditions.length === 0) {
+      return new Set([user.id]);
+    }
+
+    const scopedUsers = await db.select().from(users).where(and(...conditions));
+    return new Set(scopedUsers.map(u => u.id));
   }
 }
 
