@@ -15,6 +15,13 @@
       "when": 1774801218518,
       "tag": "0001_brainy_vermin",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1774847000000,
+      "tag": "0002_schema_sync",
+      "breakpoints": true
     }
   ]
 }
