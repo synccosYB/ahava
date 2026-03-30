@@ -2368,8 +2368,9 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/roles", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req, res) => {
+  app.get("/api/roles", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
     try {
+      const isSuperAdmin = req.userPermissions?.has("system.super_admin");
       const allRoles = await storage.getAllRoles();
       const rolesWithPermissions = await Promise.all(
         allRoles.map(async (role) => {
@@ -2377,7 +2378,10 @@ export async function registerRoutes(
           return { ...role, permissions: perms };
         })
       );
-      res.json(rolesWithPermissions);
+      const filtered = isSuperAdmin
+        ? rolesWithPermissions
+        : rolesWithPermissions.filter(r => !r.permissions.some((p: any) => p.key === "system.super_admin"));
+      res.json(filtered);
     } catch (error) {
       console.error("Error fetching roles:", error);
       res.status(500).json({ message: "Failed to fetch roles" });
@@ -2387,6 +2391,13 @@ export async function registerRoutes(
   app.post("/api/roles", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
     try {
       const { permissionIds, ...roleData } = req.body;
+      const isSuperAdmin = req.userPermissions?.has("system.super_admin");
+      if (!isSuperAdmin && permissionIds && Array.isArray(permissionIds)) {
+        const superAdminPerm = await storage.getPermissionByKey("system.super_admin");
+        if (superAdminPerm && permissionIds.includes(superAdminPerm.id)) {
+          return res.status(403).json({ message: "Cannot assign super admin permission" });
+        }
+      }
       const parsed = insertRoleSchema.safeParse(roleData);
       if (!parsed.success) {
         return res.status(400).json({ message: "Invalid role data", errors: parsed.error.flatten() });
@@ -2416,7 +2427,20 @@ export async function registerRoutes(
 
   app.patch("/api/roles/:id", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
     try {
+      const isSuperAdmin = req.userPermissions?.has("system.super_admin");
+      if (!isSuperAdmin) {
+        const existingPerms = await storage.getRolePermissions(req.params.id);
+        if (existingPerms.some(p => p.key === "system.super_admin")) {
+          return res.status(403).json({ message: "Cannot edit a role with super admin privileges" });
+        }
+      }
       const { permissionIds, ...roleData } = req.body;
+      if (!isSuperAdmin && permissionIds && Array.isArray(permissionIds)) {
+        const superAdminPerm = await storage.getPermissionByKey("system.super_admin");
+        if (superAdminPerm && permissionIds.includes(superAdminPerm.id)) {
+          return res.status(403).json({ message: "Cannot assign super admin permission" });
+        }
+      }
       const role = await storage.updateRole(req.params.id, roleData);
       if (!role) return res.status(404).json({ message: "Role not found" });
       if (permissionIds && Array.isArray(permissionIds)) {
@@ -2449,6 +2473,13 @@ export async function registerRoutes(
     try {
       const sourceRole = await storage.getRole(req.params.id);
       if (!sourceRole) return res.status(404).json({ message: "Role not found" });
+      const isSuperAdmin = req.userPermissions?.has("system.super_admin");
+      if (!isSuperAdmin) {
+        const sourcePermsCheck = await storage.getRolePermissions(sourceRole.id);
+        if (sourcePermsCheck.some(p => p.key === "system.super_admin")) {
+          return res.status(403).json({ message: "Cannot duplicate a role with super admin privileges" });
+        }
+      }
       const newRole = await storage.createRole({
         name: `${sourceRole.name} (Copy)`,
         description: sourceRole.description,
@@ -2481,6 +2512,13 @@ export async function registerRoutes(
       const role = await storage.getRole(req.params.id);
       if (!role) return res.status(404).json({ message: "Role not found" });
       if (role.isSystem) return res.status(400).json({ message: "Cannot delete system roles" });
+      const isSuperAdmin = req.userPermissions?.has("system.super_admin");
+      if (!isSuperAdmin) {
+        const rolePerms = await storage.getRolePermissions(role.id);
+        if (rolePerms.some(p => p.key === "system.super_admin")) {
+          return res.status(403).json({ message: "Cannot delete a role with super admin privileges" });
+        }
+      }
       await storage.deleteRole(req.params.id);
       const auditCtx = getAuditContext(req);
       await writeAuditLog({
@@ -2498,10 +2536,12 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/permissions", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (_req, res) => {
+  app.get("/api/permissions", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
     try {
+      const isSuperAdmin = req.userPermissions?.has("system.super_admin");
       const allPerms = await storage.getAllPermissions();
-      res.json(allPerms);
+      const filteredPerms = isSuperAdmin ? allPerms : allPerms.filter(p => p.key !== "system.super_admin");
+      res.json(filteredPerms);
     } catch (error) {
       console.error("Error fetching permissions:", error);
       res.status(500).json({ message: "Failed to fetch permissions" });
