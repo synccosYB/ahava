@@ -40,6 +40,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - `employee_pins`, `kiosk_devices`
 - `policy_types`, `policies`, `policy_rules`, `policy_assignments`
 - `system_alerts`
+- `documents`
 
 ## External Dependencies
 - **PostgreSQL:** Primary database for all application data.
@@ -56,6 +57,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **`bcryptjs`:** For password hashing.
 - **Zod:** Schema validation library.
 - **`ws`:** WebSocket library for real-time updates.
+- **`multer`:** For handling file uploads (document management).
 
 ## Corporate Design System
 - **PageHeader component** (`client/src/components/page-header.tsx`): Shared header with title, subtitle, and optional actions slot. Used across all pages for consistent layout.
@@ -74,3 +76,12 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **WebSocket**: `ws://host/ws` path for real-time attendance updates, broadcasts `attendance_update` events
 - **Security Hardening**: All legacy `storage.createAuditLog` calls with wrong field names replaced with `writeAuditLog` using correct schema
 - **Frontend Pages**: alerts.tsx, audit-log.tsx, permissions.tsx, role-management.tsx, kiosk-management.tsx
+
+## HR Onboarding & Employee Management
+- **Add Employee**: Multi-step dialog on Employees page (basic info -> employment details -> pay setup). Creates user with temporary password + `forcePasswordChange` flag.
+- **Password Reset**: Admin can reset any employee password from their profile. Generates temp password, sets `forcePasswordChange` flag.
+- **Force Password Change**: Users with `forcePasswordChange=true` see a password change screen instead of the main app until they set a new password.
+- **Document Management**: Documents tab on employee profiles with 5 required document types (W-9, I-9, Direct Deposit, Emergency Contact, Handbook Ack). Upload, download, review status, delete capabilities. Files stored in `uploads/documents/`.
+- **Onboarding Checklist**: Card on employee profile showing completion of: basic info, employment setup, pay config, all documents collected.
+- **API Endpoints**: `POST /api/users` (create employee), `POST /api/users/:id/reset-password`, `POST /api/users/change-password`, `GET/POST /api/users/:id/documents`, `GET /api/documents/:id/download`, `PATCH/DELETE /api/documents/:id`
+- **Schema**: `force_password_change` boolean on users table, `documents` table for file metadata

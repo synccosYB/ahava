@@ -76,6 +76,7 @@ export const users = pgTable("users", {
   companyId: varchar("company_id").references(() => companies.id),
   locationId: varchar("location_id").references(() => locations.id),
   departmentId: varchar("department_id"),
+  forcePasswordChange: boolean("force_password_change").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

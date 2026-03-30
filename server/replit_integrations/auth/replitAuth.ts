@@ -65,7 +65,7 @@ export async function setupAuth(app: Express) {
       }
       console.log("[auth] Session saved for userId:", (req.session as any).userId);
       const { password: _, passwordHash: _ph, ...safeUser } = user;
-      res.json({ ...safeUser, token });
+      res.json({ ...safeUser, token, forcePasswordChange: user.forcePasswordChange || false });
     });
   });
 
@@ -102,7 +102,7 @@ export async function setupAuth(app: Express) {
       return res.status(401).json({ message: "Unauthorized" });
     }
     const { password: _, passwordHash: _ph, ...safeUser } = user;
-    res.json(safeUser);
+    res.json({ ...safeUser, forcePasswordChange: user.forcePasswordChange || false });
   });
 }
 

@@ -63,6 +63,36 @@ export {
   insertPolicyTypeSchema,
 } from "./models/auth";
 
+export const documents = pgTable("documents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  documentType: varchar("document_type", { length: 50 }).notNull(),
+  fileName: varchar("file_name", { length: 500 }).notNull(),
+  filePath: varchar("file_path", { length: 1000 }).notNull(),
+  mimeType: varchar("mime_type", { length: 100 }),
+  fileSize: integer("file_size"),
+  status: varchar("status", { length: 20 }).default("uploaded").notNull(),
+  uploadedBy: varchar("uploaded_by").references(() => users.id),
+  uploadedAt: timestamp("uploaded_at").defaultNow(),
+  reviewedBy: varchar("reviewed_by").references(() => users.id),
+  reviewedAt: timestamp("reviewed_at"),
+});
+
+export const insertDocumentSchema = createInsertSchema(documents).omit({
+  id: true,
+  uploadedAt: true,
+  reviewedBy: true,
+  reviewedAt: true,
+});
+export type InsertDocument = z.infer<typeof insertDocumentSchema>;
+export type Document = typeof documents.$inferSelect;
+
+export const documentsRelations = relations(documents, ({ one }) => ({
+  employee: one(users, { fields: [documents.employeeId], references: [users.id] }),
+  uploader: one(users, { fields: [documents.uploadedBy], references: [users.id] }),
+  reviewer: one(users, { fields: [documents.reviewedBy], references: [users.id] }),
+}));
+
 export const policies = pgTable("policies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").references(() => companies.id),

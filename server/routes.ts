@@ -4,7 +4,7 @@ import { z } from "zod";
 import { storage } from "./storage";
 import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
-import { requireAuth } from "./middleware/auth";
+import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest } from "@shared/schema";
@@ -12,6 +12,44 @@ import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES } from "./policyEngine";
 import { runAlertDetection } from "./services/alerts";
 import { WebSocketServer, WebSocket } from "ws";
+import bcrypt from "bcryptjs";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+
+const uploadDir = path.resolve("uploads/documents");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const documentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, uploadDir),
+    filename: (_req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, uniqueSuffix + path.extname(file.originalname));
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only PDF and image files are allowed"));
+    }
+  },
+});
+
+function generateTempPassword(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  let result = "";
+  for (let i = 0; i < 12; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
 
 const roleSchema = z.object({
   role: z.enum(["employee", "manager", "admin"]),
@@ -88,6 +126,13 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  const PASSWORD_CHANGE_EXEMPT_PATHS = ["/api/auth", "/api/users/change-password"];
+  app.use((req, res, next) => {
+    if (PASSWORD_CHANGE_EXEMPT_PATHS.some(p => req.path.startsWith(p))) {
+      return next();
+    }
+    requirePasswordChanged(req, res, next);
+  });
   app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), async (_req, res) => {
     const users = await storage.getAllUsers();
     res.json(users);
@@ -102,6 +147,220 @@ export async function registerRoutes(
     const user = await storage.updateUserRole(id, parsed.data.role);
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json(user);
+  });
+
+  const createUserSchema = z.object({
+    email: z.string().email(),
+    firstName: z.string().min(1),
+    lastName: z.string().min(1),
+    role: z.enum(["employee", "manager", "admin"]).default("employee"),
+    companyId: z.string().optional().nullable(),
+    locationId: z.string().optional().nullable(),
+    departmentId: z.string().optional().nullable(),
+    employmentType: z.string().optional(),
+    hireDate: z.string().optional(),
+    payType: z.string().optional(),
+    hourlyRate: z.number().optional(),
+    weeklySalary: z.number().optional(),
+  });
+
+  app.post("/api/users", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = createUserSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid user data", errors: parsed.error.flatten() });
+    }
+
+    const existing = await storage.getUserByEmail(parsed.data.email);
+    if (existing) {
+      return res.status(409).json({ message: "A user with this email already exists" });
+    }
+
+    const tempPassword = generateTempPassword();
+    const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+    const newUser = await storage.createUser({
+      email: parsed.data.email,
+      firstName: parsed.data.firstName,
+      lastName: parsed.data.lastName,
+      role: parsed.data.role,
+      password: hashedPassword,
+      passwordHash: hashedPassword,
+      forcePasswordChange: true,
+      companyId: parsed.data.companyId || null,
+      locationId: parsed.data.locationId || null,
+      departmentId: parsed.data.departmentId || null,
+    });
+
+    if (parsed.data.employmentType || parsed.data.payType || parsed.data.hourlyRate || parsed.data.weeklySalary || parsed.data.hireDate) {
+      await storage.createEmploymentProfile({
+        userId: newUser.id,
+        employmentType: parsed.data.employmentType || "full_time",
+        payType: parsed.data.payType || "hourly",
+        hourlyRate: parsed.data.hourlyRate || null,
+        weeklySalary: parsed.data.weeklySalary || null,
+        hireDate: parsed.data.hireDate || null,
+        overtimeEligible: false,
+        holidayPayEnabled: false,
+        voluntaryPayEnabled: false,
+      });
+    }
+
+    const { password: _, passwordHash: _ph, ...safeUser } = newUser;
+    res.status(201).json({ ...safeUser, temporaryPassword: tempPassword });
+  });
+
+  app.post("/api/users/:id/reset-password", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const user = await storage.getUser(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const tempPassword = generateTempPassword();
+    const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+    await storage.updateUser(user.id, {
+      password: hashedPassword,
+      passwordHash: hashedPassword,
+      forcePasswordChange: true,
+    });
+
+    res.json({ temporaryPassword: tempPassword });
+  });
+
+  app.post("/api/users/change-password", requireAuth, async (req, res) => {
+    const user = (req as any).authUser as User;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ message: "New password must be at least 6 characters" });
+    }
+
+    const fullUser = await storage.getUser(user.id);
+    if (!fullUser) return res.status(404).json({ message: "User not found" });
+
+    if (!fullUser.forcePasswordChange) {
+      if (!currentPassword) {
+        return res.status(400).json({ message: "Current password is required" });
+      }
+      const hashToCheck = fullUser.passwordHash || fullUser.password;
+      if (hashToCheck) {
+        const valid = await bcrypt.compare(currentPassword, hashToCheck);
+        if (!valid) {
+          return res.status(401).json({ message: "Current password is incorrect" });
+        }
+      }
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await storage.updateUser(user.id, {
+      password: hashedPassword,
+      passwordHash: hashedPassword,
+      forcePasswordChange: false,
+    });
+
+    res.json({ message: "Password changed successfully" });
+  });
+
+  const ALLOWED_DOCUMENT_TYPES = ["w9", "i9", "direct_deposit", "emergency_contact", "handbook_ack"];
+
+  app.get("/api/users/:id/documents", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    const docs = await storage.getDocumentsByEmployee(req.params.id);
+    res.json(docs);
+  });
+
+  app.post("/api/users/:id/documents", requireAuth, requireRole("admin"), requirePermission("users.edit"), documentUpload.single("file"), async (req, res) => {
+    const employee = await storage.getUser(req.params.id);
+    if (!employee) {
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ message: "No file uploaded" });
+    }
+
+    const documentType = req.body.documentType;
+    if (!documentType || !ALLOWED_DOCUMENT_TYPES.includes(documentType)) {
+      fs.unlinkSync(file.path);
+      return res.status(400).json({ message: "Invalid or missing document type" });
+    }
+
+    const adminUser = (req as any).authUser as User;
+
+    try {
+      const doc = await storage.createDocument({
+        employeeId: req.params.id,
+        documentType,
+        fileName: file.originalname,
+        filePath: file.path,
+        mimeType: file.mimetype,
+        fileSize: file.size,
+        status: "uploaded",
+        uploadedBy: adminUser.id,
+      });
+
+      res.status(201).json(doc);
+    } catch (error) {
+      fs.unlinkSync(file.path);
+      res.status(500).json({ message: "Failed to save document" });
+    }
+  });
+
+  app.get("/api/documents/:id/download", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    try {
+      const doc = await storage.getDocument(req.params.id);
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+
+      if (!fs.existsSync(doc.filePath)) {
+        return res.status(404).json({ message: "File not found on server" });
+      }
+
+      res.setHeader("X-Content-Type-Options", "nosniff");
+
+      if (req.query.view === "inline") {
+        res.setHeader("Content-Type", doc.mimeType);
+        res.setHeader("Content-Disposition", `inline; filename="${doc.fileName}"`);
+        return fs.createReadStream(doc.filePath).pipe(res);
+      }
+
+      res.download(doc.filePath, doc.fileName);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to download document" });
+    }
+  });
+
+  app.patch("/api/documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const { status } = req.body;
+    if (!status || !["uploaded", "reviewed", "missing"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+
+    try {
+      const adminUser = (req as any).authUser as User;
+      const doc = await storage.updateDocument(req.params.id, {
+        status,
+        ...(status === "reviewed" ? { reviewedBy: adminUser.id, reviewedAt: new Date() } : {}),
+      });
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+      res.json(doc);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update document" });
+    }
+  });
+
+  app.delete("/api/documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    try {
+      const doc = await storage.getDocument(req.params.id);
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+
+      if (fs.existsSync(doc.filePath)) {
+        fs.unlinkSync(doc.filePath);
+      }
+
+      await storage.deleteDocument(doc.id);
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete document" });
+    }
   });
 
   app.get("/api/companies", requireAuth, requirePermission("company.view"), async (req, res) => {

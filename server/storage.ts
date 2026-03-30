@@ -76,6 +76,9 @@ import {
   systemAlerts,
   type SystemAlert,
   type InsertSystemAlert,
+  documents,
+  type Document,
+  type InsertDocument,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
@@ -275,6 +278,15 @@ export interface IStorage {
   createSystemAlert(alert: InsertSystemAlert): Promise<SystemAlert>;
   updateSystemAlert(id: string, data: Partial<SystemAlert>): Promise<SystemAlert | undefined>;
   getAuditLogsFiltered(filters: { actorUserId?: string; action?: string; targetType?: string; startDate?: string; endDate?: string; search?: string; limit?: number; offset?: number }): Promise<{ logs: AuditLog[]; total: number }>;
+
+  createUser(user: UpsertUser): Promise<User>;
+  updateUser(id: string, data: Partial<UpsertUser>): Promise<User | undefined>;
+
+  getDocumentsByEmployee(employeeId: string): Promise<Document[]>;
+  getDocument(id: string): Promise<Document | undefined>;
+  createDocument(doc: InsertDocument): Promise<Document>;
+  updateDocument(id: string, data: Partial<Document>): Promise<Document | undefined>;
+  deleteDocument(id: string): Promise<void>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -1450,6 +1462,39 @@ export class DatabaseStorage implements IStorage {
       .offset(off);
 
     return { logs, total: totalResult?.count || 0 };
+  }
+
+  async createUser(user: UpsertUser): Promise<User> {
+    const [created] = await db.insert(users).values(user).returning();
+    return created;
+  }
+
+  async updateUser(id: string, data: Partial<UpsertUser>): Promise<User | undefined> {
+    const [updated] = await db.update(users).set({ ...data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+    return updated;
+  }
+
+  async getDocumentsByEmployee(employeeId: string): Promise<Document[]> {
+    return db.select().from(documents).where(eq(documents.employeeId, employeeId)).orderBy(desc(documents.uploadedAt));
+  }
+
+  async getDocument(id: string): Promise<Document | undefined> {
+    const [doc] = await db.select().from(documents).where(eq(documents.id, id));
+    return doc;
+  }
+
+  async createDocument(doc: InsertDocument): Promise<Document> {
+    const [created] = await db.insert(documents).values(doc).returning();
+    return created;
+  }
+
+  async updateDocument(id: string, data: Partial<Document>): Promise<Document | undefined> {
+    const [updated] = await db.update(documents).set(data).where(eq(documents.id, id)).returning();
+    return updated;
+  }
+
+  async deleteDocument(id: string): Promise<void> {
+    await db.delete(documents).where(eq(documents.id, id));
   }
 }
 

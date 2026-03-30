@@ -55,3 +55,28 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
 
   return res.status(401).json({ message: "Unauthorized" });
 };
+
+export const requirePasswordChanged: RequestHandler = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  let user = null;
+
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    try {
+      const payload = jwt.verify(token, JWT_SECRET) as { userId: string };
+      user = await authStorage.getUser(payload.userId);
+    } catch {}
+  }
+
+  if (!user) {
+    const userId = (req.session as any)?.userId;
+    if (userId) {
+      user = await authStorage.getUser(userId);
+    }
+  }
+
+  if (user?.forcePasswordChange) {
+    return res.status(403).json({ message: "Password change required", code: "FORCE_PASSWORD_CHANGE" });
+  }
+  next();
+};

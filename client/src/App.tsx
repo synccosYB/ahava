@@ -27,6 +27,7 @@ import AuditLogPage from "@/pages/audit-log";
 import PermissionsPage from "@/pages/permissions";
 import RoleManagementPage from "@/pages/role-management";
 import KioskManagementPage from "@/pages/kiosk-management";
+import ChangePasswordPage from "@/pages/change-password";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
@@ -126,7 +127,7 @@ function AuthenticatedRouter() {
 }
 
 function AppContent() {
-  const { isLoading, isAuthenticated } = useAuth();
+  const { isLoading, isAuthenticated, user } = useAuth();
 
   if (isLoading) {
     return (
@@ -138,6 +139,10 @@ function AppContent() {
 
   if (!isAuthenticated) {
     return <LoginPage />;
+  }
+
+  if (user?.forcePasswordChange) {
+    return <ChangePasswordPage />;
   }
 
   return <AuthenticatedRouter />;
