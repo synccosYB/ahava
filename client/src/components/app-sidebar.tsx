@@ -111,9 +111,9 @@ export function AppSidebar() {
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-3">
           <img
-            src="/ahava-logo.jpg"
+            src="/ahava-icon.png"
             alt="Ahava Medical Center"
-            className="h-8 w-8 rounded object-cover"
+            className="h-8 w-8 rounded object-contain"
             data-testid="img-sidebar-logo"
           />
           <div className="flex flex-col">
