@@ -23,7 +23,7 @@ import {
   GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { Policy, PolicyType, AuditLog, Location, Department, Company } from "@shared/schema";
+import type { Policy, PolicyType, AuditLog, Location, Department, Division } from "@shared/schema";
 
 const sections = [
   { key: "general", label: "General", icon: Settings2 },
@@ -43,7 +43,7 @@ export default function RulesControlsPage() {
 
   return (
     <div className="max-w-6xl space-y-6" data-testid="rules-controls-page">
-      <PageHeader title="Rules & Controls" subtitle="Configure company policies and system settings" />
+      <PageHeader title="Rules & Controls" subtitle="Configure division policies and system settings" />
 
       <div className="flex gap-6">
         <div className="w-56 shrink-0 space-y-1" data-testid="rules-nav">
@@ -82,8 +82,8 @@ export default function RulesControlsPage() {
 }
 
 function GeneralSection() {
-  const { data: companies, isLoading } = useQuery<Company[]>({ queryKey: ["/api/companies"] });
-  const company = companies?.[0];
+  const { data: divisions, isLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const division = divisions?.[0];
 
   return (
     <Card data-testid="card-general-settings">
@@ -92,28 +92,28 @@ function GeneralSection() {
         {isLoading ? <Skeleton className="h-40" /> : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <Label className="text-muted-foreground text-xs">Company Name</Label>
-              <p className="font-medium" data-testid="text-company-name">{company?.name || "—"}</p>
+              <Label className="text-muted-foreground text-xs">Division Name</Label>
+              <p className="font-medium" data-testid="text-division-name">{division?.name || "—"}</p>
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Legal Name</Label>
-              <p className="font-medium" data-testid="text-legal-name">{company?.legalName || "—"}</p>
+              <p className="font-medium" data-testid="text-legal-name">{division?.legalName || "—"}</p>
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Timezone</Label>
-              <p className="font-medium" data-testid="text-timezone">{company?.timezone || "—"}</p>
+              <p className="font-medium" data-testid="text-timezone">{division?.timezone || "—"}</p>
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Email</Label>
-              <p className="font-medium" data-testid="text-company-email">{company?.email || "—"}</p>
+              <p className="font-medium" data-testid="text-division-email">{division?.email || "—"}</p>
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Phone</Label>
-              <p className="font-medium" data-testid="text-company-phone">{company?.phone || "—"}</p>
+              <p className="font-medium" data-testid="text-division-phone">{division?.phone || "—"}</p>
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Address</Label>
-              <p className="font-medium" data-testid="text-company-address">{company?.address || "—"}</p>
+              <p className="font-medium" data-testid="text-division-address">{division?.address || "—"}</p>
             </div>
           </div>
         )}
@@ -169,7 +169,7 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
 
   const { data: policies, isLoading } = useQuery<Policy[]>({ queryKey: ["/api/policies"] });
   const { data: policyTypes } = useQuery<PolicyType[]>({ queryKey: ["/api/policy-types"] });
-  const { data: companies } = useQuery<Company[]>({ queryKey: ["/api/companies"] });
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
 
   const matchingType = policyTypes?.find((pt) => pt.key === policyTypeKey);
   const filteredPolicies = (policies || []).filter((p) => p.policyTypeId === matchingType?.id);
@@ -180,7 +180,7 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
         name: form.name,
         description: form.description || null,
         policyTypeId: matchingType?.id,
-        companyId: companies?.[0]?.id || null,
+        companyId: divisions?.[0]?.id || null,
         status: form.status,
       };
       if (editingPolicy) {

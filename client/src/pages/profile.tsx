@@ -21,7 +21,7 @@ interface ProfileDetails {
   lastName: string;
   role: string;
 
-  companyName: string;
+  divisionName: string;
   locationName: string;
   departmentName: string;
 
@@ -341,11 +341,11 @@ export default function ProfilePage() {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <Field
-                label="Company"
+                label="Division"
                 value={
                   <span className="flex items-center gap-1.5">
                     <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
-                    {profile!.companyName}
+                    {profile!.divisionName}
                   </span>
                 }
               />

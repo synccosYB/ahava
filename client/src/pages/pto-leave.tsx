@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { CalendarDays, Plus, Pencil, Settings } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { PtoPolicy, User, Company } from "@shared/schema";
+import type { PtoPolicy, User, Division } from "@shared/schema";
 
 export default function PtoLeavePage() {
   return (
@@ -50,7 +50,7 @@ function PoliciesTab() {
   });
 
   const { data: policies, isLoading } = useQuery<PtoPolicy[]>({ queryKey: ["/api/pto-policies"] });
-  const { data: companies } = useQuery<Company[]>({ queryKey: ["/api/companies"] });
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -66,7 +66,7 @@ function PoliciesTab() {
         personalDaysPerYear: parseFloat(form.personalDaysPerYear) || 5,
         holidayPayEnabled: form.holidayPayEnabled,
         isDefault: form.isDefault,
-        companyId: companies?.[0]?.id || null,
+        companyId: divisions?.[0]?.id || null,
       };
       if (editingId) {
         await apiRequest("PATCH", `/api/pto-policies/${editingId}`, payload);
@@ -312,7 +312,7 @@ function EmployeePtoTab() {
                         <SelectValue placeholder="Use default" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">Use Company Default</SelectItem>
+                        <SelectItem value="none">Use Division Default</SelectItem>
                         {policies?.map((p) => (
                           <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
                         ))}

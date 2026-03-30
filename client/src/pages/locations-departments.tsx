@@ -18,12 +18,12 @@ import {
 } from "@/components/ui/dialog";
 import { MapPin, Building2, Plus, Pencil, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { Location, Department, Company, User } from "@shared/schema";
+import type { Location, Department, Division, User } from "@shared/schema";
 
 export default function LocationsDepartmentsPage() {
   return (
     <div className="max-w-6xl space-y-6" data-testid="locations-departments-page">
-      <PageHeader title="Locations & Departments" subtitle="Configure company locations and department structure" />
+      <PageHeader title="Locations & Departments" subtitle="Configure division locations and department structure" />
       <Tabs defaultValue="locations" data-testid="tabs-loc-dept">
         <TabsList>
           <TabsTrigger value="locations" data-testid="tab-locations">
@@ -47,15 +47,15 @@ function LocationsTab() {
   const [form, setForm] = useState({ name: "", code: "", address: "", city: "", state: "", zip: "", timezone: "" });
 
   const { data: locations, isLoading } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
-  const { data: companies } = useQuery<Company[]>({ queryKey: ["/api/companies"] });
-  const companyId = companies?.[0]?.id;
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const divisionId = divisions?.[0]?.id;
 
   const createMutation = useMutation({
     mutationFn: async () => {
       if (editingId) {
         await apiRequest("PATCH", `/api/locations/${editingId}`, form);
       } else {
-        await apiRequest("POST", "/api/locations", { ...form, companyId });
+        await apiRequest("POST", "/api/locations", { ...form, companyId: divisionId });
       }
     },
     onSuccess: () => {
@@ -194,8 +194,8 @@ function DepartmentsTab() {
   const { data: departments, isLoading } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
-  const { data: companies } = useQuery<Company[]>({ queryKey: ["/api/companies"] });
-  const companyId = companies?.[0]?.id;
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const divisionId = divisions?.[0]?.id;
 
   const createMutation = useMutation({
     mutationFn: async () => {
@@ -204,7 +204,7 @@ function DepartmentsTab() {
         description: form.description || null,
         managerId: form.managerId || null,
         locationId: form.locationId || null,
-        companyId: companyId || null,
+        companyId: divisionId || null,
       };
       if (editingId) {
         await apiRequest("PATCH", `/api/departments/${editingId}`, payload);

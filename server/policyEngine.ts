@@ -14,7 +14,7 @@ export interface EffectivePolicy {
   policyId: string;
   policyName: string;
   policyTypeKey: string;
-  assignmentLevel: "global" | "company" | "location" | "department" | "employee";
+  assignmentLevel: "global" | "division" | "location" | "department" | "employee";
   rules: Record<string, any>;
 }
 
@@ -46,7 +46,7 @@ export async function getEffectivePolicy(
     );
 
   let resolvedPolicy: Policy | null = null;
-  let assignmentLevel: EffectivePolicy["assignmentLevel"] = "company";
+  let assignmentLevel: EffectivePolicy["assignmentLevel"] = "division";
 
   const employeeMatch = allAssignments.find(
     (a) => a.assignment.userId === userId
@@ -91,7 +91,7 @@ export async function getEffectivePolicy(
     );
     if (companyMatch) {
       resolvedPolicy = companyMatch.policy;
-      assignmentLevel = "company";
+      assignmentLevel = "division";
     }
   }
 

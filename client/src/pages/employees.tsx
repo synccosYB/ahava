@@ -314,7 +314,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             <CardHeader><CardTitle>Time Clock Settings</CardTitle></CardHeader>
             <CardContent>
               <p className="text-muted-foreground" data-testid="text-timeclock-info">
-                Time clock settings are managed through the Rules & Controls center. This employee follows the company default time clock rules.
+                Time clock settings are managed through the Rules & Controls center. This employee follows the division default time clock rules.
               </p>
             </CardContent>
           </Card>

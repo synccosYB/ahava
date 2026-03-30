@@ -20,6 +20,7 @@ export {
   users,
   sessions,
   companies,
+  companies as divisions,
   locations,
   departments,
   roles,
@@ -34,7 +35,9 @@ export type {
   User,
   UpsertUser,
   Company,
+  Company as Division,
   InsertCompany,
+  InsertCompany as InsertDivision,
   Location,
   InsertLocation,
   Department,
@@ -52,6 +55,7 @@ export type {
 } from "./models/auth";
 export {
   insertCompanySchema,
+  insertCompanySchema as insertDivisionSchema,
   insertLocationSchema,
   insertDepartmentSchema,
   insertRoleSchema,

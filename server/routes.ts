@@ -303,7 +303,7 @@ export async function registerRoutes(
         lastName: user.lastName,
         role: user.role,
 
-        companyName: company?.name ?? "—",
+        divisionName: company?.name ?? "—",
         locationName: location?.name ?? "—",
         departmentName: department?.name ?? "—",
 

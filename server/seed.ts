@@ -6,8 +6,8 @@ import { getDefaultRulesForType } from "./policyEngine";
 
 const PERMISSION_KEYS = [
   { key: "system.super_admin", name: "Super Admin", description: "Full system access", module: "system" },
-  { key: "company.manage", name: "Manage Company", description: "Manage company settings", module: "company" },
-  { key: "company.view", name: "View Company", description: "View company information", module: "company" },
+  { key: "company.manage", name: "Manage Division", description: "Manage division settings", module: "company" },
+  { key: "company.view", name: "View Division", description: "View division information", module: "company" },
   { key: "users.create", name: "Create Users", description: "Create users", module: "users" },
   { key: "users.view", name: "View Users", description: "View users", module: "users" },
   { key: "users.edit", name: "Edit Users", description: "Edit user details", module: "users" },
@@ -53,12 +53,12 @@ const PERMISSION_KEYS = [
 const SYSTEM_ROLES = [
   {
     name: "Super Admin",
-    description: "Full system access across all companies",
+    description: "Full system access across all divisions",
     permissions: ["system.super_admin"],
   },
   {
-    name: "Company Admin",
-    description: "Full access within a company",
+    name: "Division Admin",
+    description: "Full access within a division",
     permissions: [
       "company.manage", "company.view",
       "users.create", "users.view", "users.edit", "users.deactivate",

@@ -11,10 +11,10 @@ import {
 } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 
-const LEGACY_ROLE_MAP: Record<string, string> = {
-  admin: "Company Admin",
-  manager: "Department Manager",
-  employee: "Employee",
+const LEGACY_ROLE_MAP: Record<string, string[]> = {
+  admin: ["Division Admin", "Company Admin"],
+  manager: ["Department Manager"],
+  employee: ["Employee"],
 };
 
 export async function resolveUserPermissions(userId: string): Promise<Set<string>> {
@@ -30,16 +30,19 @@ export async function resolveUserPermissions(userId: string): Promise<Set<string
   if (permSet.size === 0) {
     const [user] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId));
     if (user?.role) {
-      const mappedRoleName = LEGACY_ROLE_MAP[user.role];
-      if (mappedRoleName) {
-        const legacyPerms = await db
-          .select({ key: permissions.key })
-          .from(roles)
-          .innerJoin(rolePermissions, eq(rolePermissions.roleId, roles.id))
-          .innerJoin(permissions, eq(permissions.id, rolePermissions.permissionId))
-          .where(eq(roles.name, mappedRoleName));
-        for (const p of legacyPerms) {
-          permSet.add(p.key);
+      const mappedRoleNames = LEGACY_ROLE_MAP[user.role];
+      if (mappedRoleNames) {
+        for (const mappedRoleName of mappedRoleNames) {
+          const legacyPerms = await db
+            .select({ key: permissions.key })
+            .from(roles)
+            .innerJoin(rolePermissions, eq(rolePermissions.roleId, roles.id))
+            .innerJoin(permissions, eq(permissions.id, rolePermissions.permissionId))
+            .where(eq(roles.name, mappedRoleName));
+          for (const p of legacyPerms) {
+            permSet.add(p.key);
+          }
+          if (permSet.size > 0) break;
         }
       }
     }
@@ -82,25 +85,26 @@ export const requirePermission = (key: string): RequestHandler => {
   };
 };
 
-export type ScopeType = "company" | "location" | "department";
+export type ScopeType = "division" | "company" | "location" | "department";
 
 export async function resolveUserScopes(
   userId: string,
   scopeType: ScopeType
 ): Promise<string[]> {
+  const dbScopeType = scopeType === "division" ? "company" : scopeType;
   const scopes = await db
     .select()
     .from(userAccessScopes)
     .where(
       and(
         eq(userAccessScopes.userId, userId),
-        eq(userAccessScopes.scopeType, scopeType)
+        eq(userAccessScopes.scopeType, dbScopeType)
       )
     );
 
   const scopeIds: string[] = [];
   for (const scope of scopes) {
-    if (scopeType === "company" && scope.companyId) {
+    if ((scopeType === "division" || scopeType === "company") && scope.companyId) {
       scopeIds.push(scope.companyId);
     } else if (scopeType === "location" && scope.locationId) {
       scopeIds.push(scope.locationId);

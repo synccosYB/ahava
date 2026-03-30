@@ -35,6 +35,11 @@ export const insertCompanySchema = createInsertSchema(companies).omit({
 export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companies.$inferSelect;
 
+export const divisions = companies;
+export const insertDivisionSchema = insertCompanySchema;
+export type InsertDivision = InsertCompany;
+export type Division = Company;
+
 export const locations = pgTable("locations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id),

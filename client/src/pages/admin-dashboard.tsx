@@ -104,7 +104,7 @@ export default function AdminDashboardPage() {
     <div className="max-w-6xl space-y-6" data-testid="admin-dashboard-page">
       <PageHeader
         title="Dashboard"
-        subtitle="Company-wide overview"
+        subtitle="Division-wide overview"
         actions={
           <div className="flex items-center gap-3 flex-wrap">
             <Select value={locationFilter} onValueChange={setLocationFilter}>

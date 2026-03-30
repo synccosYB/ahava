@@ -15,7 +15,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **Admin UI:** Features a comprehensive dashboard with KPI cards, live attendance, exceptions panel, and approval queues. Employee profiles are structured with multiple tabs for detailed management.
 
 **Technical Implementations:**
-- **Role-Based Access Control (RBAC):** Granular permissions are managed through roles, user-specific overrides, and access scopes (company, location, department). Middleware (`requirePermission`, `requireScopedAccess`) enforces these rules.
+- **Role-Based Access Control (RBAC):** Granular permissions are managed through roles, user-specific overrides, and access scopes (division/company, location, department). Middleware (`requirePermission`, `requireScopedAccess`) enforces these rules. Note: All user-facing references use "Division" terminology while the underlying DB tables and API endpoints retain "company" naming (e.g., `companies` table, `/api/companies` endpoint). TypeScript type aliases (`Division = Company`, `InsertDivision = InsertCompany`) are exported from `shared/schema.ts` for frontend use.
 - **Policy Engine:** A dynamic policy engine allows for hierarchical rule resolution (employee → department → location → company → global default) for attendance, PTO, payroll, approvals, alerts, and kiosk behaviors. Policies are defined with rules stored as JSON objects.
 - **Time & Attendance:** Manages `punch_logs` (clock in/out records), `attendance_exceptions` (missing punches, time corrections with approval workflows), and computes `hoursWorked`.
 - **PTO Management:** Tracks `time_off_requests` with approval workflows and `time_off_balances`. Configurable `pto_policies` define accrual rates, caps, and holiday pay rules.
@@ -25,7 +25,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 
 **Feature Specifications:**
 - **Kiosk System:** Public `/kiosk` route for employee clock-in/out using PIN or name search, designed for shared devices.
-- **Dashboard:** Employee dashboard shows current clock status, hours, and PTO balance. Manager/Admin dashboards provide team/company-wide stats and approval queues.
+- **Dashboard:** Employee dashboard shows current clock status, hours, and PTO balance. Manager/Admin dashboards provide team/division-wide stats and approval queues.
 - **Admin Pages:** Dedicated sections for managing Employees, Locations & Departments, Time Clock Rules (policies), PTO & Leave, Alerts & Exceptions, Payroll Prep, Reports, Permissions, Roles, Kiosks, and Audit Log.
 - **API Endpoints:** A comprehensive set of RESTful APIs for all functionalities, including user authentication, attendance, time-off, company/location/department management, employment profiles, and reporting. All sensitive API calls are protected by RBAC and scoping.
 
