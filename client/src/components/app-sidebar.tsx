@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   Shield,
   Monitor,
+  BookOpen,
 } from "lucide-react";
 import {
   Sidebar,
@@ -52,6 +53,7 @@ const employeeItems: NavItem[] = [
   { title: "My Attendance", href: "/attendance", icon: Clock, roles: ["employee", "manager", "admin"] },
   { title: "Time Off", href: "/time-off", icon: CalendarDays, roles: ["employee", "manager", "admin"] },
   { title: "Profile", href: "/profile", icon: UserCircle, roles: ["employee", "manager", "admin"] },
+  { title: "User Manual", href: "/manual", icon: BookOpen, roles: ["employee", "manager", "admin"] },
 ];
 
 const managerItems: NavItem[] = [

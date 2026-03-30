@@ -31,12 +31,14 @@ import ChangePasswordPage from "@/pages/change-password";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
+import ManualPage from "@/pages/manual";
 
 function AuthenticatedRouter() {
   return (
     <AppLayout>
       <Switch>
         <Route path="/" component={Dashboard} />
+        <Route path="/manual" component={ManualPage} />
         <Route path="/attendance" component={MyAttendance} />
         <Route path="/time-off" component={TimeOff} />
         <Route path="/profile" component={ProfilePage} />
