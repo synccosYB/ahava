@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { Check, X } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest } from "@shared/schema";
 import {
   Table,
@@ -84,10 +85,8 @@ export default function ApprovalQueuePage() {
   };
 
   return (
-    <div className="p-6 space-y-6" data-testid="approval-queue-page">
-      <h1 className="text-2xl font-bold" data-testid="text-page-title">
-        Pending Approvals ({pendingRequests?.length ?? 0})
-      </h1>
+    <div className="max-w-5xl space-y-6" data-testid="approval-queue-page">
+      <PageHeader title={`Pending Approvals (${pendingRequests?.length ?? 0})`} subtitle="Review and action time-off requests" />
 
       {pendingLoading ? (
         <div className="space-y-4">
@@ -156,7 +155,7 @@ export default function ApprovalQueuePage() {
       )}
 
       <div className="pt-4">
-        <h2 className="text-xl font-semibold mb-4" data-testid="text-recently-processed-title">Recently Processed</h2>
+        <h2 className="text-lg font-semibold" data-testid="text-recently-processed-title">Recently Processed</h2>
         {processedLoading ? (
           <Skeleton className="h-40 w-full" />
         ) : processedRequests && processedRequests.length > 0 ? (
@@ -165,12 +164,12 @@ export default function ApprovalQueuePage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Employee</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Dates</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Processed By</TableHead>
-                    <TableHead>Date</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Dates</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Processed By</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

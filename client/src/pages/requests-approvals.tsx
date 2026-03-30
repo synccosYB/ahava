@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Check, X, ClipboardList, Filter } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException } from "@shared/schema";
 
 type PendingPtoRequest = TimeOffRequest & { employeeName: string };
@@ -17,11 +18,8 @@ type EnrichedException = AttendanceException & { employeeName?: string };
 
 export default function RequestsApprovalsPage() {
   return (
-    <div className="p-6 space-y-6" data-testid="requests-approvals-page">
-      <div className="flex items-center gap-3">
-        <ClipboardList className="h-6 w-6" />
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Requests & Approvals</h1>
-      </div>
+    <div className="max-w-5xl space-y-6" data-testid="requests-approvals-page">
+      <PageHeader title="Requests & Approvals" subtitle="Manage pending PTO and exception requests" />
 
       <Tabs defaultValue="all" data-testid="tabs-requests">
         <TabsList>

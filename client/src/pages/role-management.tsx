@@ -26,6 +26,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Plus, Edit, Copy, Trash2, Shield, Loader2 } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 
 type Permission = {
   id: string;
@@ -138,17 +139,20 @@ export default function RoleManagementPage() {
     setSelectedPerms(next);
   }
 
-  const modules = [...new Set((permissions || []).map(p => p.module || p.key.split(".")[0]))];
+  const modules = Array.from(new Set((permissions || []).map(p => p.module || p.key.split(".")[0])));
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   return (
-    <div className="p-6 space-y-6" data-testid="role-management-page">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Role Management</h1>
-        <Button onClick={openCreate} data-testid="button-create-role">
-          <Plus className="h-4 w-4 mr-2" /> Create Role
-        </Button>
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="role-management-page">
+      <PageHeader
+        title="Role Management"
+        subtitle="Create and manage user roles"
+        actions={
+          <Button onClick={openCreate} data-testid="button-create-role">
+            <Plus className="h-4 w-4 mr-2" /> Create Role
+          </Button>
+        }
+      />
 
       <Card data-testid="card-roles-list">
         <CardHeader>
@@ -166,11 +170,11 @@ export default function RoleManagementPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead>Permissions</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Permissions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

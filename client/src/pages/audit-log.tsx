@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileText, Search, ChevronLeft, ChevronRight } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 
 type AuditLogEntry = {
   id: string;
@@ -83,8 +84,8 @@ export default function AuditLogPage() {
   }
 
   return (
-    <div className="p-6 space-y-6" data-testid="audit-log-page">
-      <h1 className="text-2xl font-bold" data-testid="text-page-title">Audit Log</h1>
+    <div className="max-w-6xl space-y-6" data-testid="audit-log-page">
+      <PageHeader title="Audit Log" subtitle="Track all system changes and user actions" />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="space-y-1">
@@ -159,12 +160,12 @@ export default function AuditLogPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Timestamp</TableHead>
-                    <TableHead>Actor</TableHead>
-                    <TableHead>Action</TableHead>
-                    <TableHead>Entity</TableHead>
-                    <TableHead>Target ID</TableHead>
-                    <TableHead>Details</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Timestamp</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Actor</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Action</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Entity</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Target ID</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Details</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -269,28 +270,28 @@ export default function AuditLogPage() {
                   )}
                 </div>
 
-                {(selectedLog.oldValue || selectedLog.newValue) && (
+                {(selectedLog.oldValue !== null || selectedLog.newValue !== null) && (
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <p className="font-medium text-muted-foreground text-sm mb-1">Old Value</p>
                       <div className="bg-red-50 dark:bg-red-950 p-3 rounded text-sm" data-testid="text-detail-old-value">
-                        {renderJson(selectedLog.oldValue)}
+                        {renderJson(selectedLog.oldValue as Record<string, unknown>)}
                       </div>
                     </div>
                     <div>
                       <p className="font-medium text-muted-foreground text-sm mb-1">New Value</p>
                       <div className="bg-green-50 dark:bg-green-950 p-3 rounded text-sm" data-testid="text-detail-new-value">
-                        {renderJson(selectedLog.newValue)}
+                        {renderJson(selectedLog.newValue as Record<string, unknown>)}
                       </div>
                     </div>
                   </div>
                 )}
 
-                {selectedLog.context && (
+                {selectedLog.context !== null && selectedLog.context !== undefined && (
                   <div>
                     <p className="font-medium text-muted-foreground text-sm mb-1">Context</p>
                     <div className="bg-muted p-3 rounded text-sm" data-testid="text-detail-context">
-                      {renderJson(selectedLog.context)}
+                      {renderJson(selectedLog.context as Record<string, unknown>)}
                     </div>
                   </div>
                 )}

@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
 import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
 import type { TimeOffRequest } from "@shared/schema";
@@ -113,27 +114,21 @@ export default function TimeOff() {
     }
   };
 
-  const getStatusBorderColor = (status: string) => {
-    switch (status) {
-      case "pending": return "border-l-amber-500";
-      case "approved": return "border-l-green-500";
-      case "denied": return "border-l-red-500";
-      default: return "border-l-gray-300";
-    }
-  };
-
   return (
     <div className="space-y-6 max-w-5xl">
-      <h2 className="text-2xl font-bold" data-testid="text-page-title">Time Off</h2>
+      <PageHeader
+        title="Time Off"
+        subtitle="Request time off and view your upcoming schedule"
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card data-testid="card-new-request">
-          <CardHeader>
-            <CardTitle>New Request</CardTitle>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">New Request</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-1">
-              <Label>Request Type</Label>
+              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Request Type</Label>
               <Select value={type} onValueChange={setType}>
                 <SelectTrigger data-testid="select-request-type">
                   <SelectValue />
@@ -147,7 +142,7 @@ export default function TimeOff() {
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="time-off-start">Start Date</Label>
+              <Label htmlFor="time-off-start" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Start Date</Label>
               <Input
                 id="time-off-start"
                 type="date"
@@ -158,7 +153,7 @@ export default function TimeOff() {
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="time-off-end">End Date</Label>
+              <Label htmlFor="time-off-end" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">End Date</Label>
               <Input
                 id="time-off-end"
                 type="date"
@@ -169,7 +164,7 @@ export default function TimeOff() {
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="time-off-reason">Reason (Optional)</Label>
+              <Label htmlFor="time-off-reason" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Reason (Optional)</Label>
               <Textarea
                 id="time-off-reason"
                 value={reason}
@@ -181,9 +176,9 @@ export default function TimeOff() {
 
             {startDate && endDate && daysRequested > 0 && (
               <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-days-summary">
-                <p className="font-semibold">Days Requested: {daysRequested}</p>
+                <p className="text-sm font-semibold">Days Requested: <span className="tabular-nums">{daysRequested}</span></p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  Remaining Balance: {remainingBalance - daysRequested} days
+                  Remaining Balance: <span className="tabular-nums">{remainingBalance - daysRequested}</span> days
                 </p>
               </div>
             )}
@@ -200,8 +195,8 @@ export default function TimeOff() {
         </Card>
 
         <Card data-testid="card-my-requests">
-          <CardHeader>
-            <CardTitle>My Requests</CardTitle>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">My Requests</CardTitle>
           </CardHeader>
           <CardContent>
             {requestsLoading ? (
@@ -209,7 +204,7 @@ export default function TimeOff() {
                 {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}
               </div>
             ) : !requests || requests.length === 0 ? (
-              <p className="text-center text-muted-foreground py-4" data-testid="text-no-requests">
+              <p className="text-center text-muted-foreground py-4 text-sm" data-testid="text-no-requests">
                 No time off requests yet.
               </p>
             ) : (
@@ -217,17 +212,17 @@ export default function TimeOff() {
                 {requests.map((request) => (
                   <div
                     key={request.id}
-                    className={`border-l-4 ${getStatusBorderColor(request.status)} border rounded-md p-3`}
+                    className="rounded-md border p-3"
                     data-testid={`card-request-${request.id}`}
                   >
-                    <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
                       {getStatusBadge(request.status)}
                     </div>
-                    <p className="font-semibold mt-2">
+                    <p className="text-sm font-semibold mt-2">
                       {formatDateRange(request.startDate, request.endDate)}
                     </p>
                     <p className="text-sm text-muted-foreground capitalize">
-                      {request.type} &bull; {request.daysRequested} day{request.daysRequested > 1 ? "s" : ""}
+                      {request.type} &bull; <span className="tabular-nums">{request.daysRequested}</span> day{request.daysRequested > 1 ? "s" : ""}
                     </p>
                     {request.status === "pending" && (
                       <p className="text-sm text-amber-600 mt-1">Awaiting manager approval</p>
@@ -294,10 +289,10 @@ function TeamCalendar({
 
   return (
     <Card data-testid="card-team-calendar">
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2">
-            <Calendar className="h-5 w-5" />
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Calendar className="h-4 w-4 text-muted-foreground" />
             Team Calendar
           </CardTitle>
           <div className="flex items-center gap-2">
@@ -320,7 +315,7 @@ function TeamCalendar({
           <>
             <div className="grid grid-cols-7 gap-px bg-border rounded-md overflow-hidden">
               {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-                <div key={d} className="bg-muted p-2 text-center text-xs font-semibold text-muted-foreground">
+                <div key={d} className="bg-muted p-2 text-center text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   {d}
                 </div>
               ))}
@@ -364,7 +359,7 @@ function TeamCalendar({
                 );
               })}
             </div>
-            <div className="flex gap-4 mt-4 text-xs">
+            <div className="flex gap-4 mt-4 text-xs flex-wrap">
               <div className="flex items-center gap-1.5">
                 <div className="w-3 h-3 rounded bg-primary/20" />
                 <span>Your time off</span>

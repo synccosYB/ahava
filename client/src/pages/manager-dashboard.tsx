@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, Users, UserCheck, CalendarOff } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import {
   Table,
   TableBody,
@@ -39,8 +40,8 @@ export default function ManagerDashboardPage() {
   });
 
   return (
-    <div className="p-6 space-y-6" data-testid="manager-dashboard-page">
-      <h1 className="text-2xl font-bold" data-testid="text-page-title">Team Overview</h1>
+    <div className="max-w-5xl space-y-6" data-testid="manager-dashboard-page">
+      <PageHeader title="Team Overview" subtitle="Monitor your team's attendance and status" />
 
       {stats && stats.pendingApprovals > 0 && (
         <Link href="/approvals">
@@ -69,21 +70,21 @@ export default function ManagerDashboardPage() {
               <CardContent className="flex flex-col items-center justify-center p-6">
                 <Users className="h-5 w-5 text-muted-foreground mb-2" />
                 <p className="text-sm text-muted-foreground">Team Size</p>
-                <p className="text-3xl font-bold text-primary" data-testid="text-team-size">{stats?.teamSize ?? 0}</p>
+                <p className="text-3xl font-bold tabular-nums text-primary" data-testid="text-team-size">{stats?.teamSize ?? 0}</p>
               </CardContent>
             </Card>
             <Card data-testid="card-clocked-in">
               <CardContent className="flex flex-col items-center justify-center p-6">
                 <UserCheck className="h-5 w-5 text-muted-foreground mb-2" />
                 <p className="text-sm text-muted-foreground">Clocked In</p>
-                <p className="text-3xl font-bold text-green-600" data-testid="text-clocked-in">{stats?.clockedIn ?? 0}</p>
+                <p className="text-3xl font-bold tabular-nums text-green-600" data-testid="text-clocked-in">{stats?.clockedIn ?? 0}</p>
               </CardContent>
             </Card>
             <Card data-testid="card-on-leave">
               <CardContent className="flex flex-col items-center justify-center p-6">
                 <CalendarOff className="h-5 w-5 text-muted-foreground mb-2" />
                 <p className="text-sm text-muted-foreground">On Leave</p>
-                <p className="text-3xl font-bold text-amber-500" data-testid="text-on-leave">{stats?.onLeave ?? 0}</p>
+                <p className="text-3xl font-bold tabular-nums text-amber-500" data-testid="text-on-leave">{stats?.onLeave ?? 0}</p>
               </CardContent>
             </Card>
           </>
@@ -105,10 +106,10 @@ export default function ManagerDashboardPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Employee</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Today</TableHead>
-                  <TableHead>This Week</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Today</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">This Week</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -127,10 +128,10 @@ export default function ManagerDashboardPage() {
                         {member.status}
                       </Badge>
                     </TableCell>
-                    <TableCell data-testid={`text-member-today-${member.id}`}>
+                    <TableCell className="tabular-nums" data-testid={`text-member-today-${member.id}`}>
                       {member.status === "On Leave" ? "-" : `${member.todayHours} hrs`}
                     </TableCell>
-                    <TableCell data-testid={`text-member-week-${member.id}`}>
+                    <TableCell className="tabular-nums" data-testid={`text-member-week-${member.id}`}>
                       {member.weekHours} hrs
                     </TableCell>
                   </TableRow>

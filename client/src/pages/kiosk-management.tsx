@@ -32,6 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Plus, Edit, Trash2, Monitor, Loader2 } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 
 type KioskDevice = {
   id: string;
@@ -142,13 +143,16 @@ export default function KioskManagementPage() {
   const deptMap = new Map((departments || []).map(d => [d.id, d.name]));
 
   return (
-    <div className="p-6 space-y-6" data-testid="kiosk-management-page">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Kiosk Management</h1>
-        <Button onClick={openCreate} data-testid="button-create-device">
-          <Plus className="h-4 w-4 mr-2" /> Add Device
-        </Button>
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="kiosk-management-page">
+      <PageHeader
+        title="Kiosk Management"
+        subtitle="Manage clock-in kiosk devices"
+        actions={
+          <Button onClick={openCreate} data-testid="button-create-device">
+            <Plus className="h-4 w-4 mr-2" /> Add Device
+          </Button>
+        }
+      />
 
       <Card data-testid="card-device-list">
         <CardHeader>
@@ -166,12 +170,12 @@ export default function KioskManagementPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Location</TableHead>
-                  <TableHead>Department</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Last Heartbeat</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Location</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Last Heartbeat</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

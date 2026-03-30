@@ -12,6 +12,7 @@ import {
   Users, UserCheck, CalendarOff, Clock, AlertTriangle, Timer,
   CheckSquare, FileText, Download, UserPlus, AlertCircle,
 } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import type { User, Department, Location, TimeOffRequest, AttendanceException } from "@shared/schema";
 
 type PendingPtoRequest = TimeOffRequest & { employeeName: string };
@@ -100,35 +101,37 @@ export default function AdminDashboardPage() {
   const statsLoading = usersLoading || ptoLoading || exceptionsLoading;
 
   return (
-    <div className="p-6 space-y-6" data-testid="admin-dashboard-page">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Dashboard</h1>
-
-        <div className="flex items-center gap-3 flex-wrap">
-          <Select value={locationFilter} onValueChange={setLocationFilter}>
-            <SelectTrigger className="w-[160px]" data-testid="select-location-filter">
-              <SelectValue placeholder="Location" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Locations</SelectItem>
-              {locations?.map((l) => (
-                <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
-            <SelectTrigger className="w-[160px]" data-testid="select-department-filter">
-              <SelectValue placeholder="Department" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Departments</SelectItem>
-              {departments?.map((d) => (
-                <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="admin-dashboard-page">
+      <PageHeader
+        title="Dashboard"
+        subtitle="Company-wide overview"
+        actions={
+          <div className="flex items-center gap-3 flex-wrap">
+            <Select value={locationFilter} onValueChange={setLocationFilter}>
+              <SelectTrigger className="w-[160px]" data-testid="select-location-filter">
+                <SelectValue placeholder="Location" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Locations</SelectItem>
+                {locations?.map((l) => (
+                  <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
+              <SelectTrigger className="w-[160px]" data-testid="select-department-filter">
+                <SelectValue placeholder="Department" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Departments</SelectItem>
+                {departments?.map((d) => (
+                  <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        }
+      />
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {statsLoading ? (
@@ -139,7 +142,7 @@ export default function AdminDashboardPage() {
               <CardContent className="flex flex-col items-center justify-center p-4">
                 <kpi.icon className={`h-5 w-5 mb-1 ${kpi.color}`} />
                 <p className="text-xs text-muted-foreground text-center">{kpi.label}</p>
-                <p className={`text-2xl font-bold ${kpi.color}`} data-testid={`text-${kpi.testId}`}>
+                <p className={`text-2xl font-bold tabular-nums ${kpi.color}`} data-testid={`text-${kpi.testId}`}>
                   {kpi.value}
                 </p>
               </CardContent>
@@ -161,8 +164,8 @@ export default function AdminDashboardPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Department</TableHead>
-                      <TableHead>Description</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>

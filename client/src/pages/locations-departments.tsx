@@ -17,12 +17,13 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
 import { MapPin, Building2, Plus, Pencil, Trash2 } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import type { Location, Department, Company, User } from "@shared/schema";
 
 export default function LocationsDepartmentsPage() {
   return (
-    <div className="p-6 space-y-6" data-testid="locations-departments-page">
-      <h1 className="text-2xl font-bold" data-testid="text-page-title">Locations & Departments</h1>
+    <div className="max-w-6xl space-y-6" data-testid="locations-departments-page">
+      <PageHeader title="Locations & Departments" subtitle="Configure company locations and department structure" />
       <Tabs defaultValue="locations" data-testid="tabs-loc-dept">
         <TabsList>
           <TabsTrigger value="locations" data-testid="tab-locations">
@@ -143,11 +144,11 @@ function LocationsTab() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Code</TableHead>
-                  <TableHead>Address</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Code</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Address</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -317,11 +318,11 @@ function DepartmentsTab() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead>Manager</TableHead>
-                  <TableHead>Location</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Manager</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Location</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

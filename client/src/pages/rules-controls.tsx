@@ -22,6 +22,7 @@ import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
   GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil
 } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import type { Policy, PolicyType, AuditLog, Location, Department, Company } from "@shared/schema";
 
 const sections = [
@@ -41,11 +42,8 @@ export default function RulesControlsPage() {
   const [activeSection, setActiveSection] = useState("general");
 
   return (
-    <div className="p-6 space-y-6" data-testid="rules-controls-page">
-      <div className="flex items-center gap-3">
-        <Settings2 className="h-6 w-6" />
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Rules & Controls</h1>
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="rules-controls-page">
+      <PageHeader title="Rules & Controls" subtitle="Configure company policies and system settings" />
 
       <div className="flex gap-6">
         <div className="w-56 shrink-0 space-y-1" data-testid="rules-nav">
@@ -135,10 +133,10 @@ function LocationsSection() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Code</TableHead>
-                <TableHead>Timezone</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Code</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Timezone</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -338,11 +336,11 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Version</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Version</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -465,11 +463,11 @@ function AuditSection() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Action</TableHead>
-                <TableHead>Target Type</TableHead>
-                <TableHead>Target ID</TableHead>
-                <TableHead>IP Address</TableHead>
-                <TableHead>Date</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Action</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Target Type</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Target ID</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">IP Address</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

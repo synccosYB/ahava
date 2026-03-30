@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Download, FileText, Loader2, Clock, CalendarDays, AlertTriangle, FileSearch, Users } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -40,11 +41,8 @@ export default function ReportsPage() {
   const [activeReport, setActiveReport] = useState("attendance");
 
   return (
-    <div className="p-6 space-y-6" data-testid="reports-page">
-      <div className="flex items-center gap-3">
-        <FileText className="h-6 w-6" />
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Reports</h1>
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="reports-page">
+      <PageHeader title="Reports" subtitle="Generate and export workforce reports" />
 
       <Tabs value={activeReport} onValueChange={setActiveReport} data-testid="tabs-reports">
         <TabsList className="flex-wrap">
@@ -177,12 +175,12 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Employee</TableHead>
-                      <TableHead>Department</TableHead>
-                      <TableHead>Total Hours</TableHead>
-                      <TableHead>Days Worked</TableHead>
-                      <TableHead>Days Off</TableHead>
-                      <TableHead>Overtime</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Total Hours</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Days Worked</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Days Off</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Overtime</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -190,9 +188,9 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
                       <TableRow key={row.employeeId} data-testid={`row-report-${row.employeeId}`}>
                         <TableCell className="font-medium" data-testid={`text-report-name-${row.employeeId}`}>{row.employeeName}</TableCell>
                         <TableCell data-testid={`text-report-dept-${row.employeeId}`}>{row.department}</TableCell>
-                        <TableCell data-testid={`text-report-hours-${row.employeeId}`}>{row.totalHours}</TableCell>
-                        <TableCell data-testid={`text-report-days-${row.employeeId}`}>{row.daysWorked}</TableCell>
-                        <TableCell data-testid={`text-report-off-${row.employeeId}`}>{row.daysOff}</TableCell>
+                        <TableCell className="tabular-nums" data-testid={`text-report-hours-${row.employeeId}`}>{row.totalHours}</TableCell>
+                        <TableCell className="tabular-nums" data-testid={`text-report-days-${row.employeeId}`}>{row.daysWorked}</TableCell>
+                        <TableCell className="tabular-nums" data-testid={`text-report-off-${row.employeeId}`}>{row.daysOff}</TableCell>
                         <TableCell data-testid={`text-report-overtime-${row.employeeId}`}>
                           <span className={row.overtime > 0 ? "text-amber-500 font-bold" : ""}>{row.overtime}</span>
                         </TableCell>
@@ -254,11 +252,11 @@ function AuditReport() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Target Type</TableHead>
-                  <TableHead>Target ID</TableHead>
-                  <TableHead>IP Address</TableHead>
-                  <TableHead>Date</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Action</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Target Type</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Target ID</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">IP Address</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

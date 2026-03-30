@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/page-header";
 import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import type { AttendanceRecord } from "@shared/schema";
 
@@ -128,19 +129,22 @@ export default function MyAttendance() {
 
   return (
     <div className="space-y-6 max-w-5xl">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold" data-testid="text-page-title">Attendance History</h2>
-        <Button onClick={exportCSV} disabled={!records || records.length === 0} data-testid="button-export-csv">
-          <Download className="mr-2 h-4 w-4" />
-          Export to CSV
-        </Button>
-      </div>
+      <PageHeader
+        title="Attendance History"
+        subtitle="View and export your attendance records"
+        actions={
+          <Button onClick={exportCSV} disabled={!records || records.length === 0} data-testid="button-export-csv">
+            <Download className="mr-2 h-4 w-4" />
+            Export to CSV
+          </Button>
+        }
+      />
 
       <Card data-testid="card-date-filter">
         <CardContent className="pt-6">
           <div className="flex items-end gap-4 flex-wrap">
             <div className="space-y-1">
-              <Label htmlFor="start-date">Start Date</Label>
+              <Label htmlFor="start-date" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Start Date</Label>
               <Input
                 id="start-date"
                 type="date"
@@ -150,7 +154,7 @@ export default function MyAttendance() {
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="end-date">End Date</Label>
+              <Label htmlFor="end-date" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">End Date</Label>
               <Input
                 id="end-date"
                 type="date"
@@ -168,8 +172,8 @@ export default function MyAttendance() {
       </Card>
 
       <Card data-testid="card-summary-stats">
-        <CardHeader>
-          <CardTitle>Summary</CardTitle>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Summary</CardTitle>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -179,16 +183,16 @@ export default function MyAttendance() {
           ) : (
             <div className="grid grid-cols-3 gap-4 text-center">
               <div data-testid="stat-total-hours">
-                <p className="text-sm text-muted-foreground">Total Hours</p>
-                <p className="text-3xl font-bold text-primary">{stats.totalHours}</p>
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Total Hours</p>
+                <p className="text-2xl font-semibold tabular-nums">{stats.totalHours}</p>
               </div>
               <div data-testid="stat-days-worked">
-                <p className="text-sm text-muted-foreground">Days Worked</p>
-                <p className="text-3xl font-bold text-primary">{stats.daysWorked}</p>
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Days Worked</p>
+                <p className="text-2xl font-semibold tabular-nums">{stats.daysWorked}</p>
               </div>
               <div data-testid="stat-daily-average">
-                <p className="text-sm text-muted-foreground">Daily Average</p>
-                <p className="text-3xl font-bold text-primary">{stats.dailyAvg}</p>
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Daily Average</p>
+                <p className="text-2xl font-semibold tabular-nums">{stats.dailyAvg}</p>
               </div>
             </div>
           )}
@@ -202,50 +206,50 @@ export default function MyAttendance() {
               {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
             </div>
           ) : isError ? (
-            <p className="text-center text-destructive py-8" data-testid="text-error">
+            <p className="text-center text-destructive py-8 text-sm" data-testid="text-error">
               Failed to load attendance records. Please try again.
             </p>
           ) : !records || records.length === 0 ? (
-            <p className="text-center text-muted-foreground py-8" data-testid="text-no-records">
+            <p className="text-center text-muted-foreground py-8 text-sm" data-testid="text-no-records">
               No attendance records found for this date range.
             </p>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">
                     <button
                       onClick={() => toggleSort("date")}
-                      className="flex items-center font-medium hover:text-foreground transition-colors"
+                      className="flex items-center hover:text-foreground transition-colors"
                       data-testid="sort-date"
                     >
                       Date <SortIcon column="date" />
                     </button>
                   </TableHead>
-                  <TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">
                     <button
                       onClick={() => toggleSort("clockIn")}
-                      className="flex items-center font-medium hover:text-foreground transition-colors"
+                      className="flex items-center hover:text-foreground transition-colors"
                       data-testid="sort-clock-in"
                     >
                       Clock In <SortIcon column="clockIn" />
                     </button>
                   </TableHead>
-                  <TableHead>Clock Out</TableHead>
-                  <TableHead>Break</TableHead>
-                  <TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Clock Out</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Break</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">
                     <button
                       onClick={() => toggleSort("totalHours")}
-                      className="flex items-center font-medium hover:text-foreground transition-colors"
+                      className="flex items-center hover:text-foreground transition-colors"
                       data-testid="sort-total-hours"
                     >
                       Total Hours <SortIcon column="totalHours" />
                     </button>
                   </TableHead>
-                  <TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">
                     <button
                       onClick={() => toggleSort("status")}
-                      className="flex items-center font-medium hover:text-foreground transition-colors"
+                      className="flex items-center hover:text-foreground transition-colors"
                       data-testid="sort-status"
                     >
                       Status <SortIcon column="status" />
@@ -256,19 +260,19 @@ export default function MyAttendance() {
               <TableBody>
                 {sortedRecords.map((record) => (
                   <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
-                    <TableCell className="font-medium">{record.date}</TableCell>
-                    <TableCell>
+                    <TableCell className="text-sm font-medium">{record.date}</TableCell>
+                    <TableCell className="text-sm tabular-nums">
                       {record.clockIn
                         ? new Date(record.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                         : "—"}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-sm tabular-nums">
                       {record.clockOut
                         ? new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                         : "—"}
                     </TableCell>
-                    <TableCell>{record.breakMinutes || 0} min</TableCell>
-                    <TableCell className="font-bold">
+                    <TableCell className="text-sm tabular-nums">{record.breakMinutes || 0} min</TableCell>
+                    <TableCell className="text-sm font-semibold tabular-nums">
                       {record.totalHours ? `${record.totalHours} hrs` : "—"}
                     </TableCell>
                     <TableCell>{getStatusBadge(record.status)}</TableCell>

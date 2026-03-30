@@ -9,6 +9,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { PageHeader } from "@/components/page-header";
 import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Umbrella } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
@@ -72,10 +73,10 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="space-y-0.5" data-testid={`field-${label.toLowerCase().replace(/\s+/g, "-")}`}>
-      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
         {label}
       </p>
-      <p className="text-sm font-medium text-foreground">{value}</p>
+      <div className="text-sm font-medium text-foreground">{value}</div>
     </div>
   );
 }
@@ -92,15 +93,15 @@ function BalanceCard({
   colorClass: string;
 }) {
   return (
-    <div className="flex items-center gap-4 rounded-lg border p-4" data-testid={`card-balance-${label.toLowerCase()}`}>
+    <div className="flex items-center gap-4 rounded-md border p-4" data-testid={`card-balance-${label.toLowerCase()}`}>
       <div className={`rounded-full p-2 ${colorClass}`}>
         <Icon className="h-4 w-4" />
       </div>
       <div>
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
           {label}
         </p>
-        <p className="text-xl font-bold">
+        <p className="text-xl font-semibold tabular-nums">
           {days}{" "}
           <span className="text-sm font-normal text-muted-foreground">days</span>
         </p>
@@ -124,7 +125,7 @@ export default function ProfilePage() {
 
   if (isError) {
     return (
-      <div className="container max-w-3xl py-8" data-testid="profile-error">
+      <div className="max-w-5xl" data-testid="profile-error">
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
@@ -136,7 +137,11 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="container max-w-3xl py-8 space-y-6" data-testid="profile-page">
+    <div className="space-y-6 max-w-5xl" data-testid="profile-page">
+      <PageHeader
+        title="My Profile"
+        subtitle="View your personal and employment information"
+      />
 
       <Card data-testid="card-profile-header">
         <CardContent className="pt-6">
@@ -159,9 +164,9 @@ export default function ProfilePage() {
                 </>
               ) : (
                 <>
-                  <h1 className="text-xl font-bold" data-testid="text-profile-name">
+                  <h2 className="text-xl font-semibold tracking-tight" data-testid="text-profile-name">
                     {profile!.firstName} {profile!.lastName}
-                  </h1>
+                  </h2>
                   <p className="text-sm text-muted-foreground" data-testid="text-profile-email">{profile!.email}</p>
                   <Badge variant="secondary" className="mt-1 capitalize" data-testid="badge-profile-role">
                     {formatLabel(profile!.role)}
@@ -273,7 +278,7 @@ export default function ProfilePage() {
           {isLoading ? (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-20 rounded-lg" />
+                <Skeleton key={i} className="h-20 rounded-md" />
               ))}
             </div>
           ) : (

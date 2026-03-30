@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ShieldCheck, Save, Loader2 } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 
 type Permission = {
   id: string;
@@ -49,14 +50,14 @@ export default function PermissionsPage() {
 
   if (rolesLoading || permsLoading) {
     return (
-      <div className="p-6 space-y-6">
-        <h1 className="text-2xl font-bold">Permission Matrix</h1>
+      <div className="max-w-6xl space-y-6">
+        <PageHeader title="Permission Matrix" subtitle="Loading roles and permissions..." />
         <Skeleton className="h-[400px] w-full" />
       </div>
     );
   }
 
-  const modules = [...new Set((permissions || []).map(p => p.module || p.key.split(".")[0]))];
+  const modules = Array.from(new Set((permissions || []).map(p => p.module || p.key.split(".")[0])));
   const permsByModule = modules.map(mod => ({
     module: mod,
     perms: (permissions || []).filter(p => (p.module || p.key.split(".")[0]) === mod),
@@ -88,13 +89,12 @@ export default function PermissionsPage() {
   const hasPending = pendingChanges.size > 0;
 
   return (
-    <div className="p-6 space-y-6" data-testid="permissions-page">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Permission Matrix</h1>
-          {hasPending && <Badge variant="secondary">Unsaved changes</Badge>}
-        </div>
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="permissions-page">
+      <PageHeader
+        title="Permission Matrix"
+        subtitle="Configure role-based access controls"
+        actions={hasPending ? <Badge variant="secondary">Unsaved changes</Badge> : undefined}
+      />
 
       <Card data-testid="card-permission-matrix">
         <CardHeader>
@@ -108,9 +108,9 @@ export default function PermissionsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b">
-                  <th className="text-left py-3 px-2 font-medium sticky left-0 bg-background min-w-[200px]">Permission</th>
+                  <th className="text-left py-3 px-2 text-xs font-medium uppercase tracking-wider sticky left-0 bg-background min-w-[200px]">Permission</th>
                   {(roles || []).map(role => (
-                    <th key={role.id} className="text-center py-3 px-4 font-medium min-w-[120px]">
+                    <th key={role.id} className="text-center py-3 px-4 text-xs font-medium uppercase tracking-wider min-w-[120px]">
                       <div className="flex flex-col items-center gap-1">
                         <span data-testid={`text-role-name-${role.id}`}>{role.name}</span>
                         {role.isSystem && <Badge variant="outline" className="text-xs">System</Badge>}
@@ -134,8 +134,8 @@ export default function PermissionsPage() {
               </thead>
               <tbody>
                 {permsByModule.map(({ module, perms }) => (
-                  <>
-                    <tr key={`mod-${module}`} className="bg-muted/50">
+                  <Fragment key={`mod-${module}`}>
+                    <tr className="bg-muted/50">
                       <td colSpan={(roles?.length || 0) + 1} className="py-2 px-2 font-semibold capitalize" data-testid={`text-module-${module}`}>
                         {module}
                       </td>
@@ -161,7 +161,7 @@ export default function PermissionsPage() {
                         ))}
                       </tr>
                     ))}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>

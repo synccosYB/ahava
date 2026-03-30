@@ -19,6 +19,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, CheckCircle, XCircle } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 
 type PayrollBatch = {
   id: string;
@@ -141,13 +142,12 @@ export default function PayrollPrepPage() {
   };
 
   return (
-    <div className="p-6 space-y-6" data-testid="payroll-prep-page">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <DollarSign className="h-6 w-6" />
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Payroll Prep</h1>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+    <div className="max-w-6xl space-y-6" data-testid="payroll-prep-page">
+      <PageHeader
+        title="Payroll Prep"
+        subtitle="Create, validate, and export payroll batches"
+        actions={
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button data-testid="button-create-batch"><Plus className="h-4 w-4 mr-1" /> Create Batch</Button>
           </DialogTrigger>
@@ -170,7 +170,8 @@ export default function PayrollPrepPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
+        }
+      />
 
       <Card data-testid="card-batch-list">
         <CardContent className="p-0">
@@ -182,13 +183,13 @@ export default function PayrollPrepPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Period</TableHead>
-                  <TableHead>Employees</TableHead>
-                  <TableHead>Total Hours</TableHead>
-                  <TableHead>OT Hours</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Period</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Employees</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Total Hours</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">OT Hours</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -198,8 +199,8 @@ export default function PayrollPrepPage() {
                     <TableCell data-testid={`text-batch-period-${batch.id}`}>
                       {batch.periodStart} — {batch.periodEnd}
                     </TableCell>
-                    <TableCell data-testid={`text-batch-employees-${batch.id}`}>{batch.employeeCount}</TableCell>
-                    <TableCell data-testid={`text-batch-hours-${batch.id}`}>{batch.totalHours}</TableCell>
+                    <TableCell className="tabular-nums" data-testid={`text-batch-employees-${batch.id}`}>{batch.employeeCount}</TableCell>
+                    <TableCell className="tabular-nums" data-testid={`text-batch-hours-${batch.id}`}>{batch.totalHours}</TableCell>
                     <TableCell data-testid={`text-batch-ot-${batch.id}`}>
                       <span className={batch.totalOvertimeHours > 0 ? "text-amber-500 font-bold" : ""}>
                         {batch.totalOvertimeHours}

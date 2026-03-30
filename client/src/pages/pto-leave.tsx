@@ -19,15 +19,13 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
 import { CalendarDays, Plus, Pencil, Settings } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import type { PtoPolicy, User, Company } from "@shared/schema";
 
 export default function PtoLeavePage() {
   return (
-    <div className="p-6 space-y-6" data-testid="pto-leave-page">
-      <div className="flex items-center gap-3">
-        <CalendarDays className="h-6 w-6" />
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">PTO & Leave</h1>
-      </div>
+    <div className="max-w-5xl space-y-6" data-testid="pto-leave-page">
+      <PageHeader title="PTO & Leave" subtitle="Manage time-off policies and employee settings" />
       <Tabs defaultValue="policies" data-testid="tabs-pto">
         <TabsList>
           <TabsTrigger value="policies" data-testid="tab-policies">Policies</TabsTrigger>
@@ -183,12 +181,12 @@ function PoliciesTab() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Accrual Type</TableHead>
-                  <TableHead>Rate</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Default</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Accrual Type</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Rate</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Default</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

@@ -12,6 +12,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { AlertTriangle, Check, X, Filter } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import type { AttendanceException } from "@shared/schema";
 
 type EnrichedException = AttendanceException & {
@@ -68,7 +69,7 @@ export default function AttendanceExceptionsPage() {
     return true;
   });
 
-  const exceptionTypes = [...new Set(allExceptions.map((e) => e.type))];
+  const exceptionTypes = Array.from(new Set(allExceptions.map((e) => e.type)));
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -91,20 +92,18 @@ export default function AttendanceExceptionsPage() {
   };
 
   return (
-    <div className="p-6 space-y-6" data-testid="attendance-exceptions-page">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <AlertTriangle className="h-6 w-6 text-amber-500" />
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">
-            Alerts & Exceptions
-          </h1>
-          {pendingExceptions && pendingExceptions.length > 0 && (
+    <div className="max-w-5xl space-y-6" data-testid="attendance-exceptions-page">
+      <PageHeader
+        title="Alerts & Exceptions"
+        subtitle="Review and resolve attendance exceptions"
+        actions={
+          pendingExceptions && pendingExceptions.length > 0 ? (
             <Badge variant="destructive" data-testid="badge-pending-count">
               {pendingExceptions.length} pending
             </Badge>
-          )}
-        </div>
-      </div>
+          ) : undefined
+        }
+      />
 
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-2">

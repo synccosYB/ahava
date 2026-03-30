@@ -18,6 +18,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 import type { User, Department, Location, EmploymentProfile } from "@shared/schema";
 
 type EmployeeListItem = User & {
@@ -59,10 +60,8 @@ export default function EmployeesPage() {
   }
 
   return (
-    <div className="p-6 space-y-6" data-testid="employees-page">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Employees</h1>
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="employees-page">
+      <PageHeader title="Employees" subtitle="Manage employee records and profiles" />
 
       <div className="flex items-center gap-4 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
@@ -107,12 +106,12 @@ export default function EmployeesPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Role</TableHead>
-                  <TableHead>Department</TableHead>
-                  <TableHead>Location</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Email</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Role</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Location</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
@@ -189,21 +188,21 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
   const loc = locations?.find((l) => l.id === user?.locationId);
 
   return (
-    <div className="p-6 space-y-6" data-testid="employee-profile-page">
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={onBack} data-testid="button-back">
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <div>
-          <h1 className="text-2xl font-bold" data-testid="text-employee-profile-name">
-            {user?.firstName} {user?.lastName}
-          </h1>
-          <p className="text-sm text-muted-foreground" data-testid="text-employee-profile-email">{user?.email}</p>
-        </div>
-        <Badge variant="outline" className="ml-auto" data-testid="badge-employee-profile-role">
-          {user?.role}
-        </Badge>
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="employee-profile-page">
+      <PageHeader
+        title={`${user?.firstName || ""} ${user?.lastName || ""}`}
+        subtitle={user?.email || ""}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="icon" onClick={onBack} data-testid="button-back">
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <Badge variant="outline" data-testid="badge-employee-profile-role">
+              {user?.role}
+            </Badge>
+          </div>
+        }
+      />
 
       <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-employee-profile">
         <TabsList className="flex-wrap" data-testid="tabs-list-employee">
@@ -383,9 +382,9 @@ function EmployeeAuditHistory({ userId }: { userId: string }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Action</TableHead>
-                <TableHead>Target</TableHead>
-                <TableHead>Date</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Action</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Target</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

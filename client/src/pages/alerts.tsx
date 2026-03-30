@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AlertTriangle, Bell, CheckCircle, Eye, Loader2, Play } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
 
 type SystemAlert = {
   id: string;
@@ -114,25 +115,28 @@ export default function AlertsPage() {
   const openCount = alerts?.filter(a => a.status === "open").length || 0;
 
   return (
-    <div className="p-6 space-y-6" data-testid="alerts-page">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Alerts</h1>
-          {openCount > 0 && (
-            <Badge variant="destructive" data-testid="badge-open-count">{openCount} open</Badge>
-          )}
-        </div>
-        {isAdmin && (
-          <Button
-            onClick={() => detectMutation.mutate()}
-            disabled={detectMutation.isPending}
-            data-testid="button-run-detection"
-          >
-            {detectMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
-            Run Detection
-          </Button>
-        )}
-      </div>
+    <div className="max-w-6xl space-y-6" data-testid="alerts-page">
+      <PageHeader
+        title="Alerts"
+        subtitle="Monitor and resolve system alerts"
+        actions={
+          <div className="flex items-center gap-2">
+            {openCount > 0 && (
+              <Badge variant="destructive" data-testid="badge-open-count">{openCount} open</Badge>
+            )}
+            {isAdmin && (
+              <Button
+                onClick={() => detectMutation.mutate()}
+                disabled={detectMutation.isPending}
+                data-testid="button-run-detection"
+              >
+                {detectMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+                Run Detection
+              </Button>
+            )}
+          </div>
+        }
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="space-y-1">
@@ -198,13 +202,13 @@ export default function AlertsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Severity</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Employee</TableHead>
-                  <TableHead>Message</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Severity</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Message</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Created</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
