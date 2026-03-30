@@ -5,6 +5,7 @@ import { createServer } from "http";
 import path from 'path';
 import { setupAuth, registerAuthRoutes } from "./replit_integrations/auth";
 import { seed } from "./seed";
+import { runMigrations } from "./migrate";
 
 const app = express();
 
@@ -53,6 +54,7 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  await runMigrations();
   await seed().catch((err) => console.error("Seed warning:", err));
 
   await setupAuth(app);
