@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -10,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { PageHeader } from "@/components/page-header";
-import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Umbrella } from "lucide-react";
+import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Umbrella, Timer } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface ProfileDetails {
@@ -49,6 +50,153 @@ function formatDate(iso: string | null) {
     month: "long",
     day: "numeric",
   });
+}
+
+interface AttendanceStatus {
+  isClockedIn: boolean;
+  currentRecord: { clockIn: string } | null;
+  todayHours: number;
+  weekHours: number;
+}
+
+function formatElapsed(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function CurrentShiftCard() {
+  const { user } = useAuth();
+  const { data: status, isLoading, isError } = useQuery<AttendanceStatus>({
+    queryKey: ["/api/attendance/status"],
+    enabled: !!user,
+    refetchInterval: 60_000,
+  });
+
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!status?.isClockedIn || !status.currentRecord) {
+      setElapsed(0);
+      return;
+    }
+
+    const clockInTime = new Date(status.currentRecord.clockIn).getTime();
+
+    const tick = () => {
+      setElapsed(Math.max(0, Math.floor((Date.now() - clockInTime) / 1000)));
+    };
+
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [status?.isClockedIn, status?.currentRecord?.clockIn]);
+
+  if (isLoading) {
+    return (
+      <Card data-testid="card-current-shift">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Timer className="h-4 w-4 text-muted-foreground" />
+            Current Shift
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-24 rounded-md" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Card data-testid="card-current-shift">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Timer className="h-4 w-4 text-muted-foreground" />
+            Current Shift
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>Unable to load shift status.</AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const isClockedIn = status?.isClockedIn ?? false;
+
+  return (
+    <Card data-testid="card-current-shift">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Timer className="h-4 w-4 text-muted-foreground" />
+          Current Shift
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-6">
+          <div className="flex items-center gap-3 min-w-0" data-testid="shift-status">
+            <span
+              className="relative flex h-3 w-3 shrink-0"
+              data-testid="status-indicator"
+            >
+              {isClockedIn && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+              )}
+              <span
+                className={`relative inline-flex rounded-full h-3 w-3 ${
+                  isClockedIn ? "bg-green-500" : "bg-muted-foreground/40"
+                }`}
+              />
+            </span>
+            <div>
+              <p className="text-sm font-medium" data-testid="text-shift-label">
+                {isClockedIn ? "Clocked In" : "Not Clocked In"}
+              </p>
+              {isClockedIn ? (
+                <p
+                  className="text-3xl font-bold tabular-nums tracking-tight text-green-600 dark:text-green-400"
+                  data-testid="text-live-timer"
+                >
+                  {formatElapsed(elapsed)}
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground" data-testid="text-shift-inactive">
+                  No active shift
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex gap-6 sm:ml-auto">
+            <div className="text-center" data-testid="stat-today-hours">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Today
+              </p>
+              <p className="text-xl font-semibold tabular-nums">
+                {status?.todayHours ?? 0}
+                <span className="text-sm font-normal text-muted-foreground ml-1">hrs</span>
+              </p>
+            </div>
+            <div className="text-center" data-testid="stat-week-hours">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                This Week
+              </p>
+              <p className="text-xl font-semibold tabular-nums">
+                {status?.weekHours ?? 0}
+                <span className="text-sm font-normal text-muted-foreground ml-1">hrs</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 function FieldSkeleton() {
@@ -177,6 +325,8 @@ export default function ProfilePage() {
           </div>
         </CardContent>
       </Card>
+
+      <CurrentShiftCard />
 
       <Card data-testid="card-organization">
         <CardHeader className="pb-3">
