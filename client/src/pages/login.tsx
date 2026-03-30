@@ -2,12 +2,13 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Lock, Mail, ArrowRight, ShieldCheck, Loader2 } from "lucide-react";
+import { Lock, Mail, ArrowRight, ShieldCheck, Loader2, Eye, EyeOff } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const queryClient = useQueryClient();
 
@@ -109,7 +110,7 @@ export default function LoginPage() {
                     </div>
                     <Input
                       id="password"
-                      type="password"
+                      type={showPassword ? "text" : "password"}
                       placeholder="Enter your password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -117,8 +118,21 @@ export default function LoginPage() {
                       aria-invalid={hasError || undefined}
                       aria-describedby={hasError ? "login-error" : undefined}
                       data-testid="input-password"
-                      className="pl-11 h-12 text-[15px] border-gray-200 bg-[#f9fafb] rounded-xl focus:border-[#1f97d4] focus:ring-1 focus:ring-[#1f97d4] focus:bg-white transition-colors placeholder:text-gray-400"
+                      className="pl-11 pr-11 h-12 text-[15px] border-gray-200 bg-[#f9fafb] rounded-xl focus:border-[#1f97d4] focus:ring-1 focus:ring-[#1f97d4] focus:bg-white transition-colors placeholder:text-gray-400"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      data-testid="button-toggle-password"
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      {showPassword ? (
+                        <EyeOff className="h-[18px] w-[18px]" />
+                      ) : (
+                        <Eye className="h-[18px] w-[18px]" />
+                      )}
+                    </button>
                   </div>
                 </div>
               </div>
