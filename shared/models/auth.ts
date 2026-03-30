@@ -100,6 +100,7 @@ export type Role = typeof roles.$inferSelect;
 export const permissions = pgTable("permissions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   key: varchar("key", { length: 100 }).notNull().unique(),
+  name: varchar("name", { length: 200 }).notNull(),
   description: varchar("description", { length: 500 }),
   module: varchar("module", { length: 50 }),
   createdAt: timestamp("created_at").defaultNow(),
