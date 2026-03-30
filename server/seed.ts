@@ -1,8 +1,7 @@
 import { db } from "./db";
-import { users, departments, permissions, roles, rolePermissions, policyTypes, userRoles, policies, policyRules, policyAssignments } from "@shared/schema";
+import { users, permissions, roles, rolePermissions, policyTypes, userRoles } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
-import { getDefaultRulesForType } from "./policyEngine";
 
 const PERMISSION_KEYS = [
   { key: "system.super_admin", name: "Super Admin", description: "Full system access", module: "system" },
@@ -201,21 +200,6 @@ export async function seed() {
     console.log("Admin user already exists, skipping.");
   }
 
-  const [existingDept] = await db
-    .select()
-    .from(departments)
-    .where(eq(departments.name, "General"));
-
-  if (!existingDept) {
-    await db.insert(departments).values({
-      name: "General",
-      description: "General department",
-    });
-    console.log("Created General department.");
-  } else {
-    console.log("General department already exists, skipping.");
-  }
-
   const [existingPerm] = await db
     .select()
     .from(permissions)
@@ -299,44 +283,6 @@ export async function seed() {
     console.log(`Inserted ${POLICY_TYPES.length} policy types.`);
   } else {
     console.log("Policy types already seeded, skipping.");
-  }
-
-  const allPolicyTypes = await db.select().from(policyTypes);
-  const [existingDefaultPolicy] = await db
-    .select()
-    .from(policies)
-    .where(eq(policies.name, "Default Attendance Policy"));
-
-  if (!existingDefaultPolicy && allPolicyTypes.length > 0) {
-    console.log("Seeding default policies...");
-    for (const pt of allPolicyTypes) {
-      const defaultRules = getDefaultRulesForType(pt.key);
-      if (Object.keys(defaultRules).length === 0) continue;
-
-      const [policy] = await db
-        .insert(policies)
-        .values({
-          policyTypeId: pt.id,
-          name: `Default ${pt.name} Policy`,
-          description: `System default ${pt.name.toLowerCase()} policy`,
-          status: "active",
-          version: 1,
-        })
-        .returning();
-
-      await db.insert(policyRules).values({
-        policyId: policy.id,
-        rules: defaultRules,
-      });
-
-      await db.insert(policyAssignments).values({
-        policyId: policy.id,
-      });
-
-      console.log(`  Created default ${pt.name} policy with rules.`);
-    }
-  } else {
-    console.log("Default policies already seeded, skipping.");
   }
 
   console.log("Seed complete.");
