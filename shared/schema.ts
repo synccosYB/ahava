@@ -269,6 +269,8 @@ export const timeOffRequests = pgTable("time_off_requests", {
   daysRequested: integer("days_requested").notNull().default(1),
   status: varchar("status", { length: 20 }).default("pending").notNull(),
   reason: text("reason"),
+  exceedsBalance: boolean("exceeds_balance").default(false).notNull(),
+  balanceAtSubmission: integer("balance_at_submission"),
   reviewedBy: varchar("reviewed_by").references(() => users.id),
   reviewedAt: timestamp("reviewed_at"),
   editedAt: timestamp("edited_at"),

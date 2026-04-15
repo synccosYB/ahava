@@ -1370,26 +1370,20 @@ export async function registerRoutes(
         });
       }
 
-      const BALANCE_TRACKED_TYPES = ["vacation", "sick", "personal"];
+      const balance = await storage.computeTimeOffBalance(userId);
       const requestType = parsed.type as string;
+      const availableBalance = requestType === "vacation" ? balance.vacation
+        : requestType === "sick" ? balance.sick
+        : requestType === "personal" ? balance.personal : null;
 
-      if (BALANCE_TRACKED_TYPES.includes(requestType)) {
-        const balance = await storage.computeTimeOffBalance(userId);
-        const availableBalance = requestType === "vacation" ? balance.vacation
-          : requestType === "sick" ? balance.sick
-          : balance.personal;
-
-        if (computedDays > availableBalance) {
-          return res.status(400).json({
-            message: `Insufficient ${requestType} balance. You have ${availableBalance} day(s) remaining but requested ${computedDays}.`,
-          });
-        }
-      }
+      const exceedsBalance = availableBalance !== null && computedDays > availableBalance;
 
       const request = await storage.createTimeOffRequest({
         ...parsed,
         status: "pending",
         daysRequested: computedDays,
+        exceedsBalance,
+        balanceAtSubmission: availableBalance ?? null,
       });
       res.json(request);
     } catch (error: any) {
@@ -1520,6 +1514,17 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching time off requests:", error);
       res.status(500).json({ message: "Failed to fetch time off requests" });
+    }
+  });
+
+  app.get("/api/time-off/my-balance", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const balance = await storage.computeTimeOffBalance(userId);
+      res.json(balance);
+    } catch (error) {
+      console.error("Error fetching balance:", error);
+      res.status(500).json({ message: "Failed to fetch PTO balance" });
     }
   });
 

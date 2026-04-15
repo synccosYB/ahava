@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Calendar, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
+import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle } from "lucide-react";
 import type { TimeOffRequest } from "@shared/schema";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
@@ -51,6 +51,10 @@ export default function TimeOff() {
     enabled: isAuthenticated,
   });
 
+  const { data: balance } = useQuery<{ vacation: number; sick: number; personal: number }>({
+    queryKey: ["/api/time-off/my-balance"],
+    enabled: isAuthenticated,
+  });
 
   const { data: teamRequests, isLoading: teamLoading } = useQuery<TimeOffRequest[]>({
     queryKey: ["/api/time-off/team"],
@@ -71,6 +75,7 @@ export default function TimeOff() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/time-off/my-balance"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
       setType("vacation");
       setStartDate("");
@@ -157,6 +162,14 @@ export default function TimeOff() {
 
   const daysRequested = calculateDays();
 
+  const availableBalance = balance
+    ? type === "vacation" ? balance.vacation
+      : type === "sick" ? balance.sick
+      : type === "personal" ? balance.personal
+      : null
+    : null;
+
+  const exceedsBalance = availableBalance !== null && daysRequested > 0 && daysRequested > availableBalance;
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -237,6 +250,18 @@ export default function TimeOff() {
               </div>
             )}
 
+            {exceedsBalance && (
+              <div className="bg-orange-50 dark:bg-orange-950/20 border border-orange-400 rounded-md p-3 flex items-start gap-2" data-testid="warning-exceeds-balance">
+                <AlertTriangle className="h-4 w-4 text-orange-600 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-orange-800 dark:text-orange-300">Exceeds Available Balance</p>
+                  <p className="text-xs text-orange-700 dark:text-orange-400">
+                    You have {availableBalance} {type} day{availableBalance !== 1 ? "s" : ""} remaining but are requesting {daysRequested}. This request will be flagged for manager review.
+                  </p>
+                </div>
+              </div>
+            )}
+
             <Button
               onClick={() => submitMutation.mutate()}
               disabled={!startDate || !endDate || daysRequested === 0 || submitMutation.isPending}
@@ -271,6 +296,12 @@ export default function TimeOff() {
                   >
                     <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
                       {getStatusBadge(request.status)}
+                      {request.exceedsBalance && (
+                        <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-300 text-xs" data-testid={`badge-exceeds-balance-${request.id}`}>
+                          <AlertTriangle className="h-3 w-3 mr-1" />
+                          Exceeds Balance
+                        </Badge>
+                      )}
                     </div>
                     <p className="text-sm font-semibold mt-2">
                       {formatDateRange(request.startDate, request.endDate)}

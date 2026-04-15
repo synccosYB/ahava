@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Check, X } from "lucide-react";
+import { Check, X, AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest } from "@shared/schema";
 import {
@@ -129,6 +129,14 @@ export default function ApprovalQueuePage() {
                         </Badge>
                       )}
                     </p>
+                    {request.exceedsBalance && (
+                      <div className="bg-orange-50 dark:bg-orange-950/20 border border-orange-400 rounded-md p-2 flex items-start gap-2" data-testid={`warning-exceeds-balance-${request.id}`}>
+                        <AlertTriangle className="h-4 w-4 text-orange-600 mt-0.5 shrink-0" />
+                        <p className="text-sm text-orange-800 dark:text-orange-300">
+                          Exceeds balance: Requested {request.daysRequested} day{request.daysRequested > 1 ? "s" : ""}, balance was {request.balanceAtSubmission ?? "N/A"} day{(request.balanceAtSubmission ?? 0) !== 1 ? "s" : ""} ({request.type})
+                        </p>
+                      </div>
+                    )}
                     {request.reason && (
                       <p className="text-sm bg-muted/50 p-2 rounded" data-testid={`text-request-reason-${request.id}`}>
                         "{request.reason}"
