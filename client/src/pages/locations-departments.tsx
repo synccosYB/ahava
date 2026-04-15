@@ -16,9 +16,13 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
-import { MapPin, Building2, Plus, Pencil, Trash2 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { Location, Department, Division, User } from "@shared/schema";
+
+type DepartmentWithManagers = Department & { managerIds: string[] };
 
 export default function LocationsDepartmentsPage() {
   return (
@@ -189,9 +193,10 @@ function DepartmentsTab() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: "", description: "", managerId: "", locationId: "" });
+  const [form, setForm] = useState({ name: "", description: "", managerIds: [] as string[], locationId: "" });
+  const [managersPopoverOpen, setManagersPopoverOpen] = useState(false);
 
-  const { data: departments, isLoading } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
+  const { data: departments, isLoading } = useQuery<DepartmentWithManagers[]>({ queryKey: ["/api/departments"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
   const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
@@ -202,7 +207,7 @@ function DepartmentsTab() {
       const payload = {
         name: form.name,
         description: form.description || null,
-        managerId: form.managerId || null,
+        managerIds: form.managerIds,
         locationId: form.locationId || null,
         companyId: divisionId || null,
       };
@@ -237,22 +242,38 @@ function DepartmentsTab() {
   });
 
   const resetForm = () => {
-    setForm({ name: "", description: "", managerId: "", locationId: "" });
+    setForm({ name: "", description: "", managerIds: [], locationId: "" });
     setEditingId(null);
   };
 
-  const startEdit = (dept: Department) => {
+  const startEdit = (dept: DepartmentWithManagers) => {
     setForm({
       name: dept.name,
       description: dept.description || "",
-      managerId: dept.managerId || "",
+      managerIds: dept.managerIds || [],
       locationId: dept.locationId || "",
     });
     setEditingId(dept.id);
     setDialogOpen(true);
   };
 
-  const managers = (users || []).filter((u) => u.role === "manager" || u.role === "admin");
+  const eligibleManagers = (users || []).filter((u) => u.role === "manager" || u.role === "admin");
+
+  const toggleManager = (userId: string) => {
+    setForm(prev => ({
+      ...prev,
+      managerIds: prev.managerIds.includes(userId)
+        ? prev.managerIds.filter(id => id !== userId)
+        : [...prev.managerIds, userId],
+    }));
+  };
+
+  const getManagerNames = (ids: string[]) => {
+    return ids
+      .map(id => users?.find(u => u.id === id))
+      .filter(Boolean)
+      .map(u => `${u!.firstName} ${u!.lastName}`);
+  };
 
   return (
     <div className="space-y-4 mt-4">
@@ -269,18 +290,56 @@ function DepartmentsTab() {
               <div><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-department-name" /></div>
               <div><Label>Description</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} data-testid="input-department-description" /></div>
               <div>
-                <Label>Manager</Label>
-                <Select value={form.managerId || "none"} onValueChange={(v) => setForm({ ...form, managerId: v === "none" ? "" : v })}>
-                  <SelectTrigger data-testid="select-department-manager">
-                    <SelectValue placeholder="Select manager" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">None</SelectItem>
-                    {managers.map((u) => (
-                      <SelectItem key={u.id} value={u.id}>{u.firstName} {u.lastName}</SelectItem>
+                <Label>Managers</Label>
+                <Popover open={managersPopoverOpen} onOpenChange={setManagersPopoverOpen}>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-full justify-between font-normal" data-testid="select-department-managers">
+                      {form.managerIds.length === 0
+                        ? "Select managers..."
+                        : `${form.managerIds.length} manager${form.managerIds.length > 1 ? "s" : ""} selected`}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-full p-0" align="start">
+                    <div className="max-h-60 overflow-y-auto p-1">
+                      {eligibleManagers.length === 0 ? (
+                        <p className="p-3 text-sm text-muted-foreground">No managers available</p>
+                      ) : (
+                        eligibleManagers.map((u) => (
+                          <label
+                            key={u.id}
+                            className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm cursor-pointer hover:bg-accent"
+                            data-testid={`option-manager-${u.id}`}
+                          >
+                            <Checkbox
+                              checked={form.managerIds.includes(u.id)}
+                              onCheckedChange={() => toggleManager(u.id)}
+                              data-testid={`checkbox-manager-${u.id}`}
+                            />
+                            {u.firstName} {u.lastName}
+                          </label>
+                        ))
+                      )}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+                {form.managerIds.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5" data-testid="selected-managers-list">
+                    {getManagerNames(form.managerIds).map((name, i) => (
+                      <Badge key={form.managerIds[i]} variant="secondary" className="text-xs">
+                        {name}
+                        <button
+                          type="button"
+                          className="ml-1 hover:text-destructive"
+                          onClick={() => toggleManager(form.managerIds[i])}
+                          data-testid={`remove-manager-${form.managerIds[i]}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
                     ))}
-                  </SelectContent>
-                </Select>
+                  </div>
+                )}
               </div>
               <div>
                 <Label>Location</Label>
@@ -320,21 +379,27 @@ function DepartmentsTab() {
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Manager</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Managers</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Location</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {departments.map((dept) => {
-                  const mgr = users?.find((u) => u.id === dept.managerId);
+                  const mgrNames = getManagerNames(dept.managerIds || []);
                   const loc = locations?.find((l) => l.id === dept.locationId);
                   return (
                     <TableRow key={dept.id} data-testid={`row-department-${dept.id}`}>
                       <TableCell className="font-medium" data-testid={`text-department-name-${dept.id}`}>{dept.name}</TableCell>
                       <TableCell data-testid={`text-department-desc-${dept.id}`}>{dept.description || "—"}</TableCell>
-                      <TableCell data-testid={`text-department-manager-${dept.id}`}>
-                        {mgr ? `${mgr.firstName} ${mgr.lastName}` : "—"}
+                      <TableCell data-testid={`text-department-managers-${dept.id}`}>
+                        {mgrNames.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {mgrNames.map((name, i) => (
+                              <Badge key={i} variant="secondary" className="text-xs">{name}</Badge>
+                            ))}
+                          </div>
+                        ) : "—"}
                       </TableCell>
                       <TableCell data-testid={`text-department-location-${dept.id}`}>{loc?.name || "—"}</TableCell>
                       <TableCell>

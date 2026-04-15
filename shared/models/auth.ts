@@ -161,7 +161,6 @@ export const departments = pgTable("departments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 100 }).notNull(),
   description: text("description"),
-  managerId: varchar("manager_id").references(() => users.id),
   companyId: varchar("company_id").references(() => companies.id),
   locationId: varchar("location_id").references(() => locations.id),
   createdAt: timestamp("created_at").defaultNow(),
@@ -175,6 +174,22 @@ export const insertDepartmentSchema = createInsertSchema(departments).omit({
 });
 export type InsertDepartment = z.infer<typeof insertDepartmentSchema>;
 export type Department = typeof departments.$inferSelect;
+
+export const departmentManagers = pgTable("department_managers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  departmentId: varchar("department_id").notNull().references(() => departments.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("department_manager_unique").on(table.departmentId, table.userId),
+]);
+
+export const insertDepartmentManagerSchema = createInsertSchema(departmentManagers).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertDepartmentManager = z.infer<typeof insertDepartmentManagerSchema>;
+export type DepartmentManager = typeof departmentManagers.$inferSelect;
 
 export const userAccessScopes = pgTable("user_access_scopes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

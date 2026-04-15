@@ -9,8 +9,10 @@ import {
   type Location,
   type InsertLocation,
   departments,
+  departmentManagers,
   type Department,
   type InsertDepartment,
+  type DepartmentManager,
   userEmploymentProfiles,
   type EmploymentProfile,
   type InsertEmploymentProfile,
@@ -419,7 +421,28 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteDepartment(id: string): Promise<void> {
+    await db.delete(departmentManagers).where(eq(departmentManagers.departmentId, id));
     await db.delete(departments).where(eq(departments.id, id));
+  }
+
+  async getDepartmentManagers(departmentId: string): Promise<DepartmentManager[]> {
+    return db.select().from(departmentManagers).where(eq(departmentManagers.departmentId, departmentId));
+  }
+
+  async setDepartmentManagers(departmentId: string, userIds: string[]): Promise<void> {
+    await db.delete(departmentManagers).where(eq(departmentManagers.departmentId, departmentId));
+    if (userIds.length > 0) {
+      await db.insert(departmentManagers).values(
+        userIds.map(userId => ({ departmentId, userId }))
+      );
+    }
+  }
+
+  async getDepartmentsForManager(userId: string): Promise<Department[]> {
+    const managerEntries = await db.select().from(departmentManagers).where(eq(departmentManagers.userId, userId));
+    if (managerEntries.length === 0) return [];
+    const deptIds = managerEntries.map(e => e.departmentId);
+    return db.select().from(departments).where(inArray(departments.id, deptIds));
   }
 
   async getEmploymentProfile(userId: string): Promise<EmploymentProfile | undefined> {

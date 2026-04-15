@@ -7,6 +7,7 @@ import {
   companies,
   locations,
   departments,
+  departmentManagers,
   roles,
   permissions,
   rolePermissions,
@@ -23,6 +24,7 @@ export {
   companies as divisions,
   locations,
   departments,
+  departmentManagers,
   roles,
   permissions,
   rolePermissions,
@@ -42,6 +44,8 @@ export type {
   InsertLocation,
   Department,
   InsertDepartment,
+  DepartmentManager,
+  InsertDepartmentManager,
   Role,
   InsertRole,
   Permission,
@@ -58,6 +62,7 @@ export {
   insertCompanySchema as insertDivisionSchema,
   insertLocationSchema,
   insertDepartmentSchema,
+  insertDepartmentManagerSchema,
   insertRoleSchema,
   insertPermissionSchema,
   insertPolicyTypeSchema,
@@ -435,10 +440,15 @@ export const userAccessScopesRelations = relations(userAccessScopes, ({ one }) =
 }));
 
 export const departmentsRelations = relations(departments, ({ one, many }) => ({
-  manager: one(users, { fields: [departments.managerId], references: [users.id] }),
   company: one(companies, { fields: [departments.companyId], references: [companies.id] }),
   location: one(locations, { fields: [departments.locationId], references: [locations.id] }),
+  managers: many(departmentManagers),
   kioskDevices: many(kioskDevices),
+}));
+
+export const departmentManagersRelations = relations(departmentManagers, ({ one }) => ({
+  department: one(departments, { fields: [departmentManagers.departmentId], references: [departments.id] }),
+  user: one(users, { fields: [departmentManagers.userId], references: [users.id] }),
 }));
 
 export const employmentProfilesRelations = relations(userEmploymentProfiles, ({ one }) => ({

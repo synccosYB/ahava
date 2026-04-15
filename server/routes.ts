@@ -528,42 +528,55 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
+  async function enrichDepartmentsWithManagers(depts: Department[]) {
+    return Promise.all(depts.map(async (dept) => {
+      const managers = await storage.getDepartmentManagers(dept.id);
+      return { ...dept, managerIds: managers.map(m => m.userId) };
+    }));
+  }
+
   app.get("/api/departments", requireAuth, requirePermission("departments.view"), async (req, res) => {
     const user = (req as any).authUser as User;
     const companyId = req.query.companyId as string | undefined;
     const locationId = req.query.locationId as string | undefined;
 
+    let depts: Department[];
     if (user.role === "admin") {
       if (locationId) {
-        return res.json(await storage.getDepartmentsByLocation(locationId));
+        depts = await storage.getDepartmentsByLocation(locationId);
+      } else if (companyId) {
+        depts = await storage.getDepartmentsByCompany(companyId);
+      } else {
+        depts = await storage.getAllDepartments();
       }
-      if (companyId) {
-        return res.json(await storage.getDepartmentsByCompany(companyId));
-      }
-      return res.json(await storage.getAllDepartments());
-    }
-
-    if (user.departmentId && !user.companyId && !user.locationId) {
+    } else if (user.departmentId && !user.companyId && !user.locationId) {
       const dept = await storage.getDepartment(user.departmentId);
-      return res.json(dept ? [dept] : []);
+      depts = dept ? [dept] : [];
+    } else if (!user.companyId) {
+      depts = [];
+    } else {
+      depts = await storage.getDepartmentsByCompany(user.companyId);
+      if (user.locationId) {
+        depts = depts.filter(d => d.locationId === user.locationId);
+      }
     }
 
-    if (!user.companyId) {
-      return res.json([]);
-    }
-
-    let depts = await storage.getDepartmentsByCompany(user.companyId);
-    if (user.locationId) {
-      depts = depts.filter(d => d.locationId === user.locationId);
-    }
-    res.json(depts);
+    res.json(await enrichDepartmentsWithManagers(depts));
   });
 
+  const managerIdsSchema = z.array(z.string()).optional().default([]);
+
   app.post("/api/departments", requireAuth, requireRole("admin"), requirePermission("departments.create"), async (req, res) => {
-    const parsed = insertDepartmentSchema.safeParse(req.body);
+    const { managerIds: rawManagerIds, ...deptData } = req.body;
+    const parsed = insertDepartmentSchema.safeParse(deptData);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid department data", errors: parsed.error.flatten() });
     }
+    const mgrParsed = managerIdsSchema.safeParse(rawManagerIds);
+    if (!mgrParsed.success) {
+      return res.status(400).json({ message: "Invalid managerIds, expected an array of strings" });
+    }
+    const uniqueManagerIds = [...new Set(mgrParsed.data)];
     if (parsed.data.locationId && parsed.data.companyId) {
       const location = await storage.getLocation(parsed.data.locationId);
       if (!location || location.companyId !== parsed.data.companyId) {
@@ -571,17 +584,30 @@ export async function registerRoutes(
       }
     }
     const dept = await storage.createDepartment(parsed.data);
-    res.status(201).json(dept);
+    if (uniqueManagerIds.length > 0) {
+      await storage.setDepartmentManagers(dept.id, uniqueManagerIds);
+    }
+    const managers = await storage.getDepartmentManagers(dept.id);
+    res.status(201).json({ ...dept, managerIds: managers.map(m => m.userId) });
   });
 
   app.patch("/api/departments/:id", requireAuth, requireRole("admin"), requirePermission("departments.edit"), async (req, res) => {
-    const parsed = insertDepartmentSchema.partial().safeParse(req.body);
+    const { managerIds: rawManagerIds, ...deptData } = req.body;
+    const parsed = insertDepartmentSchema.partial().safeParse(deptData);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid department data", errors: parsed.error.flatten() });
     }
     const dept = await storage.updateDepartment(req.params.id, parsed.data);
     if (!dept) return res.status(404).json({ message: "Department not found" });
-    res.json(dept);
+    if (rawManagerIds !== undefined) {
+      const mgrParsed = managerIdsSchema.safeParse(rawManagerIds);
+      if (!mgrParsed.success) {
+        return res.status(400).json({ message: "Invalid managerIds, expected an array of strings" });
+      }
+      await storage.setDepartmentManagers(dept.id, [...new Set(mgrParsed.data)]);
+    }
+    const managers = await storage.getDepartmentManagers(dept.id);
+    res.json({ ...dept, managerIds: managers.map(m => m.userId) });
   });
 
   app.delete("/api/departments/:id", requireAuth, requireRole("admin"), requirePermission("departments.edit"), async (req, res) => {
@@ -685,6 +711,15 @@ export async function registerRoutes(
     if (user.role === "admin") {
       const allUsers = (await storage.getAllUsers()).filter(u => u.id !== SUPER_ADMIN_USER_ID);
       return new Set(allUsers.filter(u => u.id !== user.id).map(u => u.id));
+    }
+    const managedDepts = await storage.getDepartmentsForManager(user.id);
+    if (managedDepts.length > 0) {
+      const allUserIds = new Set<string>();
+      for (const dept of managedDepts) {
+        const deptUsers = await storage.getUsersByDepartment(dept.id);
+        deptUsers.forEach(u => { if (u.id !== user.id) allUserIds.add(u.id); });
+      }
+      return allUserIds;
     }
     if (user.departmentId) {
       const deptUsers = await storage.getUsersByDepartment(user.departmentId);
