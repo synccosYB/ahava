@@ -1410,22 +1410,60 @@ export async function registerRoutes(
 
   app.get("/api/time-off/processed", requireAuth, requireRole("manager", "admin"), requirePermission("pto.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
-    const requests = await storage.getProcessedTimeOffRequests(user.role === "manager" ? user.id : undefined);
+    const { department, location, type, status, startDate, endDate } = req.query as Record<string, string | undefined>;
+
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+    const allDepartments = await storage.getAllDepartments();
+    const allLocations = await storage.getAllLocations();
+    const deptMap = new Map(allDepartments.map(d => [d.id, d.name]));
+    const locMap = new Map(allLocations.map(l => [l.id, l.name]));
     const userMap = new Map(allUsers.map(u => [u.id, u]));
 
-    const enriched = requests.map(r => ({
-      ...r,
-      employeeName: (() => {
-        const u = userMap.get(r.userId);
-        return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
-      })(),
-      reviewerName: (() => {
-        if (!r.reviewedBy) return "N/A";
-        const u = userMap.get(r.reviewedBy);
-        return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
-      })(),
-    }));
+    let scopedUserIds: string[] | undefined;
+
+    if (user.role === "manager") {
+      const teamIds = await getTeamUserIds(user);
+      scopedUserIds = Array.from(teamIds);
+    } else if (user.role === "admin") {
+      let filteredUsers = allUsers;
+      if (department) {
+        filteredUsers = filteredUsers.filter(u => u.departmentId === department);
+      }
+      if (location) {
+        filteredUsers = filteredUsers.filter(u => u.locationId === location);
+      }
+      if (filteredUsers.length !== allUsers.length) {
+        scopedUserIds = filteredUsers.map(u => u.id);
+      }
+    }
+
+    const filters: Parameters<typeof storage.getProcessedTimeOffRequests>[0] = {};
+    if (user.role === "manager") {
+      filters.userIds = scopedUserIds ?? [];
+    } else if (scopedUserIds) {
+      filters.userIds = scopedUserIds;
+    }
+    if (type) filters.type = type;
+    if (status) filters.status = status;
+    if (startDate) filters.startDate = startDate;
+    if (endDate) filters.endDate = endDate;
+
+    const requests = await storage.getProcessedTimeOffRequests(filters);
+
+    const enriched = requests.map(r => {
+      const emp = userMap.get(r.userId);
+      return {
+        ...r,
+        employeeName: emp ? `${emp.firstName || ""} ${emp.lastName || ""}`.trim() : "Unknown",
+        departmentName: emp?.departmentId ? (deptMap.get(emp.departmentId) || "N/A") : "N/A",
+        locationName: emp?.locationId ? (locMap.get(emp.locationId) || "N/A") : "N/A",
+        reviewerName: (() => {
+          if (!r.reviewedBy) return "N/A";
+          const u = userMap.get(r.reviewedBy);
+          return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+        })(),
+      };
+    });
     res.json(enriched);
   });
 

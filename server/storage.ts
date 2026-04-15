@@ -176,7 +176,16 @@ export interface IStorage {
   getLatestAttendanceForUser(userId: string): Promise<PunchLog | undefined>;
 
   getUsersByDepartment(departmentId: string): Promise<User[]>;
-  getProcessedTimeOffRequests(reviewerId?: string): Promise<TimeOffRequest[]>;
+  getProcessedTimeOffRequests(filters?: {
+    reviewerId?: string;
+    departmentId?: string;
+    locationId?: string;
+    type?: string;
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    userIds?: string[];
+  }): Promise<TimeOffRequest[]>;
   getAttendanceByDateRange(startDate: string, endDate: string): Promise<PunchLog[]>;
 
   getPtoPolicy(id: string): Promise<PtoPolicy | undefined>;
@@ -769,17 +778,44 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(users).where(eq(users.departmentId, departmentId));
   }
 
-  async getProcessedTimeOffRequests(reviewerId?: string): Promise<TimeOffRequest[]> {
-    if (reviewerId) {
-      return db.select().from(timeOffRequests)
-        .where(and(ne(timeOffRequests.status, "pending"), eq(timeOffRequests.reviewedBy, reviewerId)))
-        .orderBy(desc(timeOffRequests.reviewedAt))
-        .limit(20);
+  async getProcessedTimeOffRequests(filters?: {
+    reviewerId?: string;
+    departmentId?: string;
+    locationId?: string;
+    type?: string;
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    userIds?: string[];
+  }): Promise<TimeOffRequest[]> {
+    const conditions: any[] = [ne(timeOffRequests.status, "pending")];
+
+    if (filters?.reviewerId) {
+      conditions.push(eq(timeOffRequests.reviewedBy, filters.reviewerId));
     }
+    if (filters?.type) {
+      conditions.push(eq(timeOffRequests.type, filters.type));
+    }
+    if (filters?.status) {
+      conditions.push(eq(timeOffRequests.status, filters.status));
+    }
+    if (filters?.startDate) {
+      conditions.push(gte(timeOffRequests.startDate, filters.startDate));
+    }
+    if (filters?.endDate) {
+      conditions.push(lte(timeOffRequests.endDate, filters.endDate));
+    }
+    if (filters?.userIds !== undefined) {
+      if (filters.userIds.length === 0) {
+        return [];
+      }
+      conditions.push(inArray(timeOffRequests.userId, filters.userIds));
+    }
+
     return db.select().from(timeOffRequests)
-      .where(ne(timeOffRequests.status, "pending"))
+      .where(and(...conditions))
       .orderBy(desc(timeOffRequests.reviewedAt))
-      .limit(20);
+      .limit(100);
   }
 
   async getAttendanceByDateRange(startDate: string, endDate: string): Promise<PunchLog[]> {
