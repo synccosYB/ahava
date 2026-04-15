@@ -1,0 +1,670 @@
+import { useState, useRef } from "react";
+
+// ── Tokens ────────────────────────────────────────────────────────────────────
+const C = {
+  blue:"#2563eb",blueL:"#eff6ff",blueB:"#bfdbfe",
+  green:"#16a34a",greenL:"#f0fdf4",greenB:"#bbf7d0",
+  purple:"#7c3aed",purpleL:"#faf5ff",purpleB:"#e9d5ff",
+  amber:"#d97706",amberL:"#fffbeb",amberB:"#fde68a",
+  red:"#dc2626",redL:"#fef2f2",redB:"#fecaca",
+  navy:"#1e3a8a",gray:"#6b7280",grayL:"#f9fafb",
+  text:"#1a1a2e",border:"#e5e7eb",white:"#ffffff",
+};
+const fmt=(n)=>n.toLocaleString("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2});
+
+// ── Seed data ─────────────────────────────────────────────────────────────────
+const EMPLOYEES = [
+  {id:"E001",name:"Maria Santos",  dept:"ICU",      role:"RN",          manager:"Janet Reyes",  initials:"MS",color:C.blue},
+  {id:"E002",name:"David Kim",     dept:"ER",       role:"Physician",   manager:"Frank Osei",   initials:"DK",color:C.purple},
+  {id:"E003",name:"Priya Nair",    dept:"Lab",      role:"Medical Tech",manager:"Janet Reyes",  initials:"PN",color:C.amber},
+  {id:"E004",name:"James Okafor", dept:"ICU",      role:"CNA",         manager:"Janet Reyes",  initials:"JO",color:C.green},
+  {id:"E005",name:"Leah Chen",     dept:"Pharmacy", role:"Pharmacist",  manager:"Frank Osei",   initials:"LC",color:"#ec4899"},
+  {id:"E006",name:"Tom Rivera",    dept:"Facilities",role:"Maintenance",manager:"Frank Osei",   initials:"TR",color:C.red},
+];
+
+const PTO_DATA = {
+  E001:{vacation:{total:15,used:5,pending:3},sick:{total:10,used:1,pending:0},personal:{total:3,used:2,pending:0}},
+  E002:{vacation:{total:20,used:8,pending:0},sick:{total:10,used:2,pending:1},personal:{total:3,used:0,pending:2}},
+  E003:{vacation:{total:15,used:3,pending:0},sick:{total:10,used:0,pending:0},personal:{total:3,used:1,pending:0}},
+  E004:{vacation:{total:15,used:7,pending:3},sick:{total:10,used:3,pending:0},personal:{total:3,used:0,pending:0}},
+  E005:{vacation:{total:15,used:2,pending:5},sick:{total:10,used:1,pending:0},personal:{total:3,used:2,pending:0}},
+  E006:{vacation:{total:10,used:3,pending:0},sick:{total:10,used:4,pending:0},personal:{total:3,used:3,pending:0}},
+};
+
+const SEED_PUNCH_REQS = [
+  {id:"PR001",empId:"E001",empName:"Maria Santos",dept:"ICU",manager:"Janet Reyes",date:"Mar 27, 2026",origIn:"7:02 AM",origOut:"3:06 PM",reqIn:"7:00 AM",reqOut:"3:30 PM",reason:"Forgot to clock out after charting",status:"pending",submitted:"Mar 28"},
+  {id:"PR002",empId:"E004",empName:"James Okafor",dept:"ICU",manager:"Janet Reyes",date:"Mar 25, 2026",origIn:"7:15 AM",origOut:"—",reqIn:"7:15 AM",reqOut:"3:15 PM",reason:"System didn't register clock-out",status:"approved",submitted:"Mar 26",decidedBy:"Janet Reyes",comment:"Confirmed with floor logs."},
+  {id:"PR003",empId:"E005",empName:"Leah Chen",dept:"Pharmacy",manager:"Frank Osei",date:"Mar 24, 2026",origIn:"8:02 AM",origOut:"4:08 PM",reqIn:"7:55 AM",reqOut:"4:08 PM",reason:"Badge reader glitched at entrance",status:"denied",submitted:"Mar 25",decidedBy:"Frank Osei",comment:"No badge log found for that time."},
+];
+
+const SEED_DOCS = [
+  {id:"D001",empId:"E001",name:"Pay Stub — Mar 15, 2026",type:"Pay Stub",period:"Mar 1–15 2026",size:"124 KB",uploadedBy:"HR Admin",date:"Mar 16, 2026",gross:fmt(3240),net:fmt(2418)},
+  {id:"D002",empId:"E001",name:"Pay Stub — Feb 28, 2026",type:"Pay Stub",period:"Feb 16–28 2026",size:"118 KB",uploadedBy:"HR Admin",date:"Mar 1, 2026",gross:fmt(3240),net:fmt(2418)},
+  {id:"D003",empId:"E001",name:"W-2 2025",type:"Tax Form",period:"2025",size:"89 KB",uploadedBy:"HR Admin",date:"Jan 31, 2026",gross:fmt(77760),net:"—"},
+  {id:"D004",empId:"E002",name:"Pay Stub — Mar 15, 2026",type:"Pay Stub",period:"Mar 1–15 2026",size:"131 KB",uploadedBy:"HR Admin",date:"Mar 16, 2026",gross:fmt(6120),net:fmt(4380)},
+];
+
+// ── Shared UI ─────────────────────────────────────────────────────────────────
+const Avatar=({initials,size=34,color=C.blue})=>(
+  <div style={{width:size,height:size,borderRadius:"50%",background:color+"22",color,fontWeight:800,fontSize:size*0.35,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{initials}</div>
+);
+const Badge=({label,color,bg})=>(
+  <span style={{background:bg,color,border:`1px solid ${color}33`,borderRadius:999,padding:"2px 10px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{label}</span>
+);
+const statusBadge=(s)=>{
+  const m={pending:[C.amber,C.amberL],approved:[C.green,C.greenL],denied:[C.red,C.redL]};
+  const [c,bg]=m[s]||[C.gray,C.grayL];
+  return <Badge label={s.charAt(0).toUpperCase()+s.slice(1)} color={c} bg={bg}/>;
+};
+const Th=({children,right})=>(
+  <th style={{padding:"9px 13px",textAlign:right?"right":"left",fontSize:11,fontWeight:700,color:C.gray,textTransform:"uppercase",letterSpacing:.5,background:C.grayL,borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{children}</th>
+);
+const Td=({children,right})=>(
+  <td style={{padding:"11px 13px",textAlign:right?"right":"left",fontSize:13,color:"#374151",borderBottom:`1px solid ${C.border}`}}>{children}</td>
+);
+const Card=({children,style={}})=>(
+  <div style={{background:C.white,border:`1px solid ${C.border}`,borderRadius:12,...style}}>{children}</div>
+);
+const SectionHead=({title,sub})=>(
+  <div style={{marginBottom:14}}>
+    <h2 style={{margin:0,fontSize:16,fontWeight:800,color:C.text}}>{title}</h2>
+    {sub&&<p style={{margin:"4px 0 0",fontSize:13,color:C.gray}}>{sub}</p>}
+  </div>
+);
+const Input=({label,testid,...props})=>(
+  <div>
+    <label style={{fontSize:11,fontWeight:700,color:C.gray,display:"block",marginBottom:5,textTransform:"uppercase"}}>{label}</label>
+    <input data-testid={testid} {...props} style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:7,padding:"9px 12px",fontSize:13,outline:"none",boxSizing:"border-box",fontFamily:"inherit",...props.style}}/>
+  </div>
+);
+const Select=({label,testid,options,...props})=>(
+  <div>
+    <label style={{fontSize:11,fontWeight:700,color:C.gray,display:"block",marginBottom:5,textTransform:"uppercase"}}>{label}</label>
+    <select data-testid={testid} {...props} style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:7,padding:"9px 12px",fontSize:13,outline:"none",background:"#fff",boxSizing:"border-box",...props.style}}>
+      {options.map(o=><option key={o}>{o}</option>)}
+    </select>
+  </div>
+);
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let _toastFn=()=>{};
+const addToast=(msg,type="success")=>_toastFn(msg,type);
+
+function ToastHost(){
+  const [toasts,setToasts]=useState([]);
+  _toastFn=(msg,type)=>{
+    const id=Date.now();
+    setToasts(p=>[...p,{id,msg,type}]);
+    setTimeout(()=>setToasts(p=>p.filter(t=>t.id!==id)),3400);
+  };
+  return(
+    <div style={{position:"fixed",bottom:24,right:24,zIndex:9999,display:"flex",flexDirection:"column",gap:10,pointerEvents:"none"}}>
+      {toasts.map(t=>(
+        <div key={t.id} style={{background:t.type==="error"?C.red:t.type==="warning"?C.amber:C.green,color:"#fff",borderRadius:10,padding:"12px 18px",fontSize:13,fontWeight:600,boxShadow:"0 4px 16px rgba(0,0,0,0.18)",maxWidth:320,display:"flex",gap:10,alignItems:"center"}}>
+          <span>{t.type==="error"?"❌":t.type==="warning"?"⚠️":"✅"}</span>{t.msg}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FEATURE 1 — PTO OVERVIEW (admin sees all; employee sees request-only view)
+// ══════════════════════════════════════════════════════════════════════════════
+function PTOBar({used,pending,total,color}){
+  const usedPct=(used/total)*100;
+  const pendPct=(pending/total)*100;
+  const left=total-used-pending;
+  return(
+    <div>
+      <div style={{height:8,borderRadius:99,background:"#e5e7eb",overflow:"hidden",display:"flex"}}>
+        <div style={{width:`${usedPct}%`,background:color,borderRadius:99}}/>
+        <div style={{width:`${pendPct}%`,background:color+"66"}}/>
+      </div>
+      <div style={{display:"flex",gap:16,marginTop:5,fontSize:11,color:C.gray}}>
+        <span><span style={{color,fontWeight:700}}>{used}</span> used</span>
+        {pending>0&&<span><span style={{color:color+"99",fontWeight:700}}>{pending}</span> pending</span>}
+        <span><span style={{fontWeight:700,color:C.text}}>{left}</span> remaining</span>
+        <span style={{marginLeft:"auto"}}>{total} total</span>
+      </div>
+    </div>
+  );
+}
+
+function AdminPTOOverview(){
+  const [search,setSearch]=useState("");
+  const [deptFilter,setDeptFilter]=useState("All");
+  const depts=["All",...new Set(EMPLOYEES.map(e=>e.dept))];
+  const filtered=EMPLOYEES.filter(e=>{
+    const matchSearch=e.name.toLowerCase().includes(search.toLowerCase());
+    const matchDept=deptFilter==="All"||e.dept===deptFilter;
+    return matchSearch&&matchDept;
+  });
+  return(
+    <div data-testid="admin-pto-overview">
+      <SectionHead title="PTO Balances — All Employees" sub="Admin view: full visibility across all staff"/>
+      <div style={{display:"flex",gap:12,marginBottom:18,flexWrap:"wrap"}}>
+        <Input label="Search employee" testid="pto-search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Name…" style={{maxWidth:220}}/>
+        <Select label="Department" testid="pto-dept-filter" value={deptFilter} onChange={e=>setDeptFilter(e.target.value)} options={depts} style={{maxWidth:180}}/>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {filtered.map(emp=>{
+          const b=PTO_DATA[emp.id];
+          return(
+            <Card key={emp.id} style={{padding:20}} data-testid={`pto-row-${emp.id}`}>
+              <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14,flexWrap:"wrap"}}>
+                <Avatar initials={emp.initials} color={emp.color}/>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:800,fontSize:15,color:C.text}}>{emp.name}</div>
+                  <div style={{fontSize:12,color:C.gray}}>{emp.role} · {emp.dept} · Manager: {emp.manager}</div>
+                </div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  {[["Vacation",b.vacation,C.blue],["Sick",b.sick,C.red],["Personal",b.personal,C.purple]].map(([t,,c])=>{
+                    const bal=b[t.toLowerCase()];
+                    const left=bal.total-bal.used-bal.pending;
+                    return <div key={t} style={{background:c+"11",border:`1px solid ${c}33`,borderRadius:8,padding:"6px 12px",textAlign:"center"}}>
+                      <div style={{fontSize:18,fontWeight:900,color:c}}>{left}</div>
+                      <div style={{fontSize:10,color:C.gray}}>{t}</div>
+                    </div>;
+                  })}
+                </div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
+                {[["Vacation",b.vacation,C.blue],["Sick",b.sick,C.red],["Personal",b.personal,C.purple]].map(([t,bal,c])=>(
+                  <div key={t}>
+                    <div style={{fontSize:11,fontWeight:700,color:c,marginBottom:4}}>{t}</div>
+                    <PTOBar used={bal.used} pending={bal.pending} total={bal.total} color={c}/>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function EmployeePTOView({onRequest}){
+  // Employee sees NO balances — just request form + history
+  const [type,setType]=useState("Vacation");
+  const [startD,setStartD]=useState("");
+  const [endD,setEndD]=useState("");
+  const [notes,setNotes]=useState("");
+  const [reqs,setReqs]=useState([
+    {id:1,type:"Vacation",dates:"Apr 7–9",days:3,status:"approved",submitted:"Mar 25"},
+    {id:2,type:"Personal",dates:"Apr 21–22",days:2,status:"pending",submitted:"Mar 28"},
+  ]);
+  const submit=()=>{
+    if(!startD||!endD){addToast("Select start and end dates.","error");return;}
+    setReqs(p=>[{id:Date.now(),type,dates:`${startD} – ${endD}`,days:1,status:"pending",submitted:"Today"},...p]);
+    setStartD("");setEndD("");setNotes("");
+    addToast("Request submitted to your manager.","success");
+  };
+  return(
+    <div data-testid="employee-pto-view">
+      <SectionHead title="Request Time Off" sub="Submit a request — your manager will be notified"/>
+      <div style={{display:"grid",gridTemplateColumns:"360px 1fr",gap:20,alignItems:"start"}}>
+        <Card style={{padding:20}} data-testid="pto-request-form">
+          <div style={{background:C.amberL,border:`1px solid ${C.amberB}`,borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#92400e"}}>
+            ℹ️ Balances are managed by HR and your manager. Contact your manager to check your remaining balance.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Select label="Type" testid="pto-type" value={type} onChange={e=>setType(e.target.value)} options={["Vacation","Sick","Personal"]}/>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <Input label="Start Date" testid="pto-start" type="date" value={startD} onChange={e=>setStartD(e.target.value)}/>
+              <Input label="End Date" testid="pto-end" type="date" value={endD} onChange={e=>setEndD(e.target.value)}/>
+            </div>
+            <div>
+              <label style={{fontSize:11,fontWeight:700,color:C.gray,display:"block",marginBottom:5,textTransform:"uppercase"}}>Notes</label>
+              <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={3} data-testid="pto-notes" placeholder="Optional context for your manager…"
+                style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:7,padding:"9px 12px",fontSize:13,outline:"none",resize:"vertical",boxSizing:"border-box",fontFamily:"inherit"}}/>
+            </div>
+            <button onClick={submit} data-testid="pto-submit-btn"
+              style={{background:C.blue,color:"#fff",border:"none",borderRadius:8,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer",width:"100%"}}>
+              Submit Request
+            </button>
+          </div>
+        </Card>
+        <Card style={{overflow:"hidden"}} data-testid="pto-history">
+          <div style={{padding:"14px 18px",borderBottom:`1px solid ${C.border}`,fontWeight:800,fontSize:14,color:C.text}}>My Requests</div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr><Th>Type</Th><Th>Dates</Th><Th right>Days</Th><Th>Status</Th><Th>Submitted</Th></tr></thead>
+            <tbody>
+              {reqs.map(r=>(
+                <tr key={r.id} data-testid={`pto-req-${r.id}`}>
+                  <Td><Badge label={r.type} color={r.type==="Vacation"?C.blue:r.type==="Sick"?C.red:C.purple} bg={(r.type==="Vacation"?C.blue:r.type==="Sick"?C.red:C.purple)+"18"}/></Td>
+                  <Td>{r.dates}</Td>
+                  <Td right><strong>{r.days}</strong></Td>
+                  <Td>{statusBadge(r.status)}</Td>
+                  <Td><span style={{fontSize:11,color:C.gray}}>{r.submitted}</span></Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FEATURE 2 — PUNCH CORRECTION REQUESTS
+// ══════════════════════════════════════════════════════════════════════════════
+function PunchCorrectionEmployee(){
+  const [date,setDate]=useState("");
+  const [origIn,setOrigIn]=useState("");
+  const [origOut,setOrigOut]=useState("");
+  const [reqIn,setReqIn]=useState("");
+  const [reqOut,setReqOut]=useState("");
+  const [reason,setReason]=useState("");
+  const [reqs,setReqs]=useState(SEED_PUNCH_REQS.filter(r=>r.empId==="E001"));
+
+  const submit=()=>{
+    if(!date||!reqIn||!reqOut){addToast("Date and corrected times are required.","error");return;}
+    const newR={
+      id:`PR${Date.now()}`,empId:"E001",empName:"Maria Santos",dept:"ICU",manager:"Janet Reyes",
+      date,origIn:origIn||"Unknown",origOut:origOut||"Unknown",reqIn,reqOut,reason,
+      status:"pending",submitted:"Today"
+    };
+    setReqs(p=>[newR,...p]);
+    setDate("");setOrigIn("");setOrigOut("");setReqIn("");setReqOut("");setReason("");
+    addToast("Punch correction sent to Janet Reyes (your manager).","success");
+  };
+
+  return(
+    <div data-testid="punch-correction-employee">
+      <SectionHead title="Request Punch Correction" sub="Something logged incorrectly? Submit a correction — routes to your manager"/>
+      <div style={{display:"grid",gridTemplateColumns:"400px 1fr",gap:20,alignItems:"start"}}>
+        <Card style={{padding:20}} data-testid="punch-form">
+          <div style={{fontWeight:700,fontSize:14,color:C.text,marginBottom:16}}>New Correction Request</div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Input label="Date of punch" testid="punch-date" type="date" value={date} onChange={e=>setDate(e.target.value)}/>
+            <div style={{background:C.grayL,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.gray,marginBottom:10,textTransform:"uppercase"}}>Original Punch (what was recorded)</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <Input label="Clock In" testid="orig-in" type="time" value={origIn} onChange={e=>setOrigIn(e.target.value)}/>
+                <Input label="Clock Out" testid="orig-out" type="time" value={origOut} onChange={e=>setOrigOut(e.target.value)}/>
+              </div>
+            </div>
+            <div style={{background:C.blueL,border:`1px solid ${C.blueB}`,borderRadius:8,padding:"12px 14px"}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.blue,marginBottom:10,textTransform:"uppercase"}}>Corrected Times (what it should be)</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <Input label="Clock In" testid="req-in" type="time" value={reqIn} onChange={e=>setReqIn(e.target.value)}/>
+                <Input label="Clock Out" testid="req-out" type="time" value={reqOut} onChange={e=>setReqOut(e.target.value)}/>
+              </div>
+            </div>
+            <div>
+              <label style={{fontSize:11,fontWeight:700,color:C.gray,display:"block",marginBottom:5,textTransform:"uppercase"}}>Reason</label>
+              <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={3} data-testid="punch-reason"
+                placeholder="Explain what happened…"
+                style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:7,padding:"9px 12px",fontSize:13,outline:"none",resize:"vertical",boxSizing:"border-box",fontFamily:"inherit"}}/>
+            </div>
+            <button onClick={submit} data-testid="punch-submit-btn"
+              style={{background:C.blue,color:"#fff",border:"none",borderRadius:8,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+              Submit Correction
+            </button>
+          </div>
+        </Card>
+
+        <Card style={{overflow:"hidden"}} data-testid="punch-history">
+          <div style={{padding:"14px 18px",borderBottom:`1px solid ${C.border}`,fontWeight:800,fontSize:14,color:C.text}}>My Correction Requests</div>
+          {reqs.length===0
+            ?<div style={{padding:32,textAlign:"center",color:C.gray}}>No requests yet.</div>
+            :<table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr><Th>Date</Th><Th>Original</Th><Th>Requested</Th><Th>Reason</Th><Th>Status</Th></tr></thead>
+              <tbody>
+                {reqs.map(r=>(
+                  <tr key={r.id} data-testid={`punch-req-${r.id}`}>
+                    <Td><strong style={{color:C.text}}>{r.date}</strong><div style={{fontSize:11,color:C.gray}}>Submitted {r.submitted}</div></Td>
+                    <Td><span style={{fontSize:12,fontFamily:"monospace",color:C.red}}>{r.origIn} – {r.origOut}</span></Td>
+                    <Td><span style={{fontSize:12,fontFamily:"monospace",color:C.green}}>{r.reqIn} – {r.reqOut}</span></Td>
+                    <Td><span style={{fontSize:12,color:C.gray}}>{r.reason||"—"}</span></Td>
+                    <Td>
+                      {statusBadge(r.status)}
+                      {r.comment&&<div style={{fontSize:11,color:C.gray,marginTop:3}}>"{r.comment}"</div>}
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          }
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function PunchCorrectionManager(){
+  const [reqs,setReqs]=useState(SEED_PUNCH_REQS.map(r=>({...r,commentDraft:""})));
+  const [processed,setProcessed]=useState([]);
+
+  const decide=(id,decision)=>{
+    const req=reqs.find(r=>r.id===id);
+    setProcessed(p=>[{...req,status:decision,decidedBy:"Janet Reyes",comment:req.commentDraft},  ...p]);
+    setReqs(p=>p.filter(r=>r.id!==id));
+    addToast(`Punch correction ${decision}.`,"success");
+  };
+
+  const pending=reqs.filter(r=>r.status==="pending");
+
+  return(
+    <div data-testid="punch-correction-manager">
+      <SectionHead title="Punch Correction Queue" sub={`${pending.length} pending · routed from your direct reports`}/>
+      {pending.length===0&&<div style={{background:C.greenL,border:`1px solid ${C.greenB}`,borderRadius:10,padding:28,textAlign:"center",color:C.green,fontWeight:700}}>✅ All caught up — no pending corrections.</div>}
+      <div style={{display:"flex",flexDirection:"column",gap:14,marginBottom:28}}>
+        {pending.map(req=>(
+          <Card key={req.id} style={{padding:20}} data-testid={`mgr-punch-${req.id}`}>
+            <div style={{display:"flex",gap:14,alignItems:"flex-start",flexWrap:"wrap"}}>
+              <Avatar initials={req.empName.split(" ").map(n=>n[0]).join("")} color={C.blue}/>
+              <div style={{flex:1,minWidth:200}}>
+                <div style={{fontWeight:800,fontSize:15,color:C.text}}>{req.empName}</div>
+                <div style={{fontSize:12,color:C.gray}}>{req.dept} · Submitted {req.submitted}</div>
+                <div style={{marginTop:10,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,maxWidth:400}}>
+                  <div style={{background:C.redL,border:`1px solid ${C.redB}`,borderRadius:8,padding:"10px 14px"}}>
+                    <div style={{fontSize:10,fontWeight:700,color:C.red,marginBottom:4}}>RECORDED</div>
+                    <div style={{fontSize:13,fontFamily:"monospace",color:C.text}}>{req.date}</div>
+                    <div style={{fontSize:13,fontFamily:"monospace",fontWeight:700,color:C.red}}>{req.origIn} – {req.origOut}</div>
+                  </div>
+                  <div style={{background:C.greenL,border:`1px solid ${C.greenB}`,borderRadius:8,padding:"10px 14px"}}>
+                    <div style={{fontSize:10,fontWeight:700,color:C.green,marginBottom:4}}>REQUESTED</div>
+                    <div style={{fontSize:13,fontFamily:"monospace",color:C.text}}>{req.date}</div>
+                    <div style={{fontSize:13,fontFamily:"monospace",fontWeight:700,color:C.green}}>{req.reqIn} – {req.reqOut}</div>
+                  </div>
+                </div>
+                {req.reason&&<div style={{marginTop:8,fontSize:12,color:C.gray,fontStyle:"italic"}}>"{req.reason}"</div>}
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:8,minWidth:220}}>
+                <input placeholder="Comment (optional)…" value={req.commentDraft}
+                  onChange={e=>setReqs(p=>p.map(r=>r.id===req.id?{...r,commentDraft:e.target.value}:r))}
+                  data-testid={`punch-comment-${req.id}`}
+                  style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 10px",fontSize:12,outline:"none",width:"100%",boxSizing:"border-box"}}/>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>decide(req.id,"approved")} data-testid={`punch-approve-${req.id}`}
+                    style={{flex:1,background:C.green,color:"#fff",border:"none",borderRadius:6,padding:"9px 0",fontWeight:700,fontSize:12,cursor:"pointer"}}>✓ Approve</button>
+                  <button onClick={()=>decide(req.id,"denied")} data-testid={`punch-deny-${req.id}`}
+                    style={{flex:1,background:C.red,color:"#fff",border:"none",borderRadius:6,padding:"9px 0",fontWeight:700,fontSize:12,cursor:"pointer"}}>✕ Deny</button>
+                </div>
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+      {processed.length>0&&(
+        <>
+          <SectionHead title="Recently Decided"/>
+          <Card style={{overflow:"hidden"}}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr><Th>Employee</Th><Th>Date</Th><Th>Original</Th><Th>Corrected</Th><Th>Decision</Th><Th>Comment</Th></tr></thead>
+              <tbody>
+                {processed.map((r,i)=>(
+                  <tr key={i}>
+                    <Td><strong>{r.empName}</strong></Td>
+                    <Td>{r.date}</Td>
+                    <Td><span style={{fontFamily:"monospace",color:C.red,fontSize:12}}>{r.origIn}–{r.origOut}</span></Td>
+                    <Td><span style={{fontFamily:"monospace",color:C.green,fontSize:12}}>{r.reqIn}–{r.reqOut}</span></Td>
+                    <Td>{statusBadge(r.status)}</Td>
+                    <Td><span style={{color:C.gray,fontSize:12}}>{r.comment||"—"}</span></Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FEATURE 3 — PAYROLL DOCUMENTS
+// ══════════════════════════════════════════════════════════════════════════════
+function PayrollDocsEmployee(){
+  const [docs,setDocs]=useState(SEED_DOCS.filter(d=>d.empId==="E001"));
+  const [filter,setFilter]=useState("All");
+  const fileRef=useRef(null);
+  const types=["All","Pay Stub","Tax Form","Other"];
+
+  const handleUpload=(e)=>{
+    const file=e.target.files[0];
+    if(!file)return;
+    const newDoc={id:`D${Date.now()}`,empId:"E001",name:file.name,type:"Other",period:"—",size:`${Math.round(file.size/1024)} KB`,uploadedBy:"Maria Santos",date:"Today",gross:"—",net:"—"};
+    setDocs(p=>[newDoc,...p]);
+    addToast(`"${file.name}" uploaded successfully.`,"success");
+    e.target.value="";
+  };
+
+  const filtered=filter==="All"?docs:docs.filter(d=>d.type===filter);
+  const typeColor={
+    "Pay Stub":[C.blue,C.blueL],
+    "Tax Form":[C.green,C.greenL],
+    "Other":[C.gray,C.grayL],
+  };
+
+  return(
+    <div data-testid="payroll-docs-employee">
+      <SectionHead title="My Payroll Documents" sub="Pay stubs, tax forms, and other payroll records"/>
+      <div style={{display:"flex",gap:12,marginBottom:18,flexWrap:"wrap",alignItems:"flex-end"}}>
+        <Select label="Filter by type" testid="doc-filter" value={filter} onChange={e=>setFilter(e.target.value)} options={types} style={{maxWidth:180}}/>
+        <div style={{marginLeft:"auto"}}>
+          <input type="file" ref={fileRef} onChange={handleUpload} style={{display:"none"}} accept=".pdf,.png,.jpg,.xlsx,.csv" data-testid="doc-upload-input"/>
+          <button onClick={()=>fileRef.current.click()} data-testid="doc-upload-btn"
+            style={{background:C.blue,color:"#fff",border:"none",borderRadius:8,padding:"9px 18px",fontWeight:700,fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
+            📎 Upload Document
+          </button>
+        </div>
+      </div>
+
+      {filtered.length===0
+        ?<Card style={{padding:40,textAlign:"center",color:C.gray}}>No documents found.</Card>
+        :<Card style={{overflow:"hidden"}}>
+          <table style={{width:"100%",borderCollapse:"collapse"}} data-testid="docs-table">
+            <thead><tr><Th>Document</Th><Th>Type</Th><Th>Period</Th><Th>Gross Pay</Th><Th>Net Pay</Th><Th right>Size</Th><Th>Uploaded By</Th><Th>Date</Th></tr></thead>
+            <tbody>
+              {filtered.map(doc=>{
+                const [tc,tbg]=typeColor[doc.type]||[C.gray,C.grayL];
+                return(
+                  <tr key={doc.id} data-testid={`doc-row-${doc.id}`}>
+                    <Td>
+                      <button style={{background:"none",border:"none",cursor:"pointer",color:C.blue,fontWeight:600,fontSize:13,padding:0,textDecoration:"underline"}}
+                        onClick={()=>addToast(`Opening "${doc.name}"…`,"success")} data-testid={`doc-open-${doc.id}`}>
+                        📄 {doc.name}
+                      </button>
+                    </Td>
+                    <Td><Badge label={doc.type} color={tc} bg={tbg}/></Td>
+                    <Td><span style={{fontSize:12}}>{doc.period}</span></Td>
+                    <Td><span style={{fontWeight:600,color:C.text}}>{doc.gross}</span></Td>
+                    <Td><span style={{fontWeight:600,color:C.green}}>{doc.net}</span></Td>
+                    <Td right><span style={{color:C.gray,fontSize:12}}>{doc.size}</span></Td>
+                    <Td><span style={{fontSize:12,color:C.gray}}>{doc.uploadedBy}</span></Td>
+                    <Td><span style={{fontSize:12,color:C.gray}}>{doc.date}</span></Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Card>
+      }
+    </div>
+  );
+}
+
+function PayrollDocsAdmin(){
+  const [docs,setDocs]=useState(SEED_DOCS);
+  const [empFilter,setEmpFilter]=useState("All");
+  const [typeFilter,setTypeFilter]=useState("All");
+  const [uploadEmp,setUploadEmp]=useState(EMPLOYEES[0].id);
+  const [uploadType,setUploadType]=useState("Pay Stub");
+  const [uploadPeriod,setUploadPeriod]=useState("");
+  const [uploadGross,setUploadGross]=useState("");
+  const [uploadNet,setUploadNet]=useState("");
+  const [showUpload,setShowUpload]=useState(false);
+  const fileRef=useRef(null);
+
+  const handleUpload=(e)=>{
+    const file=e.target.files[0];
+    if(!file)return;
+    const emp=EMPLOYEES.find(e2=>e2.id===uploadEmp);
+    const newDoc={
+      id:`D${Date.now()}`,empId:uploadEmp,name:file.name,type:uploadType,
+      period:uploadPeriod||"—",size:`${Math.round(file.size/1024)} KB`,
+      uploadedBy:"HR Admin",date:"Today",
+      gross:uploadGross?fmt(parseFloat(uploadGross.replace(/[^0-9.]/g,"")))||"—":"—",
+      net:uploadNet?fmt(parseFloat(uploadNet.replace(/[^0-9.]/g,"")))||"—":"—",
+    };
+    setDocs(p=>[newDoc,...p]);
+    setShowUpload(false);setUploadPeriod("");setUploadGross("");setUploadNet("");
+    addToast(`Document uploaded for ${emp?.name}.`,"success");
+    e.target.value="";
+  };
+
+  const filtered=docs
+    .filter(d=>empFilter==="All"||d.empId===empFilter)
+    .filter(d=>typeFilter==="All"||d.type===typeFilter);
+
+  const typeColor={"Pay Stub":[C.blue,C.blueL],"Tax Form":[C.green,C.greenL],"Other":[C.gray,C.grayL]};
+
+  return(
+    <div data-testid="payroll-docs-admin">
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:12}}>
+        <SectionHead title="Payroll Documents — All Employees" sub="Upload and manage pay stubs, tax forms, and payroll records for your staff"/>
+        <button onClick={()=>setShowUpload(s=>!s)} data-testid="admin-upload-toggle"
+          style={{background:C.blue,color:"#fff",border:"none",borderRadius:8,padding:"9px 18px",fontWeight:700,fontSize:13,cursor:"pointer"}}>
+          📎 Upload Document
+        </button>
+      </div>
+
+      {showUpload&&(
+        <Card style={{padding:20,marginBottom:20,background:C.blueL,border:`1px solid ${C.blueB}`}} data-testid="admin-upload-form">
+          <div style={{fontWeight:800,fontSize:14,color:C.text,marginBottom:14}}>Upload for Employee</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:12}}>
+            <Select label="Employee" testid="upload-emp" value={uploadEmp} onChange={e=>setUploadEmp(e.target.value)} options={EMPLOYEES.map(e=>e.id)} style={{}}/>
+            <Select label="Document Type" testid="upload-type" value={uploadType} onChange={e=>setUploadType(e.target.value)} options={["Pay Stub","Tax Form","Other"]}/>
+            <Input label="Pay Period" testid="upload-period" value={uploadPeriod} onChange={e=>setUploadPeriod(e.target.value)} placeholder="e.g. Mar 1–15 2026"/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:14}}>
+            <Input label="Gross Pay ($)" testid="upload-gross" value={uploadGross} onChange={e=>setUploadGross(e.target.value)} placeholder="3240.00"/>
+            <Input label="Net Pay ($)" testid="upload-net" value={uploadNet} onChange={e=>setUploadNet(e.target.value)} placeholder="2418.00"/>
+            <div style={{display:"flex",alignItems:"flex-end"}}>
+              <input type="file" ref={fileRef} onChange={handleUpload} style={{display:"none"}} accept=".pdf,.png,.jpg,.xlsx,.csv" data-testid="admin-file-input"/>
+              <button onClick={()=>fileRef.current.click()} data-testid="admin-upload-btn"
+                style={{background:C.navy,color:"#fff",border:"none",borderRadius:8,padding:"9px 18px",fontWeight:700,fontSize:13,cursor:"pointer",width:"100%"}}>
+                Choose File & Upload
+              </button>
+            </div>
+          </div>
+          <div style={{fontSize:12,color:C.gray}}>
+            Uploading for: <strong>{EMPLOYEES.find(e=>e.id===uploadEmp)?.name}</strong> · Employee can view this immediately in their portal.
+          </div>
+        </Card>
+      )}
+
+      <div style={{display:"flex",gap:12,marginBottom:18,flexWrap:"wrap"}}>
+        <Select label="Employee" testid="admin-emp-filter" value={empFilter}
+          onChange={e=>setEmpFilter(e.target.value)}
+          options={["All",...EMPLOYEES.map(e=>e.id)]}/>
+        <Select label="Type" testid="admin-type-filter" value={typeFilter}
+          onChange={e=>setTypeFilter(e.target.value)} options={["All","Pay Stub","Tax Form","Other"]}/>
+        <div style={{marginLeft:"auto",alignSelf:"flex-end",fontSize:12,color:C.gray}}>{filtered.length} document{filtered.length!==1?"s":""}</div>
+      </div>
+
+      <Card style={{overflow:"hidden"}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}} data-testid="admin-docs-table">
+          <thead><tr><Th>Document</Th><Th>Employee</Th><Th>Type</Th><Th>Period</Th><Th right>Gross</Th><Th right>Net</Th><Th>Date</Th></tr></thead>
+          <tbody>
+            {filtered.map(doc=>{
+              const emp=EMPLOYEES.find(e=>e.id===doc.empId);
+              const [tc,tbg]=typeColor[doc.type]||[C.gray,C.grayL];
+              return(
+                <tr key={doc.id} data-testid={`admin-doc-row-${doc.id}`}>
+                  <Td>
+                    <button onClick={()=>addToast(`Opening "${doc.name}"…`,"success")}
+                      style={{background:"none",border:"none",cursor:"pointer",color:C.blue,fontWeight:600,fontSize:13,padding:0,textDecoration:"underline"}}>
+                      📄 {doc.name}
+                    </button>
+                  </Td>
+                  <Td>
+                    {emp&&<div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <Avatar initials={emp.initials} size={26} color={emp.color}/>
+                      <div><div style={{fontWeight:600,fontSize:13}}>{emp.name}</div><div style={{fontSize:11,color:C.gray}}>{emp.dept}</div></div>
+                    </div>}
+                  </Td>
+                  <Td><Badge label={doc.type} color={tc} bg={tbg}/></Td>
+                  <Td><span style={{fontSize:12}}>{doc.period}</span></Td>
+                  <Td right><span style={{fontWeight:600}}>{doc.gross}</span></Td>
+                  <Td right><span style={{fontWeight:600,color:C.green}}>{doc.net}</span></Td>
+                  <Td><span style={{fontSize:12,color:C.gray}}>{doc.date}</span></Td>
+                </tr>
+              );
+            })}
+            {filtered.length===0&&<tr><td colSpan={7} style={{padding:32,textAlign:"center",color:C.gray}}>No documents found.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// ── ROOT ──────────────────────────────────────────────────────────────────────
+const TABS=[
+  {key:"pto-admin",label:"PTO Overview",icon:"📊",role:"admin"},
+  {key:"pto-emp",label:"Request Time Off",icon:"✈️",role:"employee"},
+  {key:"punch-emp",label:"Punch Correction",icon:"⏱",role:"employee"},
+  {key:"punch-mgr",label:"Correction Queue",icon:"✅",role:"manager"},
+  {key:"docs-emp",label:"My Pay Docs",icon:"📄",role:"employee"},
+  {key:"docs-admin",label:"Payroll Docs (HR)",icon:"🗂",role:"admin"},
+];
+
+export default function App(){
+  const [tab,setTab]=useState("pto-admin");
+  const [roleFilter,setRoleFilter]=useState("all");
+
+  const visibleTabs=roleFilter==="all"?TABS:TABS.filter(t=>t.role===roleFilter||roleFilter==="all");
+
+  return(
+    <>
+      <style>{`* { box-sizing: border-box; } body { margin: 0; }`}</style>
+      <div style={{fontFamily:"'Segoe UI',sans-serif",fontSize:14,minHeight:"100vh",background:C.grayL}}>
+        {/* Top bar */}
+        <div style={{background:C.navy,color:"#fff",padding:"12px 24px",display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+          <div style={{fontWeight:900,fontSize:15}}>Ahava Medical — Feature Preview</div>
+          <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+            <span style={{fontSize:11,color:"rgba(255,255,255,0.5)"}}>Preview as:</span>
+            {["all","employee","manager","admin"].map(r=>(
+              <button key={r} onClick={()=>setRoleFilter(r)}
+                style={{background:roleFilter===r?"rgba(255,255,255,0.18)":"transparent",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"capitalize"}}>
+                {r}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Tab nav */}
+        <div style={{background:C.white,borderBottom:`1px solid ${C.border}`,padding:"0 24px",display:"flex",gap:2,overflowX:"auto"}}>
+          {TABS.map(t=>{
+            const roleColors={employee:C.blue,manager:C.green,admin:C.purple};
+            const rc=roleColors[t.role];
+            return(
+              <button key={t.key} onClick={()=>setTab(t.key)} data-testid={`tab-${t.key}`}
+                style={{padding:"13px 18px",border:"none",borderBottom:tab===t.key?`3px solid ${rc}`:"3px solid transparent",background:"transparent",cursor:"pointer",fontSize:13,fontWeight:tab===t.key?700:400,color:tab===t.key?rc:C.gray,whiteSpace:"nowrap",display:"flex",alignItems:"center",gap:6}}>
+                {t.icon} {t.label}
+                <span style={{fontSize:9,background:rc+"22",color:rc,border:`1px solid ${rc}33`,borderRadius:99,padding:"1px 6px",fontWeight:700,marginLeft:2}}>{t.role}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Content */}
+        <div style={{padding:28,maxWidth:1100,margin:"0 auto"}}>
+          {tab==="pto-admin"  && <AdminPTOOverview/>}
+          {tab==="pto-emp"    && <EmployeePTOView/>}
+          {tab==="punch-emp"  && <PunchCorrectionEmployee/>}
+          {tab==="punch-mgr"  && <PunchCorrectionManager/>}
+          {tab==="docs-emp"   && <PayrollDocsEmployee/>}
+          {tab==="docs-admin" && <PayrollDocsAdmin/>}
+        </div>
+      </div>
+      <ToastHost/>
+    </>
+  );
+}
