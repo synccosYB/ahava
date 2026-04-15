@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { PageHeader } from "@/components/page-header";
-import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Umbrella, Timer } from "lucide-react";
+import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Timer } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface ProfileDetails {
@@ -228,34 +228,6 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function BalanceCard({
-  label,
-  days,
-  icon: Icon,
-  colorClass,
-}: {
-  label: string;
-  days: number;
-  icon: React.ElementType;
-  colorClass: string;
-}) {
-  return (
-    <div className="flex items-center gap-4 rounded-md border p-4" data-testid={`card-balance-${label.toLowerCase()}`}>
-      <div className={`rounded-full p-2 ${colorClass}`}>
-        <Icon className="h-4 w-4" />
-      </div>
-      <div>
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-          {label}
-        </p>
-        <p className="text-xl font-semibold tabular-nums">
-          {days}{" "}
-          <span className="text-sm font-normal text-muted-foreground">days</span>
-        </p>
-      </div>
-    </div>
-  );
-}
 
 export default function ProfilePage() {
   const { user } = useAuth();
@@ -416,44 +388,6 @@ export default function ProfilePage() {
         </CardContent>
       </Card>
 
-      <Card data-testid="card-timeoff">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Umbrella className="h-4 w-4 text-muted-foreground" />
-            Time-Off Balances
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-20 rounded-md" />
-              ))}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <BalanceCard
-                label="Vacation"
-                days={profile!.vacationBalance}
-                icon={Umbrella}
-                colorClass="bg-blue-100 text-blue-600"
-              />
-              <BalanceCard
-                label="Sick"
-                days={profile!.sickBalance}
-                icon={Clock}
-                colorClass="bg-orange-100 text-orange-600"
-              />
-              <BalanceCard
-                label="Personal"
-                days={profile!.personalBalance}
-                icon={CalendarDays}
-                colorClass="bg-purple-100 text-purple-600"
-              />
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

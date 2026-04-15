@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { PageHeader } from "@/components/page-header";
-import { Clock, Timer, CalendarDays, Play, Square, TrendingUp } from "lucide-react";
+import { Clock, Play, Square, TrendingUp } from "lucide-react";
 import type { AttendanceRecord } from "@shared/schema";
 
 interface DashboardStatus {
@@ -125,10 +125,10 @@ export default function Dashboard() {
         </Card>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {statusLoading ? (
           <>
-            {[1, 2, 3, 4].map((i) => (
+            {[1, 2].map((i) => (
               <Skeleton key={i} className="h-28 rounded-xl" />
             ))}
           </>
@@ -154,30 +154,6 @@ export default function Dashboard() {
                 </div>
                 <p className="text-2xl font-bold tabular-nums" data-testid="text-week-hours">
                   {formatHoursMinutes(status?.weekHours ?? 0)}
-                </p>
-              </CardContent>
-            </Card>
-
-            <Card data-testid="card-vacation-balance">
-              <CardContent className="pt-5 pb-5">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-sm font-medium text-muted-foreground">Vacation</p>
-                  <CalendarDays className="h-4 w-4 text-muted-foreground/60" />
-                </div>
-                <p className="text-2xl font-bold tabular-nums" data-testid="text-vacation-balance">
-                  {status?.ptoBalance?.vacation ?? 0}<span className="text-sm font-normal text-muted-foreground ml-1">days</span>
-                </p>
-              </CardContent>
-            </Card>
-
-            <Card data-testid="card-sick-balance">
-              <CardContent className="pt-5 pb-5">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-sm font-medium text-muted-foreground">Sick Leave</p>
-                  <Timer className="h-4 w-4 text-muted-foreground/60" />
-                </div>
-                <p className="text-2xl font-bold tabular-nums" data-testid="text-sick-balance">
-                  {status?.ptoBalance?.sick ?? 0}<span className="text-sm font-normal text-muted-foreground ml-1">days</span>
                 </p>
               </CardContent>
             </Card>

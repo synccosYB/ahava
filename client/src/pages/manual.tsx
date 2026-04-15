@@ -45,7 +45,6 @@ const tocItems: TocItem[] = [
       { id: "emp-clock", label: "Clocking In & Out" },
       { id: "emp-attendance", label: "Viewing Attendance History" },
       { id: "emp-timeoff", label: "Submitting Time-Off Requests" },
-      { id: "emp-pto", label: "Checking PTO Balances" },
       { id: "emp-profile", label: "Updating Your Profile" },
     ],
   },
@@ -100,7 +99,6 @@ const tocItems: TocItem[] = [
     subsections: [
       { id: "faq-pin", label: "Forgot My PIN" },
       { id: "faq-missed", label: "Missed Punch" },
-      { id: "faq-pto", label: "PTO Balance Questions" },
       { id: "faq-password", label: "Password Reset" },
     ],
   },
@@ -371,7 +369,6 @@ export default function ManualPage() {
                 <li><strong>Clock Status</strong> — Shows whether you're currently clocked in or out, with a quick action button</li>
                 <li><strong>Today's Hours</strong> — How many hours you've worked today</li>
                 <li><strong>This Week's Hours</strong> — Your total hours for the current week</li>
-                <li><strong>Vacation & Sick Leave Balances</strong> — Your remaining PTO days at a glance</li>
                 <li><strong>Recent Activity</strong> — A table showing your last five attendance records</li>
               </ul>
 
@@ -412,23 +409,13 @@ export default function ManualPage() {
                 "In the \"New Request\" form, select the request type (Vacation, Sick Leave, or Personal).",
                 "Choose your start and end dates. The system automatically calculates business days.",
                 "Optionally, add a reason for your request.",
-                "Review the \"Days Requested\" summary and remaining balance shown below.",
+                "Review the \"Days Requested\" summary shown below.",
                 "Click \"Submit Request\" to send it to your manager for approval.",
               ]} />
               <p className="text-sm text-foreground/80 leading-relaxed">
                 Your submitted requests will appear in the <strong>My Requests</strong> panel, showing their current 
                 status (Pending, Approved, or Denied). You can also see approved time off on the Team Calendar below.
               </p>
-              <Warning id="pto-balance-check">Make sure you have enough PTO balance before submitting. Requests that exceed your balance may be denied.</Warning>
-
-              <SubHeading id="emp-pto">Checking PTO Balances</SubHeading>
-              <p className="text-sm text-foreground/80 leading-relaxed">
-                You can check your PTO balances in two places:
-              </p>
-              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
-                <li><strong>Dashboard</strong> — Quick view of Vacation and Sick Leave days remaining</li>
-                <li><strong>Profile</strong> — Detailed view showing Vacation, Sick, and Personal balances</li>
-              </ul>
 
               <SubHeading id="emp-profile">Updating Your Profile</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
@@ -439,7 +426,6 @@ export default function ManualPage() {
                 <li>Current shift status with a live timer when clocked in</li>
                 <li>Organization details (Division, Location, Department)</li>
                 <li>Employment details (Type, Pay Type, Hire Date, Overtime eligibility)</li>
-                <li>Time-Off Balances (Vacation, Sick, Personal)</li>
               </ul>
               <Tip id="profile-contact-admin">If any of your information is incorrect, contact your administrator to have it updated.</Tip>
 
@@ -665,24 +651,6 @@ export default function ManualPage() {
                   record through the Alerts & Exceptions system. An attendance exception can be created 
                   for the missing punch, which will go through the approval workflow before being applied 
                   to your record.
-                </p>
-              </div>
-
-              <SubHeading id="faq-pto">PTO Balance Questions</SubHeading>
-              <div className="rounded-lg border bg-muted/30 p-4 my-3">
-                <p className="text-sm font-medium text-foreground mb-2">Q: My PTO balance seems incorrect. Who should I contact?</p>
-                <p className="text-sm text-foreground/80">
-                  <strong>A:</strong> First, check your Profile page for the most accurate balance information. 
-                  If the numbers don't match what you expect, contact your administrator. They can review your 
-                  PTO history and make adjustments through the PTO & Leave management page if needed.
-                </p>
-              </div>
-              <div className="rounded-lg border bg-muted/30 p-4 my-3">
-                <p className="text-sm font-medium text-foreground mb-2">Q: How is my PTO balance calculated?</p>
-                <p className="text-sm text-foreground/80">
-                  <strong>A:</strong> Your PTO balance starts with your annual allocation and is reduced by approved 
-                  time-off requests. The balance may also be affected by carry-over policies from the previous year 
-                  and any manual adjustments made by your administrator.
                 </p>
               </div>
 

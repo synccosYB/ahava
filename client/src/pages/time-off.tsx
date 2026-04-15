@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
@@ -15,12 +15,6 @@ import { useToast } from "@/hooks/use-toast";
 import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
 import type { TimeOffRequest } from "@shared/schema";
 
-interface PtoBalance {
-  vacation: number;
-  sick: number;
-  personal: number;
-}
-
 export default function TimeOff() {
   const { user, isAuthenticated } = useAuth();
   const { toast } = useToast();
@@ -35,10 +29,6 @@ export default function TimeOff() {
     enabled: isAuthenticated,
   });
 
-  const { data: balance, isLoading: balanceLoading } = useQuery<PtoBalance>({
-    queryKey: ["/api/time-off/balance"],
-    enabled: isAuthenticated,
-  });
 
   const { data: teamRequests, isLoading: teamLoading } = useQuery<TimeOffRequest[]>({
     queryKey: ["/api/time-off/team"],
@@ -58,7 +48,6 @@ export default function TimeOff() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/time-off/balance"] });
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
       setType("vacation");
@@ -93,13 +82,6 @@ export default function TimeOff() {
 
   const daysRequested = calculateDays();
 
-  const remainingBalance = useMemo(() => {
-    if (!balance) return 0;
-    if (type === "vacation") return balance.vacation;
-    if (type === "sick") return balance.sick;
-    if (type === "personal") return balance.personal;
-    return 0;
-  }, [balance, type]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -177,9 +159,6 @@ export default function TimeOff() {
             {startDate && endDate && daysRequested > 0 && (
               <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-days-summary">
                 <p className="text-sm font-semibold">Days Requested: <span className="tabular-nums">{daysRequested}</span></p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Remaining Balance: <span className="tabular-nums">{remainingBalance - daysRequested}</span> days
-                </p>
               </div>
             )}
 
