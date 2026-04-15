@@ -266,6 +266,7 @@ export const timeOffRequests = pgTable("time_off_requests", {
   reason: text("reason"),
   reviewedBy: varchar("reviewed_by").references(() => users.id),
   reviewedAt: timestamp("reviewed_at"),
+  editedAt: timestamp("edited_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -274,6 +275,7 @@ export const insertTimeOffRequestSchema = createInsertSchema(timeOffRequests).om
   createdAt: true,
   reviewedBy: true,
   reviewedAt: true,
+  editedAt: true,
 });
 export type InsertTimeOffRequest = z.infer<typeof insertTimeOffRequestSchema>;
 export type TimeOffRequest = typeof timeOffRequests.$inferSelect;

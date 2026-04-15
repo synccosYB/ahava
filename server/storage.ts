@@ -157,7 +157,7 @@ export interface IStorage {
   getPendingTimeOffRequests(): Promise<TimeOffRequest[]>;
   getAllTimeOffRequests(): Promise<TimeOffRequest[]>;
   createTimeOffRequest(request: InsertTimeOffRequest): Promise<TimeOffRequest>;
-  updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date }>): Promise<TimeOffRequest | undefined>;
+  updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date }>): Promise<TimeOffRequest | undefined>;
 
   getTimeOffBalance(userId: string, type: string, year: number): Promise<TimeOffBalance | undefined>;
   getTimeOffBalancesByUser(userId: string, year: number): Promise<TimeOffBalance[]>;
@@ -675,7 +675,7 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date }>): Promise<TimeOffRequest | undefined> {
+  async updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date }>): Promise<TimeOffRequest | undefined> {
     const [updated] = await db.update(timeOffRequests).set(request).where(eq(timeOffRequests.id, id)).returning();
     return updated;
   }

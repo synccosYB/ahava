@@ -12,7 +12,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
-import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Calendar, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import type { TimeOffRequest } from "@shared/schema";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
@@ -38,6 +39,12 @@ export default function TimeOff() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [reason, setReason] = useState("");
+
+  const [editingRequest, setEditingRequest] = useState<TimeOffRequest | null>(null);
+  const [editType, setEditType] = useState("vacation");
+  const [editStartDate, setEditStartDate] = useState("");
+  const [editEndDate, setEditEndDate] = useState("");
+  const [editReason, setEditReason] = useState("");
 
   const { data: requests, isLoading: requestsLoading } = useQuery<TimeOffRequest[]>({
     queryKey: ["/api/time-off"],
@@ -75,6 +82,59 @@ export default function TimeOff() {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  const editMutation = useMutation({
+    mutationFn: async () => {
+      if (!editingRequest) return;
+      const daysRequested = calculateDaysForRange(editStartDate, editEndDate);
+      return apiRequest("PUT", `/api/time-off/${editingRequest.id}`, {
+        type: editType,
+        startDate: editStartDate,
+        endDate: editEndDate,
+        daysRequested,
+        reason: editReason || null,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
+      setEditingRequest(null);
+      toast({ title: "Request Updated", description: "Your time off request has been updated." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const openEditDialog = (request: TimeOffRequest) => {
+    setEditingRequest(request);
+    setEditType(request.type);
+    setEditStartDate(request.startDate);
+    setEditEndDate(request.endDate);
+    setEditReason(request.reason || "");
+  };
+
+  const calculateDaysForRange = (start: string, end: string) => {
+    if (!start || !end) return 0;
+    const parts1 = start.split("-").map(Number);
+    const parts2 = end.split("-").map(Number);
+    if (parts1.length !== 3 || parts2.length !== 3) return 0;
+    const s = new Date(Date.UTC(parts1[0], parts1[1] - 1, parts1[2]));
+    const e = new Date(Date.UTC(parts2[0], parts2[1] - 1, parts2[2]));
+    if (isNaN(s.getTime()) || isNaN(e.getTime())) return 0;
+    if (e < s) return 0;
+    let count = 0;
+    const current = new Date(s);
+    while (current <= e) {
+      const day = current.getUTCDay();
+      if (day !== 0 && day !== 6) count++;
+      current.setUTCDate(current.getUTCDate() + 1);
+    }
+    return count;
+  };
+
+  const editDaysRequested = calculateDaysForRange(editStartDate, editEndDate);
 
   const calculateDays = () => {
     if (!startDate || !endDate) return 0;
@@ -219,7 +279,17 @@ export default function TimeOff() {
                       {formatTypeLabel(request.type)} &bull; <span className="tabular-nums">{request.daysRequested}</span> day{request.daysRequested > 1 ? "s" : ""}
                     </p>
                     {request.status === "pending" && (
-                      <p className="text-sm text-amber-600 mt-1">Awaiting manager approval</p>
+                      <div className="flex items-center justify-between mt-1">
+                        <p className="text-sm text-amber-600">Awaiting manager approval</p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openEditDialog(request)}
+                          data-testid={`button-edit-request-${request.id}`}
+                        >
+                          <Pencil className="h-3 w-3 mr-1" /> Edit
+                        </Button>
+                      </div>
                     )}
                     {request.status === "approved" && (
                       <p className="text-sm text-green-600 mt-1">Approved</p>
@@ -240,6 +310,74 @@ export default function TimeOff() {
         isLoading={teamLoading}
         currentUserId={user?.id}
       />
+
+      <Dialog open={!!editingRequest} onOpenChange={(open) => { if (!open) setEditingRequest(null); }}>
+        <DialogContent data-testid="dialog-edit-request">
+          <DialogHeader>
+            <DialogTitle>Edit Time Off Request</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Request Type</Label>
+              <Select value={editType} onValueChange={setEditType}>
+                <SelectTrigger data-testid="select-edit-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(TIME_OFF_TYPE_LABELS).map(([value, label]) => (
+                    <SelectItem key={value} value={value} data-testid={`option-edit-type-${value}`}>{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Start Date</Label>
+              <Input
+                type="date"
+                value={editStartDate}
+                onChange={(e) => setEditStartDate(e.target.value)}
+                data-testid="input-edit-start-date"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">End Date</Label>
+              <Input
+                type="date"
+                value={editEndDate}
+                onChange={(e) => setEditEndDate(e.target.value)}
+                data-testid="input-edit-end-date"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Reason (Optional)</Label>
+              <Textarea
+                value={editReason}
+                onChange={(e) => setEditReason(e.target.value)}
+                placeholder="Add a reason..."
+                data-testid="input-edit-reason"
+              />
+            </div>
+
+            {editStartDate && editEndDate && editDaysRequested > 0 && (
+              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-edit-days-summary">
+                <p className="text-sm font-semibold">Days Requested: <span className="tabular-nums">{editDaysRequested}</span></p>
+              </div>
+            )}
+
+            <Button
+              onClick={() => editMutation.mutate()}
+              disabled={!editStartDate || !editEndDate || editDaysRequested === 0 || editMutation.isPending}
+              className="w-full"
+              data-testid="button-save-edit"
+            >
+              {editMutation.isPending ? "Saving..." : "Save Changes"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

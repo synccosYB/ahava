@@ -123,6 +123,11 @@ export default function ApprovalQueuePage() {
                     </p>
                     <p className="text-sm text-muted-foreground" data-testid={`text-request-submitted-${request.id}`}>
                       Submitted: {request.createdAt ? new Date(request.createdAt).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "N/A"}
+                      {request.editedAt && (
+                        <Badge variant="outline" className="ml-2 text-xs bg-blue-50 text-blue-700 border-blue-300 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-700" data-testid={`badge-edited-${request.id}`}>
+                          Edited
+                        </Badge>
+                      )}
                     </p>
                     {request.reason && (
                       <p className="text-sm bg-muted/50 p-2 rounded" data-testid={`text-request-reason-${request.id}`}>

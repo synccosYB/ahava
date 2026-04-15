@@ -1361,6 +1361,117 @@ export async function registerRoutes(
     }
   });
 
+  app.put("/api/time-off/:id", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const user = req.authUser as User;
+      const requestId = req.params.id as string;
+
+      const existing = await storage.getTimeOffRequest(requestId);
+      if (!existing) return res.status(404).json({ message: "Request not found" });
+      if (existing.userId !== userId) return res.status(403).json({ message: "You can only edit your own requests" });
+      if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be edited" });
+
+      const parsed = insertTimeOffRequestSchema.parse({ ...req.body, userId, status: "pending" });
+
+      const startMs = new Date(parsed.startDate + "T00:00:00Z").getTime();
+      const endMs = new Date(parsed.endDate + "T00:00:00Z").getTime();
+      if (isNaN(startMs) || isNaN(endMs) || endMs < startMs) {
+        return res.status(400).json({ message: "Invalid date range" });
+      }
+      let computedDays = 0;
+      const cur = new Date(startMs);
+      while (cur.getTime() <= endMs) {
+        const day = cur.getUTCDay();
+        if (day !== 0 && day !== 6) computedDays++;
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+      if (computedDays === 0) {
+        return res.status(400).json({ message: "Request must include at least one business day" });
+      }
+
+      const ptoPolicy = await getEffectivePolicy(user.companyId, userId, "pto", user);
+      const ptoRules = ptoPolicy?.rules || DEFAULT_PTO_RULES;
+
+      const empSettings = await storage.getEmployeePtoSettings(userId);
+      const legacyPolicy = await storage.getEmployeePtoPolicy(userId);
+
+      const waitingPeriodDays = ptoRules.waitingPeriodDays ?? legacyPolicy?.waitingPeriodDays ?? 0;
+      if (empSettings?.hireDate && waitingPeriodDays > 0) {
+        const hireMs = new Date(empSettings.hireDate).getTime();
+        const waitingEnd = hireMs + waitingPeriodDays * 24 * 60 * 60 * 1000;
+        if (Date.now() < waitingEnd) {
+          return res.status(400).json({ message: "You are still within the waiting period and cannot request time off yet" });
+        }
+      }
+
+      const maxConsecutiveDays = ptoRules.maxConsecutiveDays ?? 10;
+      if (computedDays > maxConsecutiveDays) {
+        return res.status(400).json({
+          message: `Request exceeds the maximum consecutive days allowed (${maxConsecutiveDays}).`,
+        });
+      }
+
+      const balance = await storage.computeTimeOffBalance(userId);
+      const requestType = parsed.type as string;
+      const availableBalance = requestType === "vacation" ? balance.vacation
+        : requestType === "sick" ? balance.sick
+        : requestType === "personal" ? balance.personal : null;
+
+      if (availableBalance !== null && computedDays > availableBalance) {
+        return res.status(400).json({
+          message: `Insufficient ${requestType} balance. You have ${availableBalance} day(s) remaining but requested ${computedDays}.`,
+        });
+      }
+
+      const oldValue = {
+        type: existing.type,
+        startDate: existing.startDate,
+        endDate: existing.endDate,
+        daysRequested: existing.daysRequested,
+        reason: existing.reason,
+      };
+
+      const updated = await storage.updateTimeOffRequest(requestId, {
+        type: parsed.type,
+        startDate: parsed.startDate,
+        endDate: parsed.endDate,
+        daysRequested: computedDays,
+        reason: parsed.reason,
+        editedAt: new Date(),
+      });
+
+      try {
+        const auditCtx = getAuditContext(req);
+        await writeAuditLog({
+          actorUserId: userId,
+          targetType: "time_off_request",
+          targetId: requestId,
+          action: "time_off.edited",
+          oldValue,
+          newValue: {
+            type: parsed.type,
+            startDate: parsed.startDate,
+            endDate: parsed.endDate,
+            daysRequested: computedDays,
+            reason: parsed.reason,
+          },
+          ...auditCtx,
+        });
+      } catch (auditError) {
+        console.error("Failed to write audit log for time_off.edited:", auditError);
+      }
+
+      res.json(updated);
+    } catch (error: any) {
+      console.error("Error editing time off request:", error);
+      if (error.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid request data", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to edit time off request" });
+    }
+  });
+
   app.get("/api/time-off", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
