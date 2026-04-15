@@ -12,7 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, DollarSign } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, DollarSign, Calendar, Clock, AlertTriangle, User, FileText } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
 
@@ -125,6 +126,8 @@ function ProcessedTab() {
     setEndDate("");
   };
 
+  const [selectedRequest, setSelectedRequest] = useState<ProcessedPtoRequest | null>(null);
+
   const hasActiveFilters = departmentFilter || locationFilter || typeFilter || statusFilter || startDate || endDate;
 
   return (
@@ -227,15 +230,21 @@ function ProcessedTab() {
         <div className="space-y-3">
           <Badge variant="secondary" data-testid="badge-processed-count">{requests.length} result{requests.length !== 1 ? "s" : ""}</Badge>
           {requests.map((req) => (
-            <ProcessedRequestCard key={req.id} request={req} showDeptLocation={isAdmin} />
+            <ProcessedRequestCard key={req.id} request={req} showDeptLocation={isAdmin} onClick={() => setSelectedRequest(req)} />
           ))}
         </div>
       )}
+
+      <ProcessedRequestDetailDialog
+        request={selectedRequest}
+        open={!!selectedRequest}
+        onClose={() => setSelectedRequest(null)}
+      />
     </div>
   );
 }
 
-function ProcessedRequestCard({ request, showDeptLocation }: { request: ProcessedPtoRequest; showDeptLocation?: boolean }) {
+function ProcessedRequestCard({ request, showDeptLocation, onClick }: { request: ProcessedPtoRequest; showDeptLocation?: boolean; onClick?: () => void }) {
   const statusColor = request.status === "approved"
     ? "bg-green-100 text-green-800"
     : request.status === "partially_approved"
@@ -243,7 +252,11 @@ function ProcessedRequestCard({ request, showDeptLocation }: { request: Processe
     : "bg-red-100 text-red-800";
 
   return (
-    <Card data-testid={`card-processed-request-${request.id}`}>
+    <Card
+      data-testid={`card-processed-request-${request.id}`}
+      className="cursor-pointer transition-colors hover:bg-accent/50"
+      onClick={onClick}
+    >
       <CardContent className="p-5">
         <div className="flex flex-col md:flex-row md:justify-between gap-3">
           <div className="flex-1 space-y-1.5">
@@ -288,6 +301,141 @@ function ProcessedRequestCard({ request, showDeptLocation }: { request: Processe
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function ProcessedRequestDetailDialog({ request, open, onClose }: { request: ProcessedPtoRequest | null; open: boolean; onClose: () => void }) {
+  if (!request) return null;
+
+  const isCashout = request.requestCategory === "cashout";
+  const isPartial = request.status === "partially_approved";
+
+  const statusLabel = request.status === "partially_approved"
+    ? "Partially Approved"
+    : request.status.charAt(0).toUpperCase() + request.status.slice(1);
+
+  const statusColor = request.status === "approved"
+    ? "bg-green-100 text-green-800"
+    : request.status === "partially_approved"
+    ? "bg-amber-100 text-amber-800"
+    : "bg-red-100 text-red-800";
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-lg" data-testid="dialog-processed-request-detail">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2" data-testid="dialog-title-request-detail">
+            <FileText className="h-5 w-5" />
+            Request Details
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            Detailed view of the processed time-off request
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" data-testid="detail-badge-type">
+              {isCashout ? (
+                <span className="flex items-center gap-1"><DollarSign className="h-3 w-3" />Cash-Out ({formatTimeOffTypeLabel(request.type)})</span>
+              ) : formatTimeOffTypeLabel(request.type)}
+            </Badge>
+            <Badge variant="secondary" className={statusColor} data-testid="detail-badge-status">
+              {statusLabel}
+            </Badge>
+            {request.exceedsBalance && (
+              <Badge variant="destructive" className="flex items-center gap-1" data-testid="detail-badge-exceeds-balance">
+                <AlertTriangle className="h-3 w-3" />
+                Exceeds Balance
+              </Badge>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+            <div>
+              <p className="text-muted-foreground flex items-center gap-1"><User className="h-3.5 w-3.5" />Employee</p>
+              <p className="font-medium" data-testid="detail-employee-name">{request.employeeName}</p>
+            </div>
+
+            <div>
+              <p className="text-muted-foreground flex items-center gap-1"><Building2 className="h-3.5 w-3.5" />Department</p>
+              <p className="font-medium" data-testid="detail-department">{request.departmentName}</p>
+            </div>
+
+            <div>
+              <p className="text-muted-foreground flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />Location</p>
+              <p className="font-medium" data-testid="detail-location">{request.locationName}</p>
+            </div>
+
+            {isCashout ? (
+              <div>
+                <p className="text-muted-foreground flex items-center gap-1"><Clock className="h-3.5 w-3.5" />Hours / Days</p>
+                <p className="font-medium" data-testid="detail-cashout-amount">
+                  {request.daysRequested * 8} hours ({request.daysRequested} day{request.daysRequested > 1 ? "s" : ""})
+                </p>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />Start Date</p>
+                  <p className="font-medium" data-testid="detail-start-date">{request.startDate}</p>
+                </div>
+
+                <div>
+                  <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />End Date</p>
+                  <p className="font-medium" data-testid="detail-end-date">{request.endDate}</p>
+                </div>
+
+                {isPartial && request.approvedEndDate && (
+                  <div>
+                    <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />Approved End Date</p>
+                    <p className="font-medium text-amber-700" data-testid="detail-approved-end-date">{request.approvedEndDate}</p>
+                  </div>
+                )}
+
+                <div>
+                  <p className="text-muted-foreground">Days Requested</p>
+                  <p className="font-medium" data-testid="detail-days-requested">{request.daysRequested}</p>
+                </div>
+
+                {isPartial && request.daysApproved != null && (
+                  <div>
+                    <p className="text-muted-foreground">Days Approved</p>
+                    <p className="font-medium text-amber-700" data-testid="detail-days-approved">{request.daysApproved} of {request.daysRequested}</p>
+                  </div>
+                )}
+              </>
+            )}
+
+            <div>
+              <p className="text-muted-foreground flex items-center gap-1"><UserCheck className="h-3.5 w-3.5" />Reviewed By</p>
+              <p className="font-medium" data-testid="detail-reviewer">{request.reviewerName}</p>
+            </div>
+
+            {request.reviewedAt && (
+              <div>
+                <p className="text-muted-foreground">Review Date</p>
+                <p className="font-medium" data-testid="detail-review-date">{new Date(request.reviewedAt).toLocaleDateString()}</p>
+              </div>
+            )}
+
+            {request.createdAt && (
+              <div>
+                <p className="text-muted-foreground">Submitted</p>
+                <p className="font-medium" data-testid="detail-submitted-date">{new Date(request.createdAt).toLocaleDateString()}</p>
+              </div>
+            )}
+          </div>
+
+          {request.reason && (
+            <div className="border-t pt-3">
+              <p className="text-sm text-muted-foreground mb-1">Employee's Reason</p>
+              <p className="text-sm" data-testid="detail-reason">"{request.reason}"</p>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
