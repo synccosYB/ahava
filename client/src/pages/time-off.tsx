@@ -153,7 +153,7 @@ export default function TimeOff() {
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="time-off-end" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">End Date</Label>
+              <Label htmlFor="time-off-end" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Return Date</Label>
               <Input
                 id="time-off-end"
                 type="date"
