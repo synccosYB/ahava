@@ -1552,7 +1552,7 @@ export async function registerRoutes(
     try {
       const allRequests = await storage.getAllTimeOffRequests();
       const calendarEntries = allRequests
-        .filter((r) => r.status === "approved" || r.status === "pending")
+        .filter((r) => r.status === "approved" || r.status === "partially_approved" || r.status === "pending")
         .map((r) => ({
           id: r.id,
           userId: r.userId,
@@ -1591,9 +1591,9 @@ export async function registerRoutes(
     const allTimeOff = await storage.getAllTimeOffRequests();
     const usingPto = allTimeOff.filter(r =>
       teamIds.has(r.userId) &&
-      r.status === "approved" &&
+      (r.status === "approved" || r.status === "partially_approved") &&
       r.startDate <= today &&
-      r.endDate >= today
+      (r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate >= today : r.endDate >= today)
     ).length;
 
     const teamPending = pendingRequests.filter(r => teamIds.has(r.userId)).length;
@@ -1638,7 +1638,7 @@ export async function registerRoutes(
       const todayRecord = todayAttendance.find(a => a.employeeId === member.id && a.clockIn && !a.clockOut);
       const todayRecords = todayAttendance.filter(a => a.employeeId === member.id);
       const hasPtoToday = allTimeOff.some(r =>
-        r.userId === member.id && r.status === "approved" && r.startDate <= today && r.endDate >= today
+        r.userId === member.id && (r.status === "approved" || r.status === "partially_approved") && r.startDate <= today && (r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate >= today : r.endDate >= today)
       );
 
       let todayHours = 0;
@@ -1681,13 +1681,16 @@ export async function registerRoutes(
 
   const approvalSchema = z.object({
     comment: z.string().optional(),
+    daysApproved: z.number().int().positive().optional(),
+    approvedEndDate: z.string().optional(),
   });
 
   app.post("/api/time-off/:id/approve", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
     try {
       const user = (req as any).authUser as User;
       const parsed = approvalSchema.safeParse(req.body);
-      const comment = parsed.success ? parsed.data.comment : undefined;
+      if (!parsed.success) return res.status(400).json({ message: "Invalid request body" });
+      const { comment, daysApproved, approvedEndDate } = parsed.data;
       const requestId = req.params.id as string;
       const request = await storage.getTimeOffRequest(requestId);
       if (!request) return res.status(404).json({ message: "Request not found" });
@@ -1696,13 +1699,37 @@ export async function registerRoutes(
       const teamIds = await getTeamUserIds(user);
       if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to approve this request" });
 
+      if (daysApproved !== undefined && daysApproved > (request.daysRequested || 1)) {
+        return res.status(400).json({ message: "Days approved cannot exceed days requested" });
+      }
+      if (approvedEndDate && (approvedEndDate < request.startDate || approvedEndDate > request.endDate)) {
+        return res.status(400).json({ message: "Approved end date must be within the requested date range" });
+      }
+
+      const isPartial = daysApproved !== undefined && daysApproved < (request.daysRequested || 1);
+      const status = isPartial ? "partially_approved" : "approved";
+
+      const finalDaysApproved = isPartial ? daysApproved : undefined;
+      let finalApprovedEndDate: string | undefined;
+      if (isPartial) {
+        if (approvedEndDate) {
+          finalApprovedEndDate = approvedEndDate;
+        } else {
+          const start = new Date(request.startDate + "T00:00:00");
+          start.setDate(start.getDate() + daysApproved! - 1);
+          finalApprovedEndDate = start.toISOString().split("T")[0];
+        }
+      }
+
       const auditCtx = getAuditContext(req);
 
       const updated = await db.transaction(async (tx) => {
         const [result] = await tx.update(timeOffRequests).set({
-          status: "approved",
+          status,
           reviewedBy: user.id,
           reviewedAt: new Date(),
+          ...(finalDaysApproved !== undefined ? { daysApproved: finalDaysApproved } : {}),
+          ...(finalApprovedEndDate ? { approvedEndDate: finalApprovedEndDate } : {}),
           ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
         }).where(eq(timeOffRequests.id, requestId)).returning();
 
@@ -1710,10 +1737,10 @@ export async function registerRoutes(
           actorUserId: user.id,
           targetType: "time_off_request",
           targetId: requestId,
-          action: "time_off.approved",
+          action: isPartial ? "time_off.partially_approved" : "time_off.approved",
           oldValue: { status: "pending" },
-          newValue: { status: "approved" },
-          context: { comment, employeeId: request.userId, type: request.type, days: request.daysRequested },
+          newValue: { status, ...(isPartial ? { daysApproved: finalDaysApproved, approvedEndDate: finalApprovedEndDate ?? request.endDate } : {}) },
+          context: { comment, employeeId: request.userId, type: request.type, daysRequested: request.daysRequested, ...(isPartial ? { daysApproved: finalDaysApproved, approvedEndDate: finalApprovedEndDate ?? request.endDate } : {}) },
           ...auditCtx,
         }, tx);
 
@@ -1839,7 +1866,7 @@ export async function registerRoutes(
 
     const activeNow = todayAttendance.filter(a => a.clockIn && !a.clockOut).length;
     const usingPto = allTimeOff.filter(r =>
-      r.status === "approved" && r.startDate <= today && r.endDate >= today
+      (r.status === "approved" || r.status === "partially_approved") && r.startDate <= today && (r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate >= today : r.endDate >= today)
     ).length;
 
     res.json({
@@ -1867,7 +1894,7 @@ export async function registerRoutes(
       const deptIds = new Set(deptUsers.map(u => u.id));
       const active = todayAttendance.filter(a => deptIds.has(a.employeeId) && a.clockIn && !a.clockOut).length;
       const usingPto = allTimeOff.filter(r =>
-        deptIds.has(r.userId) && r.status === "approved" && r.startDate <= today && r.endDate >= today
+        deptIds.has(r.userId) && (r.status === "approved" || r.status === "partially_approved") && r.startDate <= today && (r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate >= today : r.endDate >= today)
       ).length;
 
       let totalHours = 0;
@@ -1926,7 +1953,7 @@ export async function registerRoutes(
       activities.push({ text: `${pendingRequests.length} pending time-off request(s)`, timestamp: new Date().toISOString() });
     }
     if (todayProcessed.length > 0) {
-      const approved = todayProcessed.filter(r => r.status === "approved").length;
+      const approved = todayProcessed.filter(r => r.status === "approved" || r.status === "partially_approved").length;
       const denied = todayProcessed.filter(r => r.status === "denied").length;
       if (approved > 0) activities.push({ text: `${approved} request(s) approved today`, timestamp: new Date().toISOString() });
       if (denied > 0) activities.push({ text: `${denied} request(s) denied today`, timestamp: new Date().toISOString() });
@@ -2008,7 +2035,7 @@ export async function registerRoutes(
         }
       });
 
-      const userTimeOff = filteredTimeOff.filter(r => r.userId === user.id && r.status === "approved");
+      const userTimeOff = filteredTimeOff.filter(r => r.userId === user.id && (r.status === "approved" || r.status === "partially_approved"));
       let daysOff = 0;
       userTimeOff.forEach(r => {
         const start = new Date(r.startDate);

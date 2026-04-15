@@ -166,7 +166,7 @@ export interface IStorage {
   getPendingTimeOffRequests(): Promise<TimeOffRequest[]>;
   getAllTimeOffRequests(): Promise<TimeOffRequest[]>;
   createTimeOffRequest(request: InsertTimeOffRequest): Promise<TimeOffRequest>;
-  updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date }>): Promise<TimeOffRequest | undefined>;
+  updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date; daysApproved: number; approvedEndDate: string }>): Promise<TimeOffRequest | undefined>;
 
   getTimeOffBalance(userId: string, type: string, year: number): Promise<TimeOffBalance | undefined>;
   getTimeOffBalancesByUser(userId: string, year: number): Promise<TimeOffBalance[]>;
@@ -714,7 +714,7 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date }>): Promise<TimeOffRequest | undefined> {
+  async updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date; daysApproved: number; approvedEndDate: string }>): Promise<TimeOffRequest | undefined> {
     const [updated] = await db.update(timeOffRequests).set(request).where(eq(timeOffRequests.id, id)).returning();
     return updated;
   }
@@ -757,8 +757,8 @@ export class DatabaseStorage implements IStorage {
     let usedPersonal = 0;
 
     for (const r of requests) {
-      if (r.status !== "approved") continue;
-      const days = r.daysRequested || 1;
+      if (r.status !== "approved" && r.status !== "partially_approved") continue;
+      const days = r.daysApproved ?? r.daysRequested ?? 1;
       if (r.type === "vacation") usedVacation += days;
       else if (r.type === "sick") usedSick += days;
       else if (r.type === "personal") usedPersonal += days;
@@ -1264,11 +1264,11 @@ export class DatabaseStorage implements IStorage {
           .where(and(
             eq(timeOffRequests.userId, userId),
             eq(timeOffRequests.type, "holiday"),
-            eq(timeOffRequests.status, "approved")
+            inArray(timeOffRequests.status, ["approved", "partially_approved"])
           ));
         let holidayDays = 0;
         for (const r of holidayRequests) {
-          holidayDays += r.daysRequested || 1;
+          holidayDays += r.daysApproved ?? r.daysRequested ?? 1;
         }
         annualVacation = Math.max(0, annualVacation - holidayDays);
       }
@@ -1306,8 +1306,8 @@ export class DatabaseStorage implements IStorage {
     let usedPersonal = 0;
 
     for (const r of requests) {
-      if (r.status !== "approved") continue;
-      const days = r.daysRequested || 1;
+      if (r.status !== "approved" && r.status !== "partially_approved") continue;
+      const days = r.daysApproved ?? r.daysRequested ?? 1;
       if (r.type === "vacation") usedVacation += days;
       else if (r.type === "sick") usedSick += days;
       else if (r.type === "personal") usedPersonal += days;

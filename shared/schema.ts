@@ -267,6 +267,8 @@ export const timeOffRequests = pgTable("time_off_requests", {
   startDate: date("start_date").notNull(),
   endDate: date("end_date").notNull(),
   daysRequested: integer("days_requested").notNull().default(1),
+  daysApproved: integer("days_approved"),
+  approvedEndDate: date("approved_end_date"),
   status: varchar("status", { length: 20 }).default("pending").notNull(),
   reason: text("reason"),
   exceedsBalance: boolean("exceeds_balance").default(false).notNull(),

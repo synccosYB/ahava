@@ -6,8 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Check, X, AlertTriangle } from "lucide-react";
+import { Check, X, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest } from "@shared/schema";
 import {
@@ -46,6 +48,9 @@ type EnrichedRequest = TimeOffRequest & {
 export default function ApprovalQueuePage() {
   const { toast } = useToast();
   const [comments, setComments] = useState<Record<string, string>>({});
+  const [partialMode, setPartialMode] = useState<Record<string, boolean>>({});
+  const [partialDays, setPartialDays] = useState<Record<string, number>>({});
+  const [partialEndDate, setPartialEndDate] = useState<Record<string, string>>({});
 
   const { data: pendingRequests, isLoading: pendingLoading } = useQuery<PendingRequest[]>({
     queryKey: ["/api/time-off/pending"],
@@ -56,8 +61,8 @@ export default function ApprovalQueuePage() {
   });
 
   const approveMutation = useMutation({
-    mutationFn: async ({ id, comment }: { id: string; comment?: string }) => {
-      await apiRequest("POST", `/api/time-off/${id}/approve`, { comment });
+    mutationFn: async ({ id, comment, daysApproved, approvedEndDate }: { id: string; comment?: string; daysApproved?: number; approvedEndDate?: string }) => {
+      await apiRequest("POST", `/api/time-off/${id}/approve`, { comment, daysApproved, approvedEndDate });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/pending"] });
@@ -97,6 +102,36 @@ export default function ApprovalQueuePage() {
     const s = new Date(start + "T00:00:00");
     const e = new Date(end + "T00:00:00");
     return Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+  };
+
+  const handleApprove = (request: PendingRequest) => {
+    const isPartial = partialMode[request.id];
+    const days = partialDays[request.id];
+    const endDate = partialEndDate[request.id] || request.endDate;
+
+    if (isPartial && days && days < (request.daysRequested || 1)) {
+      approveMutation.mutate({
+        id: request.id,
+        comment: comments[request.id],
+        daysApproved: days,
+        approvedEndDate: endDate,
+      });
+    } else {
+      approveMutation.mutate({ id: request.id, comment: comments[request.id] });
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case "approved":
+        return <Badge variant="default" className="bg-green-600">✓ Approved</Badge>;
+      case "partially_approved":
+        return <Badge variant="default" className="bg-amber-500">◐ Partially Approved</Badge>;
+      case "denied":
+        return <Badge variant="destructive">✗ Denied</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
   };
 
   return (
@@ -142,6 +177,47 @@ export default function ApprovalQueuePage() {
                         "{request.reason}"
                       </p>
                     )}
+
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setPartialMode(prev => ({ ...prev, [request.id]: !prev[request.id] }))}
+                      data-testid={`button-toggle-partial-${request.id}`}
+                    >
+                      {partialMode[request.id] ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                      Partial approval options
+                    </button>
+
+                    {partialMode[request.id] && (
+                      <div className="border rounded-md p-3 space-y-3 bg-muted/30" data-testid={`partial-approval-section-${request.id}`}>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <Label className="text-xs font-medium">Days to Approve</Label>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={request.daysRequested || 1}
+                              value={partialDays[request.id] ?? request.daysRequested ?? 1}
+                              onChange={(e) => setPartialDays(prev => ({ ...prev, [request.id]: parseInt(e.target.value) || 1 }))}
+                              data-testid={`input-partial-days-${request.id}`}
+                            />
+                            <p className="text-xs text-muted-foreground">of {request.daysRequested} requested</p>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs font-medium">Approved End Date</Label>
+                            <Input
+                              type="date"
+                              min={request.startDate}
+                              max={request.endDate}
+                              value={partialEndDate[request.id] ?? request.endDate}
+                              onChange={(e) => setPartialEndDate(prev => ({ ...prev, [request.id]: e.target.value }))}
+                              data-testid={`input-partial-end-date-${request.id}`}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <Textarea
                       placeholder="Add a comment (optional)..."
                       value={comments[request.id] || ""}
@@ -152,12 +228,12 @@ export default function ApprovalQueuePage() {
                   </div>
                   <div className="flex md:flex-col gap-2 md:min-w-[140px]">
                     <Button
-                      onClick={() => approveMutation.mutate({ id: request.id, comment: comments[request.id] })}
+                      onClick={() => handleApprove(request)}
                       disabled={approveMutation.isPending || denyMutation.isPending}
                       className="flex-1 bg-green-600 hover:bg-green-700 text-white"
                       data-testid={`button-approve-${request.id}`}
                     >
-                      <Check className="h-4 w-4 mr-1" /> Approve
+                      <Check className="h-4 w-4 mr-1" /> {partialMode[request.id] && partialDays[request.id] && partialDays[request.id] < (request.daysRequested || 1) ? "Partial Approve" : "Approve"}
                     </Button>
                     <Button
                       onClick={() => denyMutation.mutate({ id: request.id, comment: comments[request.id] })}
@@ -195,6 +271,7 @@ export default function ApprovalQueuePage() {
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Dates</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Days</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Processed By</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
@@ -210,12 +287,17 @@ export default function ApprovalQueuePage() {
                         {formatTimeOffTypeLabel(request.type)}
                       </TableCell>
                       <TableCell data-testid={`text-processed-dates-${request.id}`}>
-                        {formatDateRange(request.startDate, request.endDate)}
+                        {request.status === "partially_approved" && request.approvedEndDate
+                          ? formatDateRange(request.startDate, request.approvedEndDate)
+                          : formatDateRange(request.startDate, request.endDate)}
+                      </TableCell>
+                      <TableCell data-testid={`text-processed-days-${request.id}`}>
+                        {request.status === "partially_approved" && request.daysApproved !== null
+                          ? `${request.daysApproved} / ${request.daysRequested}`
+                          : request.daysRequested}
                       </TableCell>
                       <TableCell data-testid={`text-processed-status-${request.id}`}>
-                        <Badge variant={request.status === "approved" ? "default" : "destructive"}>
-                          {request.status === "approved" ? "✓ Approved" : "✗ Denied"}
-                        </Badge>
+                        {getStatusBadge(request.status)}
                       </TableCell>
                       <TableCell data-testid={`text-processed-reviewer-${request.id}`}>
                         {request.reviewerName}

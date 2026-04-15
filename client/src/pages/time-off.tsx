@@ -177,6 +177,8 @@ export default function TimeOff() {
         return <Badge variant="secondary" className="bg-amber-100 text-amber-800 border-amber-300" data-testid="badge-status-pending">Pending</Badge>;
       case "approved":
         return <Badge variant="default" className="bg-green-600" data-testid="badge-status-approved">Approved</Badge>;
+      case "partially_approved":
+        return <Badge variant="default" className="bg-amber-500" data-testid="badge-status-partially-approved">Partially Approved</Badge>;
       case "denied":
         return <Badge variant="destructive" data-testid="badge-status-denied">Denied</Badge>;
       default:
@@ -325,6 +327,12 @@ export default function TimeOff() {
                     {request.status === "approved" && (
                       <p className="text-sm text-green-600 mt-1">Approved</p>
                     )}
+                    {request.status === "partially_approved" && (
+                      <p className="text-sm text-amber-600 mt-1">
+                        Partially Approved — {request.daysApproved} of {request.daysRequested} day{request.daysRequested > 1 ? "s" : ""}
+                        {request.approvedEndDate ? ` (through ${new Date(request.approvedEndDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })})` : ""}
+                      </p>
+                    )}
                     {request.reason && (
                       <p className="text-xs text-muted-foreground mt-1 italic">{request.reason}</p>
                     )}
@@ -441,7 +449,7 @@ function TeamCalendar({
   const prevMonth = () => setCurrentMonth(new Date(year, month - 1, 1));
   const nextMonth = () => setCurrentMonth(new Date(year, month + 1, 1));
 
-  const approvedRequests = teamRequests.filter((r) => r.status === "approved" || r.status === "pending");
+  const approvedRequests = teamRequests.filter((r) => r.status === "approved" || r.status === "partially_approved" || r.status === "pending");
 
   const getRequestsForDay = (day: number) => {
     const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;

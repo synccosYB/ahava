@@ -178,6 +178,7 @@ function ProcessedTab() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="approved" data-testid="option-status-approved">Approved</SelectItem>
+                <SelectItem value="partially_approved" data-testid="option-status-partially-approved">Partially Approved</SelectItem>
                 <SelectItem value="denied" data-testid="option-status-denied">Denied</SelectItem>
               </SelectContent>
             </Select>
@@ -226,6 +227,8 @@ function ProcessedTab() {
 function ProcessedRequestCard({ request, showDeptLocation }: { request: ProcessedPtoRequest; showDeptLocation?: boolean }) {
   const statusColor = request.status === "approved"
     ? "bg-green-100 text-green-800"
+    : request.status === "partially_approved"
+    ? "bg-amber-100 text-amber-800"
     : "bg-red-100 text-red-800";
 
   return (
@@ -236,14 +239,14 @@ function ProcessedRequestCard({ request, showDeptLocation }: { request: Processe
             <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="outline">{formatTimeOffTypeLabel(request.type)}</Badge>
               <Badge variant="secondary" className={statusColor} data-testid={`badge-status-${request.id}`}>
-                {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
+                {request.status === "partially_approved" ? "Partially Approved" : request.status.charAt(0).toUpperCase() + request.status.slice(1)}
               </Badge>
             </div>
             <p className="font-semibold" data-testid={`text-processed-employee-${request.id}`}>
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-processed-dates-${request.id}`}>
-              {request.startDate} to {request.endDate} ({request.daysRequested} day{request.daysRequested > 1 ? "s" : ""})
+              {request.startDate} to {request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate} ({request.status === "partially_approved" && request.daysApproved ? `${request.daysApproved} of ${request.daysRequested}` : request.daysRequested} day{(request.daysRequested || 1) > 1 ? "s" : ""})
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-processed-reason-${request.id}`}>
