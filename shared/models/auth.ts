@@ -45,11 +45,6 @@ export const locations = pgTable("locations", {
   companyId: varchar("company_id").notNull().references(() => companies.id),
   name: varchar("name", { length: 200 }).notNull(),
   code: varchar("code", { length: 20 }),
-  address: varchar("address", { length: 500 }),
-  address1: varchar("address_1", { length: 200 }),
-  city: varchar("city", { length: 100 }),
-  state: varchar("state", { length: 50 }),
-  zip: varchar("zip", { length: 20 }),
   timezone: varchar("timezone", { length: 50 }),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
@@ -63,6 +58,22 @@ export const insertLocationSchema = createInsertSchema(locations).omit({
 });
 export type InsertLocation = z.infer<typeof insertLocationSchema>;
 export type Location = typeof locations.$inferSelect;
+
+export const locationAddresses = pgTable("location_addresses", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  locationId: varchar("location_id").notNull().references(() => locations.id, { onDelete: "cascade" }),
+  label: varchar("label", { length: 100 }),
+  address: varchar("address", { length: 500 }),
+  city: varchar("city", { length: 100 }),
+  state: varchar("state", { length: 50 }),
+  zip: varchar("zip", { length: 20 }),
+});
+
+export const insertLocationAddressSchema = createInsertSchema(locationAddresses).omit({
+  id: true,
+});
+export type InsertLocationAddress = z.infer<typeof insertLocationAddressSchema>;
+export type LocationAddress = typeof locationAddresses.$inferSelect;
 
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

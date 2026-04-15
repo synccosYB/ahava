@@ -31,7 +31,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **API Endpoints:** A comprehensive set of RESTful APIs for all functionalities, including user authentication, attendance, time-off, company/location/department management, employment profiles, and reporting. All sensitive API calls are protected by RBAC and scoping.
 
 **Core Entities (Data Model):**
-- `companies`, `locations`, `users`, `departments`
+- `companies`, `locations`, `location_addresses`, `users`, `departments`
 - `roles`, `permissions`, `role_permissions`, `user_roles`, `user_permission_overrides`, `user_access_scopes`
 - `user_employment_profiles`
 - `punch_logs`, `attendance_exceptions`

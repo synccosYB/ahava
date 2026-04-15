@@ -8,6 +8,9 @@ import {
   locations,
   type Location,
   type InsertLocation,
+  locationAddresses,
+  type LocationAddress,
+  type InsertLocationAddress,
   departments,
   departmentManagers,
   type Department,
@@ -110,6 +113,12 @@ export interface IStorage {
   createLocation(location: InsertLocation): Promise<Location>;
   updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined>;
   deleteLocation(id: string): Promise<void>;
+
+  getLocationAddresses(locationId: string): Promise<LocationAddress[]>;
+  getLocationAddress(id: string): Promise<LocationAddress | undefined>;
+  createLocationAddress(address: InsertLocationAddress): Promise<LocationAddress>;
+  updateLocationAddress(id: string, address: Partial<InsertLocationAddress>): Promise<LocationAddress | undefined>;
+  deleteLocationAddress(id: string): Promise<void>;
 
   getDepartment(id: string): Promise<Department | undefined>;
   getAllDepartments(): Promise<Department[]>;
@@ -222,6 +231,13 @@ export interface IStorage {
   createLocation(location: InsertLocation): Promise<Location>;
   updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined>;
   deleteLocation(id: string): Promise<void>;
+
+  getLocationAddresses(locationId: string): Promise<LocationAddress[]>;
+  getLocationAddress(id: string): Promise<LocationAddress | undefined>;
+  createLocationAddress(address: InsertLocationAddress): Promise<LocationAddress>;
+  updateLocationAddress(id: string, address: Partial<InsertLocationAddress>): Promise<LocationAddress | undefined>;
+  deleteLocationAddress(id: string): Promise<void>;
+
   getRole(id: string): Promise<Role | undefined>;
   getAllRoles(): Promise<Role[]>;
   getRolesByCompany(companyId: string | null): Promise<Role[]>;
@@ -391,6 +407,29 @@ export class DatabaseStorage implements IStorage {
 
   async deleteLocation(id: string): Promise<void> {
     await db.delete(locations).where(eq(locations.id, id));
+  }
+
+  async getLocationAddresses(locationId: string): Promise<LocationAddress[]> {
+    return db.select().from(locationAddresses).where(eq(locationAddresses.locationId, locationId));
+  }
+
+  async getLocationAddress(id: string): Promise<LocationAddress | undefined> {
+    const [addr] = await db.select().from(locationAddresses).where(eq(locationAddresses.id, id));
+    return addr;
+  }
+
+  async createLocationAddress(address: InsertLocationAddress): Promise<LocationAddress> {
+    const [created] = await db.insert(locationAddresses).values(address).returning();
+    return created;
+  }
+
+  async updateLocationAddress(id: string, address: Partial<InsertLocationAddress>): Promise<LocationAddress | undefined> {
+    const [updated] = await db.update(locationAddresses).set(address).where(eq(locationAddresses.id, id)).returning();
+    return updated;
+  }
+
+  async deleteLocationAddress(id: string): Promise<void> {
+    await db.delete(locationAddresses).where(eq(locationAddresses.id, id));
   }
 
   async getDepartment(id: string): Promise<Department | undefined> {
@@ -913,6 +952,29 @@ export class DatabaseStorage implements IStorage {
 
   async deleteLocation(id: string): Promise<void> {
     await db.delete(locations).where(eq(locations.id, id));
+  }
+
+  async getLocationAddresses(locationId: string): Promise<LocationAddress[]> {
+    return db.select().from(locationAddresses).where(eq(locationAddresses.locationId, locationId));
+  }
+
+  async getLocationAddress(id: string): Promise<LocationAddress | undefined> {
+    const [addr] = await db.select().from(locationAddresses).where(eq(locationAddresses.id, id));
+    return addr;
+  }
+
+  async createLocationAddress(address: InsertLocationAddress): Promise<LocationAddress> {
+    const [created] = await db.insert(locationAddresses).values(address).returning();
+    return created;
+  }
+
+  async updateLocationAddress(id: string, address: Partial<InsertLocationAddress>): Promise<LocationAddress | undefined> {
+    const [updated] = await db.update(locationAddresses).set(address).where(eq(locationAddresses.id, id)).returning();
+    return updated;
+  }
+
+  async deleteLocationAddress(id: string): Promise<void> {
+    await db.delete(locationAddresses).where(eq(locationAddresses.id, id));
   }
 
   async getRole(id: string): Promise<Role | undefined> {

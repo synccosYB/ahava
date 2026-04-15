@@ -6,7 +6,7 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest } from "@shared/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
@@ -526,6 +526,46 @@ export async function registerRoutes(
     const location = await storage.getLocation(req.params.id);
     if (!location) return res.status(404).json({ message: "Location not found" });
     await storage.deleteLocation(req.params.id);
+    res.status(204).send();
+  });
+
+  app.get("/api/locations/:locationId/addresses", requireAuth, requirePermission("locations.view"), async (req, res) => {
+    const location = await storage.getLocation(req.params.locationId);
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    const addresses = await storage.getLocationAddresses(req.params.locationId);
+    res.json(addresses);
+  });
+
+  app.post("/api/locations/:locationId/addresses", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+    const location = await storage.getLocation(req.params.locationId);
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    const parsed = insertLocationAddressSchema.safeParse({ ...req.body, locationId: req.params.locationId });
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid address data", errors: parsed.error.flatten() });
+    }
+    const address = await storage.createLocationAddress(parsed.data);
+    res.status(201).json(address);
+  });
+
+  app.patch("/api/locations/:locationId/addresses/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+    const existing = await storage.getLocationAddress(req.params.id);
+    if (!existing || existing.locationId !== req.params.locationId) {
+      return res.status(404).json({ message: "Address not found" });
+    }
+    const parsed = insertLocationAddressSchema.omit({ locationId: true }).partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid address data", errors: parsed.error.flatten() });
+    }
+    const address = await storage.updateLocationAddress(req.params.id, parsed.data);
+    res.json(address);
+  });
+
+  app.delete("/api/locations/:locationId/addresses/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+    const existing = await storage.getLocationAddress(req.params.id);
+    if (!existing || existing.locationId !== req.params.locationId) {
+      return res.status(404).json({ message: "Address not found" });
+    }
+    await storage.deleteLocationAddress(req.params.id);
     res.status(204).send();
   });
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,7 +20,18 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { Location, Department, Division, User } from "@shared/schema";
+import type { Location, Department, Division, User, LocationAddress } from "@shared/schema";
+
+interface AddressEntry {
+  id?: string;
+  label: string;
+  address: string;
+  city: string;
+  state: string;
+  zip: string;
+}
+
+const emptyAddress = (): AddressEntry => ({ label: "", address: "", city: "", state: "", zip: "" });
 
 type DepartmentWithManagers = Department & { managerIds: string[] };
 
@@ -48,18 +59,66 @@ function LocationsTab() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: "", code: "", address: "", city: "", state: "", zip: "", timezone: "" });
+  const [form, setForm] = useState({ name: "", code: "", timezone: "" });
+  const [addresses, setAddresses] = useState<AddressEntry[]>([emptyAddress()]);
+  const [addressCounts, setAddressCounts] = useState<Record<string, LocationAddress[]>>({});
+  const [editOriginalAddresses, setEditOriginalAddresses] = useState<LocationAddress[]>([]);
 
   const { data: locations, isLoading } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
   const divisionId = divisions?.[0]?.id;
 
+  useEffect(() => {
+    if (locations && locations.length > 0) {
+      const fetchAddresses = async () => {
+        const counts: Record<string, LocationAddress[]> = {};
+        for (const loc of locations) {
+          try {
+            const res = await fetch(`/api/locations/${loc.id}/addresses`, { credentials: "include" });
+            if (res.ok) {
+              counts[loc.id] = await res.json();
+            }
+          } catch { /* ignore */ }
+        }
+        setAddressCounts(counts);
+      };
+      fetchAddresses();
+    }
+  }, [locations]);
+
   const createMutation = useMutation({
     mutationFn: async () => {
+      let locationId = editingId;
       if (editingId) {
         await apiRequest("PATCH", `/api/locations/${editingId}`, form);
       } else {
-        await apiRequest("POST", "/api/locations", { ...form, companyId: divisionId });
+        const res = await apiRequest("POST", "/api/locations", { ...form, companyId: divisionId });
+        const created = await res.json();
+        locationId = created.id;
+      }
+
+      if (editingId) {
+        const currentIds = addresses.filter(a => a.id).map(a => a.id);
+        for (const existing of editOriginalAddresses) {
+          if (!currentIds.includes(existing.id)) {
+            await apiRequest("DELETE", `/api/locations/${editingId}/addresses/${existing.id}`);
+          }
+        }
+        for (const addr of addresses) {
+          const { id, ...data } = addr;
+          if (!data.address && !data.city && !data.state && !data.zip && !data.label) continue;
+          if (id) {
+            await apiRequest("PATCH", `/api/locations/${editingId}/addresses/${id}`, data);
+          } else {
+            await apiRequest("POST", `/api/locations/${editingId}/addresses`, data);
+          }
+        }
+      } else if (locationId) {
+        for (const addr of addresses) {
+          const { id, ...data } = addr;
+          if (!data.address && !data.city && !data.state && !data.zip && !data.label) continue;
+          await apiRequest("POST", `/api/locations/${locationId}/addresses`, data);
+        }
       }
     },
     onSuccess: () => {
@@ -87,22 +146,66 @@ function LocationsTab() {
   });
 
   const resetForm = () => {
-    setForm({ name: "", code: "", address: "", city: "", state: "", zip: "", timezone: "" });
+    setForm({ name: "", code: "", timezone: "" });
+    setAddresses([emptyAddress()]);
+    setEditOriginalAddresses([]);
     setEditingId(null);
   };
 
-  const startEdit = (loc: Location) => {
+  const startEdit = async (loc: Location) => {
     setForm({
       name: loc.name,
       code: loc.code || "",
-      address: loc.address || "",
-      city: loc.city || "",
-      state: loc.state || "",
-      zip: loc.zip || "",
       timezone: loc.timezone || "",
     });
     setEditingId(loc.id);
+
+    try {
+      const res = await fetch(`/api/locations/${loc.id}/addresses`, { credentials: "include" });
+      if (res.ok) {
+        const addrs: LocationAddress[] = await res.json();
+        setEditOriginalAddresses(addrs);
+        if (addrs.length > 0) {
+          setAddresses(addrs.map(a => ({
+            id: a.id,
+            label: a.label || "",
+            address: a.address || "",
+            city: a.city || "",
+            state: a.state || "",
+            zip: a.zip || "",
+          })));
+        } else {
+          setAddresses([emptyAddress()]);
+        }
+      }
+    } catch {
+      setEditOriginalAddresses([]);
+      setAddresses([emptyAddress()]);
+    }
+
     setDialogOpen(true);
+  };
+
+  const updateAddress = (index: number, field: keyof AddressEntry, value: string) => {
+    setAddresses(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
+  };
+
+  const addAddress = () => {
+    setAddresses(prev => [...prev, emptyAddress()]);
+  };
+
+  const removeAddress = (index: number) => {
+    setAddresses(prev => prev.length <= 1 ? [emptyAddress()] : prev.filter((_, i) => i !== index));
+  };
+
+  const getAddressSummary = (locId: string) => {
+    const addrs = addressCounts[locId] || [];
+    if (addrs.length === 0) return "—";
+    const first = addrs[0];
+    const parts = [first.city, first.state].filter(Boolean).join(", ");
+    const display = first.label ? `${first.label}: ${parts || first.address || ""}` : (parts || first.address || "—");
+    if (addrs.length === 1) return display;
+    return `${display} +${addrs.length - 1} more`;
   };
 
   return (
@@ -112,20 +215,91 @@ function LocationsTab() {
           <DialogTrigger asChild>
             <Button data-testid="button-add-location"><Plus className="h-4 w-4 mr-1" /> Add Location</Button>
           </DialogTrigger>
-          <DialogContent data-testid="dialog-location-form">
+          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto" data-testid="dialog-location-form">
             <DialogHeader>
               <DialogTitle>{editingId ? "Edit Location" : "Add Location"}</DialogTitle>
             </DialogHeader>
             <div className="space-y-3">
               <div><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-location-name" /></div>
               <div><Label>Code</Label><Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} data-testid="input-location-code" /></div>
-              <div><Label>Address</Label><Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} data-testid="input-location-address" /></div>
-              <div className="grid grid-cols-3 gap-2">
-                <div><Label>City</Label><Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} data-testid="input-location-city" /></div>
-                <div><Label>State</Label><Input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} data-testid="input-location-state" /></div>
-                <div><Label>ZIP</Label><Input value={form.zip} onChange={(e) => setForm({ ...form, zip: e.target.value })} data-testid="input-location-zip" /></div>
-              </div>
               <div><Label>Timezone</Label><Input value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} placeholder="America/New_York" data-testid="input-location-timezone" /></div>
+
+              <div className="border-t pt-3 mt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <Label className="text-sm font-semibold">Addresses</Label>
+                  <Button type="button" variant="outline" size="sm" onClick={addAddress} data-testid="button-add-address">
+                    <Plus className="h-3 w-3 mr-1" /> Add Address
+                  </Button>
+                </div>
+                <div className="space-y-3">
+                  {addresses.map((addr, idx) => (
+                    <div key={idx} className="border rounded-md p-3 relative" data-testid={`address-entry-${idx}`}>
+                      {(addresses.length > 1 || addr.id) && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="absolute top-1 right-1 h-6 w-6"
+                          onClick={() => removeAddress(idx)}
+                          data-testid={`button-remove-address-${idx}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      )}
+                      <div className="space-y-2">
+                        <div>
+                          <Label className="text-xs">Label</Label>
+                          <Input
+                            value={addr.label}
+                            onChange={(e) => updateAddress(idx, "label", e.target.value)}
+                            placeholder="e.g. Main Entrance, Warehouse"
+                            className="h-8 text-sm"
+                            data-testid={`input-address-label-${idx}`}
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs">Address</Label>
+                          <Input
+                            value={addr.address}
+                            onChange={(e) => updateAddress(idx, "address", e.target.value)}
+                            className="h-8 text-sm"
+                            data-testid={`input-address-address-${idx}`}
+                          />
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <Label className="text-xs">City</Label>
+                            <Input
+                              value={addr.city}
+                              onChange={(e) => updateAddress(idx, "city", e.target.value)}
+                              className="h-8 text-sm"
+                              data-testid={`input-address-city-${idx}`}
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs">State</Label>
+                            <Input
+                              value={addr.state}
+                              onChange={(e) => updateAddress(idx, "state", e.target.value)}
+                              className="h-8 text-sm"
+                              data-testid={`input-address-state-${idx}`}
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs">ZIP</Label>
+                            <Input
+                              value={addr.zip}
+                              onChange={(e) => updateAddress(idx, "zip", e.target.value)}
+                              className="h-8 text-sm"
+                              data-testid={`input-address-zip-${idx}`}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
             <DialogFooter>
               <Button onClick={() => createMutation.mutate()} disabled={!form.name || createMutation.isPending} data-testid="button-save-location">
@@ -150,7 +324,7 @@ function LocationsTab() {
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Code</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Address</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Addresses</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
@@ -161,7 +335,7 @@ function LocationsTab() {
                     <TableCell className="font-medium" data-testid={`text-location-name-${loc.id}`}>{loc.name}</TableCell>
                     <TableCell data-testid={`text-location-code-${loc.id}`}>{loc.code || "—"}</TableCell>
                     <TableCell data-testid={`text-location-address-${loc.id}`}>
-                      {[loc.city, loc.state].filter(Boolean).join(", ") || "—"}
+                      {getAddressSummary(loc.id)}
                     </TableCell>
                     <TableCell>
                       <Badge variant={loc.isActive ? "default" : "secondary"} data-testid={`badge-location-status-${loc.id}`}>

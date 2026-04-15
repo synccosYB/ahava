@@ -6,6 +6,7 @@ import {
   users,
   companies,
   locations,
+  locationAddresses,
   departments,
   departmentManagers,
   roles,
@@ -23,6 +24,7 @@ export {
   companies,
   companies as divisions,
   locations,
+  locationAddresses,
   departments,
   departmentManagers,
   roles,
@@ -42,6 +44,8 @@ export type {
   InsertCompany as InsertDivision,
   Location,
   InsertLocation,
+  LocationAddress,
+  InsertLocationAddress,
   Department,
   InsertDepartment,
   DepartmentManager,
@@ -61,6 +65,7 @@ export {
   insertCompanySchema,
   insertCompanySchema as insertDivisionSchema,
   insertLocationSchema,
+  insertLocationAddressSchema,
   insertDepartmentSchema,
   insertDepartmentManagerSchema,
   insertRoleSchema,
@@ -390,6 +395,11 @@ export const companiesRelations = relations(companies, ({ many }) => ({
 export const locationsRelations = relations(locations, ({ one, many }) => ({
   company: one(companies, { fields: [locations.companyId], references: [companies.id] }),
   departments: many(departments),
+  addresses: many(locationAddresses),
+}));
+
+export const locationAddressesRelations = relations(locationAddresses, ({ one }) => ({
+  location: one(locations, { fields: [locationAddresses.locationId], references: [locations.id] }),
 }));
 
 export const usersRelations = relations(users, ({ one, many }) => ({
