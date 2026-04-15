@@ -52,3 +52,8 @@ integrations = ["javascript_log_in_with_replit:2.0.0", "javascript_websocket:1.0
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[userenv]
+
+[userenv.shared]
+VITE_SYNKDEX_API_KEY = "sk_44798e25775fce03e8a07fc19d8a166b0957c062522438f8"

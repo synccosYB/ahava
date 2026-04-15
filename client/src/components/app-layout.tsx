@@ -1,6 +1,7 @@
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Separator } from "@/components/ui/separator";
+import { SynkDexWidget } from "@/components/synkdex-widget";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -18,6 +19,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </SidebarInset>
+      <SynkDexWidget />
     </SidebarProvider>
   );
 }
