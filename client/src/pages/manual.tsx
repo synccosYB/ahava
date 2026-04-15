@@ -486,7 +486,7 @@ export default function ManualPage() {
               <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
                 <li><strong>Team Size</strong> — Total number of employees on your team</li>
                 <li><strong>Clocked In</strong> — How many team members are currently working</li>
-                <li><strong>On Leave</strong> — Team members currently on approved time off</li>
+                <li><strong>Using PTO</strong> — Team members with approved PTO (sick paid hours) for today. PTO does not indicate absence — employees using PTO may still be at work</li>
                 <li><strong>Pending Approvals Alert</strong> — A highlighted banner if there are requests awaiting your action</li>
                 <li><strong>Team Status Table</strong> — Each employee's current status, today's hours, and this week's hours</li>
               </ul>
@@ -509,7 +509,7 @@ export default function ManualPage() {
               <SubHeading id="mgr-monitoring">Monitoring Attendance</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
                 Use the Team Status table on the Team View page to monitor who is currently clocked in, 
-                their hours for the day and week. Team members on leave are marked with an "On Leave" badge.
+                their hours for the day and week. Team members with approved PTO for the day are shown with a small "PTO" badge alongside their attendance status. Note that PTO represents sick paid hours and does not imply the employee is absent.
               </p>
 
               <SubHeading id="mgr-alerts">Viewing Alerts</SubHeading>

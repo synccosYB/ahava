@@ -1356,7 +1356,7 @@ export async function registerRoutes(
     const clockedIn = todayAttendance.filter(a => teamIds.has(a.employeeId) && a.clockIn && !a.clockOut).length;
 
     const allTimeOff = await storage.getAllTimeOffRequests();
-    const onLeave = allTimeOff.filter(r =>
+    const usingPto = allTimeOff.filter(r =>
       teamIds.has(r.userId) &&
       r.status === "approved" &&
       r.startDate <= today &&
@@ -1368,7 +1368,7 @@ export async function registerRoutes(
     res.json({
       teamSize: teamMembers.length,
       clockedIn,
-      onLeave,
+      usingPto,
       pendingApprovals: teamPending,
     });
   });
@@ -1397,7 +1397,7 @@ export async function registerRoutes(
     const teamStatus = teamMembers.map(member => {
       const todayRecord = todayAttendance.find(a => a.employeeId === member.id && a.clockIn && !a.clockOut);
       const todayRecords = todayAttendance.filter(a => a.employeeId === member.id);
-      const isOnLeave = allTimeOff.some(r =>
+      const hasPtoToday = allTimeOff.some(r =>
         r.userId === member.id && r.status === "approved" && r.startDate <= today && r.endDate >= today
       );
 
@@ -1419,8 +1419,7 @@ export async function registerRoutes(
       });
 
       let status = "Clocked Out";
-      if (isOnLeave) status = "On Leave";
-      else if (todayRecord) {
+      if (todayRecord) {
         const clockInTime = new Date(todayRecord.clockIn!);
         status = `Clocked In (${clockInTime.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })})`;
       }
@@ -1430,6 +1429,7 @@ export async function registerRoutes(
         firstName: member.firstName,
         lastName: member.lastName,
         status,
+        hasPtoToday,
         todayHours: Math.round(todayHours * 10) / 10,
         weekHours: Math.round(weekHours * 10) / 10,
       };
@@ -1577,14 +1577,14 @@ export async function registerRoutes(
     const allTimeOff = await storage.getAllTimeOffRequests();
 
     const activeNow = todayAttendance.filter(a => a.clockIn && !a.clockOut).length;
-    const onLeave = allTimeOff.filter(r =>
+    const usingPto = allTimeOff.filter(r =>
       r.status === "approved" && r.startDate <= today && r.endDate >= today
     ).length;
 
     res.json({
       totalEmployees: allUsers.length,
       activeNow,
-      onLeave,
+      usingPto,
       pendingRequests: pendingRequests.length,
     });
   });
@@ -1605,7 +1605,7 @@ export async function registerRoutes(
       const deptUsers = allUsers.filter(u => u.departmentId === dept.id);
       const deptIds = new Set(deptUsers.map(u => u.id));
       const active = todayAttendance.filter(a => deptIds.has(a.employeeId) && a.clockIn && !a.clockOut).length;
-      const onLeave = allTimeOff.filter(r =>
+      const usingPto = allTimeOff.filter(r =>
         deptIds.has(r.userId) && r.status === "approved" && r.startDate <= today && r.endDate >= today
       ).length;
 
@@ -1625,7 +1625,7 @@ export async function registerRoutes(
         name: dept.name,
         employees: deptUsers.length,
         active,
-        onLeave,
+        usingPto,
         avgHoursPerWeek: avgHrs,
       };
     });
@@ -1639,7 +1639,7 @@ export async function registerRoutes(
         name: "Unassigned",
         employees: unassigned.length,
         active,
-        onLeave: 0,
+        usingPto: 0,
         avgHoursPerWeek: 0,
       });
     }

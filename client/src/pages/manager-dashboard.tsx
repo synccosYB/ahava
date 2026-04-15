@@ -4,7 +4,7 @@ import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle, Users, UserCheck, CalendarOff } from "lucide-react";
+import { AlertTriangle, Users, UserCheck, Clock } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import {
   Table,
@@ -18,7 +18,7 @@ import {
 type TeamStats = {
   teamSize: number;
   clockedIn: number;
-  onLeave: number;
+  usingPto: number;
   pendingApprovals: number;
 };
 
@@ -27,6 +27,7 @@ type TeamMemberStatus = {
   firstName: string | null;
   lastName: string | null;
   status: string;
+  hasPtoToday: boolean;
   todayHours: number;
   weekHours: number;
 };
@@ -81,11 +82,11 @@ export default function ManagerDashboardPage() {
                 <p className="text-3xl font-bold tabular-nums text-green-600" data-testid="text-clocked-in">{stats?.clockedIn ?? 0}</p>
               </CardContent>
             </Card>
-            <Card data-testid="card-on-leave">
+            <Card data-testid="card-using-pto">
               <CardContent className="flex flex-col items-center justify-center p-6">
-                <CalendarOff className="h-5 w-5 text-muted-foreground mb-2" />
-                <p className="text-sm text-muted-foreground">On Leave</p>
-                <p className="text-3xl font-bold tabular-nums text-amber-500" data-testid="text-on-leave">{stats?.onLeave ?? 0}</p>
+                <Clock className="h-5 w-5 text-muted-foreground mb-2" />
+                <p className="text-sm text-muted-foreground">Using PTO</p>
+                <p className="text-3xl font-bold tabular-nums text-amber-500" data-testid="text-using-pto">{stats?.usingPto ?? 0}</p>
               </CardContent>
             </Card>
           </>
@@ -120,17 +121,23 @@ export default function ManagerDashboardPage() {
                       {member.firstName} {member.lastName}
                     </TableCell>
                     <TableCell data-testid={`text-member-status-${member.id}`}>
-                      <Badge
-                        variant={
-                          member.status.startsWith("Clocked In") ? "default" :
-                          member.status === "On Leave" ? "secondary" : "outline"
-                        }
-                      >
-                        {member.status}
-                      </Badge>
+                      <span className="flex items-center gap-2">
+                        <Badge
+                          variant={
+                            member.status.startsWith("Clocked In") ? "default" : "outline"
+                          }
+                        >
+                          {member.status}
+                        </Badge>
+                        {member.hasPtoToday && (
+                          <Badge variant="secondary" data-testid={`badge-pto-${member.id}`}>
+                            PTO
+                          </Badge>
+                        )}
+                      </span>
                     </TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-member-today-${member.id}`}>
-                      {member.status === "On Leave" ? "-" : formatHoursMinutes(member.todayHours)}
+                      {formatHoursMinutes(member.todayHours)}
                     </TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-member-week-${member.id}`}>
                       {formatHoursMinutes(member.weekHours)}
