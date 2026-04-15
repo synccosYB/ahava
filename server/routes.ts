@@ -7,7 +7,7 @@ import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBa
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs } from "@shared/schema";
-import type { User, PunchLog, InsertPunchLog, TimeOffRequest } from "@shared/schema";
+import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location } from "@shared/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES } from "./policyEngine";
@@ -771,18 +771,45 @@ export async function registerRoutes(
 
   app.get("/api/time-off/pending", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
     const user = (req as any).authUser as User;
+    const isRequesterAdmin = user.role === "admin";
     const teamIds = await getTeamUserIds(user);
     const requests = await storage.getPendingTimeOffRequests();
     const scopedRequests = requests.filter(r => teamIds.has(r.userId));
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const userMap = new Map(allUsers.map(u => [u.id, u]));
-    const enriched = scopedRequests.map(r => ({
-      ...r,
-      employeeName: (() => {
-        const u = userMap.get(r.userId);
-        return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
-      })(),
-    }));
+    let deptMap = new Map<string, Department>();
+    let locMap = new Map<string, Location>();
+    let deptManagerMap = new Map<string, string[]>();
+    if (isRequesterAdmin) {
+      const allDepartments = await storage.getAllDepartments();
+      deptMap = new Map(allDepartments.map(d => [d.id, d]));
+      const allLocations = await storage.getAllLocations();
+      locMap = new Map(allLocations.map(l => [l.id, l]));
+      await Promise.all(allDepartments.map(async (dept) => {
+        const managers = await storage.getDepartmentManagers(dept.id);
+        const names = managers.map(m => {
+          const mu = userMap.get(m.userId);
+          return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "Unknown";
+        }).filter(n => n && n !== "Unknown");
+        deptManagerMap.set(dept.id, names);
+      }));
+    }
+    const enriched = scopedRequests.map(r => {
+      const u = userMap.get(r.userId);
+      const base = {
+        ...r,
+        employeeName: u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown",
+      };
+      if (!isRequesterAdmin) return base;
+      const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;
+      const loc = u?.locationId ? locMap.get(u.locationId) : undefined;
+      return {
+        ...base,
+        departmentName: dept?.name || "Unassigned",
+        locationName: loc?.name || "Unassigned",
+        managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
+      };
+    });
     res.json(enriched);
   });
 
@@ -1113,13 +1140,40 @@ export async function registerRoutes(
       const scopedPending = pending.filter(e => teamIds.has(e.employeeId));
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
-      const enriched = scopedPending.map(e => ({
-        ...e,
-        employeeName: (() => {
-          const u = userMap.get(e.employeeId);
-          return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
-        })(),
-      }));
+      const isRequesterAdmin = user.role === "admin";
+      let deptMap = new Map<string, Department>();
+      let locMap = new Map<string, Location>();
+      let deptManagerMap = new Map<string, string[]>();
+      if (isRequesterAdmin) {
+        const allDepartments = await storage.getAllDepartments();
+        deptMap = new Map(allDepartments.map(d => [d.id, d]));
+        const allLocations = await storage.getAllLocations();
+        locMap = new Map(allLocations.map(l => [l.id, l]));
+        await Promise.all(allDepartments.map(async (dept) => {
+          const managers = await storage.getDepartmentManagers(dept.id);
+          const names = managers.map(m => {
+            const mu = userMap.get(m.userId);
+            return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "Unknown";
+          }).filter(n => n && n !== "Unknown");
+          deptManagerMap.set(dept.id, names);
+        }));
+      }
+      const enriched = scopedPending.map(e => {
+        const u = userMap.get(e.employeeId);
+        const base = {
+          ...e,
+          employeeName: u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown",
+        };
+        if (!isRequesterAdmin) return base;
+        const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;
+        const loc = u?.locationId ? locMap.get(u.locationId) : undefined;
+        return {
+          ...base,
+          departmentName: dept?.name || "Unassigned",
+          locationName: loc?.name || "Unassigned",
+          managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
+        };
+      });
       res.json(enriched);
     } catch (error) {
       console.error("Error fetching pending exceptions:", error);

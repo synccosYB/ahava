@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { Check, X, ClipboardList, Filter, RotateCcw } from "lucide-react";
+import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
 
@@ -30,8 +30,18 @@ function formatTimeOffTypeLabel(type: string): string {
   return TIME_OFF_TYPE_LABELS[type] || type.charAt(0).toUpperCase() + type.slice(1);
 }
 
-type PendingPtoRequest = TimeOffRequest & { employeeName: string };
-type EnrichedException = AttendanceException & { employeeName?: string };
+type PendingPtoRequest = TimeOffRequest & {
+  employeeName: string;
+  departmentName?: string;
+  locationName?: string;
+  managerNames?: string[];
+};
+type EnrichedException = AttendanceException & {
+  employeeName?: string;
+  departmentName?: string;
+  locationName?: string;
+  managerNames?: string[];
+};
 type ProcessedPtoRequest = TimeOffRequest & {
   employeeName: string;
   departmentName: string;
@@ -374,6 +384,8 @@ function ExceptionsTab() {
 
 function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [comment, setComment] = useState("");
 
   const approveMutation = useMutation({
@@ -424,6 +436,19 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
                 "{request.reason}"
               </p>
             )}
+            {isAdmin && (
+              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground pt-1" data-testid={`info-pto-context-${request.id}`}>
+                <span className="flex items-center gap-1" data-testid={`text-pto-department-${request.id}`}>
+                  <Building2 className="h-3 w-3" /> {request.departmentName || "Unassigned"}
+                </span>
+                <span className="flex items-center gap-1" data-testid={`text-pto-location-${request.id}`}>
+                  <MapPin className="h-3 w-3" /> {request.locationName || "Unassigned"}
+                </span>
+                <span className="flex items-center gap-1" data-testid={`text-pto-manager-${request.id}`}>
+                  <UserCheck className="h-3 w-3" /> {request.managerNames && request.managerNames.length > 0 ? request.managerNames.join(", ") : "No manager"}
+                </span>
+              </div>
+            )}
             <Textarea
               placeholder="Comment (optional)..."
               value={comment}
@@ -459,6 +484,8 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
 
 function ExceptionCard({ exception }: { exception: EnrichedException }) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [notes, setNotes] = useState("");
 
   const approveMutation = useMutation({
@@ -507,6 +534,19 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
             <p className="text-sm text-muted-foreground" data-testid={`text-exc-reason-${exception.id}`}>
               {exception.reason}
             </p>
+            {isAdmin && (
+              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground pt-1" data-testid={`info-exc-context-${exception.id}`}>
+                <span className="flex items-center gap-1" data-testid={`text-exc-department-${exception.id}`}>
+                  <Building2 className="h-3 w-3" /> {exception.departmentName || "Unassigned"}
+                </span>
+                <span className="flex items-center gap-1" data-testid={`text-exc-location-${exception.id}`}>
+                  <MapPin className="h-3 w-3" /> {exception.locationName || "Unassigned"}
+                </span>
+                <span className="flex items-center gap-1" data-testid={`text-exc-manager-${exception.id}`}>
+                  <UserCheck className="h-3 w-3" /> {exception.managerNames && exception.managerNames.length > 0 ? exception.managerNames.join(", ") : "No manager"}
+                </span>
+              </div>
+            )}
             <Textarea
               placeholder="Review notes (optional)..."
               value={notes}
