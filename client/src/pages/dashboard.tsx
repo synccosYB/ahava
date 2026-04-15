@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { formatHoursMinutes } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -140,7 +141,7 @@ export default function Dashboard() {
                   <Clock className="h-4 w-4 text-muted-foreground/60" />
                 </div>
                 <p className="text-2xl font-bold tabular-nums" data-testid="text-today-hours">
-                  {status?.todayHours ?? 0}<span className="text-sm font-normal text-muted-foreground ml-1">hrs</span>
+                  {formatHoursMinutes(status?.todayHours ?? 0)}
                 </p>
               </CardContent>
             </Card>
@@ -152,7 +153,7 @@ export default function Dashboard() {
                   <TrendingUp className="h-4 w-4 text-muted-foreground/60" />
                 </div>
                 <p className="text-2xl font-bold tabular-nums" data-testid="text-week-hours">
-                  {status?.weekHours ?? 0}<span className="text-sm font-normal text-muted-foreground ml-1">hrs</span>
+                  {formatHoursMinutes(status?.weekHours ?? 0)}
                 </p>
               </CardContent>
             </Card>
@@ -225,7 +226,7 @@ export default function Dashboard() {
                         : " – Present"}
                     </TableCell>
                     <TableCell className="font-semibold text-sm tabular-nums">
-                      {record.totalHours ? `${record.totalHours} hrs` : "In progress"}
+                      {record.totalHours != null ? formatHoursMinutes(record.totalHours) : "In progress"}
                     </TableCell>
                   </TableRow>
                 ))}

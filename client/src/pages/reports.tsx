@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { formatHoursMinutes } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -102,7 +103,7 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
   const downloadCSV = () => {
     if (!reportData || reportData.length === 0) return;
     const headers = ["Employee", "Department", "Total Hours", "Days Worked", "Days Off", "Overtime"];
-    const rows = reportData.map((r) => [r.employeeName, r.department, r.totalHours, r.daysWorked, r.daysOff, r.overtime]);
+    const rows = reportData.map((r) => [r.employeeName, r.department, formatHoursMinutes(r.totalHours), r.daysWorked, r.daysOff, formatHoursMinutes(r.overtime)]);
     const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -188,11 +189,11 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
                       <TableRow key={row.employeeId} data-testid={`row-report-${row.employeeId}`}>
                         <TableCell className="font-medium" data-testid={`text-report-name-${row.employeeId}`}>{row.employeeName}</TableCell>
                         <TableCell data-testid={`text-report-dept-${row.employeeId}`}>{row.department}</TableCell>
-                        <TableCell className="tabular-nums" data-testid={`text-report-hours-${row.employeeId}`}>{row.totalHours}</TableCell>
+                        <TableCell className="tabular-nums" data-testid={`text-report-hours-${row.employeeId}`}>{formatHoursMinutes(row.totalHours)}</TableCell>
                         <TableCell className="tabular-nums" data-testid={`text-report-days-${row.employeeId}`}>{row.daysWorked}</TableCell>
                         <TableCell className="tabular-nums" data-testid={`text-report-off-${row.employeeId}`}>{row.daysOff}</TableCell>
                         <TableCell data-testid={`text-report-overtime-${row.employeeId}`}>
-                          <span className={row.overtime > 0 ? "text-amber-500 font-bold" : ""}>{row.overtime}</span>
+                          <span className={row.overtime > 0 ? "text-amber-500 font-bold" : ""}>{formatHoursMinutes(row.overtime)}</span>
                         </TableCell>
                       </TableRow>
                     ))}

@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { formatHoursMinutes } from "@/lib/utils";
 import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -129,10 +130,10 @@ export default function ManagerDashboardPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-member-today-${member.id}`}>
-                      {member.status === "On Leave" ? "-" : `${member.todayHours} hrs`}
+                      {member.status === "On Leave" ? "-" : formatHoursMinutes(member.todayHours)}
                     </TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-member-week-${member.id}`}>
-                      {member.weekHours} hrs
+                      {formatHoursMinutes(member.weekHours)}
                     </TableCell>
                   </TableRow>
                 ))}

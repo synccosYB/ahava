@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { formatHoursMinutes } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -179,8 +180,7 @@ function CurrentShiftCard() {
                 Today
               </p>
               <p className="text-xl font-semibold tabular-nums">
-                {status?.todayHours ?? 0}
-                <span className="text-sm font-normal text-muted-foreground ml-1">hrs</span>
+                {formatHoursMinutes(status?.todayHours ?? 0)}
               </p>
             </div>
             <div className="text-center" data-testid="stat-week-hours">
@@ -188,8 +188,7 @@ function CurrentShiftCard() {
                 This Week
               </p>
               <p className="text-xl font-semibold tabular-nums">
-                {status?.weekHours ?? 0}
-                <span className="text-sm font-normal text-muted-foreground ml-1">hrs</span>
+                {formatHoursMinutes(status?.weekHours ?? 0)}
               </p>
             </div>
           </div>

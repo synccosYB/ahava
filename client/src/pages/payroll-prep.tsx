@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { formatHoursMinutes } from "@/lib/utils";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -113,7 +114,7 @@ export default function PayrollPrepPage() {
     setReExportWarning(null);
 
     const batch = batches.find((b) => b.id === id);
-    const csv = `Employee,Hours,Overtime\nAll Employees,${batch?.totalHours || 0},${batch?.totalOvertimeHours || 0}`;
+    const csv = `Employee,Hours,Overtime\nAll Employees,${formatHoursMinutes(batch?.totalHours)},${formatHoursMinutes(batch?.totalOvertimeHours)}`;
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -200,10 +201,10 @@ export default function PayrollPrepPage() {
                       {batch.periodStart} — {batch.periodEnd}
                     </TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-batch-employees-${batch.id}`}>{batch.employeeCount}</TableCell>
-                    <TableCell className="tabular-nums" data-testid={`text-batch-hours-${batch.id}`}>{batch.totalHours}</TableCell>
+                    <TableCell className="tabular-nums" data-testid={`text-batch-hours-${batch.id}`}>{formatHoursMinutes(batch.totalHours)}</TableCell>
                     <TableCell data-testid={`text-batch-ot-${batch.id}`}>
                       <span className={batch.totalOvertimeHours > 0 ? "text-amber-500 font-bold" : ""}>
-                        {batch.totalOvertimeHours}
+                        {formatHoursMinutes(batch.totalOvertimeHours)}
                       </span>
                     </TableCell>
                     <TableCell data-testid={`badge-batch-status-${batch.id}`}>{getStatusBadge(batch.status)}</TableCell>

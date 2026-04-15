@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { formatHoursMinutes } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -94,7 +95,7 @@ export default function MyAttendance() {
       r.clockIn ? new Date(r.clockIn).toLocaleTimeString() : "",
       r.clockOut ? new Date(r.clockOut).toLocaleTimeString() : "",
       r.breakMinutes || 0,
-      r.totalHours || "",
+      r.totalHours != null ? formatHoursMinutes(r.totalHours) : "",
       r.status,
     ]);
     const csv = [headers, ...rows].map((row) => row.join(",")).join("\n");
@@ -184,7 +185,7 @@ export default function MyAttendance() {
             <div className="grid grid-cols-3 gap-4 text-center">
               <div data-testid="stat-total-hours">
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Total Hours</p>
-                <p className="text-2xl font-semibold tabular-nums">{stats.totalHours}</p>
+                <p className="text-2xl font-semibold tabular-nums">{formatHoursMinutes(stats.totalHours)}</p>
               </div>
               <div data-testid="stat-days-worked">
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Days Worked</p>
@@ -192,7 +193,7 @@ export default function MyAttendance() {
               </div>
               <div data-testid="stat-daily-average">
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Daily Average</p>
-                <p className="text-2xl font-semibold tabular-nums">{stats.dailyAvg}</p>
+                <p className="text-2xl font-semibold tabular-nums">{formatHoursMinutes(stats.dailyAvg)}</p>
               </div>
             </div>
           )}
@@ -273,7 +274,7 @@ export default function MyAttendance() {
                     </TableCell>
                     <TableCell className="text-sm tabular-nums">{record.breakMinutes || 0} min</TableCell>
                     <TableCell className="text-sm font-semibold tabular-nums">
-                      {record.totalHours ? `${record.totalHours} hrs` : "—"}
+                      {record.totalHours != null ? formatHoursMinutes(record.totalHours) : "—"}
                     </TableCell>
                     <TableCell>{getStatusBadge(record.status)}</TableCell>
                   </TableRow>
