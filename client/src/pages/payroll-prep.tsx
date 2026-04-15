@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes } from "@/lib/utils";
+import { formatHoursMinutes, formatCurrency } from "@/lib/utils";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,123 +19,122 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, CheckCircle, XCircle } from "lucide-react";
+import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, CheckCircle, XCircle, Unlock } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import type { PayrollExport } from "@shared/schema";
 
-type PayrollBatch = {
-  id: string;
-  name: string;
-  periodStart: string;
-  periodEnd: string;
-  status: "draft" | "validated" | "exported" | "locked";
-  employeeCount: number;
+type EnrichedPayrollExport = PayrollExport & {
   totalHours: number;
   totalOvertimeHours: number;
-  createdAt: string;
-  exportedAt?: string;
-  errors?: string[];
+  totalEstimatedPay: number;
+  employeeCount: number;
 };
 
 export default function PayrollPrepPage() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reExportWarning, setReExportWarning] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
   const [form, setForm] = useState({
-    name: "",
     periodStart: "",
     periodEnd: "",
+    notes: "",
   });
 
-  const [batches, setBatches] = useState<PayrollBatch[]>([
-    {
-      id: "batch-1",
-      name: "Pay Period Mar 1-15, 2026",
-      periodStart: "2026-03-01",
-      periodEnd: "2026-03-15",
-      status: "exported",
-      employeeCount: 24,
-      totalHours: 960,
-      totalOvertimeHours: 12,
-      createdAt: "2026-03-16T10:00:00Z",
-      exportedAt: "2026-03-17T09:00:00Z",
+  const { data: batches = [], isLoading } = useQuery<EnrichedPayrollExport[]>({
+    queryKey: ["/api/payroll/exports"],
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (data: { startDate: string; endDate: string; notes?: string }) => {
+      const res = await apiRequest("POST", "/api/payroll/exports", data);
+      return res.json();
     },
-    {
-      id: "batch-2",
-      name: "Pay Period Mar 16-31, 2026",
-      periodStart: "2026-03-16",
-      periodEnd: "2026-03-31",
-      status: "draft",
-      employeeCount: 24,
-      totalHours: 0,
-      totalOvertimeHours: 0,
-      createdAt: "2026-03-29T10:00:00Z",
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      setDialogOpen(false);
+      setForm({ periodStart: "", periodEnd: "", notes: "" });
+      toast({ title: "Batch created" });
     },
-  ]);
+    onError: (err: Error) => {
+      toast({ title: "Failed to create batch", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const lockMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("POST", `/api/payroll/exports/${id}/lock`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      toast({ title: "Batch locked" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to lock batch", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const reopenMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("POST", `/api/payroll/exports/${id}/reopen`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      toast({ title: "Batch reopened" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to reopen batch", description: err.message, variant: "destructive" });
+    },
+  });
 
   const createBatch = () => {
-    if (!form.name || !form.periodStart || !form.periodEnd) return;
-    const newBatch: PayrollBatch = {
-      id: `batch-${Date.now()}`,
-      name: form.name,
-      periodStart: form.periodStart,
-      periodEnd: form.periodEnd,
-      status: "draft",
-      employeeCount: 0,
-      totalHours: 0,
-      totalOvertimeHours: 0,
-      createdAt: new Date().toISOString(),
-    };
-    setBatches((prev) => [newBatch, ...prev]);
-    setDialogOpen(false);
-    setForm({ name: "", periodStart: "", periodEnd: "" });
-    toast({ title: "Batch created" });
-  };
-
-  const validateBatch = (id: string) => {
-    setBatches((prev) =>
-      prev.map((b) => b.id === id ? { ...b, status: "validated" as const } : b)
-    );
-    toast({ title: "Batch validated successfully" });
+    if (!form.periodStart || !form.periodEnd) return;
+    createMutation.mutate({
+      startDate: form.periodStart,
+      endDate: form.periodEnd,
+      notes: form.notes || undefined,
+    });
   };
 
   const exportBatch = (id: string) => {
     const batch = batches.find((b) => b.id === id);
-    if (batch?.status === "exported" || batch?.status === "locked") {
+    if (batch?.status === "exported") {
       setReExportWarning(id);
       return;
     }
     doExport(id);
   };
 
-  const doExport = (id: string) => {
-    setBatches((prev) =>
-      prev.map((b) => b.id === id ? { ...b, status: "exported" as const, exportedAt: new Date().toISOString() } : b)
-    );
+  const doExport = async (id: string) => {
     setReExportWarning(null);
-
+    setExportingId(id);
     const batch = batches.find((b) => b.id === id);
-    const csv = `Employee,Hours,Overtime\nAll Employees,${formatHoursMinutes(batch?.totalHours)},${formatHoursMinutes(batch?.totalOvertimeHours)}`;
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `payroll-${batch?.periodStart}-${batch?.periodEnd}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast({ title: "Payroll data exported" });
-  };
 
-  const lockBatch = (id: string) => {
-    setBatches((prev) =>
-      prev.map((b) => b.id === id ? { ...b, status: "locked" as const } : b)
-    );
-    toast({ title: "Batch locked" });
+    try {
+      const response = await apiRequest("POST", `/api/payroll/exports/${id}/export-csv`);
+      const csvText = await response.text();
+      const blob = new Blob([csvText], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `payroll_${batch?.startDate}_to_${batch?.endDate}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      toast({ title: "Payroll data exported" });
+    } catch {
+      toast({ title: "Export failed", description: "Unable to generate payroll CSV. Please try again.", variant: "destructive" });
+    } finally {
+      setExportingId(null);
+    }
   };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "draft": return <Badge variant="secondary">Draft</Badge>;
-      case "validated": return <Badge variant="default" className="bg-blue-600">Validated</Badge>;
       case "exported": return <Badge variant="default" className="bg-green-600">Exported</Badge>;
       case "locked": return <Badge variant="outline" className="border-amber-500 text-amber-600"><Lock className="h-3 w-3 mr-1" /> Locked</Badge>;
       default: return <Badge variant="outline">{status}</Badge>;
@@ -158,14 +157,15 @@ export default function PayrollPrepPage() {
               <DialogDescription>Define the pay period for this batch.</DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
-              <div><Label>Batch Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Pay Period Apr 1-15" data-testid="input-batch-name" /></div>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Period Start *</Label><Input type="date" value={form.periodStart} onChange={(e) => setForm({ ...form, periodStart: e.target.value })} data-testid="input-period-start" /></div>
                 <div><Label>Period End *</Label><Input type="date" value={form.periodEnd} onChange={(e) => setForm({ ...form, periodEnd: e.target.value })} data-testid="input-period-end" /></div>
               </div>
+              <div><Label>Notes</Label><Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Optional notes" data-testid="input-batch-notes" /></div>
             </div>
             <DialogFooter>
-              <Button onClick={createBatch} disabled={!form.name || !form.periodStart || !form.periodEnd} data-testid="button-save-batch">
+              <Button onClick={createBatch} disabled={!form.periodStart || !form.periodEnd || createMutation.isPending} data-testid="button-save-batch">
+                {createMutation.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
                 Create Batch
               </Button>
             </DialogFooter>
@@ -176,7 +176,12 @@ export default function PayrollPrepPage() {
 
       <Card data-testid="card-batch-list">
         <CardContent className="p-0">
-          {batches.length === 0 ? (
+          {isLoading ? (
+            <div className="p-8 space-y-3">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          ) : batches.length === 0 ? (
             <p className="p-8 text-center text-muted-foreground" data-testid="text-no-batches">
               No payroll batches. Create one to get started.
             </p>
@@ -184,11 +189,11 @@ export default function PayrollPrepPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Period</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Employees</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Total Hours</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">OT Hours</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Est. Pay</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
@@ -196,9 +201,8 @@ export default function PayrollPrepPage() {
               <TableBody>
                 {batches.map((batch) => (
                   <TableRow key={batch.id} data-testid={`row-batch-${batch.id}`}>
-                    <TableCell className="font-medium" data-testid={`text-batch-name-${batch.id}`}>{batch.name}</TableCell>
-                    <TableCell data-testid={`text-batch-period-${batch.id}`}>
-                      {batch.periodStart} — {batch.periodEnd}
+                    <TableCell className="font-medium" data-testid={`text-batch-period-${batch.id}`}>
+                      {batch.startDate} — {batch.endDate}
                     </TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-batch-employees-${batch.id}`}>{batch.employeeCount}</TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-batch-hours-${batch.id}`}>{formatHoursMinutes(batch.totalHours)}</TableCell>
@@ -207,22 +211,24 @@ export default function PayrollPrepPage() {
                         {formatHoursMinutes(batch.totalOvertimeHours)}
                       </span>
                     </TableCell>
+                    <TableCell className="tabular-nums font-medium" data-testid={`text-batch-pay-${batch.id}`}>{formatCurrency(batch.totalEstimatedPay)}</TableCell>
                     <TableCell data-testid={`badge-batch-status-${batch.id}`}>{getStatusBadge(batch.status)}</TableCell>
                     <TableCell>
                       <div className="flex gap-1">
-                        {batch.status === "draft" && (
-                          <Button variant="outline" size="sm" onClick={() => validateBatch(batch.id)} data-testid={`button-validate-${batch.id}`}>
-                            <CheckCircle className="h-3 w-3 mr-1" /> Validate
-                          </Button>
-                        )}
                         {batch.status !== "locked" && (
-                          <Button variant="outline" size="sm" onClick={() => exportBatch(batch.id)} data-testid={`button-export-${batch.id}`}>
-                            <Download className="h-3 w-3 mr-1" /> Export
+                          <Button variant="outline" size="sm" onClick={() => exportBatch(batch.id)} disabled={exportingId === batch.id} data-testid={`button-export-${batch.id}`}>
+                            {exportingId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
+                            Export
                           </Button>
                         )}
-                        {(batch.status === "validated" || batch.status === "exported") && (
-                          <Button variant="outline" size="sm" onClick={() => lockBatch(batch.id)} data-testid={`button-lock-${batch.id}`}>
+                        {batch.status === "exported" && (
+                          <Button variant="outline" size="sm" onClick={() => lockMutation.mutate(batch.id)} disabled={lockMutation.isPending} data-testid={`button-lock-${batch.id}`}>
                             <Lock className="h-3 w-3 mr-1" /> Lock
+                          </Button>
+                        )}
+                        {batch.status === "locked" && (
+                          <Button variant="outline" size="sm" onClick={() => reopenMutation.mutate(batch.id)} disabled={reopenMutation.isPending} data-testid={`button-reopen-${batch.id}`}>
+                            <Unlock className="h-3 w-3 mr-1" /> Reopen
                           </Button>
                         )}
                       </div>

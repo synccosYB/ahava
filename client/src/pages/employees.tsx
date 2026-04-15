@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { formatCurrency } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule } from "@shared/schema";
 
 type EmployeeListItem = User & {
@@ -613,13 +614,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               <div>
                 <Label className="text-muted-foreground text-xs">Hourly Rate</Label>
                 <p className="font-medium" data-testid="text-profile-hourly-rate">
-                  {profile?.hourlyRate ? `$${profile.hourlyRate.toFixed(2)}` : "—"}
+                  {profile?.hourlyRate != null ? formatCurrency(profile.hourlyRate) : "—"}
                 </p>
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Weekly Salary</Label>
                 <p className="font-medium" data-testid="text-profile-weekly-salary">
-                  {profile?.weeklySalary ? `$${profile.weeklySalary.toFixed(2)}` : "—"}
+                  {profile?.weeklySalary != null ? formatCurrency(profile.weeklySalary) : "—"}
                 </p>
               </div>
               <div>

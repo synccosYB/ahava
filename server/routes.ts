@@ -2524,7 +2524,42 @@ export async function registerRoutes(
     try {
       const companyId = req.query.companyId as string | undefined;
       const exports = await storage.getPayrollExports(companyId);
-      res.json(exports);
+
+      const profileCache = new Map<string, Awaited<ReturnType<typeof storage.getEmploymentProfile>> | null>();
+      const enriched = await Promise.all(exports.map(async (exp) => {
+        const records = await storage.getPayrollBatchRecords(exp.id);
+        let totalHours = 0;
+        let totalOvertimeHours = 0;
+        let totalEstimatedPay = 0;
+        const employeeIds = new Set<string>();
+
+        for (const r of records) {
+          const hours = (r.regularHours || 0) + (r.overtimeHours || 0) + (r.ptoHours || 0);
+          totalHours += hours;
+          totalOvertimeHours += r.overtimeHours || 0;
+          employeeIds.add(r.employeeId);
+
+          if (!profileCache.has(r.employeeId)) {
+            profileCache.set(r.employeeId, await storage.getEmploymentProfile(r.employeeId) || null);
+          }
+          const profile = profileCache.get(r.employeeId);
+          let hourlyRate = 0;
+          if (profile?.hourlyRate) hourlyRate = profile.hourlyRate;
+          else if (profile?.dailySalary) hourlyRate = profile.dailySalary / 8;
+          else if (profile?.weeklySalary) hourlyRate = profile.weeklySalary / 40;
+          totalEstimatedPay += hours * hourlyRate;
+        }
+
+        return {
+          ...exp,
+          totalHours: Math.round(totalHours * 100) / 100,
+          totalOvertimeHours: Math.round(totalOvertimeHours * 100) / 100,
+          totalEstimatedPay: Math.round(totalEstimatedPay * 100) / 100,
+          employeeCount: employeeIds.size,
+        };
+      }));
+
+      res.json(enriched);
     } catch (error) {
       console.error("Error fetching payroll exports:", error);
       res.status(500).json({ message: "Failed to fetch payroll exports" });
@@ -2745,25 +2780,113 @@ export async function registerRoutes(
       const records = await storage.getPayrollBatchRecords(req.params.id);
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
+      const allDepartments = await storage.getAllDepartments();
+      const deptMap = new Map(allDepartments.map(d => [d.id, d.name]));
 
-      const summary = new Map<string, { employeeName: string; regularHours: number; overtimeHours: number; ptoHours: number; hasIssues: boolean }>();
+      const profileCache = new Map<string, Awaited<ReturnType<typeof storage.getEmploymentProfile>> | null>();
+      const scheduleCache = new Map<string, Awaited<ReturnType<typeof storage.getEmployeeSchedules>>>();
+
+      const getProfile = async (userId: string) => {
+        if (!profileCache.has(userId)) {
+          profileCache.set(userId, await storage.getEmploymentProfile(userId) || null);
+        }
+        return profileCache.get(userId);
+      };
+
+      const getSchedules = async (userId: string) => {
+        if (!scheduleCache.has(userId)) {
+          scheduleCache.set(userId, await storage.getEmployeeSchedules(userId));
+        }
+        return scheduleCache.get(userId)!;
+      };
+
+      const formatDateWorked = (dateStr: string): string => {
+        const parts = dateStr.split("-");
+        const year = parseInt(parts[0], 10);
+        const month = parseInt(parts[1], 10);
+        const dayNum = parseInt(parts[2], 10);
+        const d = new Date(Date.UTC(year, month - 1, dayNum));
+        const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const dayName = days[d.getUTCDay()];
+        const mm = String(month).padStart(2, "0");
+        const dd = String(dayNum).padStart(2, "0");
+        return `${dayName}, ${mm}/${dd}/${year}`;
+      };
+
+      const getDayOfWeek = (dateStr: string): number => {
+        const parts = dateStr.split("-");
+        const d = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+        return d.getUTCDay();
+      };
+
+      const escapeCSV = (val: string): string => {
+        return `"${val.replace(/"/g, '""')}"`;
+      };
+
+      const formatAmountCurrency = (val: number): string => {
+        const parts = val.toFixed(2).split(".");
+        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        return `"$${parts.join(".")}"`;
+      };
+
+      const formatHoursVal = (val: number): string => {
+        return val.toFixed(2);
+      };
+
+      type DayRow = { employeeName: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string };
+      const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
-        if (!summary.has(r.employeeId)) {
-          const user = userMap.get(r.employeeId);
-          summary.set(r.employeeId, {
-            employeeName: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Unknown",
-            regularHours: 0,
-            overtimeHours: 0,
-            ptoHours: 0,
-            hasIssues: false,
+        const user = userMap.get(r.employeeId);
+        const employeeName = user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Unknown";
+        const department = user?.departmentId ? (deptMap.get(user.departmentId) || "") : "";
+        const profile = await getProfile(r.employeeId);
+        const schedules = await getSchedules(r.employeeId);
+
+        let hourlyRate = 0;
+        if (profile) {
+          if (profile.hourlyRate) {
+            hourlyRate = profile.hourlyRate;
+          } else if (profile.dailySalary) {
+            hourlyRate = profile.dailySalary / 8;
+          } else if (profile.weeklySalary) {
+            hourlyRate = profile.weeklySalary / 40;
+          }
+        }
+
+        const totalHours = (r.regularHours || 0) + (r.overtimeHours || 0) + (r.ptoHours || 0);
+        const amount = totalHours * hourlyRate;
+
+        const jsDayOfWeek = getDayOfWeek(r.workDate);
+        const scheduledDays = schedules.filter(s => s.isActive).map(s => s.dayOfWeek);
+        let payType = "Regular";
+        if (r.recordType === "pto") {
+          payType = "Regular";
+        } else if (scheduledDays.length > 0 && !scheduledDays.includes(jsDayOfWeek)) {
+          payType = "Holiday";
+        }
+
+        if (!employeeRecords.has(r.employeeId)) {
+          employeeRecords.set(r.employeeId, new Map());
+        }
+        const empDays = employeeRecords.get(r.employeeId)!;
+        const dateKey = r.workDate;
+        if (empDays.has(dateKey)) {
+          const existing = empDays.get(dateKey)!;
+          existing.amount += amount;
+          existing.paidHours += totalHours;
+          if (payType === "Holiday") existing.payType = "Holiday";
+        } else {
+          empDays.set(dateKey, {
+            employeeName,
+            amount,
+            payType,
+            department,
+            paidHours: totalHours,
+            dateWorked: formatDateWorked(r.workDate),
+            sortDate: r.workDate,
           });
         }
-        const emp = summary.get(r.employeeId)!;
-        emp.regularHours += r.regularHours || 0;
-        emp.overtimeHours += r.overtimeHours || 0;
-        emp.ptoHours += r.ptoHours || 0;
-        if (r.hasIssues) emp.hasIssues = true;
       }
 
       const overlapping = await storage.getOverlappingPayrollExports(exp.startDate, exp.endDate, exp.companyId || undefined);
@@ -2773,10 +2896,22 @@ export async function registerRoutes(
         reexportWarning = `Warning: Re-exporting data that overlaps with ${previousExports.length} previous export(s)`;
       }
 
-      let csv = "Employee,Regular Hours,OT Hours,PTO Hours,Issues\n";
-      for (const [, emp] of summary) {
-        const issueFlag = emp.hasIssues ? "Yes" : "No";
-        csv += `"${emp.employeeName}",${Math.round(emp.regularHours * 100) / 100},${Math.round(emp.overtimeHours * 100) / 100},${Math.round(emp.ptoHours * 100) / 100},${issueFlag}\n`;
+      let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
+      csv += "Employee Name,Amount,Pay Type,Department,Paid Hours,Date Worked\n";
+
+      for (const [, dayMap] of employeeRecords) {
+        const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
+        let totalAmount = 0;
+        let totalPaidHours = 0;
+
+        for (const row of rows) {
+          csv += `${escapeCSV(row.employeeName)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)}\n`;
+          totalAmount += row.amount;
+          totalPaidHours += row.paidHours;
+        }
+
+        const empName = rows[0].employeeName;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},\n`;
       }
 
       const adminUser = req.authUser as User;
@@ -2796,7 +2931,7 @@ export async function registerRoutes(
         targetType: "payroll_export",
         targetId: exp.id,
         action: "payroll_export.exported",
-        newValue: { status: "exported", employeeCount: summary.size },
+        newValue: { status: "exported", employeeCount: employeeRecords.size },
         ...auditCtx,
       });
 
