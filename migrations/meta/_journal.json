@@ -43,6 +43,13 @@
       "when": 1776288000000,
       "tag": "0005_department_managers",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776380000000,
+      "tag": "0006_fix_audit_logs_columns",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,8 @@ export interface AuditContext {
   userAgent?: string;
 }
 
+type DbOrTx = Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db;
+
 export async function writeAuditLog(entry: {
   actorUserId: string;
   targetType: string;
@@ -17,8 +19,9 @@ export async function writeAuditLog(entry: {
   context?: unknown;
   ipAddress?: string;
   userAgent?: string;
-}) {
-  const [created] = await db.insert(auditLogs).values({
+}, txDb?: DbOrTx) {
+  const targetDb = txDb || db;
+  const [created] = await targetDb.insert(auditLogs).values({
     actorUserId: entry.actorUserId,
     targetType: entry.targetType,
     targetId: entry.targetId,

@@ -6,8 +6,9 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest } from "@shared/schema";
+import { eq, desc, and, isNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES } from "./policyEngine";
 import { runAlertDetection } from "./services/alerts";
@@ -1118,22 +1119,26 @@ export async function registerRoutes(
       const auditCtx = getAuditContext(req);
 
       if (action === "deny") {
-        const updated = await storage.updateAttendanceException(exceptionId, {
-          status: "denied",
-          reviewedBy: reviewer.id,
-          reviewedAt: new Date(),
-          reviewNotes: reviewNotes || null,
-        });
+        const updated = await db.transaction(async (tx) => {
+          const [result] = await tx.update(attendanceExceptions).set({
+            status: "denied",
+            reviewedBy: reviewer.id,
+            reviewedAt: new Date(),
+            reviewNotes: reviewNotes || null,
+          }).where(eq(attendanceExceptions.id, exceptionId)).returning();
 
-        await writeAuditLog({
-          actorUserId: reviewer.id,
-          targetType: "attendance_exception",
-          targetId: exceptionId,
-          action: "exception.denied",
-          oldValue: { status: "pending" },
-          newValue: { status: "denied" },
-          context: { reviewNotes },
-          ...auditCtx,
+          await writeAuditLog({
+            actorUserId: reviewer.id,
+            targetType: "attendance_exception",
+            targetId: exceptionId,
+            action: "exception.denied",
+            oldValue: { status: "pending" },
+            newValue: { status: "denied" },
+            context: { reviewNotes },
+            ...auditCtx,
+          }, tx);
+
+          return result;
         });
 
         return res.json(updated);
@@ -1143,7 +1148,6 @@ export async function registerRoutes(
         return res.status(400).json({ message: "correctedTime is required for time_correction exceptions" });
       }
 
-      let punchLog: PunchLog | undefined | null = null;
       const correctedTimestamp = correctedTime ? new Date(correctedTime) : exception.exceptionTime;
 
       if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
@@ -1151,31 +1155,9 @@ export async function registerRoutes(
         if (existingOpen && existingOpen.workDate === exception.exceptionDate) {
           return res.status(400).json({ message: "Employee already has an open punch for this date" });
         }
-
-        punchLog = await storage.createPunchLog({
-          employeeId: exception.employeeId,
-          workDate: exception.exceptionDate,
-          clockIn: correctedTimestamp || new Date(),
-          status: "present",
-          source: "exception",
-          approved: true,
-        });
       } else if (exception.type === "forgotten_clock_out") {
         const latestRecord = await storage.getLatestAttendanceForUser(exception.employeeId);
-        if (latestRecord && latestRecord.clockIn && !latestRecord.clockOut && latestRecord.workDate === exception.exceptionDate) {
-          const clockOutTime = correctedTimestamp || new Date();
-          const clockInTime = new Date(latestRecord.clockIn).getTime();
-          const totalMs = clockOutTime.getTime() - clockInTime;
-          const breakMs = (latestRecord.breakMinutes || 0) * 60 * 1000;
-          const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
-
-          punchLog = await storage.updatePunchLog(latestRecord.id, {
-            clockOut: clockOutTime,
-            hoursWorked,
-            status: hoursWorked > 8 ? "overtime" : "complete",
-          });
-          await checkPostExportModification(latestRecord.id, reviewer.id);
-        } else {
+        if (!latestRecord || !latestRecord.clockIn || latestRecord.clockOut || latestRecord.workDate !== exception.exceptionDate) {
           return res.status(400).json({ message: "No open punch record found for this date to close" });
         }
       } else if (exception.type === "time_correction") {
@@ -1183,65 +1165,113 @@ export async function registerRoutes(
         if (!latestRecord || latestRecord.workDate !== exception.exceptionDate) {
           return res.status(400).json({ message: "No punch record found for this date to correct" });
         }
+      }
 
-        const oldValue = {
-          clockIn: latestRecord.clockIn,
-          clockOut: latestRecord.clockOut,
-          hoursWorked: latestRecord.hoursWorked,
-        };
+      const updated = await db.transaction(async (tx) => {
+        let punchLog: PunchLog | undefined | null = null;
 
-        const updateData: Partial<InsertPunchLog> = {};
-        if (!latestRecord.clockOut) {
-          updateData.clockIn = correctedTimestamp!;
-        } else {
-          updateData.clockOut = correctedTimestamp!;
-          const clockInTime = new Date(latestRecord.clockIn!).getTime();
-          const totalMs = correctedTimestamp!.getTime() - clockInTime;
-          const breakMs = (latestRecord.breakMinutes || 0) * 60 * 1000;
-          const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
-          updateData.hoursWorked = hoursWorked;
-          updateData.status = hoursWorked > 8 ? "overtime" : "complete";
+        if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+          const [created] = await tx.insert(punchLogs).values({
+            employeeId: exception.employeeId,
+            workDate: exception.exceptionDate,
+            clockIn: correctedTimestamp || new Date(),
+            status: "present",
+            source: "exception",
+            approved: true,
+          }).returning();
+          punchLog = created;
+        } else if (exception.type === "forgotten_clock_out") {
+          const [latestRecord] = await tx.select().from(punchLogs)
+            .where(eq(punchLogs.employeeId, exception.employeeId))
+            .orderBy(desc(punchLogs.createdAt)).limit(1);
+          if (latestRecord && latestRecord.clockIn && !latestRecord.clockOut && latestRecord.workDate === exception.exceptionDate) {
+            const clockOutTime = correctedTimestamp || new Date();
+            const clockInTime = new Date(latestRecord.clockIn).getTime();
+            const totalMs = clockOutTime.getTime() - clockInTime;
+            const breakMs = (latestRecord.breakMinutes || 0) * 60 * 1000;
+            const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+
+            const [updated] = await tx.update(punchLogs).set({
+              clockOut: clockOutTime,
+              hoursWorked,
+              status: hoursWorked > 8 ? "overtime" : "complete",
+            }).where(eq(punchLogs.id, latestRecord.id)).returning();
+            punchLog = updated;
+          }
+        } else if (exception.type === "time_correction") {
+          const [latestRecord] = await tx.select().from(punchLogs)
+            .where(eq(punchLogs.employeeId, exception.employeeId))
+            .orderBy(desc(punchLogs.createdAt)).limit(1);
+          if (latestRecord && latestRecord.workDate === exception.exceptionDate) {
+            const oldValue = {
+              clockIn: latestRecord.clockIn,
+              clockOut: latestRecord.clockOut,
+              hoursWorked: latestRecord.hoursWorked,
+            };
+
+            const updateData: Partial<InsertPunchLog> = {};
+            if (!latestRecord.clockOut) {
+              updateData.clockIn = correctedTimestamp!;
+            } else {
+              updateData.clockOut = correctedTimestamp!;
+              const clockInTime = new Date(latestRecord.clockIn!).getTime();
+              const totalMs = correctedTimestamp!.getTime() - clockInTime;
+              const breakMs = (latestRecord.breakMinutes || 0) * 60 * 1000;
+              const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+              updateData.hoursWorked = hoursWorked;
+              updateData.status = hoursWorked > 8 ? "overtime" : "complete";
+            }
+
+            const [corrected] = await tx.update(punchLogs).set(updateData).where(eq(punchLogs.id, latestRecord.id)).returning();
+            punchLog = corrected;
+
+            await writeAuditLog({
+              actorUserId: reviewer.id,
+              targetType: "punch_log",
+              targetId: latestRecord.id,
+              action: "punch_log.corrected",
+              oldValue,
+              newValue: {
+                clockIn: punchLog?.clockIn,
+                clockOut: punchLog?.clockOut,
+                hoursWorked: punchLog?.hoursWorked,
+              },
+              context: { exceptionId, reason: exception.reason },
+              ...auditCtx,
+            }, tx);
+          }
         }
 
-        punchLog = await storage.updatePunchLog(latestRecord.id, updateData);
-        await checkPostExportModification(latestRecord.id, reviewer.id);
+        const [result] = await tx.update(attendanceExceptions).set({
+          status: "approved",
+          reviewedBy: reviewer.id,
+          reviewedAt: new Date(),
+          reviewNotes: reviewNotes || null,
+          punchLogId: punchLog?.id || null,
+        }).where(eq(attendanceExceptions.id, exceptionId)).returning();
 
         await writeAuditLog({
           actorUserId: reviewer.id,
-          targetType: "punch_log",
-          targetId: latestRecord.id,
-          action: "punch_log.corrected",
-          oldValue,
-          newValue: {
-            clockIn: punchLog?.clockIn,
-            clockOut: punchLog?.clockOut,
-            hoursWorked: punchLog?.hoursWorked,
-          },
-          context: { exceptionId, reason: exception.reason },
+          targetType: "attendance_exception",
+          targetId: exceptionId,
+          action: "exception.approved",
+          oldValue: { status: "pending" },
+          newValue: { status: "approved", punchLogId: punchLog?.id },
+          context: { reviewNotes, exceptionType: exception.type },
           ...auditCtx,
-        });
+        }, tx);
+
+        return { result, punchLog };
+      });
+
+      if (updated.punchLog && (exception.type === "forgotten_clock_out" || exception.type === "time_correction")) {
+        const latestRecord = await storage.getLatestAttendanceForUser(exception.employeeId);
+        if (latestRecord) {
+          await checkPostExportModification(latestRecord.id, reviewer.id);
+        }
       }
 
-      const updated = await storage.updateAttendanceException(exceptionId, {
-        status: "approved",
-        reviewedBy: reviewer.id,
-        reviewedAt: new Date(),
-        reviewNotes: reviewNotes || null,
-        punchLogId: punchLog?.id || null,
-      });
-
-      await writeAuditLog({
-        actorUserId: reviewer.id,
-        targetType: "attendance_exception",
-        targetId: exceptionId,
-        action: "exception.approved",
-        oldValue: { status: "pending" },
-        newValue: { status: "approved", punchLogId: punchLog?.id },
-        context: { reviewNotes, exceptionType: exception.type },
-        ...auditCtx,
-      });
-
-      return res.json(updated);
+      return res.json(updated.result);
     } catch (error) {
       console.error("Error resolving attendance exception:", error);
       res.status(500).json({ message: "Failed to resolve attendance exception" });
@@ -1490,71 +1520,91 @@ export async function registerRoutes(
   });
 
   app.post("/api/time-off/:id/approve", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
-    const user = (req as any).authUser as User;
-    const parsed = approvalSchema.safeParse(req.body);
-    const comment = parsed.success ? parsed.data.comment : undefined;
-    const requestId = req.params.id as string;
-    const request = await storage.getTimeOffRequest(requestId);
-    if (!request) return res.status(404).json({ message: "Request not found" });
-    if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
+    try {
+      const user = (req as any).authUser as User;
+      const parsed = approvalSchema.safeParse(req.body);
+      const comment = parsed.success ? parsed.data.comment : undefined;
+      const requestId = req.params.id as string;
+      const request = await storage.getTimeOffRequest(requestId);
+      if (!request) return res.status(404).json({ message: "Request not found" });
+      if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
 
-    const teamIds = await getTeamUserIds(user);
-    if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to approve this request" });
+      const teamIds = await getTeamUserIds(user);
+      if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to approve this request" });
 
-    const updated = await storage.updateTimeOffRequest(requestId, {
-      status: "approved",
-      reviewedBy: user.id,
-      reviewedAt: new Date(),
-      ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
-    });
+      const auditCtx = getAuditContext(req);
 
-    const auditCtx = getAuditContext(req);
-    await writeAuditLog({
-      actorUserId: user.id,
-      targetType: "time_off_request",
-      targetId: requestId,
-      action: "time_off.approved",
-      oldValue: { status: "pending" },
-      newValue: { status: "approved" },
-      context: { comment, employeeId: request.userId, type: request.type, days: request.daysRequested },
-      ...auditCtx,
-    });
+      const updated = await db.transaction(async (tx) => {
+        const [result] = await tx.update(timeOffRequests).set({
+          status: "approved",
+          reviewedBy: user.id,
+          reviewedAt: new Date(),
+          ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
+        }).where(eq(timeOffRequests.id, requestId)).returning();
 
-    res.json(updated);
+        await writeAuditLog({
+          actorUserId: user.id,
+          targetType: "time_off_request",
+          targetId: requestId,
+          action: "time_off.approved",
+          oldValue: { status: "pending" },
+          newValue: { status: "approved" },
+          context: { comment, employeeId: request.userId, type: request.type, days: request.daysRequested },
+          ...auditCtx,
+        }, tx);
+
+        return result;
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error approving time-off request:", error);
+      res.status(500).json({ message: "Failed to approve time-off request" });
+    }
   });
 
   app.post("/api/time-off/:id/deny", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
-    const user = (req as any).authUser as User;
-    const parsed = approvalSchema.safeParse(req.body);
-    const comment = parsed.success ? parsed.data.comment : undefined;
-    const requestId = req.params.id as string;
-    const request = await storage.getTimeOffRequest(requestId);
-    if (!request) return res.status(404).json({ message: "Request not found" });
-    if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
+    try {
+      const user = (req as any).authUser as User;
+      const parsed = approvalSchema.safeParse(req.body);
+      const comment = parsed.success ? parsed.data.comment : undefined;
+      const requestId = req.params.id as string;
+      const request = await storage.getTimeOffRequest(requestId);
+      if (!request) return res.status(404).json({ message: "Request not found" });
+      if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
 
-    const teamIds = await getTeamUserIds(user);
-    if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to deny this request" });
+      const teamIds = await getTeamUserIds(user);
+      if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to deny this request" });
 
-    const updated = await storage.updateTimeOffRequest(requestId, {
-      status: "denied",
-      reviewedBy: user.id,
-      reviewedAt: new Date(),
-      ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
-    });
+      const auditCtx = getAuditContext(req);
 
-    const auditCtx = getAuditContext(req);
-    await writeAuditLog({
-      actorUserId: user.id,
-      targetType: "time_off_request",
-      targetId: requestId,
-      action: "time_off.denied",
-      oldValue: { status: "pending" },
-      newValue: { status: "denied" },
-      context: { comment, employeeId: request.userId, type: request.type, days: request.daysRequested },
-      ...auditCtx,
-    });
+      const updated = await db.transaction(async (tx) => {
+        const [result] = await tx.update(timeOffRequests).set({
+          status: "denied",
+          reviewedBy: user.id,
+          reviewedAt: new Date(),
+          ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
+        }).where(eq(timeOffRequests.id, requestId)).returning();
 
-    res.json(updated);
+        await writeAuditLog({
+          actorUserId: user.id,
+          targetType: "time_off_request",
+          targetId: requestId,
+          action: "time_off.denied",
+          oldValue: { status: "pending" },
+          newValue: { status: "denied" },
+          context: { comment, employeeId: request.userId, type: request.type, days: request.daysRequested },
+          ...auditCtx,
+        }, tx);
+
+        return result;
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error denying time-off request:", error);
+      res.status(500).json({ message: "Failed to deny time-off request" });
+    }
   });
 
   app.get("/api/time-off/processed", requireAuth, requireRole("manager", "admin"), requirePermission("pto.view_team"), async (req, res) => {
