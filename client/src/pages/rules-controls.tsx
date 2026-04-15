@@ -20,10 +20,10 @@ import {
 } from "@/components/ui/dialog";
 import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
-  GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil
+  GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { Policy, PolicyType, AuditLog, Location, Department, Division } from "@shared/schema";
+import type { Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User } from "@shared/schema";
 
 const sections = [
   { key: "general", label: "General", icon: Settings2 },
@@ -82,14 +82,98 @@ export default function RulesControlsPage() {
 }
 
 function GeneralSection() {
+  const { toast } = useToast();
   const { data: divisions, isLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
   const division = divisions?.[0];
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    name: "",
+    legalName: "",
+    timezone: "",
+    email: "",
+    phone: "",
+    address: "",
+  });
+
+  const startEditing = () => {
+    if (division) {
+      setEditForm({
+        name: division.name || "",
+        legalName: division.legalName || "",
+        timezone: division.timezone || "",
+        email: division.email || "",
+        phone: division.phone || "",
+        address: division.address || "",
+      });
+    }
+    setEditing(true);
+  };
+
+  const updateMutation = useMutation({
+    mutationFn: async () => {
+      if (division) {
+        await apiRequest("PATCH", `/api/companies/${division.id}`, editForm);
+      } else {
+        await apiRequest("POST", "/api/companies", editForm);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+      setEditing(false);
+      toast({ title: division ? "Division settings updated" : "Division created" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
 
   return (
     <Card data-testid="card-general-settings">
-      <CardHeader><CardTitle>General Settings</CardTitle></CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>General Settings</CardTitle>
+        {!editing && !isLoading && (
+          <Button variant="outline" size="sm" onClick={startEditing} data-testid="button-edit-general">
+            <Pencil className="h-4 w-4 mr-1" /> Edit
+          </Button>
+        )}
+      </CardHeader>
       <CardContent>
-        {isLoading ? <Skeleton className="h-40" /> : (
+        {isLoading ? <Skeleton className="h-40" /> : editing ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label>Division Name *</Label>
+                <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} data-testid="input-edit-division-name" />
+              </div>
+              <div>
+                <Label>Legal Name</Label>
+                <Input value={editForm.legalName} onChange={(e) => setEditForm({ ...editForm, legalName: e.target.value })} data-testid="input-edit-legal-name" />
+              </div>
+              <div>
+                <Label>Timezone</Label>
+                <Input value={editForm.timezone} onChange={(e) => setEditForm({ ...editForm, timezone: e.target.value })} data-testid="input-edit-timezone" />
+              </div>
+              <div>
+                <Label>Email</Label>
+                <Input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} data-testid="input-edit-email" />
+              </div>
+              <div>
+                <Label>Phone</Label>
+                <Input value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} data-testid="input-edit-phone" />
+              </div>
+              <div>
+                <Label>Address</Label>
+                <Input value={editForm.address} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} data-testid="input-edit-address" />
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setEditing(false)} data-testid="button-cancel-edit-general">Cancel</Button>
+              <Button onClick={() => updateMutation.mutate()} disabled={!editForm.name || updateMutation.isPending} data-testid="button-save-general">
+                {updateMutation.isPending ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </div>
+        ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <Label className="text-muted-foreground text-xs">Division Name</Label>
@@ -157,6 +241,188 @@ function LocationsSection() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: Division[] }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [level, setLevel] = useState<string>("");
+  const [selectedId, setSelectedId] = useState<string>("");
+
+  const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"], enabled: level === "location" });
+  const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"], enabled: level === "department" });
+  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"], enabled: level === "employee" });
+
+  const assignMutation = useMutation({
+    mutationFn: async () => {
+      const payload: Record<string, string | null> = {
+        policyId: policy.id,
+        companyId: null,
+        locationId: null,
+        departmentId: null,
+        userId: null,
+      };
+      if (level === "division") payload.companyId = selectedId;
+      if (level === "location") payload.locationId = selectedId;
+      if (level === "department") payload.departmentId = selectedId;
+      if (level === "employee") payload.userId = selectedId;
+      await apiRequest("POST", "/api/policy-assignments", payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/policy-assignments", policy.id] });
+      setOpen(false);
+      setLevel("");
+      setSelectedId("");
+      toast({ title: "Policy assigned successfully" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const getOptions = () => {
+    switch (level) {
+      case "division":
+        return (divisions || []).map((d) => ({ id: d.id, label: d.name }));
+      case "location":
+        return (locations || []).map((l) => ({ id: l.id, label: l.name }));
+      case "department":
+        return (departments || []).map((d) => ({ id: d.id, label: d.name }));
+      case "employee":
+        return (users || []).map((u) => ({ id: u.id, label: `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || u.id }));
+      default:
+        return [];
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setLevel(""); setSelectedId(""); } }}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" title="Assign policy" data-testid={`button-assign-policy-${policy.id}`}>
+          <Link2 className="h-4 w-4 mr-1" /> Assign
+        </Button>
+      </DialogTrigger>
+      <DialogContent data-testid={`dialog-assign-policy-${policy.id}`}>
+        <DialogHeader>
+          <DialogTitle>Assign: {policy.name}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label>Assignment Level</Label>
+            <Select value={level} onValueChange={(v) => { setLevel(v); setSelectedId(""); }}>
+              <SelectTrigger data-testid={`select-assignment-level-${policy.id}`}>
+                <SelectValue placeholder="Select level..." />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="division">Division (Company-wide)</SelectItem>
+                <SelectItem value="location">Location</SelectItem>
+                <SelectItem value="department">Department</SelectItem>
+                <SelectItem value="employee">Individual Employee</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {level && (
+            <div>
+              <Label>Select {level === "division" ? "Division" : level === "location" ? "Location" : level === "department" ? "Department" : "Employee"}</Label>
+              <Select value={selectedId} onValueChange={setSelectedId}>
+                <SelectTrigger data-testid={`select-assignment-target-${policy.id}`}>
+                  <SelectValue placeholder={`Select ${level}...`} />
+                </SelectTrigger>
+                <SelectContent>
+                  {getOptions().map((opt) => (
+                    <SelectItem key={opt.id} value={opt.id}>{opt.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button onClick={() => assignMutation.mutate()} disabled={!level || !selectedId || assignMutation.isPending} data-testid={`button-save-assignment-${policy.id}`}>
+            {assignMutation.isPending ? "Assigning..." : "Assign"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PolicyAssignmentBadges({ policyId }: { policyId: string }) {
+  const { toast } = useToast();
+  const { data: assignments, isLoading, isError } = useQuery<PolicyAssignment[]>({
+    queryKey: ["/api/policy-assignments", policyId],
+    queryFn: async () => {
+      const res = await fetch(`/api/policy-assignments?policyId=${policyId}`, { credentials: "include" });
+      if (!res.ok) {
+        throw new Error(`Failed to fetch assignments: ${res.status}`);
+      }
+      return res.json();
+    },
+  });
+
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
+  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/policy-assignments/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/policy-assignments", policyId] });
+      toast({ title: "Assignment removed" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  if (isLoading) return null;
+  if (isError) {
+    return <span className="text-xs text-destructive" data-testid={`text-assignments-error-${policyId}`}>Failed to load</span>;
+  }
+  if (!assignments || assignments.length === 0) {
+    return <span className="text-xs text-muted-foreground" data-testid={`text-no-assignments-${policyId}`}>None</span>;
+  }
+
+  const getLabel = (a: PolicyAssignment) => {
+    if (a.userId) {
+      const user = users?.find((u) => u.id === a.userId);
+      return user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Employee" : "Employee";
+    }
+    if (a.departmentId) {
+      const dept = departments?.find((d) => d.id === a.departmentId);
+      return dept?.name || "Department";
+    }
+    if (a.locationId) {
+      const loc = locations?.find((l) => l.id === a.locationId);
+      return loc?.name || "Location";
+    }
+    if (a.companyId) {
+      const div = divisions?.find((d) => d.id === a.companyId);
+      return div?.name || "Division";
+    }
+    return "Global";
+  };
+
+  return (
+    <div className="flex flex-wrap gap-1 mt-1">
+      {assignments.map((a) => (
+        <Badge key={a.id} variant="outline" className="text-xs gap-1 pr-1" data-testid={`badge-assignment-${a.id}`}>
+          {getLabel(a)}
+          <button
+            onClick={() => deleteMutation.mutate(a.id)}
+            disabled={deleteMutation.isPending}
+            className="ml-0.5 hover:text-destructive disabled:opacity-50"
+            data-testid={`button-remove-assignment-${a.id}`}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </Badge>
+      ))}
+    </div>
   );
 }
 
@@ -338,6 +604,7 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Assignments</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Version</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
@@ -349,6 +616,9 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
                     <TableCell className="font-medium">{p.name}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{p.description || "—"}</TableCell>
                     <TableCell>
+                      <PolicyAssignmentBadges policyId={p.id} />
+                    </TableCell>
+                    <TableCell>
                       <Badge variant={p.status === "active" ? "default" : p.status === "draft" ? "secondary" : "outline"}>
                         {p.status}
                       </Badge>
@@ -359,6 +629,7 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
                         <Button variant="ghost" size="icon" onClick={() => startEdit(p)} data-testid={`button-edit-policy-${p.id}`}>
                           <Pencil className="h-4 w-4" />
                         </Button>
+                        <AssignPolicyDialog policy={p} divisions={divisions || []} />
                         {p.status !== "active" && (
                           <Button variant="ghost" size="sm" onClick={() => activateMutation.mutate(p.id)} data-testid={`button-activate-policy-${p.id}`}>
                             Activate
