@@ -462,7 +462,7 @@ export async function registerRoutes(
     res.json(location);
   });
 
-  app.post("/api/locations", requireAuth, requireRole("admin"), requirePermission("locations.create"), async (req, res) => {
+  app.post("/api/locations", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
     const parsed = insertLocationSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
@@ -471,7 +471,7 @@ export async function registerRoutes(
     res.status(201).json(location);
   });
 
-  app.patch("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.edit"), async (req, res) => {
+  app.patch("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
     const parsed = insertLocationSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
@@ -481,7 +481,7 @@ export async function registerRoutes(
     res.json(location);
   });
 
-  app.delete("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.edit"), async (req, res) => {
+  app.delete("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
     const location = await storage.getLocation(req.params.id);
     if (!location) return res.status(404).json({ message: "Location not found" });
     await storage.deleteLocation(req.params.id);
