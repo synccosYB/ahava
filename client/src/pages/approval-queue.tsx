@@ -19,6 +19,21 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+const TIME_OFF_TYPE_LABELS: Record<string, string> = {
+  vacation: "Vacation",
+  sick: "Sick Leave",
+  personal: "Personal",
+  bereavement: "Bereavement",
+  jury_duty: "Jury Duty",
+  maternity_paternity: "Maternity/Paternity",
+  fmla: "FMLA",
+  unpaid: "Unpaid Leave",
+};
+
+function formatTimeOffTypeLabel(type: string): string {
+  return TIME_OFF_TYPE_LABELS[type] || type.charAt(0).toUpperCase() + type.slice(1);
+}
+
 type PendingRequest = TimeOffRequest & {
   employeeName: string;
 };
@@ -101,7 +116,7 @@ export default function ApprovalQueuePage() {
                 <div className="flex flex-col md:flex-row md:justify-between gap-4">
                   <div className="flex-1 space-y-2">
                     <p className="text-lg font-semibold" data-testid={`text-request-title-${request.id}`}>
-                      {request.employeeName} - {request.type.charAt(0).toUpperCase() + request.type.slice(1)} Request
+                      {request.employeeName} - {formatTimeOffTypeLabel(request.type)} Request
                     </p>
                     <p className="text-base" data-testid={`text-request-dates-${request.id}`}>
                       {formatDateRange(request.startDate, request.endDate)} ({getDayCount(request.startDate, request.endDate)} day{getDayCount(request.startDate, request.endDate) > 1 ? "s" : ""})
@@ -179,7 +194,7 @@ export default function ApprovalQueuePage() {
                         {request.employeeName}
                       </TableCell>
                       <TableCell data-testid={`text-processed-type-${request.id}`}>
-                        {request.type.charAt(0).toUpperCase() + request.type.slice(1)}
+                        {formatTimeOffTypeLabel(request.type)}
                       </TableCell>
                       <TableCell data-testid={`text-processed-dates-${request.id}`}>
                         {formatDateRange(request.startDate, request.endDate)}

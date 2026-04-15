@@ -15,6 +15,21 @@ import { Check, X, ClipboardList, Filter, RotateCcw } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
 
+const TIME_OFF_TYPE_LABELS: Record<string, string> = {
+  vacation: "Vacation",
+  sick: "Sick Leave",
+  personal: "Personal",
+  bereavement: "Bereavement",
+  jury_duty: "Jury Duty",
+  maternity_paternity: "Maternity/Paternity",
+  fmla: "FMLA",
+  unpaid: "Unpaid Leave",
+};
+
+function formatTimeOffTypeLabel(type: string): string {
+  return TIME_OFF_TYPE_LABELS[type] || type.charAt(0).toUpperCase() + type.slice(1);
+}
+
 type PendingPtoRequest = TimeOffRequest & { employeeName: string };
 type EnrichedException = AttendanceException & { employeeName?: string };
 type ProcessedPtoRequest = TimeOffRequest & {
@@ -147,8 +162,13 @@ function ProcessedTab() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="vacation" data-testid="option-type-vacation">Vacation</SelectItem>
-                <SelectItem value="sick" data-testid="option-type-sick">Sick</SelectItem>
+                <SelectItem value="sick" data-testid="option-type-sick">Sick Leave</SelectItem>
                 <SelectItem value="personal" data-testid="option-type-personal">Personal</SelectItem>
+                <SelectItem value="bereavement" data-testid="option-type-bereavement">Bereavement</SelectItem>
+                <SelectItem value="jury_duty" data-testid="option-type-jury-duty">Jury Duty</SelectItem>
+                <SelectItem value="maternity_paternity" data-testid="option-type-maternity-paternity">Maternity/Paternity</SelectItem>
+                <SelectItem value="fmla" data-testid="option-type-fmla">FMLA</SelectItem>
+                <SelectItem value="unpaid" data-testid="option-type-unpaid">Unpaid Leave</SelectItem>
               </SelectContent>
             </Select>
 
@@ -214,7 +234,7 @@ function ProcessedRequestCard({ request, showDeptLocation }: { request: Processe
         <div className="flex flex-col md:flex-row md:justify-between gap-3">
           <div className="flex-1 space-y-1.5">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge variant="outline">{request.type.charAt(0).toUpperCase() + request.type.slice(1)}</Badge>
+              <Badge variant="outline">{formatTimeOffTypeLabel(request.type)}</Badge>
               <Badge variant="secondary" className={statusColor} data-testid={`badge-status-${request.id}`}>
                 {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
               </Badge>
@@ -394,7 +414,7 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-pto-type-${request.id}`}>
-              {request.type.charAt(0).toUpperCase() + request.type.slice(1)} — {request.startDate} to {request.endDate} ({request.daysRequested} day{request.daysRequested > 1 ? "s" : ""})
+              {formatTimeOffTypeLabel(request.type)} — {request.startDate} to {request.endDate} ({request.daysRequested} day{request.daysRequested > 1 ? "s" : ""})
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-pto-reason-${request.id}`}>

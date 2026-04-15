@@ -15,6 +15,21 @@ import { useToast } from "@/hooks/use-toast";
 import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
 import type { TimeOffRequest } from "@shared/schema";
 
+const TIME_OFF_TYPE_LABELS: Record<string, string> = {
+  vacation: "Vacation",
+  sick: "Sick Leave",
+  personal: "Personal",
+  bereavement: "Bereavement",
+  jury_duty: "Jury Duty",
+  maternity_paternity: "Maternity/Paternity",
+  fmla: "FMLA",
+  unpaid: "Unpaid Leave",
+};
+
+function formatTypeLabel(type: string): string {
+  return TIME_OFF_TYPE_LABELS[type] || type.charAt(0).toUpperCase() + type.slice(1);
+}
+
 export default function TimeOff() {
   const { user, isAuthenticated } = useAuth();
   const { toast } = useToast();
@@ -116,9 +131,9 @@ export default function TimeOff() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="vacation">Vacation</SelectItem>
-                  <SelectItem value="sick">Sick Leave</SelectItem>
-                  <SelectItem value="personal">Personal</SelectItem>
+                  {Object.entries(TIME_OFF_TYPE_LABELS).map(([value, label]) => (
+                    <SelectItem key={value} value={value} data-testid={`option-type-${value}`}>{label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -200,8 +215,8 @@ export default function TimeOff() {
                     <p className="text-sm font-semibold mt-2">
                       {formatDateRange(request.startDate, request.endDate)}
                     </p>
-                    <p className="text-sm text-muted-foreground capitalize">
-                      {request.type} &bull; <span className="tabular-nums">{request.daysRequested}</span> day{request.daysRequested > 1 ? "s" : ""}
+                    <p className="text-sm text-muted-foreground">
+                      {formatTypeLabel(request.type)} &bull; <span className="tabular-nums">{request.daysRequested}</span> day{request.daysRequested > 1 ? "s" : ""}
                     </p>
                     {request.status === "pending" && (
                       <p className="text-sm text-amber-600 mt-1">Awaiting manager approval</p>
@@ -325,7 +340,7 @@ function TeamCalendar({
                               ? "bg-primary/20 text-primary font-medium"
                               : "bg-muted text-muted-foreground"
                           }`}
-                          title={`${req.type} - ${req.userId === currentUserId ? "You" : "Team member"}`}
+                          title={`${formatTypeLabel(req.type)} - ${req.userId === currentUserId ? "You" : "Team member"}`}
                         >
                           {req.userId === currentUserId ? "You" : "Team"}
                         </div>

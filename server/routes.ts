@@ -1257,16 +1257,28 @@ export async function registerRoutes(
         });
       }
 
-      const balance = await storage.computeTimeOffBalance(userId);
-      const requestType = parsed.type as string;
-      const availableBalance = requestType === "vacation" ? balance.vacation
-        : requestType === "sick" ? balance.sick
-        : requestType === "personal" ? balance.personal : null;
-
-      if (availableBalance !== null && computedDays > availableBalance) {
+      const overlapping = await storage.getOverlappingTimeOffRequests(userId, parsed.startDate, parsed.endDate);
+      if (overlapping.length > 0) {
+        const conflict = overlapping[0];
         return res.status(400).json({
-          message: `Insufficient ${requestType} balance. You have ${availableBalance} day(s) remaining but requested ${computedDays}.`,
+          message: `This request overlaps with an existing ${conflict.status} time-off request from ${conflict.startDate} to ${conflict.endDate}. Please choose different dates.`,
         });
+      }
+
+      const BALANCE_TRACKED_TYPES = ["vacation", "sick", "personal"];
+      const requestType = parsed.type as string;
+
+      if (BALANCE_TRACKED_TYPES.includes(requestType)) {
+        const balance = await storage.computeTimeOffBalance(userId);
+        const availableBalance = requestType === "vacation" ? balance.vacation
+          : requestType === "sick" ? balance.sick
+          : balance.personal;
+
+        if (computedDays > availableBalance) {
+          return res.status(400).json({
+            message: `Insufficient ${requestType} balance. You have ${availableBalance} day(s) remaining but requested ${computedDays}.`,
+          });
+        }
       }
 
       const request = await storage.createTimeOffRequest({

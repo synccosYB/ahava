@@ -162,6 +162,7 @@ export interface IStorage {
   createTimeOffBalance(balance: InsertTimeOffBalance): Promise<TimeOffBalance>;
   updateTimeOffBalance(id: string, balance: Partial<InsertTimeOffBalance>): Promise<TimeOffBalance | undefined>;
   computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }>;
+  getOverlappingTimeOffRequests(userId: string, startDate: string, endDate: string): Promise<TimeOffRequest[]>;
 
   getEmployeePin(userId: string): Promise<EmployeePin | undefined>;
   createEmployeePin(pin: InsertEmployeePin): Promise<EmployeePin>;
@@ -706,6 +707,19 @@ export class DatabaseStorage implements IStorage {
       sick: ANNUAL_SICK - usedSick,
       personal: ANNUAL_PERSONAL - usedPersonal,
     };
+  }
+
+  async getOverlappingTimeOffRequests(userId: string, startDate: string, endDate: string): Promise<TimeOffRequest[]> {
+    const userRequests = await db
+      .select()
+      .from(timeOffRequests)
+      .where(eq(timeOffRequests.userId, userId));
+
+    return userRequests.filter(r =>
+      r.status !== "denied" &&
+      r.startDate <= endDate &&
+      r.endDate >= startDate
+    );
   }
 
   async getEmployeePin(userId: string): Promise<EmployeePin | undefined> {
