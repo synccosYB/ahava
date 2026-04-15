@@ -66,6 +66,7 @@ export default function KioskPage() {
   const [lastRecord, setLastRecord] = useState<KioskLastRecord | null>(null);
   const [punchType, setPunchType] = useState<"clock_in" | "clock_out">("clock_in");
   const [punchTime, setPunchTime] = useState<Date | null>(null);
+  const [scheduleWarning, setScheduleWarning] = useState<string | null>(null);
   const [lastActivity, setLastActivity] = useState(Date.now());
   const now = useCurrentTime();
 
@@ -75,6 +76,7 @@ export default function KioskPage() {
     setLastRecord(null);
     setPunchType("clock_in");
     setPunchTime(null);
+    setScheduleWarning(null);
     setLastActivity(Date.now());
   }, []);
 
@@ -116,6 +118,7 @@ export default function KioskPage() {
       });
       const data = await res.json();
       setPunchTime(new Date(data.record.timestamp));
+      setScheduleWarning(data.scheduleWarning || null);
       setScreen("success");
     } catch {
       alert("Failed to record punch. Please try again.");
@@ -154,6 +157,7 @@ export default function KioskPage() {
           employee={employee}
           punchType={punchType}
           punchTime={punchTime}
+          scheduleWarning={scheduleWarning}
         />
       )}
     </div>
@@ -413,10 +417,12 @@ function SuccessScreen({
   employee,
   punchType,
   punchTime,
+  scheduleWarning,
 }: {
   employee: KioskEmployee;
   punchType: "clock_in" | "clock_out";
   punchTime: Date | null;
+  scheduleWarning: string | null;
 }) {
   const [countdown, setCountdown] = useState(5);
   const isClockIn = punchType === "clock_in";
@@ -451,6 +457,12 @@ function SuccessScreen({
       <p className="kiosk-success-date" data-testid="text-success-date">
         {punchTime ? formatDate(punchTime) : ""}
       </p>
+
+      {scheduleWarning && (
+        <p className="kiosk-schedule-warning" data-testid="text-schedule-warning">
+          {scheduleWarning}
+        </p>
+      )}
 
       <p className="kiosk-countdown" data-testid="text-countdown">
         Returning to home screen in {countdown} seconds...

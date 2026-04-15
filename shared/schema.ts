@@ -625,3 +625,22 @@ export const payrollAdjustmentsRelations = relations(payrollAdjustments, ({ one 
   employee: one(users, { fields: [payrollAdjustments.employeeId], references: [users.id] }),
   punchLog: one(punchLogs, { fields: [payrollAdjustments.punchLogId], references: [punchLogs.id] }),
 }));
+
+export const employeeSchedules = pgTable("employee_schedules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  dayOfWeek: integer("day_of_week").notNull(),
+  startTime: varchar("start_time", { length: 5 }).notNull(),
+  endTime: varchar("end_time", { length: 5 }).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+});
+
+export const insertEmployeeScheduleSchema = createInsertSchema(employeeSchedules).omit({
+  id: true,
+});
+export type InsertEmployeeSchedule = z.infer<typeof insertEmployeeScheduleSchema>;
+export type EmployeeSchedule = typeof employeeSchedules.$inferSelect;
+
+export const employeeSchedulesRelations = relations(employeeSchedules, ({ one }) => ({
+  employee: one(users, { fields: [employeeSchedules.employeeId], references: [users.id] }),
+}));

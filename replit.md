@@ -24,6 +24,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **Real-time Updates:** WebSocket integration (`/ws`) for real-time attendance updates, with session/JWT auth at handshake.
 
 **Feature Specifications:**
+- **Employee Work Schedules:** Per-employee weekly schedule configuration (which days and hours they work). Schedule warnings are displayed on clock-in/out (kiosk and web) when an employee is early, late, leaving early, or staying past their shift. Managed via the Schedule tab on employee profiles.
 - **Kiosk System:** Public `/kiosk` route for employee clock-in/out using PIN or name search, designed for shared devices.
 - **Dashboard:** Employee dashboard shows current clock status, hours, and PTO balance. Manager/Admin dashboards provide team/division-wide stats and approval queues.
 - **Admin Pages:** Dedicated sections for managing Employees, Locations & Departments, Time Clock Rules (policies), PTO & Leave, Alerts & Exceptions, Payroll Prep, Reports, Permissions, Roles, Kiosks, and Audit Log.
@@ -41,6 +42,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - `policy_types`, `policies`, `policy_rules`, `policy_assignments`
 - `system_alerts`
 - `documents`
+- `employee_schedules`
 
 ## External Dependencies
 - **PostgreSQL:** Primary database for all application data.

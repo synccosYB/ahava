@@ -33,11 +33,14 @@ export default function Dashboard() {
   });
 
   const clockInMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/attendance/clock-in"),
-    onSuccess: () => {
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/attendance/clock-in");
+      return res.json() as Promise<AttendanceRecord & { scheduleWarning?: string }>;
+    },
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/records"] });
-      toast({ title: "Clocked In", description: "You have successfully clocked in." });
+      toast({ title: "Clocked In", description: data?.scheduleWarning || "You have successfully clocked in." });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -45,11 +48,14 @@ export default function Dashboard() {
   });
 
   const clockOutMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/attendance/clock-out"),
-    onSuccess: () => {
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/attendance/clock-out");
+      return res.json() as Promise<AttendanceRecord & { scheduleWarning?: string }>;
+    },
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/records"] });
-      toast({ title: "Clocked Out", description: "You have successfully clocked out." });
+      toast({ title: "Clocked Out", description: data?.scheduleWarning || "You have successfully clocked out." });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });

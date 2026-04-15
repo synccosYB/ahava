@@ -79,6 +79,9 @@ import {
   documents,
   type Document,
   type InsertDocument,
+  employeeSchedules,
+  type EmployeeSchedule,
+  type InsertEmployeeSchedule,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
@@ -296,6 +299,11 @@ export interface IStorage {
   createDocument(doc: InsertDocument): Promise<Document>;
   updateDocument(id: string, data: Partial<Document>): Promise<Document | undefined>;
   deleteDocument(id: string): Promise<void>;
+
+  getEmployeeSchedules(employeeId: string): Promise<EmployeeSchedule[]>;
+  getEmployeeScheduleByDay(employeeId: string, dayOfWeek: number): Promise<EmployeeSchedule | undefined>;
+  upsertEmployeeSchedule(schedule: InsertEmployeeSchedule): Promise<EmployeeSchedule>;
+  deleteEmployeeSchedules(employeeId: string): Promise<void>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -1531,6 +1539,36 @@ export class DatabaseStorage implements IStorage {
 
   async deleteDocument(id: string): Promise<void> {
     await db.delete(documents).where(eq(documents.id, id));
+  }
+
+  async getEmployeeSchedules(employeeId: string): Promise<EmployeeSchedule[]> {
+    return db.select().from(employeeSchedules).where(eq(employeeSchedules.employeeId, employeeId));
+  }
+
+  async getEmployeeScheduleByDay(employeeId: string, dayOfWeek: number): Promise<EmployeeSchedule | undefined> {
+    const [schedule] = await db.select().from(employeeSchedules).where(
+      and(eq(employeeSchedules.employeeId, employeeId), eq(employeeSchedules.dayOfWeek, dayOfWeek), eq(employeeSchedules.isActive, true))
+    );
+    return schedule;
+  }
+
+  async upsertEmployeeSchedule(schedule: InsertEmployeeSchedule): Promise<EmployeeSchedule> {
+    const existing = await db.select().from(employeeSchedules).where(
+      and(eq(employeeSchedules.employeeId, schedule.employeeId), eq(employeeSchedules.dayOfWeek, schedule.dayOfWeek))
+    );
+    if (existing.length > 0) {
+      const [updated] = await db.update(employeeSchedules)
+        .set({ startTime: schedule.startTime, endTime: schedule.endTime, isActive: schedule.isActive ?? true })
+        .where(eq(employeeSchedules.id, existing[0].id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(employeeSchedules).values(schedule).returning();
+    return created;
+  }
+
+  async deleteEmployeeSchedules(employeeId: string): Promise<void> {
+    await db.delete(employeeSchedules).where(eq(employeeSchedules.employeeId, employeeId));
   }
 }
 

@@ -124,6 +124,46 @@ function punchLogToApiResponse(record: any) {
   };
 }
 
+async function getScheduleWarning(employeeId: string, punchType: "clock_in" | "clock_out"): Promise<string | null> {
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const schedule = await storage.getEmployeeScheduleByDay(employeeId, dayOfWeek);
+  if (!schedule) return null;
+
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const [startH, startM] = schedule.startTime.split(":").map(Number);
+  const [endH, endM] = schedule.endTime.split(":").map(Number);
+  const scheduleStart = startH * 60 + startM;
+  const scheduleEnd = endH * 60 + endM;
+
+  if (punchType === "clock_in") {
+    const diff = currentMinutes - scheduleStart;
+    if (diff < 0) {
+      const mins = Math.abs(diff);
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      return h > 0 ? `You are ${h} hour${h > 1 ? "s" : ""}${m > 0 ? ` and ${m} minute${m !== 1 ? "s" : ""}` : ""} early` : `You are ${m} minute${m !== 1 ? "s" : ""} early`;
+    } else if (diff > 0) {
+      const h = Math.floor(diff / 60);
+      const m = diff % 60;
+      return h > 0 ? `You are ${h} hour${h > 1 ? "s" : ""}${m > 0 ? ` and ${m} minute${m !== 1 ? "s" : ""}` : ""} late` : `You are ${m} minute${m !== 1 ? "s" : ""} late`;
+    }
+  } else {
+    const diff = currentMinutes - scheduleEnd;
+    if (diff < 0) {
+      const mins = Math.abs(diff);
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      return h > 0 ? `You are leaving ${h} hour${h > 1 ? "s" : ""}${m > 0 ? ` and ${m} minute${m !== 1 ? "s" : ""}` : ""} early` : `You are leaving ${m} minute${m !== 1 ? "s" : ""} early`;
+    } else if (diff > 0) {
+      const h = Math.floor(diff / 60);
+      const m = diff % 60;
+      return h > 0 ? `You stayed ${h} hour${h > 1 ? "s" : ""}${m > 0 ? ` and ${m} minute${m !== 1 ? "s" : ""}` : ""} past your shift` : `You stayed ${m} minute${m !== 1 ? "s" : ""} past your shift`;
+    }
+  }
+  return null;
+}
+
 const pinLookupSchema = z.object({
   pin: z.string().min(4).max(6),
 });
@@ -755,9 +795,11 @@ export async function registerRoutes(
         source: "kiosk",
         approved: true,
       });
+      const scheduleWarning = await getScheduleWarning(user.id, "clock_in");
       return res.json({
         record: { id: record.id, type: "clock_in", timestamp: record.clockIn },
         employee: sanitizeUserForKiosk(user, deptName),
+        ...(scheduleWarning ? { scheduleWarning } : {}),
       });
     } else {
       const lastRecord = await storage.getLatestAttendanceForUser(user.id);
@@ -776,9 +818,11 @@ export async function registerRoutes(
         status: hoursWorked > 8 ? "overtime" : "complete",
       });
       await checkPostExportModification(lastRecord.id, user.id);
+      const scheduleWarning = await getScheduleWarning(user.id, "clock_out");
       return res.json({
         record: { id: updated?.id, type: "clock_out", timestamp: updated?.clockOut },
         employee: sanitizeUserForKiosk(user, deptName),
+        ...(scheduleWarning ? { scheduleWarning } : {}),
       });
     }
   });
@@ -827,7 +871,8 @@ export async function registerRoutes(
       }
 
       const record = await storage.clockIn(userId, source);
-      res.json(punchLogToApiResponse(record));
+      const scheduleWarning = await getScheduleWarning(userId, "clock_in");
+      res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
       console.error("Error clocking in:", error);
       res.status(500).json({ message: "Failed to clock in" });
@@ -848,10 +893,67 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Not currently clocked in" });
       }
       await checkPostExportModification(record.id, userId);
-      res.json(punchLogToApiResponse(record));
+      const scheduleWarning = await getScheduleWarning(userId, "clock_out");
+      res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
       console.error("Error clocking out:", error);
       res.status(500).json({ message: "Failed to clock out" });
+    }
+  });
+
+  const scheduleEntrySchema = z.object({
+    dayOfWeek: z.number().int().min(0).max(6),
+    startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    isActive: z.boolean().default(true),
+  });
+
+  app.get("/api/employees/:employeeId/schedules", requireAuth, requireRole("admin", "manager"), async (req: any, res) => {
+    try {
+      const { employeeId } = req.params;
+      const schedules = await storage.getEmployeeSchedules(employeeId);
+      res.json(schedules);
+    } catch (error) {
+      console.error("Error fetching employee schedules:", error);
+      res.status(500).json({ message: "Failed to fetch schedules" });
+    }
+  });
+
+  app.put("/api/employees/:employeeId/schedules", requireAuth, requireRole("admin", "manager"), async (req: any, res) => {
+    try {
+      const { employeeId } = req.params;
+      const scheduleEntries = req.body;
+      if (!Array.isArray(scheduleEntries)) {
+        return res.status(400).json({ message: "Request body must be an array of schedule entries" });
+      }
+
+      const validated = [];
+      for (const entry of scheduleEntries) {
+        const parsed = scheduleEntrySchema.safeParse(entry);
+        if (!parsed.success) {
+          return res.status(400).json({ message: "Invalid schedule entry", errors: parsed.error.errors });
+        }
+        if (parsed.data.isActive && parsed.data.startTime >= parsed.data.endTime) {
+          return res.status(400).json({ message: `Invalid schedule for ${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][parsed.data.dayOfWeek]}: start time must be before end time` });
+        }
+        validated.push(parsed.data);
+      }
+
+      const results = [];
+      for (const v of validated) {
+        const result = await storage.upsertEmployeeSchedule({
+          employeeId,
+          dayOfWeek: v.dayOfWeek,
+          startTime: v.startTime,
+          endTime: v.endTime,
+          isActive: v.isActive,
+        });
+        results.push(result);
+      }
+      res.json(results);
+    } catch (error) {
+      console.error("Error saving employee schedules:", error);
+      res.status(500).json({ message: "Failed to save schedules" });
     }
   });
 

@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useLocation } from "wouter";
@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { User, Department, Location, EmploymentProfile } from "@shared/schema";
+import type { User, Department, Location, EmploymentProfile, EmployeeSchedule } from "@shared/schema";
 
 type EmployeeListItem = User & {
   departmentName?: string;
@@ -655,14 +655,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         </TabsContent>
 
         <TabsContent value="schedule">
-          <Card data-testid="card-schedule">
-            <CardHeader><CardTitle>Schedule</CardTitle></CardHeader>
-            <CardContent>
-              <p className="text-muted-foreground" data-testid="text-schedule-info">
-                Scheduling module will be available in Phase 2.
-              </p>
-            </CardContent>
-          </Card>
+          <ScheduleTab employeeId={userId} />
         </TabsContent>
 
         <TabsContent value="documents">
@@ -761,6 +754,117 @@ type DocumentRecord = {
   reviewedBy: string | null;
   reviewedAt: string | null;
 };
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+interface ScheduleEntry {
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+  isActive: boolean;
+}
+
+function ScheduleTab({ employeeId }: { employeeId: string }) {
+  const { toast } = useToast();
+  const [schedule, setSchedule] = useState<ScheduleEntry[]>(
+    DAY_NAMES.map((_, i) => ({ dayOfWeek: i, startTime: "09:00", endTime: "17:00", isActive: false }))
+  );
+
+  const { data: existingSchedules, isLoading } = useQuery<EmployeeSchedule[]>({
+    queryKey: ["/api/employees", employeeId, "schedules"],
+    queryFn: async () => {
+      const res = await fetch(`/api/employees/${employeeId}/schedules`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch schedules");
+      return res.json();
+    },
+  });
+
+  const hasInitialized = useRef(false);
+  useEffect(() => {
+    if (existingSchedules && !hasInitialized.current) {
+      hasInitialized.current = true;
+      if (existingSchedules.length > 0) {
+        setSchedule(prev => prev.map(day => {
+          const existing = existingSchedules.find((s) => s.dayOfWeek === day.dayOfWeek);
+          return existing ? { ...day, startTime: existing.startTime, endTime: existing.endTime, isActive: existing.isActive } : day;
+        }));
+      }
+    }
+  }, [existingSchedules]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PUT", `/api/employees/${employeeId}/schedules`, schedule);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employees", employeeId, "schedules"] });
+      toast({ title: "Schedule Saved", description: "Employee work schedule has been updated." });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to save schedule.", variant: "destructive" });
+    },
+  });
+
+  const toggleDay = (dayOfWeek: number) => {
+    setSchedule(prev => prev.map(d => d.dayOfWeek === dayOfWeek ? { ...d, isActive: !d.isActive } : d));
+  };
+
+  const updateTime = (dayOfWeek: number, field: "startTime" | "endTime", value: string) => {
+    setSchedule(prev => prev.map(d => d.dayOfWeek === dayOfWeek ? { ...d, [field]: value } : d));
+  };
+
+  if (isLoading) return <Skeleton className="h-48 w-full" />;
+
+  return (
+    <Card data-testid="card-schedule">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>Work Schedule</CardTitle>
+        <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} data-testid="button-save-schedule">
+          {saveMutation.isPending ? "Saving..." : "Save Schedule"}
+        </Button>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          {schedule.map((day) => (
+            <div key={day.dayOfWeek} className="flex items-center gap-4 p-3 rounded-lg border" data-testid={`schedule-day-${day.dayOfWeek}`}>
+              <button
+                type="button"
+                onClick={() => toggleDay(day.dayOfWeek)}
+                className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${day.isActive ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/30"}`}
+                data-testid={`toggle-day-${day.dayOfWeek}`}
+              >
+                {day.isActive && <CheckCircle2 className="h-4 w-4" />}
+              </button>
+              <span className="w-28 font-medium" data-testid={`text-day-name-${day.dayOfWeek}`}>{DAY_NAMES[day.dayOfWeek]}</span>
+              {day.isActive ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="time"
+                    value={day.startTime}
+                    onChange={(e) => updateTime(day.dayOfWeek, "startTime", e.target.value)}
+                    className="w-32"
+                    data-testid={`input-start-time-${day.dayOfWeek}`}
+                  />
+                  <span className="text-muted-foreground">to</span>
+                  <Input
+                    type="time"
+                    value={day.endTime}
+                    onChange={(e) => updateTime(day.dayOfWeek, "endTime", e.target.value)}
+                    className="w-32"
+                    data-testid={`input-end-time-${day.dayOfWeek}`}
+                  />
+                </div>
+              ) : (
+                <span className="text-muted-foreground text-sm" data-testid={`text-day-off-${day.dayOfWeek}`}>Day off</span>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function DocumentsTab({ userId }: { userId: string }) {
   const { toast } = useToast();
