@@ -746,11 +746,18 @@ export class DatabaseStorage implements IStorage {
     const ANNUAL_VACATION = 15;
     const ANNUAL_SICK = 10;
     const ANNUAL_PERSONAL = 5;
+    const currentYear = new Date().getFullYear();
+    const yearStart = `${currentYear}-01-01`;
+    const yearEnd = `${currentYear}-12-31`;
 
     const requests = await db
       .select()
       .from(timeOffRequests)
-      .where(eq(timeOffRequests.userId, userId));
+      .where(and(
+        eq(timeOffRequests.userId, userId),
+        gte(timeOffRequests.startDate, yearStart),
+        lte(timeOffRequests.startDate, yearEnd)
+      ));
 
     let usedVacation = 0;
     let usedSick = 0;
@@ -1240,6 +1247,8 @@ export class DatabaseStorage implements IStorage {
     const policy = await this.getEmployeePtoPolicy(userId);
     const empSettings = await this.getEmployeePtoSettings(userId);
     const currentYear = new Date().getFullYear();
+    const yearStart = `${currentYear}-01-01`;
+    const yearEnd = `${currentYear}-12-31`;
 
     let annualVacation: number;
     let annualSick: number;
@@ -1264,13 +1273,56 @@ export class DatabaseStorage implements IStorage {
           .where(and(
             eq(timeOffRequests.userId, userId),
             eq(timeOffRequests.type, "holiday"),
-            inArray(timeOffRequests.status, ["approved", "partially_approved"])
+            inArray(timeOffRequests.status, ["approved", "partially_approved"]),
+            gte(timeOffRequests.startDate, yearStart),
+            lte(timeOffRequests.startDate, yearEnd)
           ));
         let holidayDays = 0;
         for (const r of holidayRequests) {
           holidayDays += r.daysApproved ?? r.daysRequested ?? 1;
         }
         annualVacation = Math.max(0, annualVacation - holidayDays);
+      }
+
+      const carryoverCap = policy.carryoverCapHours ?? 0;
+      const expirationDate = policy.expirationDate;
+      const effectiveExpiration = expirationDate
+        ? new Date(expirationDate + "T00:00:00Z")
+        : new Date(Date.UTC(currentYear, 11, 31));
+
+      const now = new Date();
+      const hasExpired = now > effectiveExpiration ||
+        (effectiveExpiration.getUTCFullYear() < currentYear);
+
+      if (carryoverCap > 0 && !hasExpired) {
+        const prevYear = currentYear - 1;
+        const prevYearStart = `${prevYear}-01-01`;
+        const prevYearEnd = `${prevYear}-12-31`;
+
+        let prevAnnualVacation = policy.accrualRate;
+        if (empSettings?.vacationBalanceOverride !== null && empSettings?.vacationBalanceOverride !== undefined) {
+          prevAnnualVacation = empSettings.vacationBalanceOverride;
+        }
+
+        const prevRequests = await db.select().from(timeOffRequests)
+          .where(and(
+            eq(timeOffRequests.userId, userId),
+            inArray(timeOffRequests.status, ["approved", "partially_approved"]),
+            gte(timeOffRequests.startDate, prevYearStart),
+            lte(timeOffRequests.startDate, prevYearEnd)
+          ));
+
+        let prevUsedVacation = 0;
+        for (const r of prevRequests) {
+          if (r.type === "vacation") {
+            prevUsedVacation += r.daysApproved ?? r.daysRequested ?? 1;
+          }
+        }
+
+        const prevRemainingVacation = Math.max(0, prevAnnualVacation - prevUsedVacation);
+        const carryoverCapDays = carryoverCap / 8;
+        const carryover = Math.min(prevRemainingVacation, carryoverCapDays);
+        annualVacation += carryover;
       }
     } else {
       annualVacation = 15;
@@ -1280,7 +1332,13 @@ export class DatabaseStorage implements IStorage {
 
     if (empSettings) {
       if (empSettings.vacationBalanceOverride !== null && empSettings.vacationBalanceOverride !== undefined) {
-        annualVacation = empSettings.vacationBalanceOverride;
+        const carryoverCap = policy?.carryoverCapHours ?? 0;
+        if (carryoverCap > 0 && policy) {
+          const baseOverride = empSettings.vacationBalanceOverride;
+          annualVacation = baseOverride + (annualVacation - (policy?.accrualRate ?? baseOverride));
+        } else {
+          annualVacation = empSettings.vacationBalanceOverride;
+        }
       }
       if (empSettings.sickBalanceOverride !== null && empSettings.sickBalanceOverride !== undefined) {
         annualSick = empSettings.sickBalanceOverride;
@@ -1299,7 +1357,11 @@ export class DatabaseStorage implements IStorage {
     }
 
     const requests = await db.select().from(timeOffRequests)
-      .where(eq(timeOffRequests.userId, userId));
+      .where(and(
+        eq(timeOffRequests.userId, userId),
+        gte(timeOffRequests.startDate, yearStart),
+        lte(timeOffRequests.startDate, yearEnd)
+      ));
 
     let usedVacation = 0;
     let usedSick = 0;

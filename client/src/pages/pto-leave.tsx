@@ -46,7 +46,7 @@ function PoliciesTab() {
     name: "", description: "", accrualType: "annual", accrualRate: "15",
     yearlyCapHours: "", carryoverCapHours: "0", waitingPeriodDays: "0",
     sickAccrualEnabled: true, personalDaysPerYear: "5",
-    holidayPayEnabled: true, isDefault: false,
+    holidayPayEnabled: true, isDefault: false, expirationDate: "",
   });
 
   const { data: policies, isLoading } = useQuery<PtoPolicy[]>({ queryKey: ["/api/pto-policies"] });
@@ -66,6 +66,7 @@ function PoliciesTab() {
         personalDaysPerYear: parseFloat(form.personalDaysPerYear) || 5,
         holidayPayEnabled: form.holidayPayEnabled,
         isDefault: form.isDefault,
+        expirationDate: form.expirationDate || null,
         companyId: divisions?.[0]?.id || null,
       };
       if (editingId) {
@@ -90,7 +91,7 @@ function PoliciesTab() {
       name: "", description: "", accrualType: "annual", accrualRate: "15",
       yearlyCapHours: "", carryoverCapHours: "0", waitingPeriodDays: "0",
       sickAccrualEnabled: true, personalDaysPerYear: "5",
-      holidayPayEnabled: true, isDefault: false,
+      holidayPayEnabled: true, isDefault: false, expirationDate: "",
     });
     setEditingId(null);
   };
@@ -108,6 +109,7 @@ function PoliciesTab() {
       personalDaysPerYear: String(p.personalDaysPerYear),
       holidayPayEnabled: p.holidayPayEnabled,
       isDefault: p.isDefault,
+      expirationDate: (p as any).expirationDate || "",
     });
     setEditingId(p.id);
     setDialogOpen(true);
@@ -146,7 +148,10 @@ function PoliciesTab() {
                 <div><Label>Carryover Cap (hours)</Label><Input type="number" value={form.carryoverCapHours} onChange={(e) => setForm({ ...form, carryoverCapHours: e.target.value })} data-testid="input-carryover-cap" /></div>
                 <div><Label>Waiting Period (days)</Label><Input type="number" value={form.waitingPeriodDays} onChange={(e) => setForm({ ...form, waitingPeriodDays: e.target.value })} data-testid="input-waiting-period" /></div>
               </div>
-              <div><Label>Personal Days/Year</Label><Input type="number" value={form.personalDaysPerYear} onChange={(e) => setForm({ ...form, personalDaysPerYear: e.target.value })} data-testid="input-personal-days" /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Personal Days/Year</Label><Input type="number" value={form.personalDaysPerYear} onChange={(e) => setForm({ ...form, personalDaysPerYear: e.target.value })} data-testid="input-personal-days" /></div>
+                <div><Label>Expiration Date</Label><Input type="date" value={form.expirationDate} onChange={(e) => setForm({ ...form, expirationDate: e.target.value })} placeholder="Defaults to Dec 31" data-testid="input-expiration-date" /></div>
+              </div>
               <div className="flex items-center justify-between">
                 <Label>Sick Accrual Enabled</Label>
                 <Switch checked={form.sickAccrualEnabled} onCheckedChange={(v) => setForm({ ...form, sickAccrualEnabled: v })} data-testid="switch-sick-accrual" />

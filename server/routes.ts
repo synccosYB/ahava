@@ -1449,6 +1449,60 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/time-off/cashout", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const cashoutSchema = z.object({
+        type: z.enum(["vacation", "sick", "personal"]),
+        hours: z.number().positive().finite().max(9999),
+        reason: z.string().max(1000).optional(),
+      });
+
+      const parsed = cashoutSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid cash-out request", errors: parsed.error.flatten() });
+      }
+
+      const { type, hours, reason } = parsed.data;
+
+      const balance = await storage.computeTimeOffBalance(userId);
+      const availableBalance = type === "vacation" ? balance.vacation
+        : type === "sick" ? balance.sick
+        : type === "personal" ? balance.personal : 0;
+
+      const daysRequested = Math.round((hours / 8) * 100) / 100;
+
+      if (daysRequested > availableBalance) {
+        return res.status(400).json({
+          message: `Insufficient ${type} balance. You have ${availableBalance} day(s) remaining but requested ${daysRequested} day(s) (${hours} hours).`,
+        });
+      }
+
+      const today = new Date().toISOString().split("T")[0];
+
+      const request = await storage.createTimeOffRequest({
+        userId,
+        type,
+        requestCategory: "cashout",
+        startDate: today,
+        endDate: today,
+        daysRequested: Math.max(1, Math.ceil(daysRequested)),
+        status: "pending",
+        reason: reason || `PTO Cash-Out: ${hours} hours`,
+        exceedsBalance: false,
+        balanceAtSubmission: Math.round(availableBalance),
+      });
+
+      res.json(request);
+    } catch (error: any) {
+      console.error("Error creating cash-out request:", error);
+      if (error.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid cash-out request", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to create cash-out request" });
+    }
+  });
+
   app.put("/api/time-off/:id", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
@@ -2688,10 +2742,13 @@ export async function registerRoutes(
 
       const timeOffRequests = await storage.getAllTimeOffRequests();
       const approvedTimeOff = timeOffRequests.filter(
-        r => r.status === "approved" && r.startDate <= endDate && r.endDate >= startDate
+        r => r.status === "approved" && r.requestCategory !== "cashout" && r.startDate <= endDate && r.endDate >= startDate
+      );
+      const approvedCashouts = timeOffRequests.filter(
+        r => r.status === "approved" && r.requestCategory === "cashout" && r.startDate <= endDate && r.endDate >= startDate
       );
 
-      const totalRecordCount = attendanceRecords.length + approvedTimeOff.length;
+      const totalRecordCount = attendanceRecords.length + approvedTimeOff.length + approvedCashouts.length;
 
       const payrollExport = await db.transaction(async (tx) => {
         const [created] = await tx.insert(payrollExportsTable).values({
@@ -2748,6 +2805,24 @@ export async function registerRoutes(
           });
         }
 
+        for (const co of approvedCashouts) {
+          const cashoutHours = (co.daysRequested || 1) * 8;
+
+          await tx.insert(payrollBatchRecordsTable).values({
+            payrollExportId: created.id,
+            employeeId: co.userId,
+            punchLogId: null,
+            timeOffRequestId: co.id,
+            recordType: "pto_cashout",
+            workDate: co.startDate,
+            regularHours: 0,
+            overtimeHours: 0,
+            ptoHours: cashoutHours,
+            hasIssues: false,
+            issueDescription: null,
+          });
+        }
+
         return created;
       });
 
@@ -2757,7 +2832,7 @@ export async function registerRoutes(
         targetType: "payroll_export",
         targetId: payrollExport.id,
         action: "payroll_export.created",
-        newValue: { startDate, endDate, recordCount: attendanceRecords.length + approvedTimeOff.length },
+        newValue: { startDate, endDate, recordCount: attendanceRecords.length + approvedTimeOff.length + approvedCashouts.length },
         ...auditCtx,
       });
 
@@ -2914,7 +2989,9 @@ export async function registerRoutes(
         const jsDayOfWeek = getDayOfWeek(r.workDate);
         const scheduledDays = schedules.filter(s => s.isActive).map(s => s.dayOfWeek);
         let payType = "Regular";
-        if (r.recordType === "pto") {
+        if (r.recordType === "pto_cashout") {
+          payType = "PTO Cash-Out";
+        } else if (r.recordType === "pto") {
           payType = "Regular";
         } else if (scheduledDays.length > 0 && !scheduledDays.includes(jsDayOfWeek)) {
           payType = "Holiday";

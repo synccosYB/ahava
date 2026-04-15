@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Check, X, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
+import { Check, X, AlertTriangle, ChevronDown, ChevronUp, DollarSign } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest } from "@shared/schema";
 import {
@@ -151,11 +151,23 @@ export default function ApprovalQueuePage() {
                 <div className="flex flex-col md:flex-row md:justify-between gap-4">
                   <div className="flex-1 space-y-2">
                     <p className="text-lg font-semibold" data-testid={`text-request-title-${request.id}`}>
-                      {request.employeeName} - {formatTimeOffTypeLabel(request.type)} Request
+                      {request.employeeName} - {(request as any).requestCategory === "cashout" ? "PTO Cash-Out" : `${formatTimeOffTypeLabel(request.type)} Request`}
+                      {(request as any).requestCategory === "cashout" && (
+                        <Badge variant="outline" className="ml-2 bg-emerald-50 text-emerald-700 border-emerald-300 text-xs dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-700" data-testid={`badge-cashout-${request.id}`}>
+                          <DollarSign className="h-3 w-3 mr-1" />
+                          Cash-Out
+                        </Badge>
+                      )}
                     </p>
-                    <p className="text-base" data-testid={`text-request-dates-${request.id}`}>
-                      {formatDateRange(request.startDate, request.endDate)} ({getDayCount(request.startDate, request.endDate)} day{getDayCount(request.startDate, request.endDate) > 1 ? "s" : ""})
-                    </p>
+                    {(request as any).requestCategory === "cashout" ? (
+                      <p className="text-base" data-testid={`text-request-dates-${request.id}`}>
+                        {request.daysRequested * 8} hours ({request.daysRequested} day{request.daysRequested > 1 ? "s" : ""}) - {formatTimeOffTypeLabel(request.type)}
+                      </p>
+                    ) : (
+                      <p className="text-base" data-testid={`text-request-dates-${request.id}`}>
+                        {formatDateRange(request.startDate, request.endDate)} ({getDayCount(request.startDate, request.endDate)} day{getDayCount(request.startDate, request.endDate) > 1 ? "s" : ""})
+                      </p>
+                    )}
                     <p className="text-sm text-muted-foreground" data-testid={`text-request-submitted-${request.id}`}>
                       Submitted: {request.createdAt ? new Date(request.createdAt).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "N/A"}
                       {request.editedAt && (
@@ -284,10 +296,17 @@ export default function ApprovalQueuePage() {
                         {request.employeeName}
                       </TableCell>
                       <TableCell data-testid={`text-processed-type-${request.id}`}>
-                        {formatTimeOffTypeLabel(request.type)}
+                        {(request as any).requestCategory === "cashout" ? (
+                          <span className="flex items-center gap-1">
+                            <DollarSign className="h-3 w-3 text-emerald-600" />
+                            Cash-Out ({formatTimeOffTypeLabel(request.type)})
+                          </span>
+                        ) : formatTimeOffTypeLabel(request.type)}
                       </TableCell>
                       <TableCell data-testid={`text-processed-dates-${request.id}`}>
-                        {request.status === "partially_approved" && request.approvedEndDate
+                        {(request as any).requestCategory === "cashout"
+                          ? `${request.daysRequested * 8} hours`
+                          : request.status === "partially_approved" && request.approvedEndDate
                           ? formatDateRange(request.startDate, request.approvedEndDate)
                           : formatDateRange(request.startDate, request.endDate)}
                       </TableCell>

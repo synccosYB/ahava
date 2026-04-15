@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck } from "lucide-react";
+import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, DollarSign } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
 
@@ -247,7 +247,11 @@ function ProcessedRequestCard({ request, showDeptLocation }: { request: Processe
         <div className="flex flex-col md:flex-row md:justify-between gap-3">
           <div className="flex-1 space-y-1.5">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge variant="outline">{formatTimeOffTypeLabel(request.type)}</Badge>
+              <Badge variant="outline">
+                {(request as any).requestCategory === "cashout" ? (
+                  <span className="flex items-center gap-1"><DollarSign className="h-3 w-3" />Cash-Out ({formatTimeOffTypeLabel(request.type)})</span>
+                ) : formatTimeOffTypeLabel(request.type)}
+              </Badge>
               <Badge variant="secondary" className={statusColor} data-testid={`badge-status-${request.id}`}>
                 {request.status === "partially_approved" ? "Partially Approved" : request.status.charAt(0).toUpperCase() + request.status.slice(1)}
               </Badge>
@@ -256,7 +260,9 @@ function ProcessedRequestCard({ request, showDeptLocation }: { request: Processe
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-processed-dates-${request.id}`}>
-              {request.startDate} to {request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate} ({request.status === "partially_approved" && request.daysApproved ? `${request.daysApproved} of ${request.daysRequested}` : request.daysRequested} day{(request.daysRequested || 1) > 1 ? "s" : ""})
+              {(request as any).requestCategory === "cashout"
+                ? `${request.daysRequested * 8} hours (${request.daysRequested} day${request.daysRequested > 1 ? "s" : ""})`
+                : `${request.startDate} to ${request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate} (${request.status === "partially_approved" && request.daysApproved ? `${request.daysApproved} of ${request.daysRequested}` : request.daysRequested} day${(request.daysRequested || 1) > 1 ? "s" : ""})`}
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-processed-reason-${request.id}`}>
@@ -429,7 +435,9 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-pto-type-${request.id}`}>
-              {formatTimeOffTypeLabel(request.type)} — {request.startDate} to {request.endDate} ({request.daysRequested} day{request.daysRequested > 1 ? "s" : ""})
+              {(request as any).requestCategory === "cashout"
+                ? `PTO Cash-Out: ${request.daysRequested * 8} hours (${request.daysRequested} day${request.daysRequested > 1 ? "s" : ""}) - ${formatTimeOffTypeLabel(request.type)}`
+                : `${formatTimeOffTypeLabel(request.type)} — ${request.startDate} to ${request.endDate} (${request.daysRequested} day${request.daysRequested > 1 ? "s" : ""})`}
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-pto-reason-${request.id}`}>
