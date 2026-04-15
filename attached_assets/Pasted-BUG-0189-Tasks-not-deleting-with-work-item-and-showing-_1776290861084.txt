@@ -1,0 +1,70 @@
+BUG-0189
+Tasks not deleting with work item and showing task not created
+Bug
+New
+High
+Close
+Resolve
+Status
+New
+Priority
+High
+Assigned To
+Unassigned
+Description
+
+I deleted the work item for the 3 tasks showing in the screenshot and the deliverable isn't showing anymore but the tasks still are.
+
+also, it's showing a new task which wasn't part of it.
+
+AI Analysis
+
+### Analysis
+
+1. **Affected App Component**:
+   - **Task Management Module**: The issue is related to the association and deletion logic of tasks tied to work items.
+
+2. **Detailed Observations** (Based on Screenshot and Report):
+   - There are tasks listed under "Assigned Tasks," and the user claims these relate to a deleted work item.
+   - A seemingly unrelated task labeled "New Task" is displayed, which was reportedly not part of the work item.
+   - The deliverable is not visible (confirming it may indeed have been deleted), but tasks belonging to it persist incorrectly.
+
+3. **Root Cause Analysis**:
+   - **Potential Issues**:
+     - **Backend Issue**: The relationship integrity (e.g., cascading deletions of related tasks) may not be enforced. Deletion of the parent work item might not trigger deletions of child tasks.
+     - **Frontend Caching/State Issue**: If the UI is not refreshing correctly after data changes, stale tasks might continue to display.
+     - **Unexpected Task Creation**: A bug could exist in the task-creation mechanism where orphaned or placeholder tasks are unintentionally generated.
+
+4. **Recommended Fix or Next Steps**:
+   - **Backend Validation**:
+     - Check the database or API for the retrieval logic and verify that tasks associated with deleted work items are fully removed or marked inactive. Ensure proper cascading delete rules are implemented.
+   - **UI State Sync**:
+     - Inspect and fix front-end code to ensure it refreshes data after backend changes such as work item deletions.
+   - **Audit Task Creation Flow**:
+     - Investigate the logic that determines how and when tasks are added or displayed to identify why a "New Task" appears erroneously.
+   - **Test Case**:
+     - Add automated tests for scenarios where tasks are linked to work items to verify behavior after a deletion.
+
+---
+
+```json
+{"severity": "high", "category": "functionality"}
+```
+
+Screenshot
+
+Screenshot
+https://financery.co/my-work
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36
+Joel Brach
+joel@financery.co
+Client: Financery (financery.co)
+Linked Projects
+
+Full CRM PMS
+Open in Replit
+Replies (0)
+
+No replies yet
+
+Write a reply...
