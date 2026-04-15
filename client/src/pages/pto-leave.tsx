@@ -18,22 +18,194 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
-import { CalendarDays, Plus, Pencil, Settings } from "lucide-react";
+import { CalendarDays, Plus, Pencil, Settings, Search } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { PtoPolicy, User, Division } from "@shared/schema";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Progress } from "@/components/ui/progress";
+import type { PtoPolicy, User, Division, Department } from "@shared/schema";
+
+type PtoBalanceEntry = {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  role: string;
+  departmentId: string | null;
+  departmentName: string;
+  profileImageUrl: string | null;
+  managerNames: string[];
+  vacation: { total: number; used: number; pending: number };
+  sick: { total: number; used: number; pending: number };
+  personal: { total: number; used: number; pending: number };
+};
 
 export default function PtoLeavePage() {
   return (
     <div className="max-w-5xl space-y-6" data-testid="pto-leave-page">
       <PageHeader title="PTO & Leave" subtitle="Manage time-off policies and employee settings" />
-      <Tabs defaultValue="policies" data-testid="tabs-pto">
+      <Tabs defaultValue="balances" data-testid="tabs-pto">
         <TabsList>
+          <TabsTrigger value="balances" data-testid="tab-balances">PTO Balances</TabsTrigger>
           <TabsTrigger value="policies" data-testid="tab-policies">Policies</TabsTrigger>
           <TabsTrigger value="employee-settings" data-testid="tab-employee-settings">Employee Settings</TabsTrigger>
         </TabsList>
+        <TabsContent value="balances"><PtoBalancesTab /></TabsContent>
         <TabsContent value="policies"><PoliciesTab /></TabsContent>
         <TabsContent value="employee-settings"><EmployeePtoTab /></TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function PtoBalanceBar({ used, pending, total, color }: { used: number; pending: number; total: number; color: string }) {
+  const safeTot = Math.max(total, 1);
+  const usedPct = Math.min((used / safeTot) * 100, 100);
+  const pendPct = Math.min((pending / safeTot) * 100, 100 - usedPct);
+  const remaining = Math.max(total - used - pending, 0);
+
+  const colorClasses: Record<string, { bar: string; pending: string; text: string }> = {
+    blue: { bar: "bg-blue-600", pending: "bg-blue-300", text: "text-blue-600" },
+    red: { bar: "bg-red-600", pending: "bg-red-300", text: "text-red-600" },
+    purple: { bar: "bg-purple-600", pending: "bg-purple-300", text: "text-purple-600" },
+  };
+  const c = colorClasses[color] || colorClasses.blue;
+
+  return (
+    <div>
+      <div className="h-2 rounded-full bg-muted overflow-hidden flex">
+        <div className={`${c.bar} rounded-full`} style={{ width: `${usedPct}%` }} />
+        <div className={c.pending} style={{ width: `${pendPct}%` }} />
+      </div>
+      <div className="flex gap-4 mt-1 text-[11px] text-muted-foreground">
+        <span><span className={`${c.text} font-bold`}>{used}</span> used</span>
+        {pending > 0 && <span><span className={`${c.text} opacity-60 font-bold`}>{pending}</span> pending</span>}
+        <span><span className="font-bold text-foreground">{remaining}</span> remaining</span>
+        <span className="ml-auto">{total} total</span>
+      </div>
+    </div>
+  );
+}
+
+function PtoBalancesTab() {
+  const [search, setSearch] = useState("");
+  const [deptFilter, setDeptFilter] = useState("all");
+
+  const { data: balances, isLoading } = useQuery<PtoBalanceEntry[]>({
+    queryKey: ["/api/pto-balances/all"],
+  });
+
+  const { data: departments } = useQuery<Department[]>({
+    queryKey: ["/api/departments"],
+  });
+
+  const filtered = (balances || []).filter(b => {
+    const matchSearch = !search || `${b.firstName} ${b.lastName}`.toLowerCase().includes(search.toLowerCase());
+    const matchDept = deptFilter === "all" || b.departmentId === deptFilter;
+    return matchSearch && matchDept;
+  });
+
+  return (
+    <div className="space-y-4 mt-4" data-testid="pto-balances-tab">
+      <div className="flex gap-3 flex-wrap items-end">
+        <div className="relative flex-1 min-w-[200px] max-w-[280px]">
+          <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1 block">Search Employee</Label>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Name..."
+              className="pl-9"
+              data-testid="input-pto-search"
+            />
+          </div>
+        </div>
+        <div className="min-w-[180px]">
+          <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1 block">Department</Label>
+          <Select value={deptFilter} onValueChange={setDeptFilter}>
+            <SelectTrigger data-testid="select-pto-dept-filter">
+              <SelectValue placeholder="All Departments" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Departments</SelectItem>
+              {(departments || []).map(d => (
+                <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => <Skeleton key={i} className="h-40 w-full" />)}
+        </div>
+      ) : filtered.length === 0 ? (
+        <Card>
+          <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-balances">
+            No employees found matching your filters.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(emp => {
+            const initials = ((emp.firstName?.[0] || "") + (emp.lastName?.[0] || "")).toUpperCase();
+            return (
+              <Card key={emp.userId} data-testid={`card-pto-balance-${emp.userId}`}>
+                <CardContent className="p-5">
+                  <div className="flex items-center gap-4 mb-4 flex-wrap">
+                    <Avatar className="h-10 w-10">
+                      <AvatarImage src={emp.profileImageUrl || undefined} />
+                      <AvatarFallback className="text-sm font-bold">{initials}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-[150px]">
+                      <div className="font-bold text-sm" data-testid={`text-pto-name-${emp.userId}`}>
+                        {emp.firstName} {emp.lastName}
+                      </div>
+                      <div className="text-xs text-muted-foreground" data-testid={`text-pto-info-${emp.userId}`}>
+                        {emp.role} &middot; {emp.departmentName}
+                        {emp.managerNames && emp.managerNames.length > 0 && (
+                          <span className="ml-1">&middot; Mgr: {emp.managerNames.join(", ")}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2 flex-wrap">
+                      {([
+                        ["Vacation", emp.vacation, "blue"],
+                        ["Sick", emp.sick, "red"],
+                        ["Personal", emp.personal, "purple"],
+                      ] as const).map(([label, bal, color]) => {
+                        const remaining = Math.max(bal.total - bal.used - bal.pending, 0);
+                        const borderColor = color === "blue" ? "border-blue-200 bg-blue-50" : color === "red" ? "border-red-200 bg-red-50" : "border-purple-200 bg-purple-50";
+                        const textColor = color === "blue" ? "text-blue-600" : color === "red" ? "text-red-600" : "text-purple-600";
+                        return (
+                          <div key={label} className={`border rounded-lg px-3 py-1.5 text-center ${borderColor}`}>
+                            <div className={`text-lg font-black ${textColor}`}>{remaining}</div>
+                            <div className="text-[10px] text-muted-foreground">{label}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {([
+                      ["Vacation", emp.vacation, "blue"],
+                      ["Sick", emp.sick, "red"],
+                      ["Personal", emp.personal, "purple"],
+                    ] as const).map(([label, bal, color]) => (
+                      <div key={label}>
+                        <div className={`text-xs font-bold mb-1 ${color === "blue" ? "text-blue-600" : color === "red" ? "text-red-600" : "text-purple-600"}`}>
+                          {label}
+                        </div>
+                        <PtoBalanceBar used={bal.used} pending={bal.pending} total={bal.total} color={color} />
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,17 +1,20 @@
 import { useState, useMemo } from "react";
 import { formatHoursMinutes } from "@/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
-import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
-import type { AttendanceRecord } from "@shared/schema";
+import { useToast } from "@/hooks/use-toast";
+import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send } from "lucide-react";
+import type { AttendanceRecord, AttendanceException } from "@shared/schema";
 
 type SortKey = "date" | "clockIn" | "totalHours" | "status";
 type SortDir = "asc" | "desc";
@@ -284,6 +287,190 @@ export default function MyAttendance() {
           )}
         </CardContent>
       </Card>
+
+      <PunchCorrectionForm />
+    </div>
+  );
+}
+
+function PunchCorrectionForm() {
+  const { toast } = useToast();
+  const [date, setDate] = useState("");
+  const [origIn, setOrigIn] = useState("");
+  const [origOut, setOrigOut] = useState("");
+  const [reqIn, setReqIn] = useState("");
+  const [reqOut, setReqOut] = useState("");
+  const [reason, setReason] = useState("");
+
+  const { data: myExceptions, isLoading: exceptionsLoading } = useQuery<AttendanceException[]>({
+    queryKey: ["/api/attendance/exceptions/my"],
+    queryFn: async () => {
+      const res = await fetch("/api/attendance/exceptions", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch exceptions");
+      return res.json();
+    },
+  });
+
+  const submitMutation = useMutation({
+    mutationFn: async () => {
+      const timeInfo = [];
+      if (origIn) timeInfo.push(`Original In: ${origIn}`);
+      if (origOut) timeInfo.push(`Original Out: ${origOut}`);
+      if (reqIn) timeInfo.push(`Corrected In: ${reqIn}`);
+      if (reqOut) timeInfo.push(`Corrected Out: ${reqOut}`);
+      const fullReason = `${reason}${timeInfo.length > 0 ? ` [${timeInfo.join(", ")}]` : ""}`;
+      return apiRequest("POST", "/api/attendance/exceptions", {
+        exceptionDate: date,
+        type: "time_correction",
+        reason: fullReason,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/my"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      setDate("");
+      setOrigIn("");
+      setOrigOut("");
+      setReqIn("");
+      setReqOut("");
+      setReason("");
+      toast({ title: "Correction Submitted", description: "Your punch correction has been sent to your manager." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const getStatusBadgeForException = (status: string) => {
+    switch (status) {
+      case "pending": return <Badge variant="secondary" className="bg-amber-100 text-amber-800">Pending</Badge>;
+      case "approved": return <Badge variant="default" className="bg-green-600">Approved</Badge>;
+      case "denied": return <Badge variant="destructive">Denied</Badge>;
+      default: return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold">Punch Correction Request</h2>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card data-testid="card-punch-correction-form">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">New Correction Request</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-1">
+              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Date of Punch</Label>
+              <Input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                data-testid="input-correction-date"
+              />
+            </div>
+
+            <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4" data-testid="section-original-punch">
+              <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">Original Punch (what was recorded)</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Clock In</Label>
+                  <Input
+                    type="time"
+                    value={origIn}
+                    onChange={(e) => setOrigIn(e.target.value)}
+                    data-testid="input-orig-clock-in"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Clock Out</Label>
+                  <Input
+                    type="time"
+                    value={origOut}
+                    onChange={(e) => setOrigOut(e.target.value)}
+                    data-testid="input-orig-clock-out"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="section-corrected-punch">
+              <div className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 mb-3">Corrected Times (what it should be)</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-blue-700 dark:text-blue-300">Clock In</Label>
+                  <Input
+                    type="time"
+                    value={reqIn}
+                    onChange={(e) => setReqIn(e.target.value)}
+                    data-testid="input-corrected-clock-in"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-blue-700 dark:text-blue-300">Clock Out</Label>
+                  <Input
+                    type="time"
+                    value={reqOut}
+                    onChange={(e) => setReqOut(e.target.value)}
+                    data-testid="input-corrected-clock-out"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Reason</Label>
+              <Textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Explain what happened..."
+                data-testid="input-correction-reason"
+              />
+            </div>
+
+            <Button
+              onClick={() => submitMutation.mutate()}
+              disabled={!date || !reason || submitMutation.isPending}
+              className="w-full"
+              data-testid="button-submit-correction"
+            >
+              <Send className="h-4 w-4 mr-1" />
+              {submitMutation.isPending ? "Submitting..." : "Submit Correction"}
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-my-corrections">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">My Correction Requests</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {exceptionsLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}
+              </div>
+            ) : !myExceptions || myExceptions.length === 0 ? (
+              <p className="text-center text-muted-foreground py-4 text-sm" data-testid="text-no-corrections">
+                No correction requests yet.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {myExceptions.map((ex) => (
+                  <div key={ex.id} className="rounded-md border p-3" data-testid={`card-correction-${ex.id}`}>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      {getStatusBadgeForException(ex.status)}
+                      <span className="text-xs text-muted-foreground">{ex.exceptionDate}</span>
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">{ex.reason}</p>
+                    {ex.reviewNotes && (
+                      <p className="text-xs text-muted-foreground mt-1 italic">Review: {ex.reviewNotes}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

@@ -27,7 +27,9 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **Employee Work Schedules:** Per-employee weekly schedule configuration (which days and hours they work). Schedule warnings are displayed on clock-in/out (kiosk and web) when an employee is early, late, leaving early, or staying past their shift. Managed via the Schedule tab on employee profiles.
 - **Kiosk System:** Public `/kiosk` route for employee clock-in/out using PIN or name search, designed for shared devices.
 - **Dashboard:** Employee dashboard shows current clock status, hours, and PTO balance. Manager/Admin dashboards provide team/division-wide stats and approval queues.
-- **Admin Pages:** Dedicated sections for managing Employees, Locations & Departments, Time Clock Rules (policies), PTO & Leave, Alerts & Exceptions, Payroll Prep, Reports, Permissions, Roles, Kiosks, and Audit Log.
+- **Admin Pages:** Dedicated sections for managing Employees, Locations & Departments, Time Clock Rules (policies), PTO & Leave (with PTO Balances overview tab), Alerts & Exceptions, Payroll Prep, Payroll Documents, Reports, Permissions, Roles, Kiosks, and Audit Log.
+- **Payroll Documents:** Employee-facing "My Pay Docs" page and admin "Payroll Documents" page for managing pay stubs and tax forms. Admin can create/delete document records; employees can view their own.
+- **Punch Correction:** Employee attendance page includes a punch correction form with gray-tinted original punch section and blue-tinted corrected times section. Manager exception queue shows side-by-side red (recorded) vs green (requested) time comparison boxes.
 - **API Endpoints:** A comprehensive set of RESTful APIs for all functionalities, including user authentication, attendance, time-off, company/location/department management, employment profiles, and reporting. All sensitive API calls are protected by RBAC and scoping.
 
 **Core Entities (Data Model):**
@@ -43,6 +45,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - `system_alerts`
 - `documents`
 - `employee_schedules`
+- `payroll_documents`
 
 ## External Dependencies
 - **PostgreSQL:** Primary database for all application data.

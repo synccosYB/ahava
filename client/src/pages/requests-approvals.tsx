@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, DollarSign } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
@@ -360,13 +361,22 @@ function PtoRequestsTab() {
   );
 }
 
+type DecidedException = AttendanceException & {
+  employeeName: string;
+  reviewerName: string;
+};
+
 function ExceptionsTab() {
   const { data: exceptions, isLoading } = useQuery<EnrichedException[]>({
     queryKey: ["/api/attendance/exceptions/pending"],
   });
 
+  const { data: recentDecided, isLoading: decidedLoading } = useQuery<DecidedException[]>({
+    queryKey: ["/api/attendance/exceptions/recent-decided"],
+  });
+
   return (
-    <div className="space-y-4 mt-4">
+    <div className="space-y-6 mt-4">
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full" />)}
@@ -384,6 +394,48 @@ function ExceptionsTab() {
           ))}
         </div>
       )}
+
+      <div data-testid="section-recently-decided">
+        <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground mb-3">Recently Decided</h3>
+        {decidedLoading ? (
+          <Skeleton className="h-32 w-full" />
+        ) : !recentDecided || recentDecided.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No recently decided exceptions.</p>
+        ) : (
+          <Card>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Employee</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Reviewed By</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {recentDecided.map((ex) => (
+                    <TableRow key={ex.id} data-testid={`row-decided-${ex.id}`}>
+                      <TableCell className="font-medium">{ex.employeeName}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">{ex.type.replace(/_/g, " ")}</Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">{ex.exceptionDate}</TableCell>
+                      <TableCell>
+                        <Badge variant={ex.status === "approved" ? "default" : "destructive"} className={ex.status === "approved" ? "bg-green-600" : ""}>
+                          {ex.status.charAt(0).toUpperCase() + ex.status.slice(1)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{ex.reviewerName}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </div>
   );
 }
@@ -490,11 +542,43 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
   );
 }
 
+interface TimeInfoResult {
+  origIn?: string;
+  origOut?: string;
+  reqIn?: string;
+  reqOut?: string;
+  cleanReason: string;
+}
+
+function parseTimeInfo(reason: string): TimeInfoResult {
+  const match = reason.match(/\[([^\]]+)\]$/);
+  if (!match) return { cleanReason: reason };
+  const cleanReason = reason.replace(/\s*\[[^\]]+\]$/, "").trim();
+  const parts = match[1].split(", ");
+  const result: TimeInfoResult = { cleanReason };
+  for (const part of parts) {
+    if (part.startsWith("Original In: ")) result.origIn = part.replace("Original In: ", "");
+    if (part.startsWith("Original Out: ")) result.origOut = part.replace("Original Out: ", "");
+    if (part.startsWith("Corrected In: ")) result.reqIn = part.replace("Corrected In: ", "");
+    if (part.startsWith("Corrected Out: ")) result.reqOut = part.replace("Corrected Out: ", "");
+  }
+  return result;
+}
+
 function ExceptionCard({ exception }: { exception: EnrichedException }) {
   const { toast } = useToast();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [notes, setNotes] = useState("");
+  const timeInfo = parseTimeInfo(exception.reason);
+  const hasTimeInfo = timeInfo.origIn || timeInfo.origOut || timeInfo.reqIn || timeInfo.reqOut;
+
+  const initials = (exception.employeeName || "E")
+    .split(" ")
+    .map((n: string) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
 
   const approveMutation = useMutation({
     mutationFn: async () => {
@@ -527,21 +611,47 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   return (
     <Card data-testid={`card-exception-request-${exception.id}`}>
       <CardContent className="p-5">
-        <div className="flex flex-col md:flex-row md:justify-between gap-4">
-          <div className="flex-1 space-y-2">
-            <div className="flex items-center gap-2">
+        <div className="flex gap-4 items-start flex-wrap">
+          <div className="h-10 w-10 rounded-full bg-primary/10 text-primary font-bold text-sm flex items-center justify-center shrink-0">
+            {initials}
+          </div>
+          <div className="flex-1 min-w-[200px] space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="outline">{exception.type.replace(/_/g, " ")}</Badge>
               <Badge variant="secondary" className="bg-amber-100 text-amber-800">Pending</Badge>
             </div>
             <p className="font-semibold" data-testid={`text-exc-employee-${exception.id}`}>
               {exception.employeeName || "Employee"}
             </p>
-            <p className="text-sm" data-testid={`text-exc-date-${exception.id}`}>
-              Date: {exception.exceptionDate}
+            <p className="text-xs text-muted-foreground" data-testid={`text-exc-date-${exception.id}`}>
+              {exception.exceptionDate}
             </p>
-            <p className="text-sm text-muted-foreground" data-testid={`text-exc-reason-${exception.id}`}>
-              {exception.reason}
-            </p>
+
+            {hasTimeInfo && (
+              <div className="grid grid-cols-2 gap-3 max-w-[400px] mt-2">
+                <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3" data-testid={`box-recorded-${exception.id}`}>
+                  <div className="text-[10px] font-bold uppercase text-red-600 mb-1">Recorded</div>
+                  <div className="text-xs text-muted-foreground">{exception.exceptionDate}</div>
+                  <div className="text-sm font-mono font-bold text-red-700 dark:text-red-400">
+                    {timeInfo.origIn || "—"} – {timeInfo.origOut || "—"}
+                  </div>
+                </div>
+                <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3" data-testid={`box-requested-${exception.id}`}>
+                  <div className="text-[10px] font-bold uppercase text-green-600 mb-1">Requested</div>
+                  <div className="text-xs text-muted-foreground">{exception.exceptionDate}</div>
+                  <div className="text-sm font-mono font-bold text-green-700 dark:text-green-400">
+                    {timeInfo.reqIn || "—"} – {timeInfo.reqOut || "—"}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {timeInfo.cleanReason && (
+              <p className="text-sm text-muted-foreground italic" data-testid={`text-exc-reason-${exception.id}`}>
+                "{timeInfo.cleanReason}"
+              </p>
+            )}
+
             {isAdmin && (
               <div className="flex flex-wrap gap-3 text-xs text-muted-foreground pt-1" data-testid={`info-exc-context-${exception.id}`}>
                 <span className="flex items-center gap-1" data-testid={`text-exc-department-${exception.id}`}>
@@ -556,7 +666,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
               </div>
             )}
             <Textarea
-              placeholder="Review notes (optional)..."
+              placeholder="Comment (optional)..."
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               className="mt-2"

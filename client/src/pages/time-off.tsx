@@ -56,11 +56,6 @@ export default function TimeOff() {
     enabled: isAuthenticated,
   });
 
-  const { data: balance } = useQuery<{ vacation: number; sick: number; personal: number }>({
-    queryKey: ["/api/time-off/my-balance"],
-    enabled: isAuthenticated,
-  });
-
   const { data: teamRequests, isLoading: teamLoading } = useQuery<TimeOffRequest[]>({
     queryKey: ["/api/time-off/team"],
     enabled: isAuthenticated,
@@ -80,7 +75,7 @@ export default function TimeOff() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/time-off/my-balance"] });
+
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
       setType("vacation");
       setStartDate("");
@@ -128,7 +123,6 @@ export default function TimeOff() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/time-off/my-balance"] });
       setCashoutOpen(false);
       setCashoutType("vacation");
       setCashoutHours("");
@@ -140,12 +134,6 @@ export default function TimeOff() {
     },
   });
 
-  const cashoutAvailableBalance = balance
-    ? cashoutType === "vacation" ? balance.vacation
-      : cashoutType === "sick" ? balance.sick
-      : cashoutType === "personal" ? balance.personal
-      : 0
-    : 0;
 
   const openEditDialog = (request: TimeOffRequest) => {
     setEditingRequest(request);
@@ -197,15 +185,6 @@ export default function TimeOff() {
 
   const daysRequested = calculateDays();
 
-  const availableBalance = balance
-    ? type === "vacation" ? balance.vacation
-      : type === "sick" ? balance.sick
-      : type === "personal" ? balance.personal
-      : null
-    : null;
-
-  const exceedsBalance = availableBalance !== null && daysRequested > 0 && daysRequested > availableBalance;
-
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "pending":
@@ -228,39 +207,8 @@ export default function TimeOff() {
         subtitle="Request time off and view your upcoming schedule"
       />
 
-      {balance && (
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-          <Card data-testid="card-balance-vacation">
-            <CardContent className="p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Vacation</p>
-              <p className="text-2xl font-bold tabular-nums" data-testid="text-balance-vacation">{balance.vacation}</p>
-              <p className="text-xs text-muted-foreground">days remaining</p>
-            </CardContent>
-          </Card>
-          <Card data-testid="card-balance-sick">
-            <CardContent className="p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Sick</p>
-              <p className="text-2xl font-bold tabular-nums" data-testid="text-balance-sick">{balance.sick}</p>
-              <p className="text-xs text-muted-foreground">days remaining</p>
-            </CardContent>
-          </Card>
-          <Card data-testid="card-balance-personal">
-            <CardContent className="p-4">
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Personal</p>
-              <p className="text-2xl font-bold tabular-nums" data-testid="text-balance-personal">{balance.personal}</p>
-              <p className="text-xs text-muted-foreground">days remaining</p>
-            </CardContent>
-          </Card>
-          <Card className="border-dashed" data-testid="card-cashout-action">
-            <CardContent className="p-4 flex flex-col items-center justify-center">
-              <Button variant="outline" onClick={() => setCashoutOpen(true)} className="w-full" data-testid="button-open-cashout">
-                <DollarSign className="h-4 w-4 mr-1" /> PTO Cash-Out
-              </Button>
-              <p className="text-xs text-muted-foreground mt-1 text-center">Convert PTO to pay</p>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+
+
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card data-testid="card-new-request">
@@ -268,6 +216,13 @@ export default function TimeOff() {
             <CardTitle className="text-base">New Request</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 rounded-md p-3 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between" data-testid="note-balance-info">
+              <span>Contact your manager to check your remaining balance.</span>
+              <Button variant="outline" size="sm" onClick={() => setCashoutOpen(true)} className="ml-2 shrink-0 text-xs h-7" data-testid="button-open-cashout">
+                <DollarSign className="h-3 w-3 mr-1" /> Cash-Out
+              </Button>
+            </div>
+
             <div className="space-y-1">
               <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Request Type</Label>
               <Select value={type} onValueChange={setType}>
@@ -318,18 +273,6 @@ export default function TimeOff() {
             {startDate && endDate && daysRequested > 0 && (
               <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-days-summary">
                 <p className="text-sm font-semibold">Days Requested: <span className="tabular-nums">{daysRequested}</span></p>
-              </div>
-            )}
-
-            {exceedsBalance && (
-              <div className="bg-orange-50 dark:bg-orange-950/20 border border-orange-400 rounded-md p-3 flex items-start gap-2" data-testid="warning-exceeds-balance">
-                <AlertTriangle className="h-4 w-4 text-orange-600 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-semibold text-orange-800 dark:text-orange-300">Exceeds Available Balance</p>
-                  <p className="text-xs text-orange-700 dark:text-orange-400">
-                    You have {availableBalance} {type} day{availableBalance !== 1 ? "s" : ""} remaining but are requesting {daysRequested}. This request will be flagged for manager review.
-                  </p>
-                </div>
               </div>
             )}
 
@@ -449,9 +392,8 @@ export default function TimeOff() {
               </Select>
             </div>
 
-            <div className="bg-muted/50 rounded-md p-3" data-testid="card-cashout-balance">
-              <p className="text-sm text-muted-foreground">Available Balance</p>
-              <p className="text-xl font-bold tabular-nums">{cashoutAvailableBalance} days ({cashoutAvailableBalance * 8} hours)</p>
+            <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 rounded-md p-3 text-xs text-amber-800 dark:text-amber-300">
+              Your manager will verify your available balance when reviewing this request.
             </div>
 
             <div className="space-y-1">
@@ -459,7 +401,6 @@ export default function TimeOff() {
               <Input
                 type="number"
                 min="1"
-                max={cashoutAvailableBalance * 8}
                 value={cashoutHours}
                 onChange={(e) => setCashoutHours(e.target.value)}
                 placeholder="Enter hours..."
@@ -479,18 +420,11 @@ export default function TimeOff() {
                 data-testid="input-cashout-reason"
               />
             </div>
-
-            {cashoutHours && parseFloat(cashoutHours) > cashoutAvailableBalance * 8 && (
-              <div className="bg-orange-50 dark:bg-orange-950/20 border border-orange-400 rounded-md p-3 flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 text-orange-600 mt-0.5 shrink-0" />
-                <p className="text-sm text-orange-800 dark:text-orange-300">Exceeds available balance</p>
-              </div>
-            )}
           </div>
           <DialogFooter>
             <Button
               onClick={() => cashoutMutation.mutate()}
-              disabled={!cashoutHours || parseFloat(cashoutHours) <= 0 || parseFloat(cashoutHours) > cashoutAvailableBalance * 8 || cashoutMutation.isPending}
+              disabled={!cashoutHours || parseFloat(cashoutHours) <= 0 || cashoutMutation.isPending}
               data-testid="button-submit-cashout"
             >
               {cashoutMutation.isPending ? "Submitting..." : "Submit Cash-Out Request"}

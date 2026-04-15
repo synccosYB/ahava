@@ -421,6 +421,162 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/payroll-documents/my", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const docs = await storage.getPayrollDocumentsByEmployee(userId);
+      const enriched = await Promise.all(docs.map(async (doc) => {
+        const uploader = doc.uploadedBy ? await storage.getUser(doc.uploadedBy) : null;
+        return { ...doc, uploaderName: uploader ? `${uploader.firstName} ${uploader.lastName}` : "System" };
+      }));
+      res.json(enriched);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch payroll documents" });
+    }
+  });
+
+  app.get("/api/payroll-documents", requireAuth, requireRole("admin"), async (_req, res) => {
+    try {
+      const docs = await storage.getAllPayrollDocuments();
+      const enriched = await Promise.all(docs.map(async (doc) => {
+        const employee = await storage.getUser(doc.employeeId);
+        const uploader = doc.uploadedBy ? await storage.getUser(doc.uploadedBy) : null;
+        return {
+          ...doc,
+          employeeName: employee ? `${employee.firstName} ${employee.lastName}` : "Unknown",
+          uploaderName: uploader ? `${uploader.firstName} ${uploader.lastName}` : "System",
+        };
+      }));
+      res.json(enriched);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch payroll documents" });
+    }
+  });
+
+  const payrollDocSchema = z.object({
+    employeeId: z.string().min(1),
+    documentCategory: z.enum(["pay_stub", "tax_form", "other"]),
+    documentName: z.string().min(1),
+    payPeriod: z.string().min(1),
+    grossPay: z.number().nullable().optional(),
+    netPay: z.number().nullable().optional(),
+    fileName: z.string().nullable().optional(),
+    fileSize: z.number().nullable().optional(),
+    mimeType: z.string().nullable().optional(),
+  });
+
+  app.post("/api/payroll-documents", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const parsed = payrollDocSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+    }
+    try {
+      const doc = await storage.createPayrollDocument({
+        ...parsed.data,
+        grossPay: parsed.data.grossPay ?? null,
+        netPay: parsed.data.netPay ?? null,
+        fileName: parsed.data.fileName ?? null,
+        fileSize: parsed.data.fileSize ?? null,
+        mimeType: parsed.data.mimeType ?? null,
+        uploadedBy: req.authUser.id,
+      });
+      res.status(201).json(doc);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create payroll document" });
+    }
+  });
+
+  app.post("/api/payroll-documents/my", requireAuth, async (req: any, res) => {
+    const selfUploadSchema = z.object({
+      documentType: z.string().min(1),
+      documentCategory: z.enum(["pay_stub", "tax_form", "other"]),
+      payPeriod: z.string().min(1),
+      fileName: z.string().nullable().optional(),
+      fileSize: z.number().nullable().optional(),
+      mimeType: z.string().nullable().optional(),
+    });
+    const parsed = selfUploadSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+    }
+    try {
+      const doc = await storage.createPayrollDocument({
+        employeeId: req.authUser.id,
+        documentName: parsed.data.documentType,
+        documentCategory: parsed.data.documentCategory,
+        payPeriod: parsed.data.payPeriod,
+        grossPay: null,
+        netPay: null,
+        fileName: parsed.data.fileName ?? null,
+        fileSize: parsed.data.fileSize ?? null,
+        mimeType: parsed.data.mimeType ?? null,
+        uploadedBy: req.authUser.id,
+      });
+      res.status(201).json(doc);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to upload document" });
+    }
+  });
+
+  app.delete("/api/payroll-documents/:id", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const doc = await storage.getPayrollDocument(req.params.id);
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+      await storage.deletePayrollDocument(doc.id);
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete payroll document" });
+    }
+  });
+
+  app.get("/api/pto-balances/all", requireAuth, requireRole("admin"), async (_req, res) => {
+    try {
+      const allUsers = await storage.getAllUsers();
+      const departments = await storage.getAllDepartments();
+      const deptMap = new Map(departments.map(d => [d.id, d.name]));
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+      const deptManagerMap = new Map<string, string[]>();
+      await Promise.all(departments.map(async (dept) => {
+        const managers = await storage.getDepartmentManagers(dept.id);
+        const names = managers.map(m => {
+          const mu = userMap.get(m.userId);
+          return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "";
+        }).filter(n => n);
+        deptManagerMap.set(dept.id, names);
+      }));
+      const balances = await Promise.all(allUsers.filter(u => u.id !== "admin-dev-001").map(async (user) => {
+        const balance = await storage.computeTimeOffBalance(user.id);
+        const ptoSettings = await storage.getEmployeePtoSettings(user.id);
+        const policy = ptoSettings?.ptoPolicyId ? await storage.getPtoPolicy(ptoSettings.ptoPolicyId) : await storage.getDefaultPtoPolicy();
+        const totalVacation = ptoSettings?.vacationBalanceOverride ?? policy?.accrualRate ?? 15;
+        const totalSick = ptoSettings?.sickBalanceOverride ?? 10;
+        const totalPersonal = ptoSettings?.personalBalanceOverride ?? policy?.personalDaysPerYear ?? 5;
+        const pendingRequests = await storage.getTimeOffRequestsByUser(user.id);
+        const pendingVacation = pendingRequests.filter(r => r.type === "vacation" && r.status === "pending").reduce((s, r) => s + r.daysRequested, 0);
+        const pendingSick = pendingRequests.filter(r => r.type === "sick" && r.status === "pending").reduce((s, r) => s + r.daysRequested, 0);
+        const pendingPersonal = pendingRequests.filter(r => r.type === "personal" && r.status === "pending").reduce((s, r) => s + r.daysRequested, 0);
+        const managerNames = user.departmentId ? (deptManagerMap.get(user.departmentId) || []) : [];
+        return {
+          userId: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          role: user.role,
+          departmentId: user.departmentId,
+          departmentName: user.departmentId ? deptMap.get(user.departmentId) || "Unassigned" : "Unassigned",
+          profileImageUrl: user.profileImageUrl,
+          managerNames,
+          vacation: { total: totalVacation, used: balance.vacation, pending: pendingVacation },
+          sick: { total: totalSick, used: balance.sick, pending: pendingSick },
+          personal: { total: totalPersonal, used: balance.personal, pending: pendingPersonal },
+        };
+      }));
+      res.json(balances);
+    } catch (error) {
+      console.error("Error fetching PTO balances:", error);
+      res.status(500).json({ message: "Failed to fetch PTO balances" });
+    }
+  });
+
   app.get("/api/companies", requireAuth, requirePermission("company.view"), async (req, res) => {
     const user = (req as any).authUser as User;
     if (user.role === "admin") {
@@ -1178,6 +1334,37 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching pending exceptions:", error);
       res.status(500).json({ message: "Failed to fetch pending exceptions" });
+    }
+  });
+
+  app.get("/api/attendance/exceptions/recent-decided", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+    try {
+      const user = req.authUser as User;
+      const teamIds = await getTeamUserIds(user);
+      const all = await storage.getAllAttendanceExceptions();
+      const decided = all
+        .filter(e => e.status !== "pending" && teamIds.has(e.employeeId))
+        .sort((a, b) => {
+          const dateA = a.reviewedAt ? new Date(a.reviewedAt).getTime() : 0;
+          const dateB = b.reviewedAt ? new Date(b.reviewedAt).getTime() : 0;
+          return dateB - dateA;
+        })
+        .slice(0, 20);
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+      const enriched = decided.map(e => {
+        const emp = userMap.get(e.employeeId);
+        const reviewer = e.reviewedBy ? userMap.get(e.reviewedBy) : null;
+        return {
+          ...e,
+          employeeName: emp ? `${emp.firstName || ""} ${emp.lastName || ""}`.trim() : "Unknown",
+          reviewerName: reviewer ? `${reviewer.firstName || ""} ${reviewer.lastName || ""}`.trim() : "System",
+        };
+      });
+      res.json(enriched);
+    } catch (error) {
+      console.error("Error fetching recent decided exceptions:", error);
+      res.status(500).json({ message: "Failed to fetch recent decided exceptions" });
     }
   });
 

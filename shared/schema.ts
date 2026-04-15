@@ -103,6 +103,33 @@ export const documentsRelations = relations(documents, ({ one }) => ({
   reviewer: one(users, { fields: [documents.reviewedBy], references: [users.id] }),
 }));
 
+export const payrollDocuments = pgTable("payroll_documents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  documentCategory: varchar("document_category", { length: 30 }).notNull(),
+  documentName: varchar("document_name", { length: 500 }).notNull(),
+  payPeriod: varchar("pay_period", { length: 100 }).notNull(),
+  grossPay: real("gross_pay"),
+  netPay: real("net_pay"),
+  fileName: varchar("file_name", { length: 500 }),
+  fileSize: integer("file_size"),
+  mimeType: varchar("mime_type", { length: 100 }),
+  uploadedBy: varchar("uploaded_by").references(() => users.id),
+  uploadedAt: timestamp("uploaded_at").defaultNow(),
+});
+
+export const insertPayrollDocumentSchema = createInsertSchema(payrollDocuments).omit({
+  id: true,
+  uploadedAt: true,
+});
+export type InsertPayrollDocument = z.infer<typeof insertPayrollDocumentSchema>;
+export type PayrollDocument = typeof payrollDocuments.$inferSelect;
+
+export const payrollDocumentsRelations = relations(payrollDocuments, ({ one }) => ({
+  employee: one(users, { fields: [payrollDocuments.employeeId], references: [users.id] }),
+  uploader: one(users, { fields: [payrollDocuments.uploadedBy], references: [users.id] }),
+}));
+
 export const policies = pgTable("policies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").references(() => companies.id),

@@ -84,6 +84,9 @@ import {
   documents,
   type Document,
   type InsertDocument,
+  payrollDocuments,
+  type PayrollDocument,
+  type InsertPayrollDocument,
   employeeSchedules,
   type EmployeeSchedule,
   type InsertEmployeeSchedule,
@@ -318,6 +321,12 @@ export interface IStorage {
   createDocument(doc: InsertDocument): Promise<Document>;
   updateDocument(id: string, data: Partial<Document>): Promise<Document | undefined>;
   deleteDocument(id: string): Promise<void>;
+
+  getPayrollDocumentsByEmployee(employeeId: string): Promise<PayrollDocument[]>;
+  getAllPayrollDocuments(): Promise<PayrollDocument[]>;
+  getPayrollDocument(id: string): Promise<PayrollDocument | undefined>;
+  createPayrollDocument(doc: InsertPayrollDocument): Promise<PayrollDocument>;
+  deletePayrollDocument(id: string): Promise<void>;
 
   getEmployeeSchedules(employeeId: string): Promise<EmployeeSchedule[]>;
   getEmployeeScheduleByDay(employeeId: string, dayOfWeek: number): Promise<EmployeeSchedule | undefined>;
@@ -1730,6 +1739,28 @@ export class DatabaseStorage implements IStorage {
 
   async deleteEmployeeSchedules(employeeId: string): Promise<void> {
     await db.delete(employeeSchedules).where(eq(employeeSchedules.employeeId, employeeId));
+  }
+
+  async getPayrollDocumentsByEmployee(employeeId: string): Promise<PayrollDocument[]> {
+    return db.select().from(payrollDocuments).where(eq(payrollDocuments.employeeId, employeeId)).orderBy(desc(payrollDocuments.uploadedAt));
+  }
+
+  async getAllPayrollDocuments(): Promise<PayrollDocument[]> {
+    return db.select().from(payrollDocuments).orderBy(desc(payrollDocuments.uploadedAt));
+  }
+
+  async getPayrollDocument(id: string): Promise<PayrollDocument | undefined> {
+    const [doc] = await db.select().from(payrollDocuments).where(eq(payrollDocuments.id, id));
+    return doc;
+  }
+
+  async createPayrollDocument(doc: InsertPayrollDocument): Promise<PayrollDocument> {
+    const [created] = await db.insert(payrollDocuments).values(doc).returning();
+    return created;
+  }
+
+  async deletePayrollDocument(id: string): Promise<void> {
+    await db.delete(payrollDocuments).where(eq(payrollDocuments.id, id));
   }
 }
 

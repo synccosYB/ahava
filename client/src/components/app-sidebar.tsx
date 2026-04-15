@@ -52,6 +52,7 @@ const employeeItems: NavItem[] = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard, roles: ["employee", "manager", "admin"] },
   { title: "My Attendance", href: "/attendance", icon: Clock, roles: ["employee", "manager", "admin"] },
   { title: "Time Off", href: "/time-off", icon: CalendarDays, roles: ["employee", "manager", "admin"] },
+  { title: "My Pay Docs", href: "/my-pay-docs", icon: DollarSign, roles: ["employee", "manager", "admin"] },
   { title: "Profile", href: "/profile", icon: UserCircle, roles: ["employee", "manager", "admin"] },
   { title: "User Manual", href: "/manual", icon: BookOpen, roles: ["employee", "manager", "admin"] },
 ];
@@ -70,6 +71,7 @@ const adminItems: NavItem[] = [
   { title: "PTO & Leave", href: "/pto-leave", icon: CalendarDays, roles: ["admin"] },
   { title: "Alerts & Exceptions", href: "/alerts-exceptions", icon: AlertTriangle, roles: ["admin"] },
   { title: "Payroll Prep", href: "/payroll-prep", icon: DollarSign, roles: ["admin"] },
+  { title: "Payroll Documents", href: "/payroll-documents", icon: FileText, roles: ["admin"] },
   { title: "Reports", href: "/reports", icon: BarChart3, roles: ["manager", "admin"] },
   { title: "Permissions", href: "/permissions", icon: ShieldCheck, roles: ["admin"] },
   { title: "Roles", href: "/role-management", icon: Shield, roles: ["admin"] },

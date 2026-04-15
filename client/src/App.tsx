@@ -28,6 +28,8 @@ import PermissionsPage from "@/pages/permissions";
 import RoleManagementPage from "@/pages/role-management";
 import KioskManagementPage from "@/pages/kiosk-management";
 import ChangePasswordPage from "@/pages/change-password";
+import MyPayrollDocsPage from "@/pages/my-payroll-docs";
+import AdminPayrollDocsPage from "@/pages/admin-payroll-docs";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
@@ -41,6 +43,7 @@ function AuthenticatedRouter() {
         <Route path="/manual" component={ManualPage} />
         <Route path="/attendance" component={MyAttendance} />
         <Route path="/time-off" component={TimeOff} />
+        <Route path="/my-pay-docs" component={MyPayrollDocsPage} />
         <Route path="/profile" component={ProfilePage} />
         <Route path="/team">{() => (
           <ProtectedRoute roles={["manager", "admin"]}>
@@ -115,6 +118,11 @@ function AuthenticatedRouter() {
         <Route path="/role-management">{() => (
           <ProtectedRoute roles={["admin"]}>
             <RoleManagementPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/payroll-documents">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <AdminPayrollDocsPage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/kiosk-management">{() => (
