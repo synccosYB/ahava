@@ -77,7 +77,7 @@ export default function MyAttendance() {
     if (!records || records.length === 0) return { totalHours: 0, daysWorked: 0, dailyAvg: 0 };
     const completedRecords = records.filter((r) => r.totalHours != null);
     const totalHours = completedRecords.reduce((sum, r) => sum + (r.totalHours || 0), 0);
-    const daysWorked = completedRecords.length;
+    const daysWorked = new Set(completedRecords.map((r) => r.workDate)).size;
     const dailyAvg = daysWorked > 0 ? totalHours / daysWorked : 0;
     return {
       totalHours: Math.round(totalHours * 10) / 10,
