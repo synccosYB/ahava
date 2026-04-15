@@ -1471,6 +1471,13 @@ export async function registerRoutes(
     const weekStartStr = weekStart.toISOString().split("T")[0];
     const weekAttendance = await storage.getAttendanceByDateRange(weekStartStr, today);
 
+    const uniqueDeptIds = [...new Set(teamMembers.map(m => m.departmentId).filter(Boolean))] as string[];
+    const deptMap = new Map<string, string>();
+    await Promise.all(uniqueDeptIds.map(async (deptId) => {
+      const dept = await storage.getDepartment(deptId);
+      if (dept) deptMap.set(deptId, dept.name);
+    }));
+
     const teamStatus = teamMembers.map(member => {
       const todayRecord = todayAttendance.find(a => a.employeeId === member.id && a.clockIn && !a.clockOut);
       const todayRecords = todayAttendance.filter(a => a.employeeId === member.id);
@@ -1505,6 +1512,7 @@ export async function registerRoutes(
         id: member.id,
         firstName: member.firstName,
         lastName: member.lastName,
+        departmentName: member.departmentId ? (deptMap.get(member.departmentId) ?? "Unassigned") : "Unassigned",
         status,
         hasPtoToday,
         todayHours: Math.round(todayHours * 10) / 10,

@@ -26,6 +26,7 @@ type TeamMemberStatus = {
   id: string;
   firstName: string | null;
   lastName: string | null;
+  departmentName: string;
   status: string;
   hasPtoToday: boolean;
   todayHours: number;
@@ -109,6 +110,7 @@ export default function ManagerDashboardPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Today</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">This Week</TableHead>
@@ -119,6 +121,9 @@ export default function ManagerDashboardPage() {
                   <TableRow key={member.id} data-testid={`row-team-member-${member.id}`}>
                     <TableCell className="font-medium" data-testid={`text-member-name-${member.id}`}>
                       {member.firstName} {member.lastName}
+                    </TableCell>
+                    <TableCell data-testid={`text-member-department-${member.id}`}>
+                      {member.departmentName ?? "Unassigned"}
                     </TableCell>
                     <TableCell data-testid={`text-member-status-${member.id}`}>
                       <span className="flex items-center gap-2">
