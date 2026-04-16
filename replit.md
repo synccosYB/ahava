@@ -47,6 +47,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - `documents`
 - `employee_schedules`
 - `payroll_documents`
+- `workflows`
 
 ## External Dependencies
 - **PostgreSQL:** Primary database for all application data.
@@ -89,6 +90,16 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **Integration**: Replaces the old simple dialog in `PolicySection` on the Rules & Controls page
 - **Policy Type Keys**: Database uses `attendance`, `pto`, `payroll`, `approvals`, `alerts`, `kiosk` (not suffixed versions)
 - **Edit Mode**: Fetches existing rules and assignments to pre-populate all wizard steps
+
+## Visual Workflow Builder
+- **Component**: `client/src/components/workflow-builder.tsx` - Drag-and-drop visual workflow builder using @xyflow/react
+- **Node Types**: Trigger (start events), Condition (branching logic with Yes/No paths), Approval (require sign-off), Action (execute steps), Notification (send notices)
+- **Features**: Node palette for adding nodes, click-to-configure side panel, directional edges, preview mode, save as draft or activate
+- **Backend Engine**: `server/workflowEngine.ts` - Executes active workflows when trigger events fire (PTO requests, attendance exceptions)
+- **Database**: `workflows` table stores id, name, triggerType, status, nodeGraph (JSON), timestamps
+- **API**: `GET/POST /api/workflows`, `GET/PATCH/DELETE /api/workflows/:id`
+- **Integration**: Accessible from Rules & Controls > Approval Workflows section, with tabs for "Visual Workflows" and "Rule Policies"
+- **Trigger Integration**: Workflow engine fires on PTO request submission and attendance exception creation
 
 ## HR Onboarding & Employee Management
 - **Add Employee**: Multi-step dialog on Employees page (basic info -> employment details -> pay setup). Creates user with temporary password + `forcePasswordChange` flag.

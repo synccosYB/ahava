@@ -14,6 +14,7 @@ import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, D
 import { runAlertDetection } from "./services/alerts";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts } from "./services/policyEnforcement";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
+import { runWorkflowsForTrigger } from "./workflowEngine";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
 import multer from "multer";
@@ -1314,6 +1315,14 @@ export async function registerRoutes(
         reason,
         status: "pending",
       });
+
+      runWorkflowsForTrigger({
+        userId,
+        user: req.authUser,
+        triggerType: "attendance_exception",
+        data: { type, exceptionDate, exceptionId: exception.id },
+      }).catch(err => console.error("Workflow trigger error:", err));
+
       res.status(201).json(exception);
     } catch (error) {
       console.error("Error creating attendance exception:", error);
@@ -1695,6 +1704,14 @@ export async function registerRoutes(
         exceedsBalance,
         balanceAtSubmission: availableBalance ?? null,
       });
+
+      runWorkflowsForTrigger({
+        userId,
+        user: req.authUser,
+        triggerType: "pto_request_submitted",
+        data: { daysRequested: computedDays, ptoBalance: availableBalance, requestType, requestId: request.id },
+      }).catch(err => console.error("Workflow trigger error:", err));
+
       res.json(request);
     } catch (error: any) {
       console.error("Error creating time off request:", error);
@@ -3866,6 +3883,103 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error deleting kiosk device:", error);
       res.status(500).json({ message: "Failed to delete kiosk device" });
+    }
+  });
+
+  app.get("/api/workflows", requireAuth, requireRole("admin"), async (_req, res) => {
+    try {
+      const allWorkflows = await storage.getAllWorkflows();
+      res.json(allWorkflows);
+    } catch (error) {
+      console.error("Error fetching workflows:", error);
+      res.status(500).json({ message: "Failed to fetch workflows" });
+    }
+  });
+
+  app.get("/api/workflows/:id", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const workflow = await storage.getWorkflow(req.params.id);
+      if (!workflow) return res.status(404).json({ message: "Workflow not found" });
+      res.json(workflow);
+    } catch (error) {
+      console.error("Error fetching workflow:", error);
+      res.status(500).json({ message: "Failed to fetch workflow" });
+    }
+  });
+
+  app.post("/api/workflows", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const { name, triggerType, policyTypeId, status, nodeGraph } = req.body;
+      if (!name || !triggerType || !nodeGraph) {
+        return res.status(400).json({ message: "Name, triggerType, and nodeGraph are required" });
+      }
+      const workflow = await storage.createWorkflow({
+        name,
+        triggerType,
+        policyTypeId: policyTypeId || null,
+        status: status || "draft",
+        nodeGraph,
+      });
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        action: "workflow.created",
+        targetId: workflow.id,
+        targetType: "workflow",
+        newValue: { name: workflow.name, triggerType: workflow.triggerType },
+        ...getAuditContext(req),
+      });
+      res.status(201).json(workflow);
+    } catch (error) {
+      console.error("Error creating workflow:", error);
+      res.status(500).json({ message: "Failed to create workflow" });
+    }
+  });
+
+  app.patch("/api/workflows/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const existing = await storage.getWorkflow(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Workflow not found" });
+      const { name, triggerType, policyTypeId, status, nodeGraph } = req.body;
+      const updated = await storage.updateWorkflow(req.params.id, {
+        ...(name !== undefined && { name }),
+        ...(triggerType !== undefined && { triggerType }),
+        ...(policyTypeId !== undefined && { policyTypeId }),
+        ...(status !== undefined && { status }),
+        ...(nodeGraph !== undefined && { nodeGraph }),
+      });
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        action: "workflow.updated",
+        targetId: req.params.id,
+        targetType: "workflow",
+        oldValue: { name: existing.name, status: existing.status },
+        newValue: { name: updated?.name, status: updated?.status },
+        ...getAuditContext(req),
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating workflow:", error);
+      res.status(500).json({ message: "Failed to update workflow" });
+    }
+  });
+
+  app.delete("/api/workflows/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const existing = await storage.getWorkflow(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Workflow not found" });
+      await storage.deleteWorkflow(req.params.id);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        action: "workflow.deleted",
+        targetId: req.params.id,
+        targetType: "workflow",
+        oldValue: { name: existing.name },
+        ...getAuditContext(req),
+      });
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting workflow:", error);
+      res.status(500).json({ message: "Failed to delete workflow" });
     }
   });
 

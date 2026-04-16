@@ -18,11 +18,12 @@ import {
 } from "@/components/ui/dialog";
 import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
-  GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X
+  GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PolicyWizard } from "@/components/policy-wizard";
-import type { Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User } from "@shared/schema";
+import { WorkflowBuilder } from "@/components/workflow-builder";
+import type { Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User, Workflow as WorkflowType } from "@shared/schema";
 
 const sections = [
   { key: "general", label: "General", icon: Settings2 },
@@ -69,7 +70,7 @@ export default function RulesControlsPage() {
           {activeSection === "attendance" && <PolicySection policyTypeKey="attendance" title="Attendance Rules" />}
           {activeSection === "pto" && <PolicySection policyTypeKey="pto" title="PTO Policies" />}
           {activeSection === "payroll" && <PolicySection policyTypeKey="payroll" title="Payroll Rules" />}
-          {activeSection === "approval" && <PolicySection policyTypeKey="approvals" title="Approval Workflows" />}
+          {activeSection === "approval" && <ApprovalWorkflowsSection />}
           {activeSection === "roles" && <RolesSection />}
           {activeSection === "alerts" && <AlertsSection />}
           {activeSection === "kiosk" && <KioskSection />}
@@ -563,6 +564,141 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function ApprovalWorkflowsSection() {
+  const { toast } = useToast();
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const [editingWorkflow, setEditingWorkflow] = useState<WorkflowType | null>(null);
+  const [previewWorkflow, setPreviewWorkflow] = useState<WorkflowType | null>(null);
+  const [tab, setTab] = useState<"policies" | "workflows">("workflows");
+
+  const { data: wfList, isLoading: wfLoading } = useQuery<WorkflowType[]>({ queryKey: ["/api/workflows"] });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/workflows/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      toast({ title: "Workflow deleted" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  if (builderOpen || previewWorkflow) {
+    return (
+      <WorkflowBuilder
+        workflow={editingWorkflow || previewWorkflow}
+        onClose={() => {
+          setBuilderOpen(false);
+          setEditingWorkflow(null);
+          setPreviewWorkflow(null);
+        }}
+        readOnly={!!previewWorkflow}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h2 className="text-lg font-semibold">Approval Workflows</h2>
+        <div className="flex gap-2">
+          <div className="flex rounded-md border overflow-hidden">
+            <button
+              onClick={() => setTab("workflows")}
+              className={`px-3 py-1.5 text-sm ${tab === "workflows" ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}
+              data-testid="button-tab-workflows"
+            >
+              <Workflow className="h-4 w-4 inline mr-1" /> Visual Workflows
+            </button>
+            <button
+              onClick={() => setTab("policies")}
+              className={`px-3 py-1.5 text-sm ${tab === "policies" ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}
+              data-testid="button-tab-policies"
+            >
+              <GitBranch className="h-4 w-4 inline mr-1" /> Rule Policies
+            </button>
+          </div>
+          {tab === "workflows" && (
+            <Button
+              onClick={() => { setEditingWorkflow(null); setBuilderOpen(true); }}
+              data-testid="button-new-workflow"
+            >
+              <Plus className="h-4 w-4 mr-1" /> New Workflow
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {tab === "policies" ? (
+        <PolicySection policyTypeKey="approvals" title="Approval Rule Policies" />
+      ) : (
+        <Card data-testid="card-workflows-list">
+          <CardContent className="p-0">
+            {wfLoading ? (
+              <div className="p-6 space-y-3">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
+              </div>
+            ) : !wfList || wfList.length === 0 ? (
+              <div className="p-8 text-center" data-testid="text-no-workflows">
+                <Workflow className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+                <p className="text-muted-foreground mb-1">No visual workflows yet</p>
+                <p className="text-xs text-muted-foreground mb-4">Create a workflow to define multi-step approval and automation flows</p>
+                <Button onClick={() => { setEditingWorkflow(null); setBuilderOpen(true); }} data-testid="button-create-first-workflow">
+                  <Plus className="h-4 w-4 mr-1" /> Create Workflow
+                </Button>
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Trigger</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Updated</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {wfList.map((wf) => (
+                    <TableRow key={wf.id} data-testid={`row-workflow-${wf.id}`}>
+                      <TableCell className="font-medium">{wf.name}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">{wf.triggerType.replace(/_/g, " ")}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={wf.status === "active" ? "default" : "secondary"}>{wf.status}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {wf.updatedAt ? new Date(wf.updatedAt).toLocaleDateString() : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setPreviewWorkflow(wf)} data-testid={`button-preview-workflow-${wf.id}`}>
+                            <Eye className="h-4 w-4 mr-1" /> View
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => { setEditingWorkflow(wf); setBuilderOpen(true); }} data-testid={`button-edit-workflow-${wf.id}`}>
+                            <Pencil className="h-4 w-4 mr-1" /> Edit
+                          </Button>
+                          <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deleteMutation.mutate(wf.id)} disabled={deleteMutation.isPending} data-testid={`button-delete-workflow-${wf.id}`}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

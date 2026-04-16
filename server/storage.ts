@@ -90,6 +90,9 @@ import {
   employeeSchedules,
   type EmployeeSchedule,
   type InsertEmployeeSchedule,
+  workflows,
+  type Workflow,
+  type InsertWorkflow,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull } from "drizzle-orm";
@@ -333,6 +336,13 @@ export interface IStorage {
   getEmployeeScheduleByDay(employeeId: string, dayOfWeek: number): Promise<EmployeeSchedule | undefined>;
   upsertEmployeeSchedule(schedule: InsertEmployeeSchedule): Promise<EmployeeSchedule>;
   deleteEmployeeSchedules(employeeId: string): Promise<void>;
+
+  getWorkflow(id: string): Promise<Workflow | undefined>;
+  getAllWorkflows(): Promise<Workflow[]>;
+  getWorkflowsByTriggerType(triggerType: string): Promise<Workflow[]>;
+  createWorkflow(workflow: InsertWorkflow): Promise<Workflow>;
+  updateWorkflow(id: string, workflow: Partial<InsertWorkflow>): Promise<Workflow | undefined>;
+  deleteWorkflow(id: string): Promise<void>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -1770,6 +1780,33 @@ export class DatabaseStorage implements IStorage {
 
   async deletePayrollDocument(id: string): Promise<void> {
     await db.delete(payrollDocuments).where(eq(payrollDocuments.id, id));
+  }
+
+  async getWorkflow(id: string): Promise<Workflow | undefined> {
+    const [workflow] = await db.select().from(workflows).where(eq(workflows.id, id));
+    return workflow;
+  }
+
+  async getAllWorkflows(): Promise<Workflow[]> {
+    return db.select().from(workflows).orderBy(desc(workflows.createdAt));
+  }
+
+  async getWorkflowsByTriggerType(triggerType: string): Promise<Workflow[]> {
+    return db.select().from(workflows).where(and(eq(workflows.triggerType, triggerType), eq(workflows.status, "active")));
+  }
+
+  async createWorkflow(workflow: InsertWorkflow): Promise<Workflow> {
+    const [created] = await db.insert(workflows).values(workflow).returning();
+    return created;
+  }
+
+  async updateWorkflow(id: string, workflow: Partial<InsertWorkflow>): Promise<Workflow | undefined> {
+    const [updated] = await db.update(workflows).set({ ...workflow, updatedAt: new Date() }).where(eq(workflows.id, id)).returning();
+    return updated;
+  }
+
+  async deleteWorkflow(id: string): Promise<void> {
+    await db.delete(workflows).where(eq(workflows.id, id));
   }
 }
 

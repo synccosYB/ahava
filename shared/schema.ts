@@ -681,6 +681,25 @@ export const payrollAdjustmentsRelations = relations(payrollAdjustments, ({ one 
   punchLog: one(punchLogs, { fields: [payrollAdjustments.punchLogId], references: [punchLogs.id] }),
 }));
 
+export const workflows = pgTable("workflows", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 200 }).notNull(),
+  policyTypeId: varchar("policy_type_id").references(() => policyTypes.id),
+  triggerType: varchar("trigger_type", { length: 100 }).notNull(),
+  status: varchar("status", { length: 20 }).default("draft").notNull(),
+  nodeGraph: jsonb("node_graph").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertWorkflowSchema = createInsertSchema(workflows).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertWorkflow = z.infer<typeof insertWorkflowSchema>;
+export type Workflow = typeof workflows.$inferSelect;
+
 export const employeeSchedules = pgTable("employee_schedules", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   employeeId: varchar("employee_id").notNull().references(() => users.id),
