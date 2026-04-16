@@ -12,7 +12,6 @@ import {
   BarChart3,
   LogOut,
   MapPin,
-  AlertTriangle,
   DollarSign,
   ClipboardList,
   Bell,
@@ -69,7 +68,6 @@ const adminItems: NavItem[] = [
   { title: "Locations", href: "/locations", icon: MapPin, roles: ["admin"] },
   { title: "Time Clock Rules", href: "/rules-controls", icon: Settings2, roles: ["admin"] },
   { title: "PTO & Leave", href: "/pto-leave", icon: CalendarDays, roles: ["admin"] },
-  { title: "Alerts & Exceptions", href: "/alerts-exceptions", icon: AlertTriangle, roles: ["admin"] },
   { title: "Payroll Prep", href: "/payroll-prep", icon: DollarSign, roles: ["admin"] },
   { title: "Payroll Documents", href: "/payroll-documents", icon: FileText, roles: ["admin"] },
   { title: "Reports", href: "/reports", icon: BarChart3, roles: ["manager", "admin"] },
@@ -181,7 +179,7 @@ export function AppSidebar() {
                       <span>{item.title}</span>
                     </Link>
                   </SidebarMenuButton>
-                  {item.title === "Alerts & Exceptions" && exceptionCount > 0 && (
+                  {item.title === "PTO & Leave" && exceptionCount > 0 && (
                     <SidebarMenuBadge data-testid="badge-pending-exceptions">{exceptionCount}</SidebarMenuBadge>
                   )}
                 </SidebarMenuItem>

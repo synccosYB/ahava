@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, Redirect } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -17,7 +17,6 @@ import AdminDashboardPage from "@/pages/admin-dashboard";
 import ReportsPage from "@/pages/reports";
 import EmployeesPage from "@/pages/employees";
 import LocationsDepartmentsPage from "@/pages/locations-departments";
-import AttendanceExceptionsPage from "@/pages/attendance-exceptions";
 import PtoLeavePage from "@/pages/pto-leave";
 import RulesControlsPage from "@/pages/rules-controls";
 import PayrollPrepPage from "@/pages/payroll-prep";
@@ -77,7 +76,7 @@ function AuthenticatedRouter() {
         )}</Route>
         <Route path="/alerts-exceptions">{() => (
           <ProtectedRoute roles={["admin"]}>
-            <AttendanceExceptionsPage />
+            <Redirect to="/pto-leave?tab=alerts-exceptions" />
           </ProtectedRoute>
         )}</Route>
         <Route path="/pto-leave">{() => (
