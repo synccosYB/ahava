@@ -92,7 +92,7 @@ import {
   type InsertEmployeeSchedule,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull } from "drizzle-orm";
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
@@ -147,9 +147,10 @@ export interface IStorage {
   createAttendanceRecord(record: InsertPunchLog): Promise<PunchLog>;
   updateAttendanceRecord(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
 
-  clockIn(userId: string, source?: string): Promise<PunchLog>;
+  clockIn(userId: string, source?: string, roundedTime?: Date): Promise<PunchLog>;
   clockOut(userId: string, otThresholdDaily?: number): Promise<PunchLog | undefined>;
   getCurrentAttendance(userId: string): Promise<PunchLog | undefined>;
+  getOpenPunchLogs(): Promise<PunchLog[]>;
   getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<PunchLog[]>;
   getTodayHours(userId: string): Promise<number>;
   getWeekHours(userId: string): Promise<number>;
@@ -553,8 +554,8 @@ export class DatabaseStorage implements IStorage {
     return this.updatePunchLog(id, record);
   }
 
-  async clockIn(userId: string, source: string = "web"): Promise<PunchLog> {
-    const now = new Date();
+  async clockIn(userId: string, source: string = "web", roundedTime?: Date): Promise<PunchLog> {
+    const now = roundedTime || new Date();
     const dateStr = now.toISOString().split("T")[0];
     const [record] = await db.insert(punchLogs).values({
       employeeId: userId,
@@ -595,6 +596,14 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(punchLogs.clockIn))
       .limit(1);
     return record ? punchLogToLegacy(record) : undefined;
+  }
+
+  async getOpenPunchLogs(): Promise<PunchLog[]> {
+    const records = await db
+      .select()
+      .from(punchLogs)
+      .where(isNull(punchLogs.clockOut));
+    return records.map(punchLogToLegacy);
   }
 
   async getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<PunchLog[]> {

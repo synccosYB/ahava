@@ -2,13 +2,16 @@ import { db } from "../db";
 import { punchLogs, users, policies, policyRules, policyAssignments, policyTypes } from "@shared/schema";
 import { eq, and, lte, gte, isNull, ne, desc, sql } from "drizzle-orm";
 import { storage } from "../storage";
+import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "../policyEngine";
 
 export type AlertType =
   | "missing_clock_out"
   | "late_clock_in"
   | "overtime_threshold"
   | "no_show"
-  | "repeated_exception";
+  | "repeated_exception"
+  | "break_violation"
+  | "auto_clock_out";
 
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
 
@@ -50,7 +53,7 @@ export async function detectMissingClockOuts(): Promise<GeneratedAlert[]> {
   return alerts;
 }
 
-export async function detectOvertimeThreshold(thresholdHours: number = 40): Promise<GeneratedAlert[]> {
+export async function detectOvertimeThreshold(): Promise<GeneratedAlert[]> {
   const alerts: GeneratedAlert[] = [];
   const now = new Date();
   const dayOfWeek = now.getDay();
@@ -62,6 +65,10 @@ export async function detectOvertimeThreshold(thresholdHours: number = 40): Prom
   const allUsers = await storage.getAllUsers();
 
   for (const user of allUsers) {
+    const attendancePolicy = await getEffectivePolicy(user.companyId, user.id, "attendance", user);
+    const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+    const thresholdHours = rules.otThresholdWeekly ?? DEFAULT_ATTENDANCE_RULES.otThresholdWeekly;
+
     const records = await db
       .select()
       .from(punchLogs)
@@ -88,7 +95,63 @@ export async function detectOvertimeThreshold(thresholdHours: number = 40): Prom
         severity: weekHours >= thresholdHours * 1.25 ? "critical" : "high",
         employeeId: user.id,
         message: `Weekly hours (${Math.round(weekHours * 10) / 10}h) exceed threshold (${thresholdHours}h)`,
-        details: { weekHours: Math.round(weekHours * 10) / 10, threshold: thresholdHours, weekStart },
+        details: {
+          weekHours: Math.round(weekHours * 10) / 10,
+          threshold: thresholdHours,
+          weekStart,
+          policyName: attendancePolicy?.policyName || "Default",
+        },
+      });
+    }
+  }
+
+  return alerts;
+}
+
+export async function detectBreakViolations(): Promise<GeneratedAlert[]> {
+  const alerts: GeneratedAlert[] = [];
+  const today = new Date().toISOString().split("T")[0];
+
+  const completedPunches = await db
+    .select()
+    .from(punchLogs)
+    .where(
+      and(
+        eq(punchLogs.workDate, today),
+        ne(punchLogs.status, "in-progress")
+      )
+    );
+
+  for (const punch of completedPunches) {
+    if (!punch.clockIn || !punch.clockOut) continue;
+
+    const user = await storage.getUser(punch.employeeId);
+    if (!user) continue;
+
+    const attendancePolicy = await getEffectivePolicy(user.companyId, user.id, "attendance", user);
+    const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+    const requireBreakAfterHours = rules.requireBreakAfterHours ?? DEFAULT_ATTENDANCE_RULES.requireBreakAfterHours;
+    const breakDurationMinutes = rules.breakDurationMinutes ?? DEFAULT_ATTENDANCE_RULES.breakDurationMinutes;
+
+    const shiftMs = new Date(punch.clockOut).getTime() - new Date(punch.clockIn).getTime();
+    const shiftHours = shiftMs / (1000 * 60 * 60);
+    const breakMinutes = punch.breakMinutes || 0;
+
+    if (requireBreakAfterHours && shiftHours > requireBreakAfterHours && breakMinutes < breakDurationMinutes) {
+      alerts.push({
+        type: "break_violation" as AlertType,
+        severity: "medium",
+        employeeId: punch.employeeId,
+        message: `Break violation: ${Math.round(shiftHours * 10) / 10}h shift without required ${breakDurationMinutes} min break (took ${breakMinutes} min).`,
+        details: {
+          punchLogId: punch.id,
+          workDate: punch.workDate,
+          shiftHours: Math.round(shiftHours * 10) / 10,
+          requireBreakAfterHours,
+          breakDurationMinutes,
+          breakMinutesTaken: breakMinutes,
+          policyName: attendancePolicy?.policyName || "Default",
+        },
       });
     }
   }
@@ -143,6 +206,96 @@ export async function detectNoShows(): Promise<GeneratedAlert[]> {
   return alerts;
 }
 
+export async function detectLateArrivals(): Promise<GeneratedAlert[]> {
+  const alerts: GeneratedAlert[] = [];
+  const today = new Date().toISOString().split("T")[0];
+
+  const todayPunches = await db
+    .select()
+    .from(punchLogs)
+    .where(eq(punchLogs.workDate, today));
+
+  for (const punch of todayPunches) {
+    if (!punch.clockIn) continue;
+
+    const user = await storage.getUser(punch.employeeId);
+    if (!user) continue;
+
+    const attendancePolicy = await getEffectivePolicy(user.companyId, user.id, "attendance", user);
+    const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+    const gracePeriodMinutes = rules.gracePeriodMinutes ?? DEFAULT_ATTENDANCE_RULES.gracePeriodMinutes;
+
+    const clockInDate = new Date(punch.clockIn);
+    const dayOfWeek = clockInDate.getDay();
+    const schedule = await storage.getEmployeeScheduleByDay(user.id, dayOfWeek);
+    if (!schedule) continue;
+
+    const [startH, startM] = schedule.startTime.split(":").map(Number);
+    const scheduleStart = startH * 60 + startM;
+    const clockInMinutes = clockInDate.getHours() * 60 + clockInDate.getMinutes();
+    const diff = clockInMinutes - scheduleStart;
+
+    if (diff > gracePeriodMinutes) {
+      alerts.push({
+        type: "late_clock_in",
+        severity: diff > 30 ? "high" : "medium",
+        employeeId: punch.employeeId,
+        message: `Late arrival: ${diff} minutes past scheduled start (${schedule.startTime}). Grace period: ${gracePeriodMinutes} min.`,
+        details: {
+          punchLogId: punch.id,
+          workDate: punch.workDate,
+          scheduledStart: schedule.startTime,
+          actualClockIn: punch.clockIn,
+          lateMinutes: diff,
+          gracePeriodMinutes,
+          policyName: attendancePolicy?.policyName || "Default",
+        },
+      });
+    }
+  }
+
+  return alerts;
+}
+
+export async function detectStaleOpenPunches(): Promise<GeneratedAlert[]> {
+  const alerts: GeneratedAlert[] = [];
+  const openPunches = await storage.getOpenPunchLogs();
+
+  for (const punch of openPunches) {
+    if (!punch.clockIn) continue;
+
+    const user = await storage.getUser(punch.employeeId);
+    if (!user) continue;
+
+    const attendancePolicy = await getEffectivePolicy(user.companyId, punch.employeeId, "attendance", user);
+    const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+    const autoClockOutEnabled = rules.autoClockOutEnabled ?? DEFAULT_ATTENDANCE_RULES.autoClockOutEnabled;
+    if (!autoClockOutEnabled) continue;
+
+    const autoClockOutAfterHours = rules.autoClockOutAfterHours ?? DEFAULT_ATTENDANCE_RULES.autoClockOutAfterHours;
+    const clockInTime = new Date(punch.clockIn);
+    const hoursOpen = (Date.now() - clockInTime.getTime()) / (1000 * 60 * 60);
+
+    if (hoursOpen >= autoClockOutAfterHours) {
+      alerts.push({
+        type: "auto_clock_out",
+        severity: "high",
+        employeeId: punch.employeeId,
+        message: `Open punch exceeds ${autoClockOutAfterHours}h threshold (open since ${clockInTime.toISOString()}). Auto clock-out eligible.`,
+        details: {
+          punchLogId: punch.id,
+          clockIn: clockInTime.toISOString(),
+          hoursOpen: Math.round(hoursOpen * 10) / 10,
+          autoClockOutAfterHours,
+          policyName: attendancePolicy?.policyName || "Default",
+        },
+      });
+    }
+  }
+
+  return alerts;
+}
+
 export async function runAlertDetection(): Promise<GeneratedAlert[]> {
   const allAlerts: GeneratedAlert[] = [];
 
@@ -158,6 +311,27 @@ export async function runAlertDetection(): Promise<GeneratedAlert[]> {
     allAlerts.push(...overtime);
   } catch (e) {
     console.error("Alert detection - overtime threshold error:", e);
+  }
+
+  try {
+    const breakViolations = await detectBreakViolations();
+    allAlerts.push(...breakViolations);
+  } catch (e) {
+    console.error("Alert detection - break violations error:", e);
+  }
+
+  try {
+    const lateArrivals = await detectLateArrivals();
+    allAlerts.push(...lateArrivals);
+  } catch (e) {
+    console.error("Alert detection - late arrivals error:", e);
+  }
+
+  try {
+    const staleOpenPunches = await detectStaleOpenPunches();
+    allAlerts.push(...staleOpenPunches);
+  } catch (e) {
+    console.error("Alert detection - stale open punches error:", e);
   }
 
   try {

@@ -10,8 +10,10 @@ import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location } from "@shared/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
-import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES } from "./policyEngine";
+import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { runAlertDetection } from "./services/alerts";
+import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts } from "./services/policyEnforcement";
+import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
 import multer from "multer";
@@ -1041,19 +1043,35 @@ export async function registerRoutes(
     const today = new Date().toISOString().split("T")[0];
     const deptName = await getDepartmentName(user.departmentId);
 
+    const attendancePolicy = await getEffectivePolicy(user.companyId, user.id, "attendance", user);
+    const attRules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+
     if (type === "clock_in") {
       const lastRecord = await storage.getLatestAttendanceForUser(user.id);
       if (lastRecord && lastRecord.clockIn && !lastRecord.clockOut && lastRecord.workDate === today) {
         return res.status(400).json({ error: "Employee is already clocked in" });
       }
+
+      const now = new Date();
+      const enforcement = await enforceClockIn(user, now, attRules, attendancePolicy?.policyName);
+
+      if (!enforcement.allowed) {
+        return res.status(403).json({ error: enforcement.rejectionMessage });
+      }
+
       const record = await storage.createAttendanceRecord({
         employeeId: user.id,
         workDate: today,
-        clockIn: new Date(),
+        clockIn: enforcement.roundedTime,
         status: "present",
         source: "kiosk",
         approved: true,
       });
+
+      if (enforcement.alerts.length > 0) {
+        await createPolicyAlerts(enforcement.alerts);
+      }
+
       const scheduleWarning = await getScheduleWarning(user.id, "clock_in");
       return res.json({
         record: { id: record.id, type: "clock_in", timestamp: record.clockIn },
@@ -1065,17 +1083,26 @@ export async function registerRoutes(
       if (!lastRecord || !lastRecord.clockIn || lastRecord.clockOut) {
         return res.status(400).json({ error: "Employee is not clocked in" });
       }
+
+      const payrollPolicy = await getEffectivePolicy(user.companyId, user.id, "payroll", user);
+      const payrollRules = payrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+
       const now = new Date();
-      const clockInTime = new Date(lastRecord.clockIn).getTime();
-      const totalMs = now.getTime() - clockInTime;
-      const breakMs = (lastRecord.breakMinutes || 0) * 60 * 1000;
-      const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+      const clockInTime = new Date(lastRecord.clockIn);
+      const breakMinutes = lastRecord.breakMinutes || 0;
+
+      const enforcement = enforceClockOut(clockInTime, now, breakMinutes, attRules, payrollRules, user, attendancePolicy?.policyName);
 
       const updated = await storage.updatePunchLog(lastRecord.id, {
-        clockOut: now,
-        hoursWorked,
-        status: hoursWorked > 8 ? "overtime" : "complete",
+        clockOut: enforcement.roundedTime,
+        hoursWorked: enforcement.hoursWorked,
+        status: enforcement.status,
       });
+
+      if (enforcement.alerts.length > 0) {
+        await createPolicyAlerts(enforcement.alerts);
+      }
+
       await checkPostExportModification(lastRecord.id, user.id);
       const scheduleWarning = await getScheduleWarning(user.id, "clock_out");
       return res.json({
@@ -1112,7 +1139,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/attendance/clock-in", requireAuth, async (req: any, res) => {
+  app.post("/api/attendance/clock-in", requireAuth, attachPolicyContext("attendance"), async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const user = req.authUser as User;
@@ -1122,14 +1149,26 @@ export async function registerRoutes(
       }
 
       const source = req.body?.source || "web";
-      const attendancePolicy = await getEffectivePolicy(user.companyId, userId, "attendance", user);
-      const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+      const rules = getPolicyRules(req, "attendance");
       const allowedSources: string[] = rules.allowedPunchSources || ["web", "kiosk", "mobile"];
       if (!allowedSources.includes(source)) {
         return res.status(403).json({ message: `Punch source '${source}' is not allowed by attendance policy` });
       }
 
-      const record = await storage.clockIn(userId, source);
+      const now = new Date();
+      const attPolicy = getResolvedPolicy(req, "attendance");
+      const enforcement = await enforceClockIn(user, now, rules, attPolicy?.policyName);
+
+      if (!enforcement.allowed) {
+        return res.status(403).json({ message: enforcement.rejectionMessage });
+      }
+
+      const record = await storage.clockIn(userId, source, enforcement.roundedTime);
+
+      if (enforcement.alerts.length > 0) {
+        await createPolicyAlerts(enforcement.alerts);
+      }
+
       const scheduleWarning = await getScheduleWarning(userId, "clock_in");
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
@@ -1138,19 +1177,40 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/attendance/clock-out", requireAuth, async (req: any, res) => {
+  app.post("/api/attendance/clock-out", requireAuth, attachPolicyContext("attendance", "payroll"), async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const user = req.authUser as User;
 
-      const attendancePolicy = await getEffectivePolicy(user.companyId, userId, "attendance", user);
-      const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
-      const otThreshold = rules.otThresholdDaily ?? 8;
-
-      const record = await storage.clockOut(userId, otThreshold);
-      if (!record) {
+      const current = await storage.getCurrentAttendance(userId);
+      if (!current || !current.clockIn) {
         return res.status(400).json({ message: "Not currently clocked in" });
       }
+
+      const rules = getPolicyRules(req, "attendance");
+      const payrollRules = getPolicyRules(req, "payroll");
+
+      const now = new Date();
+      const clockInTime = new Date(current.clockIn);
+      const breakMinutes = current.breakMinutes || 0;
+
+      const attPolicy = getResolvedPolicy(req, "attendance");
+      const enforcement = enforceClockOut(clockInTime, now, breakMinutes, rules, payrollRules, user, attPolicy?.policyName);
+
+      const record = await storage.updatePunchLog(current.id, {
+        clockOut: enforcement.roundedTime,
+        hoursWorked: enforcement.hoursWorked,
+        status: enforcement.status,
+      });
+
+      if (!record) {
+        return res.status(400).json({ message: "Failed to clock out" });
+      }
+
+      if (enforcement.alerts.length > 0) {
+        await createPolicyAlerts(enforcement.alerts);
+      }
+
       await checkPostExportModification(record.id, userId);
       const scheduleWarning = await getScheduleWarning(userId, "clock_out");
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
@@ -1559,7 +1619,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/time-off", requireAuth, async (req: any, res) => {
+  app.post("/api/time-off", requireAuth, attachPolicyContext("pto"), async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const user = req.authUser as User;
@@ -1581,8 +1641,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Request must include at least one business day" });
       }
 
-      const ptoPolicy = await getEffectivePolicy(user.companyId, userId, "pto", user);
-      const ptoRules = ptoPolicy?.rules || DEFAULT_PTO_RULES;
+      const ptoRules = getPolicyRules(req, "pto");
 
       const empSettings = await storage.getEmployeePtoSettings(userId);
       const legacyPolicy = await storage.getEmployeePtoPolicy(userId);
@@ -1601,6 +1660,16 @@ export async function registerRoutes(
         return res.status(400).json({
           message: `Request exceeds the maximum consecutive days allowed (${maxConsecutiveDays}).`,
         });
+      }
+
+      const advanceCheck = enforcePtoAdvanceNotice(parsed.startDate, ptoRules);
+      if (!advanceCheck.allowed) {
+        return res.status(400).json({ message: advanceCheck.rejectionMessage });
+      }
+
+      const blackoutCheck = enforcePtoBlackoutDates(parsed.startDate, parsed.endDate, ptoRules);
+      if (!blackoutCheck.allowed) {
+        return res.status(400).json({ message: blackoutCheck.rejectionMessage });
       }
 
       const overlapping = await storage.getOverlappingTimeOffRequests(userId, parsed.startDate, parsed.endDate);
@@ -1690,7 +1759,7 @@ export async function registerRoutes(
     }
   });
 
-  app.put("/api/time-off/:id", requireAuth, async (req: any, res) => {
+  app.put("/api/time-off/:id", requireAuth, attachPolicyContext("pto"), async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const user = req.authUser as User;
@@ -1719,8 +1788,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Request must include at least one business day" });
       }
 
-      const ptoPolicy = await getEffectivePolicy(user.companyId, userId, "pto", user);
-      const ptoRules = ptoPolicy?.rules || DEFAULT_PTO_RULES;
+      const ptoRules = getPolicyRules(req, "pto");
 
       const empSettings = await storage.getEmployeePtoSettings(userId);
       const legacyPolicy = await storage.getEmployeePtoPolicy(userId);
@@ -1739,6 +1807,16 @@ export async function registerRoutes(
         return res.status(400).json({
           message: `Request exceeds the maximum consecutive days allowed (${maxConsecutiveDays}).`,
         });
+      }
+
+      const advanceCheck = enforcePtoAdvanceNotice(parsed.startDate, ptoRules);
+      if (!advanceCheck.allowed) {
+        return res.status(400).json({ message: advanceCheck.rejectionMessage });
+      }
+
+      const blackoutCheck = enforcePtoBlackoutDates(parsed.startDate, parsed.endDate, ptoRules);
+      if (!blackoutCheck.allowed) {
+        return res.status(400).json({ message: blackoutCheck.rejectionMessage });
       }
 
       const balance = await storage.computeTimeOffBalance(userId);
@@ -2958,6 +3036,18 @@ export async function registerRoutes(
           const hours = record.hoursWorked || 0;
           const hasIssue = !record.clockIn || (!record.clockOut && record.status !== "in-progress");
 
+          const empUser = userMap.get(record.employeeId);
+          const empAttPolicy = empUser ? await getEffectivePolicy(empUser.companyId, record.employeeId, "attendance", empUser) : null;
+          const empAttRules = empAttPolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+          const otThreshold = empAttRules.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
+
+          let regHours = hours;
+          let otHours = 0;
+          if (hours > otThreshold) {
+            regHours = otThreshold;
+            otHours = Math.round((hours - otThreshold) * 100) / 100;
+          }
+
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,
             employeeId: record.employeeId,
@@ -2965,8 +3055,8 @@ export async function registerRoutes(
             timeOffRequestId: null,
             recordType: "attendance",
             workDate: record.workDate,
-            regularHours: Math.min(hours, 8),
-            overtimeHours: Math.max(0, hours - 8),
+            regularHours: regHours,
+            overtimeHours: otHours,
             ptoHours: 0,
             hasIssues: hasIssue,
             issueDescription: hasIssue ? `Missing punch data on ${record.workDate}` : null,
@@ -3806,6 +3896,21 @@ export async function registerRoutes(
   }
 
   (globalThis as any).__broadcastAttendanceUpdate = broadcastAttendanceUpdate;
+
+  const AUTO_CLOCK_OUT_INTERVAL_MS = 15 * 60 * 1000;
+  setInterval(async () => {
+    try {
+      const autoAlerts = await runAutoClockOut();
+      for (const alert of autoAlerts) {
+        await createPolicyAlerts([alert]);
+      }
+      if (autoAlerts.length > 0) {
+        console.log(`Auto clock-out job: processed ${autoAlerts.length} punch(es)`);
+      }
+    } catch (err) {
+      console.error("Auto clock-out background job error:", err);
+    }
+  }, AUTO_CLOCK_OUT_INTERVAL_MS);
 
   return httpServer;
 }

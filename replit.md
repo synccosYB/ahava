@@ -20,7 +20,8 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **Time & Attendance:** Manages `punch_logs` (clock in/out records), `attendance_exceptions` (missing punches, time corrections with approval workflows), and computes `hoursWorked`.
 - **PTO Management:** Tracks `time_off_requests` (with `requestCategory` field distinguishing "time_off" vs "cashout") with approval workflows and `time_off_balances`. Configurable `pto_policies` define accrual rates, caps, holiday pay rules, and optional `expirationDate`. Balance computation is year-scoped with carryover from prior year capped by `carryoverCapHours`, and carryover is zeroed after the policy's expiration date. PTO cash-out requests flow through the same approval queue with distinct UI treatment and are included in payroll exports as `pto_cashout` records.
 - **Audit Logging:** A robust `audit_logs` system captures sensitive operations with actor, target, action, and detailed context.
-- **Alerts:** System alerts for missing clock-outs, overtime breaches, and no-shows, with acknowledgement and resolution workflows.
+- **Alerts:** System alerts for missing clock-outs, overtime breaches, no-shows, late arrivals, break violations, and auto clock-outs, with acknowledgement and resolution workflows.
+- **Policy Enforcement:** Real-time enforcement at clock-in/out (grace periods, early clock-in restrictions, time rounding, break requirements, auto clock-out after configurable threshold). PTO enforcement validates advance notice, blackout dates, and max consecutive days at submission. A background job runs every 15 minutes to auto clock-out stale punches. All violations generate system alerts with policy context.
 - **Real-time Updates:** WebSocket integration (`/ws`) for real-time attendance updates, with session/JWT auth at handshake.
 
 **Feature Specifications:**
