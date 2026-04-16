@@ -193,7 +193,7 @@ export default function TimeOff() {
           <CardContent className="space-y-4">
             <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 rounded-md p-3 text-xs text-blue-800 dark:text-blue-300 flex items-center gap-2" data-testid="note-balance-info">
               <MessageSquare className="h-4 w-4 shrink-0" />
-              <span>For balance inquiries or general questions, please contact your manager or HR department.</span>
+              <span>For inquiries, please contact your manager or HR department.</span>
             </div>
 
             <div className="space-y-1">
