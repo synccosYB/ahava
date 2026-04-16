@@ -82,6 +82,13 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **Security Hardening**: All legacy `storage.createAuditLog` calls with wrong field names replaced with `writeAuditLog` using correct schema
 - **Frontend Pages**: alerts.tsx, audit-log.tsx, permissions.tsx, role-management.tsx, kiosk-management.tsx
 
+## Policy Builder Wizard
+- **Component**: `client/src/components/policy-wizard.tsx` - Reusable 4-step wizard for creating/editing policies
+- **Steps**: (1) Basics - type selection, name, description; (2) Rules - type-specific configuration with defaults; (3) Assignments - assign to divisions/locations/departments/employees; (4) Review - summary with save as draft or activate
+- **Integration**: Replaces the old simple dialog in `PolicySection` on the Rules & Controls page
+- **Policy Type Keys**: Database uses `attendance`, `pto`, `payroll`, `approvals`, `alerts`, `kiosk` (not suffixed versions)
+- **Edit Mode**: Fetches existing rules and assignments to pre-populate all wizard steps
+
 ## HR Onboarding & Employee Management
 - **Add Employee**: Multi-step dialog on Employees page (basic info -> employment details -> pay setup). Creates user with temporary password + `forcePasswordChange` flag.
 - **Password Reset**: Admin can reset any employee password from their profile. Generates temp password, sets `forcePasswordChange` flag.

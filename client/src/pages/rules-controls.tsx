@@ -7,10 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -23,6 +21,7 @@ import {
   GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { PolicyWizard } from "@/components/policy-wizard";
 import type { Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User } from "@shared/schema";
 
 const sections = [
@@ -67,10 +66,10 @@ export default function RulesControlsPage() {
         <div className="flex-1 min-w-0">
           {activeSection === "general" && <GeneralSection />}
           {activeSection === "locations" && <LocationsSection />}
-          {activeSection === "attendance" && <PolicySection policyTypeKey="attendance_policy" title="Attendance Rules" />}
-          {activeSection === "pto" && <PolicySection policyTypeKey="pto_policy" title="PTO Policies" />}
-          {activeSection === "payroll" && <PolicySection policyTypeKey="payroll_policy" title="Payroll Rules" />}
-          {activeSection === "approval" && <PolicySection policyTypeKey="approval_workflow" title="Approval Workflows" />}
+          {activeSection === "attendance" && <PolicySection policyTypeKey="attendance" title="Attendance Rules" />}
+          {activeSection === "pto" && <PolicySection policyTypeKey="pto" title="PTO Policies" />}
+          {activeSection === "payroll" && <PolicySection policyTypeKey="payroll" title="Payroll Rules" />}
+          {activeSection === "approval" && <PolicySection policyTypeKey="approvals" title="Approval Workflows" />}
           {activeSection === "roles" && <RolesSection />}
           {activeSection === "alerts" && <AlertsSection />}
           {activeSection === "kiosk" && <KioskSection />}
@@ -428,10 +427,10 @@ function PolicyAssignmentBadges({ policyId }: { policyId: string }) {
 
 function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title: string }) {
   const { toast } = useToast();
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
-  const [form, setForm] = useState({ name: "", description: "", status: "draft" });
-  const [rulesForm, setRulesForm] = useState<Record<string, any>>({});
+  const [editRules, setEditRules] = useState<Record<string, any>>({});
+  const [editAssignments, setEditAssignments] = useState<PolicyAssignment[]>([]);
 
   const { data: policies, isLoading } = useQuery<Policy[]>({ queryKey: ["/api/policies"] });
   const { data: policyTypes } = useQuery<PolicyType[]>({ queryKey: ["/api/policy-types"] });
@@ -439,39 +438,6 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
 
   const matchingType = policyTypes?.find((pt) => pt.key === policyTypeKey);
   const filteredPolicies = (policies || []).filter((p) => p.policyTypeId === matchingType?.id);
-
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      const payload = {
-        name: form.name,
-        description: form.description || null,
-        policyTypeId: matchingType?.id,
-        companyId: divisions?.[0]?.id || null,
-        status: form.status,
-      };
-      if (editingPolicy) {
-        await apiRequest("PATCH", `/api/policies/${editingPolicy.id}`, payload);
-        if (Object.keys(rulesForm).length > 0) {
-          await apiRequest("PUT", `/api/policies/${editingPolicy.id}/rules`, { rules: rulesForm });
-        }
-      } else {
-        const res = await apiRequest("POST", "/api/policies", payload);
-        const created = await res.json();
-        if (Object.keys(rulesForm).length > 0) {
-          await apiRequest("PUT", `/api/policies/${created.id}/rules`, { rules: rulesForm });
-        }
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/policies"] });
-      setDialogOpen(false);
-      resetForm();
-      toast({ title: editingPolicy ? "Policy updated" : "Policy created" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
 
   const activateMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -483,51 +449,40 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
     },
   });
 
-  const resetForm = () => {
-    setForm({ name: "", description: "", status: "draft" });
-    setRulesForm({});
-    setEditingPolicy(null);
+  const startEdit = async (p: Policy) => {
+    try {
+      const rulesRes = await fetch(`/api/policies/${p.id}/rules`, { credentials: "include" });
+      let rules: Record<string, any> = {};
+      if (rulesRes.ok) {
+        const rulesData = await rulesRes.json();
+        rules = rulesData?.rules || rulesData || {};
+      }
+
+      const assignRes = await fetch(`/api/policy-assignments?policyId=${p.id}`, { credentials: "include" });
+      let assigns: PolicyAssignment[] = [];
+      if (assignRes.ok) {
+        assigns = await assignRes.json();
+      }
+
+      setEditRules(rules);
+      setEditAssignments(assigns);
+      setEditingPolicy(p);
+      setWizardOpen(true);
+    } catch {
+      toast({ title: "Warning", description: "Could not load existing policy details. Some fields may be empty.", variant: "destructive" });
+      setEditingPolicy(p);
+      setEditRules({});
+      setEditAssignments([]);
+      setWizardOpen(true);
+    }
   };
 
-  const startEdit = (p: Policy) => {
-    setForm({ name: p.name, description: p.description || "", status: p.status });
-    setEditingPolicy(p);
-    setDialogOpen(true);
-  };
-
-  const getRuleFields = () => {
-    switch (policyTypeKey) {
-      case "attendance_policy":
-        return [
-          { key: "gracePeriodMinutes", label: "Grace Period (minutes)", type: "number" },
-          { key: "autoClockOutHours", label: "Auto Clock-Out (hours)", type: "number" },
-          { key: "requirePhotoVerification", label: "Require Photo Verification", type: "boolean" },
-          { key: "allowEarlyClockIn", label: "Allow Early Clock-In", type: "boolean" },
-          { key: "earlyClockInMinutes", label: "Early Clock-In Window (min)", type: "number" },
-          { key: "roundingIntervalMinutes", label: "Rounding Interval (min)", type: "number" },
-        ];
-      case "pto_policy":
-        return [
-          { key: "requireAdvanceNotice", label: "Require Advance Notice", type: "boolean" },
-          { key: "advanceNoticeDays", label: "Advance Notice (days)", type: "number" },
-          { key: "maxConsecutiveDays", label: "Max Consecutive Days", type: "number" },
-          { key: "blackoutDatesEnabled", label: "Blackout Dates Enabled", type: "boolean" },
-        ];
-      case "payroll_policy":
-        return [
-          { key: "overtimeThresholdHours", label: "OT Threshold (hours/week)", type: "number" },
-          { key: "overtimeMultiplier", label: "OT Multiplier", type: "number" },
-          { key: "doubleOtThreshold", label: "Double OT Threshold", type: "number" },
-          { key: "payPeriodType", label: "Pay Period Type", type: "text" },
-        ];
-      case "approval_workflow":
-        return [
-          { key: "autoApproveThreshold", label: "Auto-Approve Threshold (days)", type: "number" },
-          { key: "escalationHours", label: "Escalation After (hours)", type: "number" },
-          { key: "requireManagerApproval", label: "Require Manager Approval", type: "boolean" },
-        ];
-      default:
-        return [];
+  const handleWizardClose = (open: boolean) => {
+    setWizardOpen(open);
+    if (!open) {
+      setEditingPolicy(null);
+      setEditRules({});
+      setEditAssignments([]);
     }
   };
 
@@ -535,58 +490,22 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-semibold">{title}</h2>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger asChild>
-            <Button data-testid={`button-add-${policyTypeKey}`}>
-              <Plus className="h-4 w-4 mr-1" /> Add Policy
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto" data-testid={`dialog-${policyTypeKey}-form`}>
-            <DialogHeader>
-              <DialogTitle>{editingPolicy ? `Edit ${title}` : `Create ${title}`}</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-3">
-              <div><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-policy-name" /></div>
-              <div><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} data-testid="input-policy-description" /></div>
-
-              {getRuleFields().length > 0 && (
-                <div className="border-t pt-3 mt-3">
-                  <p className="font-medium text-sm mb-3">Policy Rules</p>
-                  {getRuleFields().map((field) => (
-                    <div key={field.key} className="mb-3">
-                      {field.type === "boolean" ? (
-                        <div className="flex items-center justify-between">
-                          <Label>{field.label}</Label>
-                          <Switch
-                            checked={!!rulesForm[field.key]}
-                            onCheckedChange={(v) => setRulesForm({ ...rulesForm, [field.key]: v })}
-                            data-testid={`switch-rule-${field.key}`}
-                          />
-                        </div>
-                      ) : (
-                        <div>
-                          <Label>{field.label}</Label>
-                          <Input
-                            type={field.type}
-                            value={rulesForm[field.key] || ""}
-                            onChange={(e) => setRulesForm({ ...rulesForm, [field.key]: field.type === "number" ? parseFloat(e.target.value) || 0 : e.target.value })}
-                            data-testid={`input-rule-${field.key}`}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <DialogFooter>
-              <Button onClick={() => saveMutation.mutate()} disabled={!form.name || saveMutation.isPending} data-testid="button-save-policy">
-                {saveMutation.isPending ? "Saving..." : "Save"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <Button
+          onClick={() => { setEditingPolicy(null); setEditRules({}); setEditAssignments([]); setWizardOpen(true); }}
+          data-testid={`button-add-${policyTypeKey}`}
+        >
+          <Plus className="h-4 w-4 mr-1" /> Add Policy
+        </Button>
       </div>
+
+      <PolicyWizard
+        open={wizardOpen}
+        onOpenChange={handleWizardClose}
+        policyTypeKey={policyTypeKey}
+        editingPolicy={editingPolicy}
+        existingRules={editRules}
+        existingAssignments={editAssignments}
+      />
 
       <Card data-testid={`card-${policyTypeKey}-list`}>
         <CardContent className="p-0">
