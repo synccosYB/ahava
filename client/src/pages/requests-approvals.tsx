@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, DollarSign, Calendar, Clock, AlertTriangle, User, FileText } from "lucide-react";
+import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
 
@@ -262,9 +262,7 @@ function ProcessedRequestCard({ request, showDeptLocation, onClick }: { request:
           <div className="flex-1 space-y-1.5">
             <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="outline">
-                {(request as any).requestCategory === "cashout" ? (
-                  <span className="flex items-center gap-1"><DollarSign className="h-3 w-3" />Cash-Out ({formatTimeOffTypeLabel(request.type)})</span>
-                ) : formatTimeOffTypeLabel(request.type)}
+                {formatTimeOffTypeLabel(request.type)}
               </Badge>
               <Badge variant="secondary" className={statusColor} data-testid={`badge-status-${request.id}`}>
                 {request.status === "partially_approved" ? "Partially Approved" : request.status.charAt(0).toUpperCase() + request.status.slice(1)}
@@ -274,9 +272,7 @@ function ProcessedRequestCard({ request, showDeptLocation, onClick }: { request:
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-processed-dates-${request.id}`}>
-              {(request as any).requestCategory === "cashout"
-                ? `${request.daysRequested * 8} hours (${request.daysRequested} day${request.daysRequested > 1 ? "s" : ""})`
-                : `${request.startDate} to ${request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate} (${request.status === "partially_approved" && request.daysApproved ? `${request.daysApproved} of ${request.daysRequested}` : request.daysRequested} day${(request.daysRequested || 1) > 1 ? "s" : ""})`}
+              {`${request.startDate} to ${request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate} (${request.status === "partially_approved" && request.daysApproved ? `${request.daysApproved} of ${request.daysRequested}` : request.daysRequested} day${(request.daysRequested || 1) > 1 ? "s" : ""})`}
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-processed-reason-${request.id}`}>
@@ -307,7 +303,6 @@ function ProcessedRequestCard({ request, showDeptLocation, onClick }: { request:
 function ProcessedRequestDetailDialog({ request, open, onClose }: { request: ProcessedPtoRequest | null; open: boolean; onClose: () => void }) {
   if (!request) return null;
 
-  const isCashout = request.requestCategory === "cashout";
   const isPartial = request.status === "partially_approved";
 
   const statusLabel = request.status === "partially_approved"
@@ -336,9 +331,7 @@ function ProcessedRequestDetailDialog({ request, open, onClose }: { request: Pro
         <div className="space-y-4">
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="outline" data-testid="detail-badge-type">
-              {isCashout ? (
-                <span className="flex items-center gap-1"><DollarSign className="h-3 w-3" />Cash-Out ({formatTimeOffTypeLabel(request.type)})</span>
-              ) : formatTimeOffTypeLabel(request.type)}
+              {formatTimeOffTypeLabel(request.type)}
             </Badge>
             <Badge variant="secondary" className={statusColor} data-testid="detail-badge-status">
               {statusLabel}
@@ -367,44 +360,33 @@ function ProcessedRequestDetailDialog({ request, open, onClose }: { request: Pro
               <p className="font-medium" data-testid="detail-location">{request.locationName}</p>
             </div>
 
-            {isCashout ? (
+            <div>
+              <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />Start Date</p>
+              <p className="font-medium" data-testid="detail-start-date">{request.startDate}</p>
+            </div>
+
+            <div>
+              <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />End Date</p>
+              <p className="font-medium" data-testid="detail-end-date">{request.endDate}</p>
+            </div>
+
+            {isPartial && request.approvedEndDate && (
               <div>
-                <p className="text-muted-foreground flex items-center gap-1"><Clock className="h-3.5 w-3.5" />Hours / Days</p>
-                <p className="font-medium" data-testid="detail-cashout-amount">
-                  {request.daysRequested * 8} hours ({request.daysRequested} day{request.daysRequested > 1 ? "s" : ""})
-                </p>
+                <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />Approved End Date</p>
+                <p className="font-medium text-amber-700" data-testid="detail-approved-end-date">{request.approvedEndDate}</p>
               </div>
-            ) : (
-              <>
-                <div>
-                  <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />Start Date</p>
-                  <p className="font-medium" data-testid="detail-start-date">{request.startDate}</p>
-                </div>
+            )}
 
-                <div>
-                  <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />End Date</p>
-                  <p className="font-medium" data-testid="detail-end-date">{request.endDate}</p>
-                </div>
+            <div>
+              <p className="text-muted-foreground">Days Requested</p>
+              <p className="font-medium" data-testid="detail-days-requested">{request.daysRequested}</p>
+            </div>
 
-                {isPartial && request.approvedEndDate && (
-                  <div>
-                    <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />Approved End Date</p>
-                    <p className="font-medium text-amber-700" data-testid="detail-approved-end-date">{request.approvedEndDate}</p>
-                  </div>
-                )}
-
-                <div>
-                  <p className="text-muted-foreground">Days Requested</p>
-                  <p className="font-medium" data-testid="detail-days-requested">{request.daysRequested}</p>
-                </div>
-
-                {isPartial && request.daysApproved != null && (
-                  <div>
-                    <p className="text-muted-foreground">Days Approved</p>
-                    <p className="font-medium text-amber-700" data-testid="detail-days-approved">{request.daysApproved} of {request.daysRequested}</p>
-                  </div>
-                )}
-              </>
+            {isPartial && request.daysApproved != null && (
+              <div>
+                <p className="text-muted-foreground">Days Approved</p>
+                <p className="font-medium text-amber-700" data-testid="detail-days-approved">{request.daysApproved} of {request.daysRequested}</p>
+              </div>
             )}
 
             <div>
@@ -635,9 +617,7 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-pto-type-${request.id}`}>
-              {(request as any).requestCategory === "cashout"
-                ? `PTO Cash-Out: ${request.daysRequested * 8} hours (${request.daysRequested} day${request.daysRequested > 1 ? "s" : ""}) - ${formatTimeOffTypeLabel(request.type)}`
-                : `${formatTimeOffTypeLabel(request.type)} — ${request.startDate} to ${request.endDate} (${request.daysRequested} day${request.daysRequested > 1 ? "s" : ""})`}
+              {`${formatTimeOffTypeLabel(request.type)} — ${request.startDate} to ${request.endDate} (${request.daysRequested} day${request.daysRequested > 1 ? "s" : ""})`}
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-pto-reason-${request.id}`}>

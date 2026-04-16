@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle, DollarSign } from "lucide-react";
+import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle, MessageSquare } from "lucide-react";
 import type { TimeOffRequest } from "@shared/schema";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
@@ -46,10 +46,6 @@ export default function TimeOff() {
   const [editEndDate, setEditEndDate] = useState("");
   const [editReason, setEditReason] = useState("");
 
-  const [cashoutOpen, setCashoutOpen] = useState(false);
-  const [cashoutType, setCashoutType] = useState("vacation");
-  const [cashoutHours, setCashoutHours] = useState("");
-  const [cashoutReason, setCashoutReason] = useState("");
 
   const { data: requests, isLoading: requestsLoading } = useQuery<TimeOffRequest[]>({
     queryKey: ["/api/time-off"],
@@ -112,27 +108,6 @@ export default function TimeOff() {
     },
   });
 
-  const cashoutMutation = useMutation({
-    mutationFn: async () => {
-      return apiRequest("POST", "/api/time-off/cashout", {
-        type: cashoutType,
-        hours: parseFloat(cashoutHours),
-        reason: cashoutReason || undefined,
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
-      setCashoutOpen(false);
-      setCashoutType("vacation");
-      setCashoutHours("");
-      setCashoutReason("");
-      toast({ title: "Cash-Out Submitted", description: "Your PTO cash-out request has been submitted for approval." });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
 
 
   const openEditDialog = (request: TimeOffRequest) => {
@@ -216,11 +191,9 @@ export default function TimeOff() {
             <CardTitle className="text-base">New Request</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 rounded-md p-3 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between" data-testid="note-balance-info">
-              <span>Contact your manager to check your remaining balance.</span>
-              <Button variant="outline" size="sm" onClick={() => setCashoutOpen(true)} className="ml-2 shrink-0 text-xs h-7" data-testid="button-open-cashout">
-                <DollarSign className="h-3 w-3 mr-1" /> Cash-Out
-              </Button>
+            <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 rounded-md p-3 text-xs text-blue-800 dark:text-blue-300 flex items-center gap-2" data-testid="note-balance-info">
+              <MessageSquare className="h-4 w-4 shrink-0" />
+              <span>For balance inquiries or general questions, please contact your manager or HR department.</span>
             </div>
 
             <div className="space-y-1">
@@ -317,19 +290,11 @@ export default function TimeOff() {
                         </Badge>
                       )}
                     </div>
-                    {(request as any).requestCategory === "cashout" && (
-                      <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-300 text-xs dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-700" data-testid={`badge-cashout-${request.id}`}>
-                        <DollarSign className="h-3 w-3 mr-1" />
-                        Cash-Out
-                      </Badge>
-                    )}
                     <p className="text-sm font-semibold mt-2">
-                      {(request as any).requestCategory === "cashout"
-                        ? `${request.daysRequested * 8} hours (${request.daysRequested} days)`
-                        : formatDateRange(request.startDate, request.endDate)}
+                      {formatDateRange(request.startDate, request.endDate)}
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      {(request as any).requestCategory === "cashout" ? "PTO Cash-Out" : formatTypeLabel(request.type)} &bull; <span className="tabular-nums">{request.daysRequested}</span> day{request.daysRequested > 1 ? "s" : ""}
+                      {formatTypeLabel(request.type)} &bull; <span className="tabular-nums">{request.daysRequested}</span> day{request.daysRequested > 1 ? "s" : ""}
                     </p>
                     {request.status === "pending" && (
                       <div className="flex items-center justify-between mt-1">
@@ -370,68 +335,6 @@ export default function TimeOff() {
         currentUserId={user?.id}
       />
 
-      <Dialog open={cashoutOpen} onOpenChange={setCashoutOpen}>
-        <DialogContent data-testid="dialog-cashout">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <DollarSign className="h-5 w-5" /> PTO Cash-Out
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-1">
-              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">PTO Type</Label>
-              <Select value={cashoutType} onValueChange={setCashoutType}>
-                <SelectTrigger data-testid="select-cashout-type">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="vacation">Vacation</SelectItem>
-                  <SelectItem value="sick">Sick Leave</SelectItem>
-                  <SelectItem value="personal">Personal</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 rounded-md p-3 text-xs text-amber-800 dark:text-amber-300">
-              Your manager will verify your available balance when reviewing this request.
-            </div>
-
-            <div className="space-y-1">
-              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Hours to Cash Out</Label>
-              <Input
-                type="number"
-                min="1"
-                value={cashoutHours}
-                onChange={(e) => setCashoutHours(e.target.value)}
-                placeholder="Enter hours..."
-                data-testid="input-cashout-hours"
-              />
-              {cashoutHours && parseFloat(cashoutHours) > 0 && (
-                <p className="text-xs text-muted-foreground">{Math.ceil(parseFloat(cashoutHours) / 8)} day(s)</p>
-              )}
-            </div>
-
-            <div className="space-y-1">
-              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Reason (Optional)</Label>
-              <Textarea
-                value={cashoutReason}
-                onChange={(e) => setCashoutReason(e.target.value)}
-                placeholder="Reason for cash-out..."
-                data-testid="input-cashout-reason"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              onClick={() => cashoutMutation.mutate()}
-              disabled={!cashoutHours || parseFloat(cashoutHours) <= 0 || cashoutMutation.isPending}
-              data-testid="button-submit-cashout"
-            >
-              {cashoutMutation.isPending ? "Submitting..." : "Submit Cash-Out Request"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={!!editingRequest} onOpenChange={(open) => { if (!open) setEditingRequest(null); }}>
         <DialogContent data-testid="dialog-edit-request">
