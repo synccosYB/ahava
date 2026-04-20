@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { formatHoursMinutes } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -11,13 +11,31 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
-import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send } from "lucide-react";
+import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench } from "lucide-react";
 import type { AttendanceRecord, AttendanceException } from "@shared/schema";
 
 type SortKey = "date" | "clockIn" | "totalHours" | "status";
 type SortDir = "asc" | "desc";
+
+type FixDialogState = {
+  open: boolean;
+  date: string;
+  origIn: string;
+  origOut: string;
+  missingPunch: boolean;
+};
+
+function toTimeInputValue(value: string | Date | null | undefined): string {
+  if (!value) return "";
+  const d = typeof value === "string" ? new Date(value) : value;
+  if (isNaN(d.getTime())) return "";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
 
 export default function MyAttendance() {
   const { isAuthenticated } = useAuth();
@@ -32,6 +50,13 @@ export default function MyAttendance() {
   const [endDate, setEndDate] = useState(new Date().toISOString().split("T")[0]);
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [fixDialog, setFixDialog] = useState<FixDialogState>({
+    open: false,
+    date: "",
+    origIn: "",
+    origOut: "",
+    missingPunch: false,
+  });
 
   const { data: records, isLoading, isError } = useQuery<AttendanceRecord[]>({
     queryKey: ["/api/attendance/records", startDate, endDate],
@@ -45,6 +70,24 @@ export default function MyAttendance() {
     },
     enabled: isAuthenticated,
   });
+
+  const { data: myExceptions, isLoading: exceptionsLoading } = useQuery<AttendanceException[]>({
+    queryKey: ["/api/attendance/exceptions/my"],
+    queryFn: async () => {
+      const res = await fetch("/api/attendance/exceptions", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch exceptions");
+      return res.json();
+    },
+    enabled: isAuthenticated,
+  });
+
+  const pendingDates = useMemo(() => {
+    const set = new Set<string>();
+    (myExceptions || []).forEach((ex) => {
+      if (ex.status === "pending") set.add(ex.exceptionDate);
+    });
+    return set;
+  }, [myExceptions]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -129,6 +172,17 @@ export default function MyAttendance() {
     return sortDir === "asc"
       ? <ArrowUp className="ml-1 h-3 w-3 inline text-primary" />
       : <ArrowDown className="ml-1 h-3 w-3 inline text-primary" />;
+  };
+
+  const openFixDialog = (record: AttendanceRecord) => {
+    const missingPunch = record.status === "in-progress" || !record.clockOut;
+    setFixDialog({
+      open: true,
+      date: record.date,
+      origIn: toTimeInputValue(record.clockIn),
+      origOut: toTimeInputValue(record.clockOut),
+      missingPunch,
+    });
   };
 
   return (
@@ -259,57 +313,149 @@ export default function MyAttendance() {
                       Status <SortIcon column="status" />
                     </button>
                   </TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sortedRecords.map((record) => (
-                  <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
-                    <TableCell className="text-sm font-medium">{record.date}</TableCell>
-                    <TableCell className="text-sm tabular-nums">
-                      {record.clockIn
-                        ? new Date(record.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                        : "—"}
-                    </TableCell>
-                    <TableCell className="text-sm tabular-nums">
-                      {record.clockOut
-                        ? new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                        : "—"}
-                    </TableCell>
-                    <TableCell className="text-sm tabular-nums">{record.breakMinutes || 0} min</TableCell>
-                    <TableCell className="text-sm font-semibold tabular-nums">
-                      {record.totalHours != null ? formatHoursMinutes(record.totalHours) : "—"}
-                    </TableCell>
-                    <TableCell>{getStatusBadge(record.status)}</TableCell>
-                  </TableRow>
-                ))}
+                {sortedRecords.map((record) => {
+                  const isInProgress = record.status === "in-progress" || !record.clockOut;
+                  const hasPending = pendingDates.has(record.date);
+                  return (
+                    <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
+                      <TableCell className="text-sm font-medium">{record.date}</TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        {record.clockIn
+                          ? new Date(record.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        {record.clockOut
+                          ? new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                          : (
+                            <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400" data-testid={`hint-missing-clock-out-${record.id}`}>
+                              <AlertCircle className="h-3 w-3" />
+                              <span className="text-xs">Missing clock-out – request a fix</span>
+                            </span>
+                          )}
+                      </TableCell>
+                      <TableCell className="text-sm tabular-nums">{record.breakMinutes || 0} min</TableCell>
+                      <TableCell className="text-sm font-semibold tabular-nums">
+                        {record.totalHours != null ? formatHoursMinutes(record.totalHours) : "—"}
+                      </TableCell>
+                      <TableCell>{getStatusBadge(record.status)}</TableCell>
+                      <TableCell className="text-right">
+                        {hasPending ? (
+                          <Badge
+                            variant="secondary"
+                            className="bg-amber-100 text-amber-800"
+                            title="A correction request for this date is awaiting manager review"
+                            data-testid={`badge-pending-fix-${record.id}`}
+                          >
+                            Pending
+                          </Badge>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant={isInProgress ? "default" : "outline"}
+                            onClick={() => openFixDialog(record)}
+                            disabled={exceptionsLoading}
+                            title={exceptionsLoading ? "Loading correction requests..." : undefined}
+                            data-testid={`button-request-fix-${record.id}`}
+                          >
+                            <Wrench className="h-3 w-3 mr-1" />
+                            Request Fix
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}
         </CardContent>
       </Card>
 
-      <PunchCorrectionForm />
+      <PunchCorrectionForm
+        myExceptions={myExceptions}
+        exceptionsLoading={exceptionsLoading}
+        pendingDates={pendingDates}
+      />
+
+      <Dialog
+        open={fixDialog.open}
+        onOpenChange={(open) => setFixDialog((prev) => ({ ...prev, open }))}
+      >
+        <DialogContent className="max-w-lg" data-testid="dialog-request-fix">
+          <DialogHeader>
+            <DialogTitle>
+              {fixDialog.missingPunch ? "Request Missing Punch Fix" : "Request Time Correction"}
+            </DialogTitle>
+            <DialogDescription>
+              {fixDialog.missingPunch
+                ? "Your shift on this date is missing a clock-out. Fill in what time you actually finished and submit the request to your manager."
+                : "Update the recorded times for this date and submit the correction to your manager."}
+            </DialogDescription>
+          </DialogHeader>
+          <CorrectionFormBody
+            initialDate={fixDialog.date}
+            initialOrigIn={fixDialog.origIn}
+            initialOrigOut={fixDialog.origOut}
+            initialReqIn={fixDialog.origIn}
+            initialReqOut={fixDialog.missingPunch ? "" : fixDialog.origOut}
+            missingPunch={fixDialog.missingPunch}
+            lockDate
+            onSuccess={() => setFixDialog((prev) => ({ ...prev, open: false }))}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function PunchCorrectionForm() {
-  const { toast } = useToast();
-  const [date, setDate] = useState("");
-  const [origIn, setOrigIn] = useState("");
-  const [origOut, setOrigOut] = useState("");
-  const [reqIn, setReqIn] = useState("");
-  const [reqOut, setReqOut] = useState("");
-  const [reason, setReason] = useState("");
+type CorrectionFormBodyProps = {
+  initialDate?: string;
+  initialOrigIn?: string;
+  initialOrigOut?: string;
+  initialReqIn?: string;
+  initialReqOut?: string;
+  missingPunch?: boolean;
+  lockDate?: boolean;
+  pendingDates?: Set<string>;
+  onSuccess?: () => void;
+};
 
-  const { data: myExceptions, isLoading: exceptionsLoading } = useQuery<AttendanceException[]>({
-    queryKey: ["/api/attendance/exceptions/my"],
-    queryFn: async () => {
-      const res = await fetch("/api/attendance/exceptions", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch exceptions");
-      return res.json();
-    },
-  });
+function CorrectionFormBody({
+  initialDate = "",
+  initialOrigIn = "",
+  initialOrigOut = "",
+  initialReqIn = "",
+  initialReqOut = "",
+  missingPunch = false,
+  lockDate = false,
+  pendingDates,
+  onSuccess,
+}: CorrectionFormBodyProps) {
+  const { toast } = useToast();
+  const [date, setDate] = useState(initialDate);
+  const [origIn, setOrigIn] = useState(initialOrigIn);
+  const [origOut, setOrigOut] = useState(initialOrigOut);
+  const [reqIn, setReqIn] = useState(initialReqIn);
+  const [reqOut, setReqOut] = useState(initialReqOut);
+  const [reason, setReason] = useState(
+    missingPunch ? "I forgot to clock out at the end of my shift." : ""
+  );
+
+  const hasPendingForDate = !!(date && pendingDates && pendingDates.has(date));
+
+  useEffect(() => {
+    setDate(initialDate);
+    setOrigIn(initialOrigIn);
+    setOrigOut(initialOrigOut);
+    setReqIn(initialReqIn);
+    setReqOut(initialReqOut);
+    setReason(missingPunch ? "I forgot to clock out at the end of my shift." : "");
+  }, [initialDate, initialOrigIn, initialOrigOut, initialReqIn, initialReqOut, missingPunch]);
 
   const submitMutation = useMutation({
     mutationFn: async () => {
@@ -321,26 +467,133 @@ function PunchCorrectionForm() {
       const fullReason = `${reason}${timeInfo.length > 0 ? ` [${timeInfo.join(", ")}]` : ""}`;
       return apiRequest("POST", "/api/attendance/exceptions", {
         exceptionDate: date,
-        type: "time_correction",
+        type: missingPunch ? "missing_punch" : "time_correction",
         reason: fullReason,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/my"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
-      setDate("");
-      setOrigIn("");
-      setOrigOut("");
-      setReqIn("");
-      setReqOut("");
+      if (!lockDate) {
+        setDate("");
+        setOrigIn("");
+        setOrigOut("");
+        setReqIn("");
+        setReqOut("");
+      }
       setReason("");
-      toast({ title: "Correction Submitted", description: "Your punch correction has been sent to your manager." });
+      toast({
+        title: "Correction Submitted",
+        description: "Your punch correction has been sent to your manager.",
+      });
+      onSuccess?.();
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
 
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1">
+        <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Date of Punch</Label>
+        <Input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          disabled={lockDate}
+          data-testid="input-correction-date"
+        />
+      </div>
+
+      <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4" data-testid="section-original-punch">
+        <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">Original Punch (what was recorded)</div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Clock In</Label>
+            <Input
+              type="time"
+              value={origIn}
+              onChange={(e) => setOrigIn(e.target.value)}
+              data-testid="input-orig-clock-in"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Clock Out</Label>
+            <Input
+              type="time"
+              value={origOut}
+              onChange={(e) => setOrigOut(e.target.value)}
+              placeholder={missingPunch ? "missing" : ""}
+              data-testid="input-orig-clock-out"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="section-corrected-punch">
+        <div className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 mb-3">
+          Corrected Times (what it should be)
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <Label className="text-xs text-blue-700 dark:text-blue-300">Clock In</Label>
+            <Input
+              type="time"
+              value={reqIn}
+              onChange={(e) => setReqIn(e.target.value)}
+              data-testid="input-corrected-clock-in"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-blue-700 dark:text-blue-300">
+              Clock Out{missingPunch ? " (required)" : ""}
+            </Label>
+            <Input
+              type="time"
+              value={reqOut}
+              onChange={(e) => setReqOut(e.target.value)}
+              data-testid="input-corrected-clock-out"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Reason</Label>
+        <Textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder={missingPunch ? "Explain why a clock-out is missing..." : "Explain what happened..."}
+          data-testid="input-correction-reason"
+        />
+      </div>
+
+      {hasPendingForDate && !lockDate && (
+        <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="text-duplicate-warning">
+          A correction request for this date is already pending review.
+        </p>
+      )}
+      <Button
+        onClick={() => submitMutation.mutate()}
+        disabled={!date || !reason || submitMutation.isPending || (missingPunch && !reqOut) || hasPendingForDate}
+        className="w-full"
+        data-testid="button-submit-correction"
+      >
+        <Send className="h-4 w-4 mr-1" />
+        {submitMutation.isPending ? "Submitting..." : "Submit Correction"}
+      </Button>
+    </div>
+  );
+}
+
+type PunchCorrectionFormProps = {
+  myExceptions?: AttendanceException[];
+  exceptionsLoading: boolean;
+  pendingDates?: Set<string>;
+};
+
+function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates }: PunchCorrectionFormProps) {
   const getStatusBadgeForException = (status: string) => {
     switch (status) {
       case "pending": return <Badge variant="secondary" className="bg-amber-100 text-amber-800">Pending</Badge>;
@@ -358,84 +611,8 @@ function PunchCorrectionForm() {
           <CardHeader className="pb-3">
             <CardTitle className="text-base">New Correction Request</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1">
-              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Date of Punch</Label>
-              <Input
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                data-testid="input-correction-date"
-              />
-            </div>
-
-            <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4" data-testid="section-original-punch">
-              <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">Original Punch (what was recorded)</div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Clock In</Label>
-                  <Input
-                    type="time"
-                    value={origIn}
-                    onChange={(e) => setOrigIn(e.target.value)}
-                    data-testid="input-orig-clock-in"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Clock Out</Label>
-                  <Input
-                    type="time"
-                    value={origOut}
-                    onChange={(e) => setOrigOut(e.target.value)}
-                    data-testid="input-orig-clock-out"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="section-corrected-punch">
-              <div className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 mb-3">Corrected Times (what it should be)</div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-xs text-blue-700 dark:text-blue-300">Clock In</Label>
-                  <Input
-                    type="time"
-                    value={reqIn}
-                    onChange={(e) => setReqIn(e.target.value)}
-                    data-testid="input-corrected-clock-in"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs text-blue-700 dark:text-blue-300">Clock Out</Label>
-                  <Input
-                    type="time"
-                    value={reqOut}
-                    onChange={(e) => setReqOut(e.target.value)}
-                    data-testid="input-corrected-clock-out"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Reason</Label>
-              <Textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Explain what happened..."
-                data-testid="input-correction-reason"
-              />
-            </div>
-
-            <Button
-              onClick={() => submitMutation.mutate()}
-              disabled={!date || !reason || submitMutation.isPending}
-              className="w-full"
-              data-testid="button-submit-correction"
-            >
-              <Send className="h-4 w-4 mr-1" />
-              {submitMutation.isPending ? "Submitting..." : "Submit Correction"}
-            </Button>
+          <CardContent>
+            <CorrectionFormBody pendingDates={pendingDates} />
           </CardContent>
         </Card>
 
