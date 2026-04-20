@@ -179,6 +179,7 @@ export const DEFAULT_PAYROLL_RULES = {
     bonusAmountPerHour: number;
     minHoursThreshold: number;
     daysOfWeek?: number[];
+    applyScope?: "entire_shift" | "before_cutoff";
   }>,
 };
 

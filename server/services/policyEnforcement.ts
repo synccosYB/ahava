@@ -24,6 +24,7 @@ export interface EarlyArrivalBonusRule {
   bonusAmountPerHour: number;
   minHoursThreshold: number;
   daysOfWeek?: number[];
+  applyScope?: "entire_shift" | "before_cutoff";
 }
 
 export interface EarlyArrivalBonusResult {
@@ -73,11 +74,22 @@ export function evaluateEarlyArrivalBonuses(
     const perHour = Number(rule.bonusAmountPerHour) || 0;
     if (perHour <= 0) continue;
 
-    const bonus = perHour * (Number(hoursWorked) || 0);
+    const totalHours = Number(hoursWorked) || 0;
+    const applyScope = rule.applyScope === "before_cutoff" ? "before_cutoff" : "entire_shift";
+    let bonusHours = totalHours;
+    if (applyScope === "before_cutoff") {
+      const minutesBeforeCutoff = cutoffMinutes - clockInMinutes;
+      bonusHours = Math.min(totalHours, Math.max(0, minutesBeforeCutoff / 60));
+      bonusHours = Math.round(bonusHours * 100) / 100;
+    }
+    const bonus = perHour * bonusHours;
     if (bonus <= 0) continue;
     result.bonusAmount += bonus;
+    const scopeLabel = applyScope === "before_cutoff"
+      ? `${bonusHours}h before cutoff`
+      : `${totalHours}h`;
     result.descriptions.push(
-      `Early-arrival bonus (before ${rule.cutoffTime}): +$${perHour.toFixed(2)}/hr × ${hoursWorked}h = $${bonus.toFixed(2)}`,
+      `Early-arrival bonus (before ${rule.cutoffTime}): +$${perHour.toFixed(2)}/hr × ${scopeLabel} = $${bonus.toFixed(2)}`,
     );
   }
 

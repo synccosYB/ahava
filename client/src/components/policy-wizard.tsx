@@ -841,6 +841,7 @@ interface EarlyArrivalBonus {
   bonusAmountPerHour: number;
   minHoursThreshold: number;
   daysOfWeek?: number[];
+  applyScope?: "entire_shift" | "before_cutoff";
 }
 
 function EarlyArrivalBonusEditor({
@@ -850,11 +851,12 @@ function EarlyArrivalBonusEditor({
   onChange: (next: EarlyArrivalBonus[]) => void;
   errors: Record<string, string>;
 }) {
-  const [draft, setDraft] = useState<{ cutoffTime: string; bonusAmountPerHour: string; minHoursThreshold: string; daysOfWeek: number[] }>({
+  const [draft, setDraft] = useState<{ cutoffTime: string; bonusAmountPerHour: string; minHoursThreshold: string; daysOfWeek: number[]; applyScope: "entire_shift" | "before_cutoff" }>({
     cutoffTime: "07:00",
     bonusAmountPerHour: "",
     minHoursThreshold: "0",
     daysOfWeek: [],
+    applyScope: "entire_shift",
   });
 
   const addBonus = () => {
@@ -869,6 +871,7 @@ function EarlyArrivalBonusEditor({
       bonusAmountPerHour: perHour,
       minHoursThreshold: threshold,
       daysOfWeek: draft.daysOfWeek.length > 0 ? [...draft.daysOfWeek].sort() : undefined,
+      applyScope: draft.applyScope,
     };
     onChange([...bonuses, next]);
     setDraft({ ...draft, bonusAmountPerHour: "" });
@@ -904,7 +907,7 @@ function EarlyArrivalBonusEditor({
       <div>
         <Label className="font-medium">Early-Arrival Bonus Rules</Label>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Use this to grant an extra per-hour bonus when employees clock in before a specific time (e.g. an early-shift premium). The bonus applies to all hours of a qualifying shift.
+          Use this to grant an extra per-hour bonus when employees clock in before a specific time (e.g. an early-shift premium). For each rule, choose whether the bonus pays for the entire shift or only for the hours worked before the cutoff.
         </p>
       </div>
 
@@ -991,9 +994,34 @@ function EarlyArrivalBonusEditor({
                   })}
                 </div>
               </div>
+              <div>
+                <Label className="text-xs">Apply to</Label>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {[
+                    { value: "entire_shift", label: "Entire shift" },
+                    { value: "before_cutoff", label: "Only hours before cutoff" },
+                  ].map((opt) => {
+                    const current = b.applyScope === "before_cutoff" ? "before_cutoff" : "entire_shift";
+                    const active = current === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => updateBonus(b.id, { applyScope: opt.value as "entire_shift" | "before_cutoff" })}
+                        className={`px-2 py-1 rounded text-xs border transition-colors ${
+                          active ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:border-primary/40"
+                        }`}
+                        data-testid={`button-edit-early-scope-${b.id}-${opt.value}`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <div className="flex flex-wrap gap-1">
                 <Badge variant="outline" className="text-xs">
-                  Before {b.cutoffTime} → +${(b.bonusAmountPerHour || 0).toFixed(2)}/hr × hours worked
+                  Before {b.cutoffTime} → +${(b.bonusAmountPerHour || 0).toFixed(2)}/hr × {b.applyScope === "before_cutoff" ? "hours before cutoff" : "hours worked"}
                 </Badge>
                 <Badge variant="outline" className="text-xs">Min {b.minHoursThreshold}h</Badge>
                 <Badge variant="outline" className="text-xs">{daysLabel(b.daysOfWeek)}</Badge>
@@ -1078,6 +1106,33 @@ function EarlyArrivalBonusEditor({
               );
             })}
           </div>
+        </div>
+        <div>
+          <Label className="text-xs">Apply to</Label>
+          <div className="flex flex-wrap gap-1 mt-1">
+            {[
+              { value: "entire_shift", label: "Entire shift" },
+              { value: "before_cutoff", label: "Only hours before cutoff" },
+            ].map((opt) => {
+              const active = draft.applyScope === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setDraft({ ...draft, applyScope: opt.value as "entire_shift" | "before_cutoff" })}
+                  className={`px-2 py-1 rounded text-xs border transition-colors ${
+                    active ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:border-primary/40"
+                  }`}
+                  data-testid={`button-early-scope-${opt.value}`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            "Entire shift" pays the bonus on every hour worked. "Only hours before cutoff" pays only for time worked before the cutoff (e.g. clock-in 05:00 with a 07:00 cutoff = 2 bonus hours).
+          </p>
         </div>
       </div>
     </div>
@@ -1384,7 +1439,7 @@ function StepReview({
                     : "all days";
                   return (
                     <Badge key={b.id} variant="outline" className="text-xs" data-testid={`review-early-bonus-${b.id}`}>
-                      Before {b.cutoffTime} → +${(b.bonusAmountPerHour || 0).toFixed(2)}/hr · min {b.minHoursThreshold}h · {days}
+                      Before {b.cutoffTime} → +${(b.bonusAmountPerHour || 0).toFixed(2)}/hr · min {b.minHoursThreshold}h · {days} · {b.applyScope === "before_cutoff" ? "before cutoff only" : "entire shift"}
                     </Badge>
                   );
                 })}
