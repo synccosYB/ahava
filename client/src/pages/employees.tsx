@@ -44,6 +44,7 @@ export default function EmployeesPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [departmentFilter, setDepartmentFilter] = useState("all");
+  const [divisionFilter, setDivisionFilter] = useState("all");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
 
   const { data: users, isLoading, isError } = useQuery<User[]>({
@@ -66,6 +67,7 @@ export default function EmployeesPage() {
     const name = `${u.firstName || ""} ${u.lastName || ""}`.toLowerCase();
     if (search && !name.includes(search.toLowerCase()) && !u.email?.toLowerCase().includes(search.toLowerCase())) return false;
     if (departmentFilter !== "all" && u.departmentId !== departmentFilter) return false;
+    if (divisionFilter !== "all" && u.companyId !== divisionFilter) return false;
     return true;
   });
 
@@ -88,6 +90,17 @@ export default function EmployeesPage() {
             data-testid="input-search-employees"
           />
         </div>
+        <Select value={divisionFilter} onValueChange={setDivisionFilter}>
+          <SelectTrigger className="w-[180px]" data-testid="select-division-filter">
+            <SelectValue placeholder="Division" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Divisions</SelectItem>
+            {divisions?.map((d) => (
+              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
           <SelectTrigger className="w-[180px]" data-testid="select-department-filter">
             <SelectValue placeholder="Department" />
