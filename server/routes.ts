@@ -288,6 +288,89 @@ export async function registerRoutes(
     locationId: z.string().nullable().optional(),
   });
 
+  const bulkAssignDivisionSchema = z.object({
+    userIds: z.array(z.string().min(1)).min(1).max(500),
+    companyId: z.string().min(1),
+    keepCompatible: z.boolean().optional().default(false),
+  });
+
+  app.post("/api/users/bulk-assign-division", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = bulkAssignDivisionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+    }
+    const { companyId, keepCompatible } = parsed.data;
+    const userIds = Array.from(new Set(parsed.data.userIds));
+    const requesterIsSuper = isSuperAdmin(req);
+    const actor = (req as any).authUser as User;
+    const auditCtx = getAuditContext(req);
+
+    const division = await storage.getCompany(companyId);
+    if (!division) return res.status(400).json({ message: "Division not found" });
+
+    const updated: string[] = [];
+    const skipped: { id: string; reason: string }[] = [];
+
+    for (const uid of userIds) {
+      if (uid === SUPER_ADMIN_USER_ID && !requesterIsSuper) {
+        skipped.push({ id: uid, reason: "not_found" });
+        continue;
+      }
+      const existing = await storage.getUser(uid);
+      if (!existing) {
+        skipped.push({ id: uid, reason: "not_found" });
+        continue;
+      }
+
+      let nextLocationId: string | null = null;
+      let nextDepartmentId: string | null = null;
+
+      if (keepCompatible) {
+        if (existing.locationId) {
+          const loc = await storage.getLocation(existing.locationId);
+          if (loc && loc.companyId === companyId) nextLocationId = existing.locationId;
+        }
+        if (existing.departmentId) {
+          const dept = await storage.getDepartment(existing.departmentId);
+          if (dept && (!dept.companyId || dept.companyId === companyId)) nextDepartmentId = existing.departmentId;
+        }
+      }
+
+      const result = await storage.updateUser(uid, {
+        companyId,
+        locationId: nextLocationId,
+        departmentId: nextDepartmentId,
+      });
+      if (!result) {
+        skipped.push({ id: uid, reason: "update_failed" });
+        continue;
+      }
+
+      await writeAuditLog({
+        actorUserId: actor.id,
+        targetType: "user",
+        targetId: uid,
+        action: "user.bulk_assign_division",
+        oldValue: {
+          companyId: existing.companyId,
+          locationId: existing.locationId,
+          departmentId: existing.departmentId,
+        },
+        newValue: {
+          companyId,
+          locationId: nextLocationId,
+          departmentId: nextDepartmentId,
+        },
+        context: { keepCompatible, divisionName: division.name },
+        ...auditCtx,
+      });
+
+      updated.push(uid);
+    }
+
+    res.json({ updatedCount: updated.length, updatedIds: updated, skipped });
+  });
+
   app.patch("/api/users/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });

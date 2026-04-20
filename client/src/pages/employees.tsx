@@ -17,7 +17,8 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
 import { formatCurrency } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division } from "@shared/schema";
@@ -46,6 +47,8 @@ export default function EmployeesPage() {
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [divisionFilter, setDivisionFilter] = useState("all");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
 
   const { data: users, isLoading, isError } = useQuery<User[]>({
     queryKey: ["/api/users"],
@@ -74,6 +77,30 @@ export default function EmployeesPage() {
   if (selectedEmployee) {
     return <EmployeeProfile userId={selectedEmployee} onBack={() => setSelectedEmployee(null)} />;
   }
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const allFilteredSelected = filtered.length > 0 && filtered.every((u) => selectedIds.has(u.id));
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      if (allFilteredSelected) {
+        const next = new Set(prev);
+        filtered.forEach((u) => next.delete(u.id));
+        return next;
+      }
+      const next = new Set(prev);
+      filtered.forEach((u) => next.add(u.id));
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
 
   return (
     <div className="max-w-6xl space-y-6" data-testid="employees-page">
@@ -121,6 +148,43 @@ export default function EmployeesPage() {
         />
       </div>
 
+      {selectedIds.size > 0 && (
+        <div
+          className="flex items-center justify-between gap-4 rounded-md border bg-muted/40 p-3"
+          data-testid="bar-bulk-actions"
+        >
+          <div className="text-sm" data-testid="text-selected-count">
+            <span className="font-medium">{selectedIds.size}</span> selected
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={clearSelection}
+              data-testid="button-clear-selection"
+            >
+              Clear
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => setBulkDialogOpen(true)}
+              data-testid="button-bulk-assign-division"
+            >
+              <Building2 className="h-4 w-4 mr-2" />
+              Assign Division
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <BulkAssignDivisionDialog
+        open={bulkDialogOpen}
+        onOpenChange={setBulkDialogOpen}
+        userIds={Array.from(selectedIds)}
+        divisions={divisions || []}
+        onSuccess={clearSelection}
+      />
+
       <Card data-testid="card-employees-list">
         <CardContent className="p-0">
           {isError ? (
@@ -140,6 +204,14 @@ export default function EmployeesPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-[40px]">
+                    <Checkbox
+                      checked={allFilteredSelected}
+                      onCheckedChange={toggleSelectAll}
+                      aria-label="Select all"
+                      data-testid="checkbox-select-all"
+                    />
+                  </TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Email</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Role</TableHead>
@@ -162,6 +234,14 @@ export default function EmployeesPage() {
                       onClick={() => setSelectedEmployee(emp.id)}
                       data-testid={`row-employee-${emp.id}`}
                     >
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={selectedIds.has(emp.id)}
+                          onCheckedChange={() => toggleSelect(emp.id)}
+                          aria-label={`Select ${emp.firstName} ${emp.lastName}`}
+                          data-testid={`checkbox-select-${emp.id}`}
+                        />
+                      </TableCell>
                       <TableCell className="font-medium" data-testid={`text-employee-name-${emp.id}`}>
                         {emp.firstName} {emp.lastName}
                       </TableCell>
@@ -191,6 +271,112 @@ export default function EmployeesPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function BulkAssignDivisionDialog({
+  open,
+  onOpenChange,
+  userIds,
+  divisions,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  userIds: string[];
+  divisions: Division[];
+  onSuccess: () => void;
+}) {
+  const { toast } = useToast();
+  const [companyId, setCompanyId] = useState("");
+  const [keepCompatible, setKeepCompatible] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setCompanyId("");
+      setKeepCompatible(false);
+    }
+  }, [open]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/users/bulk-assign-division", {
+        userIds,
+        companyId,
+        keepCompatible,
+      });
+      return res.json();
+    },
+    onSuccess: (data: { updatedCount: number; skipped: { id: string; reason: string }[] }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({
+        title: "Division assigned",
+        description: `${data.updatedCount} employee${data.updatedCount === 1 ? "" : "s"} updated${
+          data.skipped.length ? `, ${data.skipped.length} skipped` : ""
+        }.`,
+      });
+      onOpenChange(false);
+      onSuccess();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="dialog-bulk-assign-division">
+        <DialogHeader>
+          <DialogTitle>Assign Division</DialogTitle>
+          <DialogDescription>
+            Assign {userIds.length} selected employee{userIds.length === 1 ? "" : "s"} to a division.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Division</Label>
+            <Select value={companyId} onValueChange={setCompanyId}>
+              <SelectTrigger data-testid="select-bulk-division">
+                <SelectValue placeholder="Select a division" />
+              </SelectTrigger>
+              <SelectContent>
+                {divisions.map((d) => (
+                  <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-start gap-3 rounded-md border p-3">
+            <Checkbox
+              id="keep-compatible"
+              checked={keepCompatible}
+              onCheckedChange={(v) => setKeepCompatible(v === true)}
+              data-testid="checkbox-keep-compatible"
+            />
+            <div className="space-y-1">
+              <Label htmlFor="keep-compatible" className="cursor-pointer">
+                Keep existing department & location if compatible
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                When unchecked, department and location are cleared. When checked, they're kept only if they belong to the new division.
+              </p>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-bulk">
+            Cancel
+          </Button>
+          <Button
+            onClick={() => mutation.mutate()}
+            disabled={!companyId || mutation.isPending || userIds.length === 0}
+            data-testid="button-confirm-bulk-assign"
+          >
+            {mutation.isPending ? "Assigning..." : `Assign ${userIds.length}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

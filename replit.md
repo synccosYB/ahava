@@ -70,7 +70,11 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **PageHeader component** (`client/src/components/page-header.tsx`): Shared header with title, subtitle, and optional actions slot. Used across all pages for consistent layout.
 - **App layout** (`client/src/components/app-layout.tsx`): Top header bar with sidebar trigger, separator, and "Ahava Medical Center" label. Main content area with `p-6` padding.
 - **Page styling conventions**: `max-w-5xl` for employee pages, `max-w-6xl` for admin pages, `space-y-6` vertical rhythm, uppercase `tracking-wider` table headers, `tabular-nums` for numeric data.
-- **DB column sync**: Schema columns added via `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (not drizzle-kit push which hangs). Affected tables: `employee_pto_settings`, `pto_policies`, `user_employment_profiles`.
+- **DB column sync**: Schema columns added via `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (not drizzle-kit push which hangs). Affected tables: `employee_pto_settings`, `pto_policies`, `user_employment_profiles`, `companies` (added `address`, `phone`).
+
+## Bulk Division Assignment
+- **Endpoint**: `POST /api/users/bulk-assign-division` — body `{ userIds: string[], companyId: string, keepCompatible?: boolean }`. Admin + `users.edit`. Writes one audit log per affected user with action `user.bulk_assign_division`. By default clears `locationId`/`departmentId`; when `keepCompatible=true`, keeps them only if they belong to the new division.
+- **Frontend**: `client/src/pages/employees.tsx` — multi-select checkbox column on the Employees list, a bulk action bar appears when rows are selected, and a dialog to pick a division and toggle the "keep compatible" option.
 
 ## Milestone 8: Alerts, Audit, Permissions UI & Hardening
 - **system_alerts** (shared/schema.ts): Alert table (type, severity, status, employeeId, message, details JSONB, acknowledge/resolve with actor+timestamp)
