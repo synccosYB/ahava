@@ -230,6 +230,7 @@ export default function PayrollPrepPage() {
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Employees</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Total Hours</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">OT Hours</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Bonus Pay</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Est. Pay</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
@@ -247,6 +248,9 @@ export default function PayrollPrepPage() {
                       <span className={batch.totalOvertimeHours > 0 ? "text-amber-500 font-bold" : ""}>
                         {formatHoursMinutes(batch.totalOvertimeHours)}
                       </span>
+                    </TableCell>
+                    <TableCell className="tabular-nums" data-testid={`text-batch-bonus-${batch.id}`}>
+                      {batch.totalBonusAmount > 0 ? formatCurrency(batch.totalBonusAmount) : "—"}
                     </TableCell>
                     <TableCell className="tabular-nums font-medium" data-testid={`text-batch-pay-${batch.id}`}>{formatCurrency(batch.totalEstimatedPay)}</TableCell>
                     <TableCell data-testid={`badge-batch-status-${batch.id}`}>{getStatusBadge(batch.status)}</TableCell>
