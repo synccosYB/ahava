@@ -25,6 +25,10 @@ interface ColumnRow {
   column_name: string;
 }
 
+interface TableRow {
+  table_name: string;
+}
+
 const REQUIRED_COLUMNS: Record<string, string[]> = {
   employee_pto_settings: [
     "vacation_balance_override",
@@ -33,7 +37,39 @@ const REQUIRED_COLUMNS: Record<string, string[]> = {
     "hire_date",
     "notes",
   ],
+  companies: [
+    "legal_name",
+    "slug",
+    "address",
+    "phone",
+    "email",
+    "timezone",
+  ],
+  locations: [
+    "company_id",
+    "name",
+    "code",
+    "timezone",
+    "is_active",
+  ],
+  departments: [
+    "name",
+    "company_id",
+    "location_id",
+  ],
+  location_addresses: [
+    "location_id",
+    "label",
+    "address",
+    "city",
+    "state",
+    "zip",
+  ],
 };
+
+const REQUIRED_TABLES: string[] = [
+  "location_addresses",
+];
 
 export async function runMigrations(): Promise<void> {
   const client = await pool.connect();
@@ -111,19 +147,41 @@ export async function runMigrations(): Promise<void> {
 }
 
 async function verifyRequiredColumns(client: PoolClient): Promise<void> {
+  const problems: string[] = [];
+
+  if (REQUIRED_TABLES.length > 0) {
+    const { rows: tableRows } = await client.query<TableRow>(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = ANY($1::text[])`,
+      [REQUIRED_TABLES]
+    );
+    const existingTables = new Set(tableRows.map((r) => r.table_name));
+    for (const table of REQUIRED_TABLES) {
+      if (!existingTables.has(table)) {
+        problems.push(`missing table: ${table}`);
+      }
+    }
+  }
+
   for (const [table, columns] of Object.entries(REQUIRED_COLUMNS)) {
     const { rows } = await client.query<ColumnRow>(
-      `SELECT column_name FROM information_schema.columns WHERE table_name = $1`,
+      `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`,
       [table]
     );
     const existing = new Set(rows.map((r) => r.column_name));
     const missing = columns.filter((c) => !existing.has(c));
     if (missing.length > 0) {
-      throw new Error(
-        `Post-migration check failed: ${table} is missing columns: ${missing.join(", ")}. ` +
-        `The /api/attendance/status endpoint will fail. Check migration logs above.`
-      );
+      problems.push(`${table} is missing columns: ${missing.join(", ")}`);
     }
   }
+
+  if (problems.length > 0) {
+    throw new Error(
+      `Post-migration check failed: ${problems.join("; ")}. ` +
+      `Affected admin pages (Divisions, Locations, Departments, Attendance) ` +
+      `will return 500 errors. Check migration logs above.`
+    );
+  }
+
   console.log("Post-migration column verification passed.");
 }
