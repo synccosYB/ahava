@@ -19,22 +19,28 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, CheckCircle, XCircle, Unlock } from "lucide-react";
+import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, CheckCircle, XCircle, Unlock, Eye, Info } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { PayrollExport } from "@shared/schema";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { PayrollExport, PayrollBatchRecord } from "@shared/schema";
 
 type EnrichedPayrollExport = PayrollExport & {
   totalHours: number;
   totalOvertimeHours: number;
   totalEstimatedPay: number;
+  totalBonusAmount: number;
+  totalBonusHours: number;
   employeeCount: number;
 };
+
+type EnrichedBatchRecord = PayrollBatchRecord & { employeeName: string };
 
 export default function PayrollPrepPage() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reExportWarning, setReExportWarning] = useState<string | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
+  const [detailBatchId, setDetailBatchId] = useState<string | null>(null);
   const [form, setForm] = useState({
     periodStart: "",
     periodEnd: "",
@@ -44,6 +50,37 @@ export default function PayrollPrepPage() {
   const { data: batches = [], isLoading } = useQuery<EnrichedPayrollExport[]>({
     queryKey: ["/api/payroll/exports"],
   });
+
+  const { data: detailRecords = [], isLoading: isDetailLoading } = useQuery<EnrichedBatchRecord[]>({
+    queryKey: ["/api/payroll/exports", detailBatchId, "records"],
+    enabled: !!detailBatchId,
+  });
+
+  const detailBatch = detailBatchId ? batches.find((b) => b.id === detailBatchId) : null;
+
+  const sortedDetailRecords = [...detailRecords].sort((a, b) => {
+    const nameCmp = a.employeeName.localeCompare(b.employeeName);
+    if (nameCmp !== 0) return nameCmp;
+    return a.workDate.localeCompare(b.workDate);
+  });
+
+  const detailTotals = detailRecords.reduce(
+    (acc, r) => {
+      acc.regular += r.regularHours || 0;
+      acc.overtime += r.overtimeHours || 0;
+      acc.pto += r.ptoHours || 0;
+      acc.bonusHours += r.bonusHours || 0;
+      acc.bonusAmount += r.bonusAmount || 0;
+      return acc;
+    },
+    { regular: 0, overtime: 0, pto: 0, bonusHours: 0, bonusAmount: 0 },
+  );
+
+  const formatRecordType = (t: string) => {
+    if (t === "pto") return "PTO";
+    if (t === "pto_cashout") return "PTO Cash-Out";
+    return "Work";
+  };
 
   const createMutation = useMutation({
     mutationFn: async (data: { startDate: string; endDate: string; notes?: string }) => {
@@ -215,6 +252,9 @@ export default function PayrollPrepPage() {
                     <TableCell data-testid={`badge-batch-status-${batch.id}`}>{getStatusBadge(batch.status)}</TableCell>
                     <TableCell>
                       <div className="flex gap-1">
+                        <Button variant="outline" size="sm" onClick={() => setDetailBatchId(batch.id)} data-testid={`button-view-${batch.id}`}>
+                          <Eye className="h-3 w-3 mr-1" /> View
+                        </Button>
                         {batch.status !== "locked" && (
                           <Button variant="outline" size="sm" onClick={() => exportBatch(batch.id)} disabled={exportingId === batch.id} data-testid={`button-export-${batch.id}`}>
                             {exportingId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
@@ -240,6 +280,101 @@ export default function PayrollPrepPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={!!detailBatchId} onOpenChange={(open) => !open && setDetailBatchId(null)}>
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto" data-testid="dialog-batch-detail">
+          <DialogHeader>
+            <DialogTitle>
+              Batch Detail{detailBatch ? `: ${detailBatch.startDate} — ${detailBatch.endDate}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              Per-day pay breakdown including day-of-week and early-arrival bonuses.
+            </DialogDescription>
+          </DialogHeader>
+          {isDetailLoading ? (
+            <div className="space-y-2 py-4">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          ) : sortedDetailRecords.length === 0 ? (
+            <p className="py-8 text-center text-muted-foreground" data-testid="text-no-detail-records">
+              No records in this batch.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Regular</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">OT</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">PTO</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Bonus Hrs</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Bonus $</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sortedDetailRecords.map((r) => {
+                  const bonusHours = r.bonusHours || 0;
+                  const bonusAmount = r.bonusAmount || 0;
+                  const hasBonus = bonusHours > 0 || bonusAmount > 0;
+                  return (
+                    <TableRow key={r.id} data-testid={`row-batch-record-${r.id}`}>
+                      <TableCell data-testid={`text-record-employee-${r.id}`}>{r.employeeName}</TableCell>
+                      <TableCell className="tabular-nums" data-testid={`text-record-date-${r.id}`}>{r.workDate}</TableCell>
+                      <TableCell><Badge variant="outline">{formatRecordType(r.recordType)}</Badge></TableCell>
+                      <TableCell className="tabular-nums text-right">{formatHoursMinutes(r.regularHours || 0)}</TableCell>
+                      <TableCell className="tabular-nums text-right">
+                        <span className={(r.overtimeHours || 0) > 0 ? "text-amber-500 font-bold" : ""}>
+                          {formatHoursMinutes(r.overtimeHours || 0)}
+                        </span>
+                      </TableCell>
+                      <TableCell className="tabular-nums text-right">{formatHoursMinutes(r.ptoHours || 0)}</TableCell>
+                      <TableCell className="tabular-nums text-right" data-testid={`text-record-bonus-hours-${r.id}`}>
+                        {hasBonus ? formatHoursMinutes(bonusHours) : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell className="tabular-nums text-right font-medium" data-testid={`text-record-bonus-amount-${r.id}`}>
+                        {hasBonus ? (
+                          <div className="flex items-center justify-end gap-1">
+                            <span>{formatCurrency(bonusAmount)}</span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="text-muted-foreground hover:text-foreground"
+                                  data-testid={`tooltip-trigger-bonus-${r.id}`}
+                                  aria-label="Bonus rule details"
+                                >
+                                  <Info className="h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs" data-testid={`tooltip-content-bonus-${r.id}`}>
+                                {r.bonusDescription || "Bonus applied; rule description unavailable"}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                <TableRow className="font-medium border-t-2" data-testid="row-batch-detail-totals">
+                  <TableCell colSpan={3}>Totals</TableCell>
+                  <TableCell className="tabular-nums text-right" data-testid="text-detail-total-regular">{formatHoursMinutes(detailTotals.regular)}</TableCell>
+                  <TableCell className="tabular-nums text-right" data-testid="text-detail-total-overtime">{formatHoursMinutes(detailTotals.overtime)}</TableCell>
+                  <TableCell className="tabular-nums text-right" data-testid="text-detail-total-pto">{formatHoursMinutes(detailTotals.pto)}</TableCell>
+                  <TableCell className="tabular-nums text-right" data-testid="text-detail-total-bonus-hours">{formatHoursMinutes(detailTotals.bonusHours)}</TableCell>
+                  <TableCell className="tabular-nums text-right" data-testid="text-detail-total-bonus-amount">{formatCurrency(detailTotals.bonusAmount)}</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={!!reExportWarning} onOpenChange={() => setReExportWarning(null)}>
         <AlertDialogContent data-testid="dialog-reexport-warning">

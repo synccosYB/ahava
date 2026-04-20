@@ -3400,7 +3400,18 @@ export async function registerRoutes(
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
       const records = await storage.getPayrollBatchRecords(req.params.id);
-      res.json(records);
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+      const enriched = records.map(r => {
+        const user = userMap.get(r.employeeId);
+        return {
+          ...r,
+          employeeName: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Unknown",
+        };
+      });
+
+      res.json(enriched);
     } catch (error) {
       console.error("Error fetching batch records:", error);
       res.status(500).json({ message: "Failed to fetch batch records" });
