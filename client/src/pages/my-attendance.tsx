@@ -388,7 +388,16 @@ export default function MyAttendance() {
                       <TableCell className="text-sm font-semibold tabular-nums">
                         {record.totalHours != null ? formatHoursMinutes(record.totalHours) : "—"}
                       </TableCell>
-                      <TableCell>{getStatusBadge(record.status)}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5">
+                          {getStatusBadge(record.status)}
+                          {record.wasCorrected && (
+                            <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-950/40 dark:text-blue-300" data-testid={`badge-corrected-${record.id}`}>
+                              Corrected
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell className="text-right">
                         {hasPending ? (
                           <button

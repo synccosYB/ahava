@@ -8,7 +8,7 @@ import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location } from "@shared/schema";
-import { eq, desc, and, isNull } from "drizzle-orm";
+import { eq, desc, and, isNull, isNotNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { runAlertDetection } from "./services/alerts";
@@ -1436,7 +1436,22 @@ export async function registerRoutes(
         startDate as string | undefined,
         endDate as string | undefined
       );
-      res.json(records.map(punchLogToApiResponse));
+
+      // Identify which punch logs were created/updated by an approved correction request.
+      const approvedExceptions = await db
+        .select({ punchLogId: attendanceExceptions.punchLogId })
+        .from(attendanceExceptions)
+        .where(and(
+          eq(attendanceExceptions.employeeId, userId),
+          eq(attendanceExceptions.status, "approved"),
+          isNotNull(attendanceExceptions.punchLogId),
+        ));
+      const correctedIds = new Set(approvedExceptions.map(e => e.punchLogId).filter(Boolean) as string[]);
+
+      res.json(records.map(r => ({
+        ...punchLogToApiResponse(r),
+        wasCorrected: correctedIds.has(r.id),
+      })));
     } catch (error) {
       console.error("Error fetching records:", error);
       res.status(500).json({ message: "Failed to fetch attendance records" });
@@ -3471,7 +3486,19 @@ export async function registerRoutes(
         return val.toFixed(2);
       };
 
-      type DayRow = { employeeName: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string };
+      // Identify which punch logs in this batch's range were created/updated via an approved correction.
+      const approvedExceptionsForBatch = await db
+        .select({ punchLogId: attendanceExceptions.punchLogId })
+        .from(attendanceExceptions)
+        .where(and(
+          eq(attendanceExceptions.status, "approved"),
+          isNotNull(attendanceExceptions.punchLogId),
+        ));
+      const correctedPunchLogIds = new Set(
+        approvedExceptionsForBatch.map(e => e.punchLogId).filter(Boolean) as string[]
+      );
+
+      type DayRow = { employeeName: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean };
       const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
@@ -3508,6 +3535,8 @@ export async function registerRoutes(
           payType = "Holiday";
         }
 
+        const recCorrected = !!(r.punchLogId && correctedPunchLogIds.has(r.punchLogId));
+
         if (!employeeRecords.has(r.employeeId)) {
           employeeRecords.set(r.employeeId, new Map());
         }
@@ -3518,6 +3547,7 @@ export async function registerRoutes(
           existing.amount += amount;
           existing.paidHours += totalHours;
           if (payType === "Holiday") existing.payType = "Holiday";
+          if (recCorrected) existing.wasCorrected = true;
         } else {
           empDays.set(dateKey, {
             employeeName,
@@ -3527,6 +3557,7 @@ export async function registerRoutes(
             paidHours: totalHours,
             dateWorked: formatDateWorked(r.workDate),
             sortDate: r.workDate,
+            wasCorrected: recCorrected,
           });
         }
       }
@@ -3539,7 +3570,7 @@ export async function registerRoutes(
       }
 
       let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
-      csv += "Employee Name,Amount,Pay Type,Department,Paid Hours,Date Worked\n";
+      csv += "Employee Name,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected\n";
 
       for (const [, dayMap] of employeeRecords) {
         const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
@@ -3547,13 +3578,13 @@ export async function registerRoutes(
         let totalPaidHours = 0;
 
         for (const row of rows) {
-          csv += `${escapeCSV(row.employeeName)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)}\n`;
+          csv += `${escapeCSV(row.employeeName)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""}\n`;
           totalAmount += row.amount;
           totalPaidHours += row.paidHours;
         }
 
         const empName = rows[0].employeeName;
-        csv += `${escapeCSV(empName + " - Paid Totals")},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},\n`;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,\n`;
       }
 
       const adminUser = req.authUser as User;

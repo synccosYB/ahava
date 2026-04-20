@@ -238,6 +238,7 @@ export type AttendanceRecord = PunchLog & {
   userId: string;
   date: string;
   totalHours: number | null;
+  wasCorrected?: boolean;
 };
 
 export const attendanceExceptions = pgTable("attendance_exceptions", {
