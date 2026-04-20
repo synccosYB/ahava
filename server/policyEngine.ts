@@ -173,6 +173,13 @@ export const DEFAULT_PAYROLL_RULES = {
     bonusType: "money" | "hours";
     bonusAmount: number;
   }>,
+  earlyArrivalBonuses: [] as Array<{
+    id: string;
+    cutoffTime: string;
+    bonusAmountPerHour: number;
+    minHoursThreshold: number;
+    daysOfWeek?: number[];
+  }>,
 };
 
 export const DEFAULT_APPROVALS_RULES = {

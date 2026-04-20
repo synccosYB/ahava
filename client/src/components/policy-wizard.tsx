@@ -253,6 +253,37 @@ export function PolicyWizard({
           }
         }
       });
+      if (selectedTypeKey === "payroll" && Array.isArray(rulesForm.earlyArrivalBonuses)) {
+        rulesForm.earlyArrivalBonuses.forEach((b: any, idx: number) => {
+          const cutoff = typeof b?.cutoffTime === "string" ? b.cutoffTime : "";
+          const threshold = Number(b?.minHoursThreshold);
+          const perHour = Number(b?.bonusAmountPerHour);
+          if (!/^\d{1,2}:\d{2}$/.test(cutoff)) {
+            newErrors[`earlyArrivalBonuses.${idx}.cutoffTime`] = `Early-arrival rule #${idx + 1}: cutoff time is required (HH:MM)`;
+          } else {
+            const [hs, ms] = cutoff.split(":");
+            const h = parseInt(hs, 10);
+            const m = parseInt(ms, 10);
+            if (Number.isNaN(h) || Number.isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) {
+              newErrors[`earlyArrivalBonuses.${idx}.cutoffTime`] = `Early-arrival rule #${idx + 1}: enter a valid 24h time`;
+            }
+          }
+          if (Number.isNaN(perHour) || perHour <= 0) {
+            newErrors[`earlyArrivalBonuses.${idx}.bonusAmountPerHour`] = `Early-arrival rule #${idx + 1}: bonus per hour must be greater than 0`;
+          }
+          if (Number.isNaN(threshold) || threshold < 0) {
+            newErrors[`earlyArrivalBonuses.${idx}.minHoursThreshold`] = `Early-arrival rule #${idx + 1}: minimum hours must be 0 or greater`;
+          }
+          if (Array.isArray(b?.daysOfWeek)) {
+            for (const d of b.daysOfWeek) {
+              if (!Number.isInteger(d) || d < 0 || d > 6) {
+                newErrors[`earlyArrivalBonuses.${idx}.daysOfWeek`] = `Early-arrival rule #${idx + 1}: invalid day selection`;
+                break;
+              }
+            }
+          }
+        });
+      }
       if (selectedTypeKey === "payroll" && Array.isArray(rulesForm.dayOfWeekBonuses)) {
         rulesForm.dayOfWeekBonuses.forEach((b: any, idx: number) => {
           const day = Number(b?.dayOfWeek);
@@ -804,6 +835,255 @@ function DayOfWeekBonusEditor({
   );
 }
 
+interface EarlyArrivalBonus {
+  id: string;
+  cutoffTime: string;
+  bonusAmountPerHour: number;
+  minHoursThreshold: number;
+  daysOfWeek?: number[];
+}
+
+function EarlyArrivalBonusEditor({
+  bonuses, onChange, errors,
+}: {
+  bonuses: EarlyArrivalBonus[];
+  onChange: (next: EarlyArrivalBonus[]) => void;
+  errors: Record<string, string>;
+}) {
+  const [draft, setDraft] = useState<{ cutoffTime: string; bonusAmountPerHour: string; minHoursThreshold: string; daysOfWeek: number[] }>({
+    cutoffTime: "07:00",
+    bonusAmountPerHour: "",
+    minHoursThreshold: "0",
+    daysOfWeek: [],
+  });
+
+  const addBonus = () => {
+    const perHour = parseFloat(draft.bonusAmountPerHour);
+    const threshold = parseFloat(draft.minHoursThreshold);
+    if (!/^\d{1,2}:\d{2}$/.test(draft.cutoffTime)) return;
+    if (Number.isNaN(perHour) || perHour <= 0) return;
+    if (Number.isNaN(threshold) || threshold < 0) return;
+    const next: EarlyArrivalBonus = {
+      id: `early-bonus-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      cutoffTime: draft.cutoffTime,
+      bonusAmountPerHour: perHour,
+      minHoursThreshold: threshold,
+      daysOfWeek: draft.daysOfWeek.length > 0 ? [...draft.daysOfWeek].sort() : undefined,
+    };
+    onChange([...bonuses, next]);
+    setDraft({ ...draft, bonusAmountPerHour: "" });
+  };
+
+  const removeBonus = (id: string) => {
+    onChange(bonuses.filter((b) => b.id !== id));
+  };
+
+  const updateBonus = (id: string, patch: Partial<EarlyArrivalBonus>) => {
+    onChange(bonuses.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  };
+
+  const toggleDay = (list: number[] | undefined, day: number): number[] => {
+    const current = Array.isArray(list) ? list : [];
+    return current.includes(day) ? current.filter((d) => d !== day) : [...current, day].sort();
+  };
+
+  const daysLabel = (list?: number[]) => {
+    if (!list || list.length === 0) return "All days";
+    return list.map((d) => DAY_OPTIONS.find((o) => o.value === String(d))?.label.slice(0, 3) || String(d)).join(", ");
+  };
+
+  const canAdd =
+    /^\d{1,2}:\d{2}$/.test(draft.cutoffTime) &&
+    draft.bonusAmountPerHour !== "" &&
+    parseFloat(draft.bonusAmountPerHour) > 0 &&
+    draft.minHoursThreshold !== "" &&
+    parseFloat(draft.minHoursThreshold) >= 0;
+
+  return (
+    <div className="p-3 rounded-lg border bg-card space-y-3" data-testid="editor-early-arrival-bonuses">
+      <div>
+        <Label className="font-medium">Early-Arrival Bonus Rules</Label>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Use this to grant an extra per-hour bonus when employees clock in before a specific time (e.g. an early-shift premium). The bonus applies to all hours of a qualifying shift.
+        </p>
+      </div>
+
+      {bonuses.length > 0 && (
+        <div className="space-y-2">
+          {bonuses.map((b, idx) => (
+            <div
+              key={b.id}
+              className="p-2 rounded-md border bg-muted/30 space-y-2"
+              data-testid={`row-early-bonus-${b.id}`}
+            >
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+                <div>
+                  <Label className="text-xs">Clock-in before</Label>
+                  <Input
+                    type="time"
+                    value={b.cutoffTime}
+                    onChange={(e) => updateBonus(b.id, { cutoffTime: e.target.value })}
+                    data-testid={`input-edit-early-cutoff-${b.id}`}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Bonus / hour ($)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={b.bonusAmountPerHour}
+                    onChange={(e) => {
+                      const v = e.target.value === "" ? 0 : parseFloat(e.target.value);
+                      updateBonus(b.id, { bonusAmountPerHour: Number.isNaN(v) ? 0 : Math.max(0, v) });
+                    }}
+                    data-testid={`input-edit-early-amount-${b.id}`}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Min Hours</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.25"
+                    value={b.minHoursThreshold}
+                    onChange={(e) => {
+                      const v = e.target.value === "" ? 0 : parseFloat(e.target.value);
+                      updateBonus(b.id, { minHoursThreshold: Number.isNaN(v) ? 0 : Math.max(0, v) });
+                    }}
+                    data-testid={`input-edit-early-threshold-${b.id}`}
+                  />
+                </div>
+                <div className="flex items-center justify-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeBonus(b.id)}
+                    className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                    data-testid={`button-remove-early-bonus-${b.id}`}
+                  >
+                    &times;
+                  </Button>
+                </div>
+              </div>
+              <div>
+                <Label className="text-xs">Days of week (leave all unchecked to apply every day)</Label>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {DAY_OPTIONS.map((o) => {
+                    const dayNum = parseInt(o.value, 10);
+                    const active = Array.isArray(b.daysOfWeek) && b.daysOfWeek.includes(dayNum);
+                    return (
+                      <button
+                        key={o.value}
+                        type="button"
+                        onClick={() => {
+                          const next = toggleDay(b.daysOfWeek, dayNum);
+                          updateBonus(b.id, { daysOfWeek: next.length === 0 ? undefined : next });
+                        }}
+                        className={`px-2 py-1 rounded text-xs border transition-colors ${
+                          active ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:border-primary/40"
+                        }`}
+                        data-testid={`button-edit-early-day-${b.id}-${o.value}`}
+                      >
+                        {o.label.slice(0, 3)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <Badge variant="outline" className="text-xs">
+                  Before {b.cutoffTime} → +${(b.bonusAmountPerHour || 0).toFixed(2)}/hr × hours worked
+                </Badge>
+                <Badge variant="outline" className="text-xs">Min {b.minHoursThreshold}h</Badge>
+                <Badge variant="outline" className="text-xs">{daysLabel(b.daysOfWeek)}</Badge>
+              </div>
+              {[
+                errors[`earlyArrivalBonuses.${idx}.cutoffTime`],
+                errors[`earlyArrivalBonuses.${idx}.bonusAmountPerHour`],
+                errors[`earlyArrivalBonuses.${idx}.minHoursThreshold`],
+                errors[`earlyArrivalBonuses.${idx}.daysOfWeek`],
+              ].filter(Boolean).map((msg, i) => (
+                <p key={i} className="text-sm text-destructive flex items-center gap-1" data-testid={`error-early-bonus-${b.id}-${i}`}>
+                  <AlertCircle className="h-3 w-3" /> {msg}
+                </p>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="space-y-2 border-t pt-3">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+          <div>
+            <Label className="text-xs">Clock-in before</Label>
+            <Input
+              type="time"
+              value={draft.cutoffTime}
+              onChange={(e) => setDraft({ ...draft, cutoffTime: e.target.value })}
+              data-testid="input-early-cutoff"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Bonus / hour ($)</Label>
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              value={draft.bonusAmountPerHour}
+              onChange={(e) => setDraft({ ...draft, bonusAmountPerHour: e.target.value })}
+              placeholder="2.50"
+              data-testid="input-early-amount"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Min Hours (optional)</Label>
+            <Input
+              type="number"
+              min={0}
+              step="0.25"
+              value={draft.minHoursThreshold}
+              onChange={(e) => setDraft({ ...draft, minHoursThreshold: e.target.value })}
+              data-testid="input-early-threshold"
+            />
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            onClick={addBonus}
+            disabled={!canAdd}
+            data-testid="button-add-early-bonus"
+          >
+            Add Bonus
+          </Button>
+        </div>
+        <div>
+          <Label className="text-xs">Days of week (leave all unchecked to apply every day)</Label>
+          <div className="flex flex-wrap gap-1 mt-1">
+            {DAY_OPTIONS.map((o) => {
+              const dayNum = parseInt(o.value, 10);
+              const active = draft.daysOfWeek.includes(dayNum);
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => setDraft({ ...draft, daysOfWeek: toggleDay(draft.daysOfWeek, dayNum) })}
+                  className={`px-2 py-1 rounded text-xs border transition-colors ${
+                    active ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:border-primary/40"
+                  }`}
+                  data-testid={`button-early-day-${o.value}`}
+                >
+                  {o.label.slice(0, 3)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StepRules({
   ruleFields, rulesForm, setRulesForm, errors, policyTypeKey,
 }: {
@@ -835,6 +1115,13 @@ function StepRules({
           <DayOfWeekBonusEditor
             bonuses={Array.isArray(rulesForm.dayOfWeekBonuses) ? rulesForm.dayOfWeekBonuses : []}
             onChange={(next) => setRulesForm({ ...rulesForm, dayOfWeekBonuses: next })}
+          />
+        )}
+        {policyTypeKey === "payroll" && (
+          <EarlyArrivalBonusEditor
+            bonuses={Array.isArray(rulesForm.earlyArrivalBonuses) ? rulesForm.earlyArrivalBonuses : []}
+            onChange={(next) => setRulesForm({ ...rulesForm, earlyArrivalBonuses: next })}
+            errors={errors}
           />
         )}
         {ruleFields.map((field) => (
@@ -1084,6 +1371,23 @@ function StepReview({
                     {b.bonusType === "money" ? `$${b.bonusAmount.toFixed(2)}` : `+${b.bonusAmount}h`}
                   </Badge>
                 ))}
+              </div>
+            </div>
+          )}
+          {selectedTypeKey === "payroll" && Array.isArray(rulesForm.earlyArrivalBonuses) && rulesForm.earlyArrivalBonuses.length > 0 && (
+            <div className="mt-4 pt-3 border-t">
+              <Label className="text-xs text-muted-foreground uppercase tracking-wider mb-2 block">Early-Arrival Bonuses</Label>
+              <div className="flex flex-wrap gap-2">
+                {rulesForm.earlyArrivalBonuses.map((b: EarlyArrivalBonus) => {
+                  const days = Array.isArray(b.daysOfWeek) && b.daysOfWeek.length > 0
+                    ? b.daysOfWeek.map((d) => DAY_OPTIONS.find((o) => o.value === String(d))?.label.slice(0, 3) || String(d)).join(", ")
+                    : "all days";
+                  return (
+                    <Badge key={b.id} variant="outline" className="text-xs" data-testid={`review-early-bonus-${b.id}`}>
+                      Before {b.cutoffTime} → +${(b.bonusAmountPerHour || 0).toFixed(2)}/hr · min {b.minHoursThreshold}h · {days}
+                    </Badge>
+                  );
+                })}
               </div>
             </div>
           )}

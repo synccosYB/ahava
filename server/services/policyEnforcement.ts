@@ -18,6 +18,73 @@ export interface DayOfWeekBonusResult {
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+export interface EarlyArrivalBonusRule {
+  id: string;
+  cutoffTime: string;
+  bonusAmountPerHour: number;
+  minHoursThreshold: number;
+  daysOfWeek?: number[];
+}
+
+export interface EarlyArrivalBonusResult {
+  bonusAmount: number;
+  descriptions: string[];
+}
+
+export function evaluateEarlyArrivalBonuses(
+  workDate: string,
+  clockIn: Date | string | null | undefined,
+  hoursWorked: number,
+  payrollRules: Record<string, any>,
+): EarlyArrivalBonusResult {
+  const result: EarlyArrivalBonusResult = { bonusAmount: 0, descriptions: [] };
+  const bonuses: EarlyArrivalBonusRule[] = Array.isArray(payrollRules?.earlyArrivalBonuses)
+    ? payrollRules.earlyArrivalBonuses
+    : [];
+  if (bonuses.length === 0 || !clockIn || !workDate) return result;
+
+  const clockInDate = clockIn instanceof Date ? clockIn : new Date(clockIn);
+  if (isNaN(clockInDate.getTime())) return result;
+  const clockInMinutes = clockInDate.getHours() * 60 + clockInDate.getMinutes();
+
+  const parts = workDate.split("-");
+  let dayOfWeek: number | null = null;
+  if (parts.length === 3) {
+    const d = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+    dayOfWeek = d.getUTCDay();
+  }
+
+  for (const rule of bonuses) {
+    if (!rule || typeof rule.cutoffTime !== "string") continue;
+    const [hStr, mStr] = rule.cutoffTime.split(":");
+    const h = parseInt(hStr, 10);
+    const m = parseInt(mStr, 10);
+    if (Number.isNaN(h) || Number.isNaN(m)) continue;
+    const cutoffMinutes = h * 60 + m;
+    if (clockInMinutes >= cutoffMinutes) continue;
+
+    const threshold = Number(rule.minHoursThreshold) || 0;
+    if (hoursWorked < threshold) continue;
+
+    if (Array.isArray(rule.daysOfWeek) && rule.daysOfWeek.length > 0 && dayOfWeek !== null) {
+      if (!rule.daysOfWeek.includes(dayOfWeek)) continue;
+    }
+
+    const perHour = Number(rule.bonusAmountPerHour) || 0;
+    if (perHour <= 0) continue;
+
+    const bonus = perHour * (Number(hoursWorked) || 0);
+    if (bonus <= 0) continue;
+    result.bonusAmount += bonus;
+    result.descriptions.push(
+      `Early-arrival bonus (before ${rule.cutoffTime}): +$${perHour.toFixed(2)}/hr × ${hoursWorked}h = $${bonus.toFixed(2)}`,
+    );
+  }
+
+  result.bonusAmount = Math.round(result.bonusAmount * 100) / 100;
+  return result;
+}
+
 export function evaluateDayOfWeekBonuses(
   workDate: string,
   hoursWorked: number,

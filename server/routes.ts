@@ -12,7 +12,7 @@ import { eq, desc, and, isNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { runAlertDetection } from "./services/alerts";
-import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, evaluateDayOfWeekBonuses } from "./services/policyEnforcement";
+import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses } from "./services/policyEnforcement";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
 import { runWorkflowsForTrigger } from "./workflowEngine";
 import { WebSocketServer, WebSocket } from "ws";
@@ -3146,6 +3146,9 @@ export async function registerRoutes(
           const empPayrollPolicy = empUser ? await getEffectivePolicy(empUser.companyId, record.employeeId, "payroll", empUser) : null;
           const empPayrollRules = empPayrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
           const bonusResult = evaluateDayOfWeekBonuses(record.workDate, hours, empPayrollRules);
+          const earlyResult = evaluateEarlyArrivalBonuses(record.workDate, record.clockIn, hours, empPayrollRules);
+          const combinedBonusAmount = Math.round((bonusResult.bonusAmount + earlyResult.bonusAmount) * 100) / 100;
+          const combinedDescriptions = [...bonusResult.descriptions, ...earlyResult.descriptions];
 
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,
@@ -3157,9 +3160,9 @@ export async function registerRoutes(
             regularHours: regHours,
             overtimeHours: otHours,
             ptoHours: 0,
-            bonusAmount: bonusResult.bonusAmount,
+            bonusAmount: combinedBonusAmount,
             bonusHours: bonusResult.bonusHours,
-            bonusDescription: bonusResult.descriptions.length > 0 ? bonusResult.descriptions.join("; ") : null,
+            bonusDescription: combinedDescriptions.length > 0 ? combinedDescriptions.join("; ") : null,
             hasIssues: hasIssue,
             issueDescription: hasIssue ? `Missing punch data on ${record.workDate}` : null,
           });
