@@ -23,6 +23,7 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **Alerts:** System alerts for missing clock-outs, overtime breaches, no-shows, late arrivals, break violations, and auto clock-outs, with acknowledgement and resolution workflows.
 - **Policy Enforcement:** Real-time enforcement at clock-in/out (grace periods, early clock-in restrictions, time rounding, break requirements, auto clock-out after configurable threshold). PTO enforcement validates advance notice, blackout dates, and max consecutive days at submission. A background job runs every 15 minutes to auto clock-out stale punches. All violations generate system alerts with policy context.
 - **Real-time Updates:** WebSocket integration (`/ws`) for real-time attendance updates, with session/JWT auth at handshake.
+- **Automated Tests:** Unit tests for bonus evaluators live under `server/services/__tests__/` and run via Node's built-in test runner: `npx tsx --test server/services/__tests__/*.test.ts`.
 
 **Feature Specifications:**
 - **Employee Work Schedules:** Per-employee weekly schedule configuration (which days and hours they work). Schedule warnings are displayed on clock-in/out (kiosk and web) when an employee is early, late, leaving early, or staying past their shift. Managed via the Schedule tab on employee profiles.
