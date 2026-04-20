@@ -99,6 +99,13 @@
       "when": 1776600000000,
       "tag": "0013_fix_payroll_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1776700000000,
+      "tag": "0014_payroll_dow_bonuses",
+      "breakpoints": true
     }
   ]
 }

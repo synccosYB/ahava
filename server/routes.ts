@@ -12,7 +12,7 @@ import { eq, desc, and, isNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { runAlertDetection } from "./services/alerts";
-import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts } from "./services/policyEnforcement";
+import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, evaluateDayOfWeekBonuses } from "./services/policyEnforcement";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
 import { runWorkflowsForTrigger } from "./workflowEngine";
 import { WebSocketServer, WebSocket } from "ws";
@@ -2815,7 +2815,10 @@ export async function registerRoutes(
       const policy = await storage.getPolicy(req.params.id);
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
-      const rule = await storage.upsertPolicyRules(req.params.id, req.body);
+      const body = req.body && typeof req.body === "object" && "rules" in req.body && req.body.rules
+        ? req.body.rules
+        : req.body;
+      const rule = await storage.upsertPolicyRules(req.params.id, body);
 
       await writeAuditLog({
         actorUserId: req.authUser.id,
@@ -2988,12 +2991,18 @@ export async function registerRoutes(
         let totalHours = 0;
         let totalOvertimeHours = 0;
         let totalEstimatedPay = 0;
+        let totalBonusAmount = 0;
+        let totalBonusHours = 0;
         const employeeIds = new Set<string>();
 
         for (const r of records) {
-          const hours = (r.regularHours || 0) + (r.overtimeHours || 0) + (r.ptoHours || 0);
+          const bonusHours = r.bonusHours || 0;
+          const bonusAmount = r.bonusAmount || 0;
+          const hours = (r.regularHours || 0) + (r.overtimeHours || 0) + (r.ptoHours || 0) + bonusHours;
           totalHours += hours;
           totalOvertimeHours += r.overtimeHours || 0;
+          totalBonusAmount += bonusAmount;
+          totalBonusHours += bonusHours;
           employeeIds.add(r.employeeId);
 
           if (!profileCache.has(r.employeeId)) {
@@ -3004,7 +3013,7 @@ export async function registerRoutes(
           if (profile?.hourlyRate) hourlyRate = profile.hourlyRate;
           else if (profile?.dailySalary) hourlyRate = profile.dailySalary / 8;
           else if (profile?.weeklySalary) hourlyRate = profile.weeklySalary / 40;
-          totalEstimatedPay += hours * hourlyRate;
+          totalEstimatedPay += hours * hourlyRate + bonusAmount;
         }
 
         return {
@@ -3012,6 +3021,8 @@ export async function registerRoutes(
           totalHours: Math.round(totalHours * 100) / 100,
           totalOvertimeHours: Math.round(totalOvertimeHours * 100) / 100,
           totalEstimatedPay: Math.round(totalEstimatedPay * 100) / 100,
+          totalBonusAmount: Math.round(totalBonusAmount * 100) / 100,
+          totalBonusHours: Math.round(totalBonusHours * 100) / 100,
           employeeCount: employeeIds.size,
         };
       }));
@@ -3132,6 +3143,10 @@ export async function registerRoutes(
             otHours = Math.round((hours - otThreshold) * 100) / 100;
           }
 
+          const empPayrollPolicy = empUser ? await getEffectivePolicy(empUser.companyId, record.employeeId, "payroll", empUser) : null;
+          const empPayrollRules = empPayrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+          const bonusResult = evaluateDayOfWeekBonuses(record.workDate, hours, empPayrollRules);
+
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,
             employeeId: record.employeeId,
@@ -3142,6 +3157,9 @@ export async function registerRoutes(
             regularHours: regHours,
             overtimeHours: otHours,
             ptoHours: 0,
+            bonusAmount: bonusResult.bonusAmount,
+            bonusHours: bonusResult.bonusHours,
+            bonusDescription: bonusResult.descriptions.length > 0 ? bonusResult.descriptions.join("; ") : null,
             hasIssues: hasIssue,
             issueDescription: hasIssue ? `Missing punch data on ${record.workDate}` : null,
           });
@@ -3230,7 +3248,7 @@ export async function registerRoutes(
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
 
-      const summary = new Map<string, { employeeId: string; employeeName: string; regularHours: number; overtimeHours: number; ptoHours: number; hasIssues: boolean }>();
+      const summary = new Map<string, { employeeId: string; employeeName: string; regularHours: number; overtimeHours: number; ptoHours: number; bonusHours: number; bonusAmount: number; hasIssues: boolean }>();
 
       for (const r of records) {
         if (!summary.has(r.employeeId)) {
@@ -3241,6 +3259,8 @@ export async function registerRoutes(
             regularHours: 0,
             overtimeHours: 0,
             ptoHours: 0,
+            bonusHours: 0,
+            bonusAmount: 0,
             hasIssues: false,
           });
         }
@@ -3248,6 +3268,8 @@ export async function registerRoutes(
         emp.regularHours += r.regularHours || 0;
         emp.overtimeHours += r.overtimeHours || 0;
         emp.ptoHours += r.ptoHours || 0;
+        emp.bonusHours += r.bonusHours || 0;
+        emp.bonusAmount += r.bonusAmount || 0;
         if (r.hasIssues) emp.hasIssues = true;
       }
 
@@ -3344,8 +3366,10 @@ export async function registerRoutes(
           }
         }
 
-        const totalHours = (r.regularHours || 0) + (r.overtimeHours || 0) + (r.ptoHours || 0);
-        const amount = totalHours * hourlyRate;
+        const bonusHours = r.bonusHours || 0;
+        const bonusAmount = r.bonusAmount || 0;
+        const totalHours = (r.regularHours || 0) + (r.overtimeHours || 0) + (r.ptoHours || 0) + bonusHours;
+        const amount = totalHours * hourlyRate + bonusAmount;
 
         const jsDayOfWeek = getDayOfWeek(r.workDate);
         const scheduledDays = schedules.filter(s => s.isActive).map(s => s.dayOfWeek);

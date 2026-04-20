@@ -253,6 +253,25 @@ export function PolicyWizard({
           }
         }
       });
+      if (selectedTypeKey === "payroll" && Array.isArray(rulesForm.dayOfWeekBonuses)) {
+        rulesForm.dayOfWeekBonuses.forEach((b: any, idx: number) => {
+          const day = Number(b?.dayOfWeek);
+          const threshold = Number(b?.minHoursThreshold);
+          const amount = Number(b?.bonusAmount);
+          if (!Number.isInteger(day) || day < 0 || day > 6) {
+            newErrors[`dayOfWeekBonuses.${idx}.dayOfWeek`] = `Bonus rule #${idx + 1}: pick a valid day of the week`;
+          }
+          if (Number.isNaN(threshold) || threshold < 0) {
+            newErrors[`dayOfWeekBonuses.${idx}.minHoursThreshold`] = `Bonus rule #${idx + 1}: minimum hours must be 0 or greater`;
+          }
+          if (Number.isNaN(amount) || amount <= 0) {
+            newErrors[`dayOfWeekBonuses.${idx}.bonusAmount`] = `Bonus rule #${idx + 1}: bonus amount must be greater than 0`;
+          }
+          if (b?.bonusType !== "money" && b?.bonusType !== "hours") {
+            newErrors[`dayOfWeekBonuses.${idx}.bonusType`] = `Bonus rule #${idx + 1}: choose money or hours`;
+          }
+        });
+      }
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -570,6 +589,221 @@ function StepBasics({
   );
 }
 
+interface DayOfWeekBonus {
+  id: string;
+  dayOfWeek: number;
+  minHoursThreshold: number;
+  bonusType: "money" | "hours";
+  bonusAmount: number;
+}
+
+const DAY_OPTIONS = [
+  { value: "0", label: "Sunday" },
+  { value: "1", label: "Monday" },
+  { value: "2", label: "Tuesday" },
+  { value: "3", label: "Wednesday" },
+  { value: "4", label: "Thursday" },
+  { value: "5", label: "Friday" },
+  { value: "6", label: "Saturday" },
+];
+
+function DayOfWeekBonusEditor({
+  bonuses, onChange,
+}: {
+  bonuses: DayOfWeekBonus[];
+  onChange: (next: DayOfWeekBonus[]) => void;
+}) {
+  const [draft, setDraft] = useState<{ dayOfWeek: string; minHoursThreshold: string; bonusType: "money" | "hours"; bonusAmount: string }>({
+    dayOfWeek: "0",
+    minHoursThreshold: "8",
+    bonusType: "money",
+    bonusAmount: "",
+  });
+
+  const addBonus = () => {
+    const threshold = parseFloat(draft.minHoursThreshold);
+    const amount = parseFloat(draft.bonusAmount);
+    if (Number.isNaN(threshold) || threshold < 0) return;
+    if (Number.isNaN(amount) || amount <= 0) return;
+    const next: DayOfWeekBonus = {
+      id: `dow-bonus-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      dayOfWeek: parseInt(draft.dayOfWeek, 10),
+      minHoursThreshold: threshold,
+      bonusType: draft.bonusType,
+      bonusAmount: amount,
+    };
+    onChange([...bonuses, next]);
+    setDraft({ ...draft, bonusAmount: "" });
+  };
+
+  const removeBonus = (id: string) => {
+    onChange(bonuses.filter((b) => b.id !== id));
+  };
+
+  const updateBonus = (id: string, patch: Partial<DayOfWeekBonus>) => {
+    onChange(bonuses.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  };
+
+  const canAdd =
+    draft.dayOfWeek !== "" &&
+    draft.minHoursThreshold !== "" &&
+    parseFloat(draft.minHoursThreshold) >= 0 &&
+    draft.bonusAmount !== "" &&
+    parseFloat(draft.bonusAmount) > 0;
+
+  const dayLabel = (d: number) => DAY_OPTIONS.find((o) => o.value === String(d))?.label || String(d);
+
+  return (
+    <div className="p-3 rounded-lg border bg-card space-y-3" data-testid="editor-day-of-week-bonuses">
+      <div>
+        <Label className="font-medium">Day-of-Week Bonus Rules</Label>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Award a bonus (extra money or extra paid hours) when an employee works at least the threshold hours on a specific day. Example: $10 bonus for working 8+ hours on Sunday.
+        </p>
+      </div>
+
+      {bonuses.length > 0 && (
+        <div className="space-y-2">
+          {bonuses.map((b) => (
+            <div
+              key={b.id}
+              className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end p-2 rounded-md border bg-muted/30"
+              data-testid={`row-dow-bonus-${b.id}`}
+            >
+              <div>
+                <Label className="text-xs">Day</Label>
+                <Select
+                  value={String(b.dayOfWeek)}
+                  onValueChange={(v) => updateBonus(b.id, { dayOfWeek: parseInt(v, 10) })}
+                >
+                  <SelectTrigger data-testid={`select-edit-dow-bonus-day-${b.id}`}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {DAY_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Min Hours</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.25"
+                  value={b.minHoursThreshold}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? 0 : parseFloat(e.target.value);
+                    updateBonus(b.id, { minHoursThreshold: Number.isNaN(v) ? 0 : Math.max(0, v) });
+                  }}
+                  data-testid={`input-edit-dow-bonus-threshold-${b.id}`}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Bonus Type</Label>
+                <Select
+                  value={b.bonusType}
+                  onValueChange={(v) => updateBonus(b.id, { bonusType: v as "money" | "hours" })}
+                >
+                  <SelectTrigger data-testid={`select-edit-dow-bonus-type-${b.id}`}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="money">Extra Money ($)</SelectItem>
+                    <SelectItem value="hours">Extra Paid Hours</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Amount</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={b.bonusAmount}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? 0 : parseFloat(e.target.value);
+                    updateBonus(b.id, { bonusAmount: Number.isNaN(v) ? 0 : Math.max(0, v) });
+                  }}
+                  data-testid={`input-edit-dow-bonus-amount-${b.id}`}
+                />
+              </div>
+              <div className="flex items-center gap-2 justify-end">
+                <Badge variant="outline" className="text-xs whitespace-nowrap">
+                  {dayLabel(b.dayOfWeek).slice(0, 3)} ≥ {b.minHoursThreshold}h →{" "}
+                  {b.bonusType === "money" ? `$${(b.bonusAmount || 0).toFixed(2)}` : `+${b.bonusAmount}h`}
+                </Badge>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeBonus(b.id)}
+                  className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                  data-testid={`button-remove-dow-bonus-${b.id}`}
+                >
+                  &times;
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
+        <div>
+          <Label className="text-xs">Day</Label>
+          <Select value={draft.dayOfWeek} onValueChange={(v) => setDraft({ ...draft, dayOfWeek: v })}>
+            <SelectTrigger data-testid="select-dow-bonus-day"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {DAY_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Min Hours</Label>
+          <Input
+            type="number"
+            min={0}
+            step="0.25"
+            value={draft.minHoursThreshold}
+            onChange={(e) => setDraft({ ...draft, minHoursThreshold: e.target.value })}
+            data-testid="input-dow-bonus-threshold"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Bonus Type</Label>
+          <Select value={draft.bonusType} onValueChange={(v) => setDraft({ ...draft, bonusType: v as "money" | "hours" })}>
+            <SelectTrigger data-testid="select-dow-bonus-type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="money">Extra Money ($)</SelectItem>
+              <SelectItem value="hours">Extra Paid Hours</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Amount</Label>
+          <Input
+            type="number"
+            min={0}
+            step="0.01"
+            value={draft.bonusAmount}
+            onChange={(e) => setDraft({ ...draft, bonusAmount: e.target.value })}
+            placeholder={draft.bonusType === "money" ? "10.00" : "1.0"}
+            data-testid="input-dow-bonus-amount"
+          />
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          onClick={addBonus}
+          disabled={!canAdd}
+          data-testid="button-add-dow-bonus"
+        >
+          Add Bonus
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function StepRules({
   ruleFields, rulesForm, setRulesForm, errors, policyTypeKey,
 }: {
@@ -597,6 +831,12 @@ function StepRules({
       </div>
 
       <div className="space-y-4">
+        {policyTypeKey === "payroll" && (
+          <DayOfWeekBonusEditor
+            bonuses={Array.isArray(rulesForm.dayOfWeekBonuses) ? rulesForm.dayOfWeekBonuses : []}
+            onChange={(next) => setRulesForm({ ...rulesForm, dayOfWeekBonuses: next })}
+          />
+        )}
         {ruleFields.map((field) => (
           <div key={field.key} className="p-3 rounded-lg border bg-card">
             {field.type === "boolean" ? (
@@ -834,6 +1074,19 @@ function StepReview({
               </div>
             ))}
           </div>
+          {selectedTypeKey === "payroll" && Array.isArray(rulesForm.dayOfWeekBonuses) && rulesForm.dayOfWeekBonuses.length > 0 && (
+            <div className="mt-4 pt-3 border-t">
+              <Label className="text-xs text-muted-foreground uppercase tracking-wider mb-2 block">Day-of-Week Bonuses</Label>
+              <div className="flex flex-wrap gap-2">
+                {rulesForm.dayOfWeekBonuses.map((b: DayOfWeekBonus) => (
+                  <Badge key={b.id} variant="outline" className="text-xs" data-testid={`review-dow-bonus-${b.id}`}>
+                    {DAY_OPTIONS.find((o) => o.value === String(b.dayOfWeek))?.label} ≥ {b.minHoursThreshold}h →{" "}
+                    {b.bonusType === "money" ? `$${b.bonusAmount.toFixed(2)}` : `+${b.bonusAmount}h`}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

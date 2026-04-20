@@ -2,6 +2,59 @@ import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "../policyEngine";
 import type { User } from "@shared/schema";
 
+export interface DayOfWeekBonusRule {
+  id: string;
+  dayOfWeek: number;
+  minHoursThreshold: number;
+  bonusType: "money" | "hours";
+  bonusAmount: number;
+}
+
+export interface DayOfWeekBonusResult {
+  bonusAmount: number;
+  bonusHours: number;
+  descriptions: string[];
+}
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+export function evaluateDayOfWeekBonuses(
+  workDate: string,
+  hoursWorked: number,
+  payrollRules: Record<string, any>
+): DayOfWeekBonusResult {
+  const result: DayOfWeekBonusResult = { bonusAmount: 0, bonusHours: 0, descriptions: [] };
+  const bonuses: DayOfWeekBonusRule[] = Array.isArray(payrollRules?.dayOfWeekBonuses)
+    ? payrollRules.dayOfWeekBonuses
+    : [];
+  if (bonuses.length === 0 || !workDate) return result;
+
+  const parts = workDate.split("-");
+  if (parts.length !== 3) return result;
+  const d = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+  const dayOfWeek = d.getUTCDay();
+
+  for (const rule of bonuses) {
+    if (rule.dayOfWeek !== dayOfWeek) continue;
+    const threshold = Number(rule.minHoursThreshold) || 0;
+    if (hoursWorked < threshold) continue;
+    const amount = Number(rule.bonusAmount) || 0;
+    if (amount <= 0) continue;
+
+    if (rule.bonusType === "hours") {
+      result.bonusHours += amount;
+      result.descriptions.push(`${DAY_NAMES[dayOfWeek]} bonus: +${amount}h (≥${threshold}h)`);
+    } else {
+      result.bonusAmount += amount;
+      result.descriptions.push(`${DAY_NAMES[dayOfWeek]} bonus: +$${amount.toFixed(2)} (≥${threshold}h)`);
+    }
+  }
+
+  result.bonusAmount = Math.round(result.bonusAmount * 100) / 100;
+  result.bonusHours = Math.round(result.bonusHours * 100) / 100;
+  return result;
+}
+
 export function roundTime(date: Date, rule: string, intervalMinutes: number): Date {
   const ms = date.getTime();
   const intervalMs = intervalMinutes * 60 * 1000;

@@ -166,6 +166,13 @@ export const DEFAULT_PAYROLL_RULES = {
   doubleTimeThresholdDaily: 12,
   includeHolidayPay: true,
   autoCalculateOT: true,
+  dayOfWeekBonuses: [] as Array<{
+    id: string;
+    dayOfWeek: number;
+    minHoursThreshold: number;
+    bonusType: "money" | "hours";
+    bonusAmount: number;
+  }>,
 };
 
 export const DEFAULT_APPROVALS_RULES = {
