@@ -233,6 +233,21 @@ export async function registerRoutes(
       return res.status(409).json({ message: "A user with this email already exists" });
     }
 
+    if (parsed.data.companyId) {
+      if (parsed.data.locationId) {
+        const loc = await storage.getLocation(parsed.data.locationId);
+        if (!loc || loc.companyId !== parsed.data.companyId) {
+          return res.status(400).json({ message: "Location does not belong to the selected company" });
+        }
+      }
+      if (parsed.data.departmentId) {
+        const dept = await storage.getDepartment(parsed.data.departmentId);
+        if (!dept || (dept.companyId && dept.companyId !== parsed.data.companyId)) {
+          return res.status(400).json({ message: "Department does not belong to the selected company" });
+        }
+      }
+    }
+
     const tempPassword = generateTempPassword();
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
@@ -265,6 +280,58 @@ export async function registerRoutes(
 
     const { password: _, passwordHash: _ph, ...safeUser } = newUser;
     res.status(201).json({ ...safeUser, temporaryPassword: tempPassword });
+  });
+
+  const updateUserSchema = z.object({
+    companyId: z.string().nullable().optional(),
+    departmentId: z.string().nullable().optional(),
+    locationId: z.string().nullable().optional(),
+  });
+
+  app.patch("/api/users/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    const parsed = updateUserSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid update data", errors: parsed.error.flatten() });
+    }
+    const existing = await storage.getUser(req.params.id);
+    if (!existing) return res.status(404).json({ message: "User not found" });
+
+    const next = {
+      companyId: parsed.data.companyId !== undefined ? parsed.data.companyId : existing.companyId,
+      locationId: parsed.data.locationId !== undefined ? parsed.data.locationId : existing.locationId,
+      departmentId: parsed.data.departmentId !== undefined ? parsed.data.departmentId : existing.departmentId,
+    };
+
+    if (next.companyId) {
+      if (next.locationId) {
+        const loc = await storage.getLocation(next.locationId);
+        if (!loc || loc.companyId !== next.companyId) {
+          return res.status(400).json({ message: "Location does not belong to the selected company" });
+        }
+      }
+      if (next.departmentId) {
+        const dept = await storage.getDepartment(next.departmentId);
+        if (!dept || (dept.companyId && dept.companyId !== next.companyId)) {
+          return res.status(400).json({ message: "Department does not belong to the selected company" });
+        }
+      }
+    } else {
+      if (next.locationId || next.departmentId) {
+        return res.status(400).json({ message: "Cannot assign location or department without a company" });
+      }
+    }
+
+    const updated = await storage.updateUser(req.params.id, {
+      companyId: next.companyId,
+      locationId: next.locationId,
+      departmentId: next.departmentId,
+    });
+    if (!updated) return res.status(404).json({ message: "User not found" });
+    const { password: _p, passwordHash: _ph, ...safe } = updated;
+    res.json(safe);
   });
 
   app.post("/api/users/:id/reset-password", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {

@@ -20,7 +20,7 @@ import {
 import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { formatCurrency } from "@/lib/utils";
-import type { User, Department, Location, EmploymentProfile, EmployeeSchedule } from "@shared/schema";
+import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division } from "@shared/schema";
 
 type EmployeeListItem = User & {
   departmentName?: string;
@@ -56,6 +56,10 @@ export default function EmployeesPage() {
 
   const { data: locations } = useQuery<Location[]>({
     queryKey: ["/api/locations"],
+  });
+
+  const { data: divisions } = useQuery<Division[]>({
+    queryKey: ["/api/companies"],
   });
 
   const filtered = (users || []).filter((u) => {
@@ -100,6 +104,7 @@ export default function EmployeesPage() {
           onOpenChange={setAddDialogOpen}
           departments={departments || []}
           locations={locations || []}
+          divisions={divisions || []}
         />
       </div>
 
@@ -125,6 +130,7 @@ export default function EmployeesPage() {
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Email</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Role</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Division</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Location</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
@@ -135,6 +141,7 @@ export default function EmployeesPage() {
                 {filtered.map((emp) => {
                   const dept = departments?.find((d) => d.id === emp.departmentId);
                   const loc = locations?.find((l) => l.id === emp.locationId);
+                  const div = divisions?.find((d) => d.id === emp.companyId);
                   return (
                     <TableRow
                       key={emp.id}
@@ -151,6 +158,7 @@ export default function EmployeesPage() {
                           {emp.role}
                         </Badge>
                       </TableCell>
+                      <TableCell data-testid={`text-employee-division-${emp.id}`}>{div?.name || "—"}</TableCell>
                       <TableCell data-testid={`text-employee-dept-${emp.id}`}>{dept?.name || "—"}</TableCell>
                       <TableCell data-testid={`text-employee-loc-${emp.id}`}>{loc?.name || "—"}</TableCell>
                       <TableCell>
@@ -176,13 +184,15 @@ export default function EmployeesPage() {
 function AddEmployeeDialog({
   open,
   onOpenChange,
-  departments,
-  locations,
+  departments: _allDepartments,
+  locations: _allLocations,
+  divisions,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   departments: Department[];
   locations: Location[];
+  divisions: Division[];
 }) {
   const { toast } = useToast();
   const [step, setStep] = useState(1);
@@ -193,6 +203,7 @@ function AddEmployeeDialog({
     lastName: "",
     email: "",
     role: "employee",
+    companyId: "",
     departmentId: "",
     locationId: "",
     employmentType: "full_time",
@@ -202,6 +213,26 @@ function AddEmployeeDialog({
     weeklySalary: "",
   });
 
+  const { data: scopedDepartments = [] } = useQuery<Department[]>({
+    queryKey: ["/api/departments", { companyId: formData.companyId }],
+    queryFn: async () => {
+      const res = await fetch(`/api/departments?companyId=${formData.companyId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch departments");
+      return res.json();
+    },
+    enabled: !!formData.companyId,
+  });
+
+  const { data: scopedLocations = [] } = useQuery<Location[]>({
+    queryKey: ["/api/locations", { companyId: formData.companyId }],
+    queryFn: async () => {
+      const res = await fetch(`/api/locations?companyId=${formData.companyId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch locations");
+      return res.json();
+    },
+    enabled: !!formData.companyId,
+  });
+
   const createMutation = useMutation({
     mutationFn: async () => {
       const body: Record<string, string | number | null> = {
@@ -209,6 +240,7 @@ function AddEmployeeDialog({
         lastName: formData.lastName,
         email: formData.email,
         role: formData.role,
+        companyId: formData.companyId || null,
         departmentId: formData.departmentId || null,
         locationId: formData.locationId || null,
         employmentType: formData.employmentType,
@@ -240,7 +272,7 @@ function AddEmployeeDialog({
     setTempPassword(null);
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
-      departmentId: "", locationId: "", employmentType: "full_time",
+      companyId: "", departmentId: "", locationId: "", employmentType: "full_time",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "",
     });
@@ -254,7 +286,7 @@ function AddEmployeeDialog({
     }
   };
 
-  const canProceedStep1 = formData.firstName && formData.lastName && formData.email;
+  const canProceedStep1 = !!(formData.firstName && formData.lastName && formData.email && formData.companyId);
   const canProceedStep2 = true;
   const canProceedStep3 = true;
 
@@ -324,6 +356,22 @@ function AddEmployeeDialog({
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-2">
+              <Label>Division *</Label>
+              <Select
+                value={formData.companyId}
+                onValueChange={(v) => setFormData({ ...formData, companyId: v, departmentId: "", locationId: "" })}
+              >
+                <SelectTrigger data-testid="select-add-division">
+                  <SelectValue placeholder="Select division" />
+                </SelectTrigger>
+                <SelectContent>
+                  {divisions.map((d) => (
+                    <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         )}
 
@@ -337,7 +385,7 @@ function AddEmployeeDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No Department</SelectItem>
-                  {departments.map((d) => (
+                  {scopedDepartments.map((d) => (
                     <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                   ))}
                 </SelectContent>
@@ -351,7 +399,7 @@ function AddEmployeeDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No Location</SelectItem>
-                  {locations.map((l) => (
+                  {scopedLocations.map((l) => (
                     <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
                   ))}
                 </SelectContent>
@@ -491,6 +539,29 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
 
   const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+
+  const companyId = user?.companyId || "";
+
+  const { data: scopedDepartments = [] } = useQuery<Department[]>({
+    queryKey: ["/api/departments", { companyId }],
+    queryFn: async () => {
+      const res = await fetch(`/api/departments?companyId=${companyId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch departments");
+      return res.json();
+    },
+    enabled: !!companyId,
+  });
+
+  const { data: scopedLocations = [] } = useQuery<Location[]>({
+    queryKey: ["/api/locations", { companyId }],
+    queryFn: async () => {
+      const res = await fetch(`/api/locations?companyId=${companyId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch locations");
+      return res.json();
+    },
+    enabled: !!companyId,
+  });
 
   const roleMutation = useMutation({
     mutationFn: async (newRole: string) => {
@@ -505,8 +576,22 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     },
   });
 
+  const updateMutation = useMutation({
+    mutationFn: async (data: { companyId?: string | null; departmentId?: string | null; locationId?: string | null }) => {
+      await apiRequest("PATCH", `/api/users/${userId}`, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({ title: "Updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const dept = departments?.find((d) => d.id === user?.departmentId);
   const loc = locations?.find((l) => l.id === user?.locationId);
+  const div = divisions?.find((d) => d.id === user?.companyId);
 
   return (
     <div className="max-w-6xl space-y-6" data-testid="employee-profile-page">
@@ -566,6 +651,58 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     <SelectItem value="employee">Employee</SelectItem>
                     <SelectItem value="manager">Manager</SelectItem>
                     <SelectItem value="admin">Admin</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Division</Label>
+                <Select
+                  value={user?.companyId || ""}
+                  onValueChange={(v) => updateMutation.mutate({ companyId: v, departmentId: null, locationId: null })}
+                >
+                  <SelectTrigger data-testid="select-profile-division">
+                    <SelectValue placeholder="Select division" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(divisions || []).map((d) => (
+                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Department</Label>
+                <Select
+                  value={user?.departmentId || "none"}
+                  onValueChange={(v) => updateMutation.mutate({ departmentId: v === "none" ? null : v })}
+                  disabled={!user?.companyId}
+                >
+                  <SelectTrigger data-testid="select-profile-department">
+                    <SelectValue placeholder="Select department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No Department</SelectItem>
+                    {scopedDepartments.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Location</Label>
+                <Select
+                  value={user?.locationId || "none"}
+                  onValueChange={(v) => updateMutation.mutate({ locationId: v === "none" ? null : v })}
+                  disabled={!user?.companyId}
+                >
+                  <SelectTrigger data-testid="select-profile-location">
+                    <SelectValue placeholder="Select location" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No Location</SelectItem>
+                    {scopedLocations.map((l) => (
+                      <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
