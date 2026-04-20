@@ -1480,6 +1480,46 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/attendance/exceptions/:id", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const exceptionId = req.params.id as string;
+      const { exceptionDate, exceptionTime, type, reason } = req.body;
+
+      const existing = await storage.getAttendanceException(exceptionId);
+      if (!existing) {
+        return res.status(404).json({ message: "Correction request not found" });
+      }
+      if (existing.employeeId !== userId) {
+        return res.status(403).json({ message: "You can only edit your own correction requests" });
+      }
+      if (existing.status !== "pending") {
+        return res.status(400).json({ message: "Only pending requests can be edited" });
+      }
+
+      if (!exceptionDate || !type || !reason) {
+        return res.status(400).json({ message: "Date, type, and reason are required" });
+      }
+
+      const validTypes = ["missing_punch", "time_correction", "forgotten_clock_in", "forgotten_clock_out"];
+      if (!validTypes.includes(type)) {
+        return res.status(400).json({ message: `Invalid type. Must be one of: ${validTypes.join(", ")}` });
+      }
+
+      const updated = await storage.updateAttendanceException(exceptionId, {
+        exceptionDate,
+        exceptionTime: exceptionTime ? new Date(exceptionTime) : null,
+        type,
+        reason,
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating attendance exception:", error);
+      res.status(500).json({ message: "Failed to update attendance exception" });
+    }
+  });
+
   app.get("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
