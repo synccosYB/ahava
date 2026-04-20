@@ -674,14 +674,36 @@ type PunchCorrectionFormProps = {
 };
 
 function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, onEdit }: PunchCorrectionFormProps) {
+  const { toast } = useToast();
   const getStatusBadgeForException = (status: string) => {
     switch (status) {
       case "pending": return <Badge variant="secondary" className="bg-amber-100 text-amber-800">Pending</Badge>;
       case "approved": return <Badge variant="default" className="bg-green-600">Approved</Badge>;
       case "denied": return <Badge variant="destructive">Denied</Badge>;
+      case "cancelled": return <Badge variant="outline" className="text-muted-foreground">Cancelled</Badge>;
       default: return <Badge variant="outline">{status}</Badge>;
     }
   };
+
+  const cancelMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return apiRequest("POST", `/api/attendance/exceptions/${id}/cancel`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/my"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
+      toast({ title: "Request Cancelled", description: "Your correction request has been cancelled." });
+    },
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : "Could not cancel the correction request.";
+      toast({
+        title: "Failed to cancel",
+        description: message,
+        variant: "destructive",
+      });
+    },
+  });
 
   return (
     <div className="space-y-4">
@@ -727,6 +749,22 @@ function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, on
                           >
                             <Wrench className="h-3 w-3 mr-1" />
                             Edit
+                          </Button>
+                        )}
+                        {ex.status === "pending" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+                            onClick={() => {
+                              if (confirm("Cancel this pending correction request? This cannot be undone.")) {
+                                cancelMutation.mutate(ex.id);
+                              }
+                            }}
+                            disabled={cancelMutation.isPending}
+                            data-testid={`button-cancel-correction-${ex.id}`}
+                          >
+                            Cancel
                           </Button>
                         )}
                       </div>

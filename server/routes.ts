@@ -1535,6 +1535,33 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/attendance/exceptions/:id/cancel", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const exceptionId = req.params.id as string;
+
+      const existing = await storage.getAttendanceException(exceptionId);
+      if (!existing) {
+        return res.status(404).json({ message: "Correction request not found" });
+      }
+      if (existing.employeeId !== userId) {
+        return res.status(403).json({ message: "You can only cancel your own correction requests" });
+      }
+      if (existing.status !== "pending") {
+        return res.status(400).json({ message: "Only pending requests can be cancelled" });
+      }
+
+      const updated = await storage.updateAttendanceException(exceptionId, {
+        status: "cancelled",
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error cancelling attendance exception:", error);
+      res.status(500).json({ message: "Failed to cancel attendance exception" });
+    }
+  });
+
   app.get("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
