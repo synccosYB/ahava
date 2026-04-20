@@ -1,0 +1,66 @@
+FR-0045
+missing punch
+Feature Request
+In Progress
+Medium
+Close
+Resolve
+Status
+In Progress
+Priority
+Medium
+Assigned To
+Unassigned
+Description
+
+requestion punch probably here or to modify a punch
+
+AI Analysis
+
+### Bug Analysis:
+
+**Affected Part of the App:** Attendance History page.
+
+**Screenshot Analysis:**
+- On the "Attendance History" page, an entry exists for `2026-04-19` with only a **clock-in time (11:45 PM)** visible, but no **clock-out time** or total hours calculated.
+- The status for this entry is marked as **"In Progress"**.
+- Other rows for previous dates (e.g., `2026-04-15`) are marked as **"Complete"**, indicating that both clock-in and clock-out values are provided, and total hours are calculated properly.
+
+**Root Cause Analysis:**
+1. **Missing Punch Entry:** The user might have forgotten to clock out, leaving the punch incomplete, or the system failed to record the clock-out event due to:
+   - Client-side interaction (e.g., network failure).
+   - Server-side validation or logging issues.
+2. **Status Display Logic:** The app seems to display "In Progress" when only the clock-in entry exists, but it does not provide a way to modify or complete the missing punch.
+3. **User Miscommunication:** The app might lack a feature or a clear process for the user to manually fix or request correction for missing punches.
+
+**Recommended Fix/Next Steps:**
+1. **Frontend Solution:**
+   - Add a button or option next to "In Progress" entries for the user to manually add a missing punch (e.g., clock-out time), or request administrative intervention.
+   - Provide detailed tooltips/messages explaining the next steps for missing punches to enhance clarity.
+2. **Backend Validation:**
+   - Investigate why the clock-out was missing (e.g., connection issues or failures in saving data) and fix any system glitches in logging attendance data.
+   - Implement stricter validation to ensure both punches (in/out) are recorded for completeness.
+3. **Feature Improvement:**
+   - Include a UI form where users can report or modify incomplete attendance punches easily instead of administrative intervention.
+
+```json
+{"severity": "medium", "category": "functionality"}
+```
+
+Screenshot
+
+Screenshot
+https://synccos.space/attendance
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36
+regular employee
+israelebo@gmail.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+

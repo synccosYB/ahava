@@ -1,0 +1,54 @@
+FR-0048
+on time rule
+Feature Request
+In Progress
+Medium
+Close
+Resolve
+Status
+In Progress
+Priority
+Medium
+Assigned To
+Unassigned
+Description
+
+also rule that if employee comes in before x time then add x $ per hour ?
+
+AI Analysis
+
+### Analysis:
+#### 1. Affected part of the app:
+The bug appears to pertain to the business logic for calculating additional hourly pay based on an employee's arrival time ("on time rule"). This would likely fall under the scheduling, payroll, or employee management feature of the app.
+
+#### 2. Root cause analysis:
+From the description, the app may not be applying an early-arrival bonus correctly or may lack proper validation to ensure the bonus is calculated when specific criteria are met (e.g., arriving before a set time). The absence of screenshots or console errors prevents a direct inspection of the problem, but potential causes could include:
+   - Incorrect implementation of time-based rules in the backend.
+   - Missing frontend logic to display or trigger appropriate adjustments.
+   - Incorrect or missing configuration of rule parameters (e.g., "before X time" or "add X $ per hour").
+
+#### 3. Recommended fix or next steps:
+   - Investigate the feature responsible for defining and applying the "on-time rule."
+   - Check for logic errors in the backend, such as incorrect comparisons of timestamps or erroneous calculations when computing the additional hourly pay.
+   - Validate if the rule parameters (e.g., time and bonus amount) are correctly configurable and passed between the front end and back end.
+   - Review any existing test cases for this functionality to ensure edge cases (e.g., arriving exactly at X time or slightly after X time) are covered.
+   - Add logging or debugging around this logic to pinpoint where the rule is failing, if possible.
+
+```json
+{"severity": "medium", "category": "functionality"}
+```
+
+https://synccos.space/rules-controls
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36
+Yisrael D Lebowitz
+israellebo@ahavamedical.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+

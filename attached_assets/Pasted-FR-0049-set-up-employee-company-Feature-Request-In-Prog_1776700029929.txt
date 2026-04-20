@@ -1,0 +1,50 @@
+FR-0049
+set up employee company
+Feature Request
+In Progress
+Medium
+Close
+Resolve
+Status
+In Progress
+Priority
+Medium
+Assigned To
+Unassigned
+Description
+
+when setting up employee i should choose with company the employee workes for 
+ahava or bcm or other company 
+
+AI Analysis
+
+### Analysis:
+1. **Affected Part of the App**: The employee setup feature, specifically the functionality to assign an employee to a company during the setup process.
+2. **Root Cause Analysis**: 
+   - Based on the description, there appears to be an issue with the availability or usability of the company selection mechanism (e.g., dropdown, autocompletion, or radio buttons) during employee setup. Either the companies ("Ahava", "BCM", or others) are not displayed correctly, or the user is unable to assign a company to the employee.
+   - The description does not indicate whether the issue is functional (e.g., companies not loading, assignment failing) or UI-related (e.g., poor design or misplacement of the selection option).
+3. **Recommended Fix or Next Steps**:
+   - Verify whether a company selection mechanism exists in the UI for employee setup.
+   - If there is no mechanism to select a company, add a dropdown or other appropriate UI component to allow users to select a company (e.g., "Ahava", "BCM", or "Other"). Ensure the design is visible and intuitively placed.
+   - If the company selection mechanism already exists but fails to display available companies, inspect the API or database logic responsible for fetching company names. Ensure all companies are being returned correctly and displayed properly.
+   - Perform usability testing to validate whether users can intuitively set the company for an employee.
+
+```json
+{"severity": "medium", "category": "functionality"}
+```
+
+https://synccos.space/employees
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36
+Yisrael D Lebowitz
+israellebo@ahavamedical.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+
+Write a reply...

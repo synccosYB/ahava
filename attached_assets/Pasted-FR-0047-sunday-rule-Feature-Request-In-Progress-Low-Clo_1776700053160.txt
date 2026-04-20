@@ -1,0 +1,57 @@
+FR-0047
+sunday rule
+Feature Request
+In Progress
+Low
+Close
+Resolve
+Status
+In Progress
+Priority
+Low
+Assigned To
+Unassigned
+Description
+
+where do i put the rule that if employee comes in x day and has x amount hours then add x amount money or hours ?
+
+AI Analysis
+
+This bug report seems to describe a feature request or confusion about where to configure a specific rule rather than an actual application bug. The user wants to set up a rule for employees that triggers additional money or hours based on specific conditions (day and hours worked). Here's the analysis:
+
+1) **Part of the App Affected**:
+   This issue likely pertains to the part of the app responsible for employee scheduling, payroll, or shift management rules. It could involve a rules/logic configuration UI or backend functionality tied to these areas.
+
+2) **Root Cause Analysis**:
+   Based on the description, there doesn’t appear to be an outright error but rather a usability or documentation gap. The user doesn't know where to go in the app to set this rule, indicating:
+   - A missing or unclear "rule configuration" interface designed for custom conditions like this.
+   - Insufficient guidance or documentation explaining how to set conditional rules for pay bonuses or adjustments.
+
+3) **Recommended Fix or Next Steps**:
+   - **Usability Suggestions**:
+     - Review the UI design for rule configuration. Ensure there's a clear and intuitive section where conditions like "if day = Sunday and hours > X, then add money/hours" can be set.
+     - Add tooltips or an FAQ within this section to guide users in configuring such rules.
+   - **Documentation Update**:
+     - Include detailed examples for configuring rules in the user guide or help documentation.
+   - **Feature Confirmation**: 
+     - If the functionality to set such rules doesn't exist, consider adding it in future iterations and prioritize based on user demand. 
+
+```json
+{"severity": "low", "category": "usability"}
+```
+
+https://synccos.space/rules-controls
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36
+Yisrael D Lebowitz
+israellebo@ahavamedical.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+
+Write a reply...
