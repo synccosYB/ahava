@@ -26,7 +26,7 @@ export default function Dashboard() {
 
   const { data: status, isLoading: statusLoading, isError: statusError, dataUpdatedAt } = useQuery<DashboardStatus>({
     queryKey: ["/api/attendance/status"],
-    refetchInterval: 30000,
+    refetchInterval: 60000,
   });
 
   const [nowMs, setNowMs] = useState(() => Date.now());

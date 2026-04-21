@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useDebounce } from "@/hooks/use-debounce";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -43,6 +44,7 @@ export default function EmployeesPage() {
   const [, navigate] = useLocation();
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [divisionFilter, setDivisionFilter] = useState("all");
@@ -68,7 +70,7 @@ export default function EmployeesPage() {
 
   const filtered = (users || []).filter((u) => {
     const name = `${u.firstName || ""} ${u.lastName || ""}`.toLowerCase();
-    if (search && !name.includes(search.toLowerCase()) && !u.email?.toLowerCase().includes(search.toLowerCase())) return false;
+    if (debouncedSearch && !name.includes(debouncedSearch.toLowerCase()) && !u.email?.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
     if (departmentFilter !== "all" && u.departmentId !== departmentFilter) return false;
     if (divisionFilter !== "all" && u.companyId !== divisionFilter) return false;
     return true;

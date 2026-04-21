@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useDebounce } from "@/hooks/use-debounce";
+import { cachedFetch } from "@/lib/cachedFetch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +54,7 @@ type AuditResponse = {
 
 export default function AuditLogPage() {
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 400);
   const [targetType, setTargetType] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -60,7 +63,7 @@ export default function AuditLogPage() {
   const pageSize = 25;
 
   const queryParams = new URLSearchParams();
-  if (search) queryParams.set("search", search);
+  if (debouncedSearch) queryParams.set("search", debouncedSearch);
   if (targetType !== "all") queryParams.set("targetType", targetType);
   if (startDate) queryParams.set("startDate", startDate);
   if (endDate) queryParams.set("endDate", endDate);
@@ -68,9 +71,9 @@ export default function AuditLogPage() {
   queryParams.set("offset", String(page * pageSize));
 
   const { data, isLoading } = useQuery<AuditResponse>({
-    queryKey: ["/api/audit-logs/filtered", search, targetType, startDate, endDate, page],
+    queryKey: ["/api/audit-logs/filtered", debouncedSearch, targetType, startDate, endDate, page],
     queryFn: async () => {
-      const res = await fetch(`/api/audit-logs/filtered?${queryParams}`, { credentials: "include" });
+      const res = await cachedFetch(`/api/audit-logs/filtered?${queryParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch audit logs");
       return res.json();
     },

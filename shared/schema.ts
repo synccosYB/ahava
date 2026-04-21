@@ -724,3 +724,21 @@ export type EmployeeSchedule = typeof employeeSchedules.$inferSelect;
 export const employeeSchedulesRelations = relations(employeeSchedules, ({ one }) => ({
   employee: one(users, { fields: [employeeSchedules.employeeId], references: [users.id] }),
 }));
+
+export const jobs = pgTable("jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: varchar("type", { length: 64 }).notNull(),
+  payload: jsonb("payload"),
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+});
+
+export const insertJobSchema = createInsertSchema(jobs).omit({
+  id: true,
+  createdAt: true,
+  completedAt: true,
+});
+export type InsertJob = z.infer<typeof insertJobSchema>;
+export type Job = typeof jobs.$inferSelect;

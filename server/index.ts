@@ -1,4 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
+import helmet from "helmet";
+import compression from "compression";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -6,8 +8,19 @@ import path from 'path';
 import { setupAuth, registerAuthRoutes } from "./replit_integrations/auth";
 import { seed } from "./seed";
 import { runMigrations } from "./migrate";
+import { config } from "./config";
+import { rateLimit } from "./lib/rateLimit";
 
 const app = express();
+
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
+app.use(compression());
 
 app.use(express.static('client/public'));
 
@@ -45,11 +58,21 @@ app.use((req, res, next) => {
   const path = req.path;
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
+    if (path.startsWith("/api") || path.startsWith("/internal")) {
       log(`${req.method} ${path} ${res.statusCode} in ${duration}ms`);
+      if (duration >= config.slowRequestMs) {
+        log(`[slow] ${req.method} ${path} ${res.statusCode} in ${duration}ms (threshold ${config.slowRequestMs}ms)`);
+      }
     }
   });
 
+  next();
+});
+
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api") || req.path.startsWith("/internal")) {
+    return rateLimit()(req, res, next);
+  }
   next();
 });
 
@@ -94,7 +117,7 @@ app.use((req, res, next) => {
     await setupVite(httpServer, app);
   }
 
-  const port = parseInt(process.env.PORT || "5000", 10);
+  const port = config.port;
 
   httpServer.listen(
     {

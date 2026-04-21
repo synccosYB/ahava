@@ -83,6 +83,9 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
 
   const generateMutation = useMutation({
     mutationFn: async () => {
+      // INTENTIONALLY user-triggered only.
+      // DO NOT call generateMutation.mutate() from a useEffect or auto-fire on mount.
+      // Report generation is an expensive endpoint (server cooldown applies).
       const res = await apiRequest("POST", "/api/reports/generate", {
         reportType,
         startDate,

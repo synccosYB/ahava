@@ -15,6 +15,10 @@ import { runAlertDetection } from "./services/alerts";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses } from "./services/policyEnforcement";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
 import { runWorkflowsForTrigger } from "./workflowEngine";
+import { requestCache } from "./lib/requestCache";
+import { shouldRun } from "./lib/cooldown";
+import { drainPending, enqueue } from "./services/jobs";
+import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
 import multer from "multer";
@@ -188,7 +192,7 @@ export async function registerRoutes(
     }
     requirePasswordChanged(req, res, next);
   });
-  app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), requestCache({ scope: "user" }), async (req, res) => {
     const users = await storage.getAllUsers();
     res.json(hideSuperAdmin(users, isSuperAdmin(req)));
   });
@@ -2194,7 +2198,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/manager/team-stats", requireAuth, requireRole("manager", "admin"), requirePermission("attendance.view_team"), async (req, res) => {
+  app.get("/api/manager/team-stats", requireAuth, requireRole("manager", "admin"), requirePermission("attendance.view_team"), requestCache({ scope: "user" }), async (req, res) => {
     const user = (req as any).authUser as User;
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const today = new Date().toISOString().split("T")[0];
@@ -2482,7 +2486,7 @@ export async function registerRoutes(
     res.json(enriched);
   });
 
-  app.get("/api/admin/company-stats", requireAuth, requireRole("admin"), requirePermission("company.view"), async (req, res) => {
+  app.get("/api/admin/company-stats", requireAuth, requireRole("admin"), requirePermission("company.view"), requestCache({ scope: "user" }), async (req, res) => {
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const today = new Date().toISOString().split("T")[0];
     const todayAttendance = await storage.getAttendanceByDate(today);
@@ -2605,6 +2609,15 @@ export async function registerRoutes(
   });
 
   app.post("/api/reports/generate", requireAuth, requireRole("manager", "admin"), requirePermission("reports.view"), async (req, res) => {
+    const cdUser = (req as any).authUser as User;
+    const cdKey = `reports:generate:${cdUser?.id ?? "anon"}:${JSON.stringify(req.body ?? {})}`;
+    const gate = shouldRun(cdKey);
+    if (!gate.ok) {
+      return res.status(202).json({
+        message: `Report generation cooling down. Try again in ${Math.ceil(gate.retryAfterMs / 1000)}s.`,
+        retryAfterMs: gate.retryAfterMs,
+      });
+    }
     const user = (req as any).authUser as User;
     const parsed = reportSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -3214,6 +3227,14 @@ export async function registerRoutes(
   });
 
   app.post("/api/payroll/exports", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const peKey = `payroll:exports:${req.authUser?.id ?? "anon"}`;
+    const peGate = shouldRun(peKey);
+    if (!peGate.ok) {
+      return res.status(202).json({
+        message: `Payroll export rebuild cooling down. Try again in ${Math.ceil(peGate.retryAfterMs / 1000)}s.`,
+        retryAfterMs: peGate.retryAfterMs,
+      });
+    }
     try {
       const parsed = payrollBatchCreateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -3799,7 +3820,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/alerts", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.view"), async (req, res) => {
+  app.get("/api/alerts", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.view"), requestCache({ scope: "user" }), async (req, res) => {
     try {
       const filters: any = {};
       if (req.query.type) filters.type = req.query.type as string;
@@ -3902,7 +3923,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/audit-logs/filtered", requireAuth, requireRole("admin"), requirePermission("audit.view"), async (req, res) => {
+  app.get("/api/audit-logs/filtered", requireAuth, requireRole("admin"), requirePermission("audit.view"), requestCache({ scope: "user" }), async (req, res) => {
     try {
       const filters = {
         actorUserId: req.query.actorUserId as string | undefined,
@@ -4310,20 +4331,39 @@ export async function registerRoutes(
 
   (globalThis as any).__broadcastAttendanceUpdate = broadcastAttendanceUpdate;
 
-  const AUTO_CLOCK_OUT_INTERVAL_MS = 15 * 60 * 1000;
-  setInterval(async () => {
-    try {
-      const autoAlerts = await runAutoClockOut();
-      for (const alert of autoAlerts) {
-        await createPolicyAlerts([alert]);
-      }
-      if (autoAlerts.length > 0) {
-        console.log(`Auto clock-out job: processed ${autoAlerts.length} punch(es)`);
-      }
-    } catch (err) {
-      console.error("Auto clock-out background job error:", err);
+  app.post("/internal/jobs/run", async (req, res) => {
+    const provided = req.headers["x-cron-secret"];
+    if (!config.cronSecret || provided !== config.cronSecret) {
+      return res.status(401).json({ message: "Unauthorized" });
     }
-  }, AUTO_CLOCK_OUT_INTERVAL_MS);
+    try {
+      const { ensureRecurringEnqueued } = await import("./services/jobs");
+      await ensureRecurringEnqueued();
+      const result = await drainPending(config.jobsBatchSize);
+      return res.json({ ok: true, ...result });
+    } catch (err: any) {
+      console.error("/internal/jobs/run error:", err);
+      return res.status(500).json({ ok: false, message: String(err?.message || err) });
+    }
+  });
+
+  app.post("/internal/jobs/enqueue", async (req, res) => {
+    const provided = req.headers["x-cron-secret"];
+    if (!config.cronSecret || provided !== config.cronSecret) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+    const ALLOWED_JOB_TYPES = ["auto-clock-out", "rebuild-report"] as const;
+    type AllowedJobType = typeof ALLOWED_JOB_TYPES[number];
+    const rawType = req.body?.type ?? "auto-clock-out";
+    if (typeof rawType !== "string" || !ALLOWED_JOB_TYPES.includes(rawType as AllowedJobType)) {
+      return res.status(400).json({
+        message: "Invalid job type",
+        allowed: ALLOWED_JOB_TYPES,
+      });
+    }
+    const created = await enqueue(rawType as AllowedJobType, req.body?.payload);
+    return res.json({ ok: true, job: created });
+  });
 
   return httpServer;
 }

@@ -114,3 +114,28 @@ The system is built on an Express.js backend with TypeScript, a React frontend u
 - **Onboarding Checklist**: Card on employee profile showing completion of: basic info, employment setup, pay config, all documents collected.
 - **API Endpoints**: `POST /api/users` (create employee), `POST /api/users/:id/reset-password`, `POST /api/users/change-password`, `GET/POST /api/users/:id/documents`, `GET /api/documents/:id/download`, `PATCH/DELETE /api/documents/:id`
 - **Schema**: `force_password_change` boolean on users table, `documents` table for file metadata
+
+## Replit Deployment Topology (Low-Cost)
+- **Primary deploy target**: **Autoscale** (single deployment serves both API + frontend; scales to zero when idle).
+  - The Express app in `server/index.ts` serves the built React app and the API on the same port. No Reserved VM is needed for normal operation.
+  - **Caveat**: WebSocket route `/ws` (used for live shift updates) requires a connected client; Autoscale supports WS but instances may recycle on low traffic. Reconnect logic on the client handles this.
+- **Background work**: A separate **Scheduled Deployment** invokes the cron drain endpoint on a fixed cadence (recommend every 5 minutes).
+  - Command (in the scheduled deployment): `curl -fsS -X POST -H "x-cron-secret: $CRON_SECRET" "$APP_URL/internal/jobs/run"`
+  - This drains the `jobs` table: it runs the `auto-clock-out` recurring job (replaces the old in-process `setInterval`) plus any ad-hoc jobs enqueued via `POST /internal/jobs/enqueue`.
+- **Frontend follow-up (not done in this pass)**: For further savings the static `dist/public/` build can be served from Static Hosting and the API kept on Autoscale; uploads under `uploads/` should move to Object Storage so Autoscale instances stay stateless.
+
+## Performance & Cost Hardening (server)
+- **Headers + compression**: `helmet()` and `compression()` are wired in `server/index.ts`.
+- **Rate limiter** (`server/lib/rateLimit.ts`): in-memory token bucket applied globally to `/api` and `/internal`. Tunable via `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX`.
+- **Response cache + single-flight** (`server/lib/requestCache.ts`, `cache.ts`, `inFlight.ts`): TTL cache keyed by URL+user with `X-Cache: HIT` header. Applied to read-heavy GETs: `/api/users`, `/api/manager/team-stats`, `/api/admin/company-stats`, `/api/alerts`, `/api/audit-logs/filtered`. Tunable via `CACHE_TTL_MS`.
+- **Cooldown** (`server/lib/cooldown.ts`): per-user gate on expensive POSTs (`/api/reports/generate`, `/api/payroll/exports`); returns `202 { retryAfterMs }` if called too soon. Tunable via `EXPENSIVE_COOLDOWN_MS`.
+- **Slow-request log**: Requests slower than `SLOW_REQUEST_MS` are tagged in the log line.
+- **DB pool**: `server/db.ts` uses `max:5`, idle 30s, conn 10s — sized for Autoscale instances. Tunable via `DB_POOL_MAX`.
+- **Jobs table**: `jobs` table (migration `0017_jobs_table.sql`) drives `server/services/jobs.ts`. The drain endpoint is `POST /internal/jobs/run` (gated by header `x-cron-secret` matching env `CRON_SECRET`); ad-hoc enqueue at `POST /internal/jobs/enqueue`. Batch size via `JOBS_BATCH_SIZE`.
+- **Required env / secrets**: `CRON_SECRET` (secret). Optional tuning env vars: `CACHE_TTL_MS`, `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX`, `EXPENSIVE_COOLDOWN_MS`, `DB_POOL_MAX`, `SLOW_REQUEST_MS`, `JOBS_BATCH_SIZE`.
+
+## Performance Hardening (client)
+- **`client/src/lib/cachedFetch.ts`**: thin fetch wrapper with an in-memory TTL cache keyed by `METHOD URL` (default 15s, override via `ttlMs`). GET requests within the TTL window return a cloned cached `Response`, and concurrent in-flight identical GETs share the same promise (single-flight). Non-GET requests pass straight through. Note: it does not parse server `Cache-Control` headers — server-side caching is signalled separately via `X-Cache: HIT` from `server/lib/requestCache.ts`. Use `invalidateCachedFetch(prefix?)` after a write to clear matching keys.
+- **`client/src/hooks/use-debounce.ts`**: used for search inputs in `employees.tsx` (300ms) and `audit-log.tsx` (400ms) so filter/query keys don't change per keystroke.
+- **Refetch intervals relaxed**: `dashboard.tsx` attendance status 30s → 60s; `profile.tsx` already 60s. Kiosk-page intervals are local UI timers (clock display, inactivity, success countdown), not network polling.
+- **Reports**: AI/report generation in `reports.tsx` is **strictly user-triggered** (button click only). Do not auto-fire it from `useEffect` or on mount — the server enforces a per-user cooldown.
