@@ -24,6 +24,13 @@ import bcrypt from "bcryptjs";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import {
+  uploadDocumentBuffer,
+  streamDocument,
+  deleteDocument as deleteStoredDocument,
+  documentExists,
+  isObjectStoragePath,
+} from "./services/documentStorage";
 
 const SUPER_ADMIN_USER_ID = "admin-dev-001";
 
@@ -36,19 +43,8 @@ function hideSuperAdmin<T extends { id: string }>(users: T[], requestIsSuperAdmi
   return users.filter(u => u.id !== SUPER_ADMIN_USER_ID);
 }
 
-const uploadDir = path.resolve("uploads/documents");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
 const documentUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, uploadDir),
-    filename: (_req, file, cb) => {
-      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      cb(null, uniqueSuffix + path.extname(file.originalname));
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"];
@@ -484,7 +480,6 @@ export async function registerRoutes(
   app.post("/api/users/:id/documents", requireAuth, requireRole("admin"), requirePermission("users.edit"), documentUpload.single("file"), async (req, res) => {
     const employee = await storage.getUser(req.params.id);
     if (!employee) {
-      if (req.file) fs.unlinkSync(req.file.path);
       return res.status(404).json({ message: "Employee not found" });
     }
 
@@ -495,18 +490,21 @@ export async function registerRoutes(
 
     const documentType = req.body.documentType;
     if (!documentType || !ALLOWED_DOCUMENT_TYPES.includes(documentType)) {
-      fs.unlinkSync(file.path);
       return res.status(400).json({ message: "Invalid or missing document type" });
     }
 
     const adminUser = (req as any).authUser as User;
 
+    let storagePath: string | null = null;
     try {
+      const uploaded = await uploadDocumentBuffer(file.buffer, file.originalname, file.mimetype);
+      storagePath = uploaded.storagePath;
+
       const doc = await storage.createDocument({
         employeeId: req.params.id,
         documentType,
         fileName: file.originalname,
-        filePath: file.path,
+        filePath: uploaded.storagePath,
         mimeType: file.mimetype,
         fileSize: file.size,
         status: "uploaded",
@@ -515,7 +513,10 @@ export async function registerRoutes(
 
       res.status(201).json(doc);
     } catch (error) {
-      fs.unlinkSync(file.path);
+      console.error("Failed to save document:", error);
+      if (storagePath) {
+        try { await deleteStoredDocument(storagePath); } catch {}
+      }
       res.status(500).json({ message: "Failed to save document" });
     }
   });
@@ -525,20 +526,34 @@ export async function registerRoutes(
       const doc = await storage.getDocument(req.params.id);
       if (!doc) return res.status(404).json({ message: "Document not found" });
 
-      if (!fs.existsSync(doc.filePath)) {
+      const exists = await documentExists(doc.filePath);
+      if (!exists) {
         return res.status(404).json({ message: "File not found on server" });
       }
 
       res.setHeader("X-Content-Type-Options", "nosniff");
 
-      if (req.query.view === "inline") {
-        res.setHeader("Content-Type", doc.mimeType);
-        res.setHeader("Content-Disposition", `inline; filename="${doc.fileName}"`);
-        return fs.createReadStream(doc.filePath).pipe(res);
+      const inline = req.query.view === "inline";
+      const disposition = inline
+        ? `inline; filename="${doc.fileName}"`
+        : `attachment; filename="${doc.fileName}"`;
+      res.setHeader("Content-Type", doc.mimeType || "application/octet-stream");
+      res.setHeader("Content-Disposition", disposition);
+
+      if (isObjectStoragePath(doc.filePath)) {
+        const { stream, size } = await streamDocument(doc.filePath);
+        if (size) res.setHeader("Content-Length", String(size));
+        stream.on("error", (err) => {
+          console.error("Document stream error:", err);
+          if (!res.headersSent) res.status(500).end();
+          else res.end();
+        });
+        return stream.pipe(res);
       }
 
-      res.download(doc.filePath, doc.fileName);
+      return fs.createReadStream(doc.filePath).pipe(res);
     } catch (error) {
+      console.error("Failed to download document:", error);
       res.status(500).json({ message: "Failed to download document" });
     }
   });
@@ -567,8 +582,10 @@ export async function registerRoutes(
       const doc = await storage.getDocument(req.params.id);
       if (!doc) return res.status(404).json({ message: "Document not found" });
 
-      if (fs.existsSync(doc.filePath)) {
-        fs.unlinkSync(doc.filePath);
+      try {
+        await deleteStoredDocument(doc.filePath);
+      } catch (err) {
+        console.error("Failed to delete document file:", err);
       }
 
       await storage.deleteDocument(doc.id);
