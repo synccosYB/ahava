@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes } from "@/lib/utils";
+import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,10 +24,32 @@ export default function Dashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  const { data: status, isLoading: statusLoading, isError: statusError } = useQuery<DashboardStatus>({
+  const { data: status, isLoading: statusLoading, isError: statusError, dataUpdatedAt } = useQuery<DashboardStatus>({
     queryKey: ["/api/attendance/status"],
     refetchInterval: 30000,
   });
+
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!status?.isClockedIn) return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [status?.isClockedIn, status?.currentRecord?.clockIn]);
+
+  const clockInIso = status?.currentRecord?.clockIn ?? null;
+  const elapsedSeconds = status?.isClockedIn ? liveElapsedSeconds(clockInIso, nowMs) : 0;
+  const elapsedHrs = Math.floor(elapsedSeconds / 3600);
+  const elapsedMins = Math.floor((elapsedSeconds % 3600) / 60);
+  const elapsedSecs = elapsedSeconds % 60;
+  const elapsedLabel = `${String(elapsedHrs).padStart(2, "0")}:${String(elapsedMins).padStart(2, "0")}:${String(elapsedSecs).padStart(2, "0")}`;
+
+  const liveTodayHours = status?.isClockedIn
+    ? addLiveElapsedHours(status?.todayHours, dataUpdatedAt, nowMs)
+    : status?.todayHours ?? 0;
+  const liveWeekHours = status?.isClockedIn
+    ? addLiveElapsedHours(status?.weekHours, dataUpdatedAt, nowMs)
+    : status?.weekHours ?? 0;
 
   const { data: recentRecords, isLoading: recordsLoading, isError: recordsError } = useQuery<AttendanceRecord[]>({
     queryKey: ["/api/attendance/records"],
@@ -96,9 +119,14 @@ export default function Dashboard() {
                     {status?.isClockedIn ? "Clocked In" : "Clocked Out"}
                   </p>
                   {status?.isClockedIn && status.currentRecord?.clockIn && (
-                    <p className="text-xs text-muted-foreground" data-testid="text-clocked-in-since">
-                      Since {new Date(status.currentRecord.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </p>
+                    <>
+                      <p className="text-xs text-muted-foreground" data-testid="text-clocked-in-since">
+                        Since {new Date(status.currentRecord.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                      <p className="text-xs font-medium tabular-nums text-green-700 dark:text-green-400" data-testid="text-live-elapsed">
+                        {elapsedLabel}
+                      </p>
+                    </>
                   )}
                 </div>
               </div>
@@ -147,7 +175,7 @@ export default function Dashboard() {
                   <Clock className="h-4 w-4 text-muted-foreground/60" />
                 </div>
                 <p className="text-2xl font-bold tabular-nums" data-testid="text-today-hours">
-                  {formatHoursMinutes(status?.todayHours ?? 0)}
+                  {formatHoursMinutes(liveTodayHours)}
                 </p>
               </CardContent>
             </Card>
@@ -159,7 +187,7 @@ export default function Dashboard() {
                   <TrendingUp className="h-4 w-4 text-muted-foreground/60" />
                 </div>
                 <p className="text-2xl font-bold tabular-nums" data-testid="text-week-hours">
-                  {formatHoursMinutes(status?.weekHours ?? 0)}
+                  {formatHoursMinutes(liveWeekHours)}
                 </p>
               </CardContent>
             </Card>

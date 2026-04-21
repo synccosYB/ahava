@@ -565,12 +565,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async clockIn(userId: string, source: string = "web", roundedTime?: Date): Promise<PunchLog> {
-    const now = roundedTime || new Date();
-    const dateStr = now.toISOString().split("T")[0];
+    const actualNow = new Date();
+    const rounded = roundedTime || actualNow;
+    const dateStr = actualNow.toISOString().split("T")[0];
     const [record] = await db.insert(punchLogs).values({
       employeeId: userId,
       workDate: dateStr,
-      clockIn: now,
+      clockIn: actualNow,
+      roundedClockIn: rounded,
       status: "in-progress",
       source,
       approved: true,
@@ -583,8 +585,8 @@ export class DatabaseStorage implements IStorage {
     if (!current || !current.clockIn) return undefined;
 
     const now = new Date();
-    const clockInTime = new Date(current.clockIn).getTime();
-    const totalMs = now.getTime() - clockInTime;
+    const roundedInMs = new Date(current.roundedClockIn ?? current.clockIn).getTime();
+    const totalMs = now.getTime() - roundedInMs;
     const breakMs = (current.breakMinutes || 0) * 60 * 1000;
     const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
 
@@ -592,7 +594,7 @@ export class DatabaseStorage implements IStorage {
 
     const [updated] = await db
       .update(punchLogs)
-      .set({ clockOut: now, hoursWorked, status: hoursWorked > threshold ? "overtime" : "complete" })
+      .set({ clockOut: now, roundedClockOut: now, hoursWorked, status: hoursWorked > threshold ? "overtime" : "complete" })
       .where(eq(punchLogs.id, current.id))
       .returning();
     return punchLogToLegacy(updated);

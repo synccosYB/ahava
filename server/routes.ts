@@ -1213,7 +1213,8 @@ export async function registerRoutes(
       const record = await storage.createAttendanceRecord({
         employeeId: user.id,
         workDate: today,
-        clockIn: enforcement.roundedTime,
+        clockIn: now,
+        roundedClockIn: enforcement.roundedTime,
         status: "present",
         source: "kiosk",
         approved: true,
@@ -1239,13 +1240,14 @@ export async function registerRoutes(
       const payrollRules = payrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
 
       const now = new Date();
-      const clockInTime = new Date(lastRecord.clockIn);
+      const roundedClockInTime = new Date(lastRecord.roundedClockIn ?? lastRecord.clockIn);
       const breakMinutes = lastRecord.breakMinutes || 0;
 
-      const enforcement = enforceClockOut(clockInTime, now, breakMinutes, attRules, payrollRules, user, attendancePolicy?.policyName);
+      const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, attRules, payrollRules, user, attendancePolicy?.policyName);
 
       const updated = await storage.updatePunchLog(lastRecord.id, {
-        clockOut: enforcement.roundedTime,
+        clockOut: now,
+        roundedClockOut: enforcement.roundedTime,
         hoursWorked: enforcement.hoursWorked,
         status: enforcement.status,
       });
@@ -1275,8 +1277,8 @@ export async function registerRoutes(
       const response: any = {
         isClockedIn: !!current,
         currentRecord: current ? punchLogToApiResponse(current) : null,
-        todayHours: Math.round(todayHours * 10) / 10,
-        weekHours: Math.round(weekHours * 10) / 10,
+        todayHours,
+        weekHours,
       };
 
       if (userRole === "admin" || userRole === "manager") {
@@ -1342,14 +1344,15 @@ export async function registerRoutes(
       const payrollRules = getPolicyRules(req, "payroll");
 
       const now = new Date();
-      const clockInTime = new Date(current.clockIn);
+      const roundedClockInTime = new Date(current.roundedClockIn ?? current.clockIn);
       const breakMinutes = current.breakMinutes || 0;
 
       const attPolicy = getResolvedPolicy(req, "attendance");
-      const enforcement = enforceClockOut(clockInTime, now, breakMinutes, rules, payrollRules, user, attPolicy?.policyName);
+      const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, rules, payrollRules, user, attPolicy?.policyName);
 
       const record = await storage.updatePunchLog(current.id, {
-        clockOut: enforcement.roundedTime,
+        clockOut: now,
+        roundedClockOut: enforcement.roundedTime,
         hoursWorked: enforcement.hoursWorked,
         status: enforcement.status,
       });
@@ -3311,7 +3314,7 @@ export async function registerRoutes(
           const empPayrollPolicy = empUser ? await getEffectivePolicy(empUser.companyId, record.employeeId, "payroll", empUser) : null;
           const empPayrollRules = empPayrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
           const bonusResult = evaluateDayOfWeekBonuses(record.workDate, hours, empPayrollRules);
-          const earlyResult = evaluateEarlyArrivalBonuses(record.workDate, record.clockIn, hours, empPayrollRules);
+          const earlyResult = evaluateEarlyArrivalBonuses(record.workDate, record.roundedClockIn ?? record.clockIn, hours, empPayrollRules);
           const combinedBonusAmount = Math.round((bonusResult.bonusAmount + earlyResult.bonusAmount) * 100) / 100;
           const combinedDescriptions = [...bonusResult.descriptions, ...earlyResult.descriptions];
 

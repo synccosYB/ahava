@@ -399,6 +399,24 @@ export function enforcePtoBlackoutDates(
   return { allowed: true };
 }
 
+export function computeAutoClockOutValues(opts: {
+  actualClockIn: Date;
+  roundedClockIn: Date | null;
+  breakMinutes: number;
+  autoClockOutAfterHours: number;
+  roundingRule: string;
+  roundingIntervalMinutes: number;
+}): { autoClockOutActual: Date; autoClockOutRounded: Date; hoursWorked: number } {
+  const { actualClockIn, roundedClockIn, breakMinutes, autoClockOutAfterHours, roundingRule, roundingIntervalMinutes } = opts;
+  const roundedIn = roundedClockIn ?? actualClockIn;
+  const autoClockOutActual = new Date(actualClockIn.getTime() + autoClockOutAfterHours * 60 * 60 * 1000);
+  const autoClockOutRounded = roundTime(autoClockOutActual, roundingRule, roundingIntervalMinutes);
+  const breakMs = (breakMinutes || 0) * 60 * 1000;
+  const totalMs = autoClockOutRounded.getTime() - roundedIn.getTime();
+  const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+  return { autoClockOutActual, autoClockOutRounded, hoursWorked };
+}
+
 export async function runAutoClockOut(): Promise<PolicyAlert[]> {
   const alerts: PolicyAlert[] = [];
   const openPunches = await storage.getOpenPunchLogs();
@@ -416,21 +434,30 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
     if (!autoClockOutEnabled) continue;
 
     const autoClockOutAfterHours = rules.autoClockOutAfterHours ?? DEFAULT_ATTENDANCE_RULES.autoClockOutAfterHours;
-    const clockInTime = new Date(punch.clockIn);
+    const roundingRule = rules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+    const roundingInterval = rules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+
+    const actualClockInTime = new Date(punch.clockIn);
+    const roundedClockInTime = new Date(punch.roundedClockIn ?? punch.clockIn);
     const now = new Date();
-    const hoursOpen = (now.getTime() - clockInTime.getTime()) / (1000 * 60 * 60);
+    const hoursOpen = (now.getTime() - actualClockInTime.getTime()) / (1000 * 60 * 60);
 
     if (hoursOpen >= autoClockOutAfterHours) {
-      const autoClockOutTime = new Date(clockInTime.getTime() + autoClockOutAfterHours * 60 * 60 * 1000);
-      const breakMs = (punch.breakMinutes || 0) * 60 * 1000;
-      const totalMs = autoClockOutTime.getTime() - clockInTime.getTime();
-      const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+      const { autoClockOutActual, autoClockOutRounded, hoursWorked } = computeAutoClockOutValues({
+        actualClockIn: actualClockInTime,
+        roundedClockIn: roundedClockInTime,
+        breakMinutes: punch.breakMinutes || 0,
+        autoClockOutAfterHours,
+        roundingRule,
+        roundingIntervalMinutes: roundingInterval,
+      });
 
       const otThreshold = rules.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
       const status = hoursWorked > otThreshold ? "overtime" : "complete";
 
       await storage.updatePunchLog(punch.id, {
-        clockOut: autoClockOutTime,
+        clockOut: autoClockOutActual,
+        roundedClockOut: autoClockOutRounded,
         hoursWorked,
         status,
       });
@@ -439,11 +466,11 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
         type: "auto_clock_out",
         severity: "high",
         employeeId: punch.employeeId,
-        message: `Auto clock-out: Employee was automatically clocked out after ${autoClockOutAfterHours} hours (open since ${clockInTime.toISOString()}). Hours recorded: ${hoursWorked}.`,
+        message: `Auto clock-out: Employee was automatically clocked out after ${autoClockOutAfterHours} hours (open since ${actualClockInTime.toISOString()}). Hours recorded: ${hoursWorked}.`,
         details: {
           punchLogId: punch.id,
-          clockIn: clockInTime.toISOString(),
-          autoClockOut: autoClockOutTime.toISOString(),
+          clockIn: actualClockInTime.toISOString(),
+          autoClockOut: autoClockOutActual.toISOString(),
           hoursWorked,
           autoClockOutAfterHours,
           policyName: attendancePolicy?.policyName || "Default",

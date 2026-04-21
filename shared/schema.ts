@@ -214,6 +214,8 @@ export const punchLogs = pgTable("punch_logs", {
   workDate: date("work_date").notNull(),
   clockIn: timestamp("clock_in"),
   clockOut: timestamp("clock_out"),
+  roundedClockIn: timestamp("rounded_clock_in"),
+  roundedClockOut: timestamp("rounded_clock_out"),
   breakMinutes: integer("break_minutes").default(0),
   hoursWorked: real("hours_worked"),
   status: varchar("status", { length: 20 }).default("present").notNull(),
