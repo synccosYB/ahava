@@ -1,0 +1,87 @@
+time
+Feature Request
+New
+Medium
+Close
+Resolve
+Status
+New
+Priority
+Medium
+Assigned To
+Unassigned
+Description
+
+the time is not correct 
+i just clocked in and it says since 12 
+also the timer doesnt work on the frontend 
+it says like 7 min when its not 
+
+AI Analysis
+
+### Analysis of Bug Report
+
+#### 1) Part of the App Affected:
+- **Dashboard Screen**, specifically the time tracking section that shows clock-in time, elapsed time for "Today," and "This Week."
+
+#### 2) Root Cause Analysis:
+The screenshot indicates the following issues:
+- **Clock-In Time Issue:** The displayed clock-in time is "12:00 PM," which may not reflect the actual clock-in event. The user mentions having just clocked in, suggesting there is a time mismatch between the user action and the displayed time.
+- **Elapsed Time Issue:**
+  - The "Today" elapsed time is recorded as **"0H 6M"**, which seems inconsistent with the actual progression since the user action.
+  - The "Timer on the frontend" (displaying "0H 7M" in this case) is not in sync with expected real-time updates, indicating an issue with the timer logic.
+
+#### Observations Based on Screenshot:
+- The UI displays a status labeled **"Clocked In --> Since 12:00 PM"**, which likely derives from stored data (backend records) or an incorrect local timestamp.
+- Timer logic appears not to update dynamically, resulting in incorrect time accumulation.
+
+#### Possible Root Causes:
+1. **Backend Time Sync Issue:**
+   - The backend may be storing or sending incorrect timestamps for clock-in, leading to discrepancies between actual user actions and displayed time.
+   - Time zones or server-side adjustments could also contribute to the error.
+
+2. **Frontend Timer Issue:**
+   - The timer may not accurately calculate elapsed time. It could be relying on incorrect or static timestamps, or failing to consistently refresh.
+
+#### 3) Recommended Fix/Next Steps:
+1. **Investigate Backend Timestamps:**
+   - Confirm the accuracy of the timestamp sent to the frontend when a clock-in action is performed.
+   - Verify if there are time zone discrepancies or data handling issues related to timestamps.
+
+2. **Review Timer Logic on Frontend:**
+   - Trace the timer's logic responsible for displaying **Today** and **This Week** durations. Ensure dynamic updating based on server responses or client-side event listeners.
+   - Validate that elapsed time updates in real-time and accurately reflects data from the backend.
+
+3. **Testing and Debugging:**
+   - Test clock-in functionality and ensure timestamps remain consistent between frontend and backend.
+   - Debug timer and elapsed time calculations during use to identify and resolve synchronization errors.
+
+4. **User Feedback Display:**
+   - Consider adding error handling or fallback mechanisms to alert the user if time discrepancies arise.
+
+---
+
+### JSON Summary:
+```json
+{"severity": "medium", "category": "functionality"}
+```
+
+Screenshot
+
+Screenshot
+https://synccos.space/
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36
+Yisrael D Lebowitz
+israellebo@ahavamedical.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (1)
+
+Yisrael D Lebowitzclient
+about 11 hours ago
+i think the issue is that it rounds up to the nearst 15 min
+
