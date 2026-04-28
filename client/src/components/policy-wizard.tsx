@@ -17,6 +17,15 @@ import {
   DollarSign, GitBranch, AlertCircle
 } from "lucide-react";
 import type { Policy, PolicyType, Division, Location, Department, User, PolicyAssignment } from "@shared/schema";
+import {
+  findDayOfWeekBonusOverlaps,
+  findEarlyArrivalBonusOverlaps,
+  expandDaysOfWeek,
+  daySetsIntersect,
+  describeDays,
+  DAY_NAMES,
+  type OverlapInfo,
+} from "@shared/policyOverlap";
 
 const STEPS = [
   { label: "Basics", description: "Name and type" },
@@ -420,10 +429,47 @@ export function PolicyWizard({
           }
         });
       }
+      if (selectedTypeKey === "payroll") {
+        const dowList: any[] = Array.isArray(rulesForm.dayOfWeekBonuses) ? rulesForm.dayOfWeekBonuses : [];
+        const dowOverlaps = findDayOfWeekBonusOverlaps(dowList);
+        dowList.forEach((b: any, idx: number) => {
+          const info = dowOverlaps.get(b?.id);
+          if (info) {
+            const dayLabel = DAY_NAMES[Number(b?.dayOfWeek)] || "this day";
+            newErrors[`dayOfWeekBonuses.${idx}.overlap`] = `Bonus rule #${idx + 1}: a rule for ${dayLabel} already exists. Edit or remove it first.`;
+          }
+        });
+        const earlyList: any[] = Array.isArray(rulesForm.earlyArrivalBonuses) ? rulesForm.earlyArrivalBonuses : [];
+        const earlyOverlaps = findEarlyArrivalBonusOverlaps(earlyList);
+        earlyList.forEach((b: any, idx: number) => {
+          const info = earlyOverlaps.get(b?.id);
+          if (info) {
+            newErrors[`earlyArrivalBonuses.${idx}.overlap`] = `Early-arrival rule #${idx + 1}: day(s) overlap with another rule (${describeDays(info.conflictingDays)}). Edit or remove the conflicting rule first.`;
+          }
+        });
+      }
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
+
+  const dowBonuses = useMemo<any[]>(
+    () => (Array.isArray(rulesForm.dayOfWeekBonuses) ? rulesForm.dayOfWeekBonuses : []),
+    [rulesForm.dayOfWeekBonuses],
+  );
+  const earlyBonuses = useMemo<any[]>(
+    () => (Array.isArray(rulesForm.earlyArrivalBonuses) ? rulesForm.earlyArrivalBonuses : []),
+    [rulesForm.earlyArrivalBonuses],
+  );
+  const dowOverlaps = useMemo(
+    () => (selectedTypeKey === "payroll" ? findDayOfWeekBonusOverlaps(dowBonuses) : new Map<string, OverlapInfo>()),
+    [dowBonuses, selectedTypeKey],
+  );
+  const earlyOverlaps = useMemo(
+    () => (selectedTypeKey === "payroll" ? findEarlyArrivalBonusOverlaps(earlyBonuses) : new Map<string, OverlapInfo>()),
+    [earlyBonuses, selectedTypeKey],
+  );
+  const hasBonusOverlaps = dowOverlaps.size > 0 || earlyOverlaps.size > 0;
 
   const goNext = () => {
     if (validateStep(currentStep)) {
@@ -573,6 +619,8 @@ export function PolicyWizard({
               setRulesForm={setRulesForm}
               errors={errors}
               policyTypeKey={selectedTypeKey}
+              dowOverlaps={dowOverlaps}
+              earlyOverlaps={earlyOverlaps}
             />
           )}
           {currentStep === 2 && (
@@ -611,7 +659,11 @@ export function PolicyWizard({
 
           <div className="flex gap-2">
             {currentStep < STEPS.length - 1 ? (
-              <Button onClick={goNext} data-testid="button-wizard-next">
+              <Button
+                onClick={goNext}
+                disabled={currentStep === 1 && hasBonusOverlaps}
+                data-testid="button-wizard-next"
+              >
                 Next <ChevronRight className="h-4 w-4 ml-1" />
               </Button>
             ) : (
@@ -619,14 +671,14 @@ export function PolicyWizard({
                 <Button
                   variant="outline"
                   onClick={() => { setSaveStatus("draft"); saveMutation.mutate("draft"); }}
-                  disabled={saveMutation.isPending}
+                  disabled={saveMutation.isPending || hasBonusOverlaps}
                   data-testid="button-wizard-save-draft"
                 >
                   {saveMutation.isPending && saveStatus === "draft" ? "Saving..." : "Save as Draft"}
                 </Button>
                 <Button
                   onClick={() => { setSaveStatus("active"); saveMutation.mutate("active"); }}
-                  disabled={saveMutation.isPending}
+                  disabled={saveMutation.isPending || hasBonusOverlaps}
                   data-testid="button-wizard-activate"
                 >
                   {saveMutation.isPending && saveStatus === "active" ? "Activating..." : "Save & Activate"}
@@ -759,10 +811,11 @@ const DAY_OPTIONS = [
 ];
 
 function DayOfWeekBonusEditor({
-  bonuses, onChange,
+  bonuses, onChange, overlaps,
 }: {
   bonuses: DayOfWeekBonus[];
   onChange: (next: DayOfWeekBonus[]) => void;
+  overlaps: Map<string, OverlapInfo>;
 }) {
   const [draft, setDraft] = useState<{ dayOfWeek: string; minHoursThreshold: string; bonusType: "money" | "hours"; bonusAmount: string }>({
     dayOfWeek: "0",
@@ -771,14 +824,21 @@ function DayOfWeekBonusEditor({
     bonusAmount: "",
   });
 
+  const draftDay = parseInt(draft.dayOfWeek, 10);
+  const draftConflictsWith = bonuses.find((b) => b.dayOfWeek === draftDay);
+  const draftConflictMessage = draftConflictsWith
+    ? `A rule for ${DAY_NAMES[draftDay]} already exists. Edit or remove it first.`
+    : null;
+
   const addBonus = () => {
     const threshold = parseFloat(draft.minHoursThreshold);
     const amount = parseFloat(draft.bonusAmount);
     if (Number.isNaN(threshold) || threshold < 0) return;
     if (Number.isNaN(amount) || amount <= 0) return;
+    if (draftConflictsWith) return;
     const next: DayOfWeekBonus = {
       id: `dow-bonus-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      dayOfWeek: parseInt(draft.dayOfWeek, 10),
+      dayOfWeek: draftDay,
       minHoursThreshold: threshold,
       bonusType: draft.bonusType,
       bonusAmount: amount,
@@ -800,7 +860,8 @@ function DayOfWeekBonusEditor({
     draft.minHoursThreshold !== "" &&
     parseFloat(draft.minHoursThreshold) >= 0 &&
     draft.bonusAmount !== "" &&
-    parseFloat(draft.bonusAmount) > 0;
+    parseFloat(draft.bonusAmount) > 0 &&
+    !draftConflictsWith;
 
   const dayLabel = (d: number) => DAY_OPTIONS.find((o) => o.value === String(d))?.label || String(d);
 
@@ -815,10 +876,12 @@ function DayOfWeekBonusEditor({
 
       {bonuses.length > 0 && (
         <div className="space-y-2">
-          {bonuses.map((b) => (
+          {bonuses.map((b) => {
+            const overlapInfo = overlaps.get(b.id);
+            return (
             <div
               key={b.id}
-              className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end p-2 rounded-md border bg-muted/30"
+              className={`grid grid-cols-1 md:grid-cols-5 gap-2 items-end p-2 rounded-md border ${overlapInfo ? "border-destructive bg-destructive/5" : "bg-muted/30"}`}
               data-testid={`row-dow-bonus-${b.id}`}
             >
               <div>
@@ -891,8 +954,17 @@ function DayOfWeekBonusEditor({
                   &times;
                 </Button>
               </div>
+              {overlapInfo && (
+                <p
+                  className="md:col-span-5 text-sm text-destructive flex items-center gap-1"
+                  data-testid={`error-dow-bonus-overlap-${b.id}`}
+                >
+                  <AlertCircle className="h-3 w-3" /> A rule for {DAY_NAMES[b.dayOfWeek]} already exists. Edit or remove the duplicate so only one rule fires per day.
+                </p>
+              )}
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
 
@@ -951,6 +1023,11 @@ function DayOfWeekBonusEditor({
           Add Bonus
         </Button>
       </div>
+      {draftConflictMessage && (
+        <p className="text-sm text-destructive flex items-center gap-1" data-testid="error-dow-bonus-draft-conflict">
+          <AlertCircle className="h-3 w-3" /> {draftConflictMessage}
+        </p>
+      )}
     </div>
   );
 }
@@ -965,11 +1042,12 @@ interface EarlyArrivalBonus {
 }
 
 function EarlyArrivalBonusEditor({
-  bonuses, onChange, errors,
+  bonuses, onChange, errors, overlaps,
 }: {
   bonuses: EarlyArrivalBonus[];
   onChange: (next: EarlyArrivalBonus[]) => void;
   errors: Record<string, string>;
+  overlaps: Map<string, OverlapInfo>;
 }) {
   const [draft, setDraft] = useState<{ cutoffTime: string; bonusAmountPerHour: string; minHoursThreshold: string; daysOfWeek: number[]; applyScope: "entire_shift" | "before_cutoff" }>({
     cutoffTime: "07:00",
@@ -979,12 +1057,29 @@ function EarlyArrivalBonusEditor({
     applyScope: "entire_shift",
   });
 
+  const draftConflictDays = useMemo(() => {
+    const conflictingDays = new Set<number>();
+    const draftDays = new Set(expandDaysOfWeek(draft.daysOfWeek));
+    for (const existing of bonuses) {
+      const shared = daySetsIntersect(draft.daysOfWeek, existing.daysOfWeek ?? null);
+      for (const d of shared) {
+        if (draftDays.has(d)) conflictingDays.add(d);
+      }
+    }
+    return Array.from(conflictingDays).sort((a, b) => a - b);
+  }, [draft.daysOfWeek, bonuses]);
+  const draftHasConflict = draftConflictDays.length > 0;
+  const draftConflictMessage = draftHasConflict
+    ? `Day(s) overlap with another rule: ${describeDays(draftConflictDays)}. Edit or remove the conflicting rule first.`
+    : null;
+
   const addBonus = () => {
     const perHour = parseFloat(draft.bonusAmountPerHour);
     const threshold = parseFloat(draft.minHoursThreshold);
     if (!/^\d{1,2}:\d{2}$/.test(draft.cutoffTime)) return;
     if (Number.isNaN(perHour) || perHour <= 0) return;
     if (Number.isNaN(threshold) || threshold < 0) return;
+    if (draftHasConflict) return;
     const next: EarlyArrivalBonus = {
       id: `early-bonus-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       cutoffTime: draft.cutoffTime,
@@ -1020,7 +1115,8 @@ function EarlyArrivalBonusEditor({
     draft.bonusAmountPerHour !== "" &&
     parseFloat(draft.bonusAmountPerHour) > 0 &&
     draft.minHoursThreshold !== "" &&
-    parseFloat(draft.minHoursThreshold) >= 0;
+    parseFloat(draft.minHoursThreshold) >= 0 &&
+    !draftHasConflict;
 
   return (
     <div className="p-3 rounded-lg border bg-card space-y-3" data-testid="editor-early-arrival-bonuses">
@@ -1033,10 +1129,12 @@ function EarlyArrivalBonusEditor({
 
       {bonuses.length > 0 && (
         <div className="space-y-2">
-          {bonuses.map((b, idx) => (
+          {bonuses.map((b, idx) => {
+            const overlapInfo = overlaps.get(b.id);
+            return (
             <div
               key={b.id}
-              className="p-2 rounded-md border bg-muted/30 space-y-2"
+              className={`p-2 rounded-md border space-y-2 ${overlapInfo ? "border-destructive bg-destructive/5" : "bg-muted/30"}`}
               data-testid={`row-early-bonus-${b.id}`}
             >
               <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
@@ -1156,8 +1254,14 @@ function EarlyArrivalBonusEditor({
                   <AlertCircle className="h-3 w-3" /> {msg}
                 </p>
               ))}
+              {overlapInfo && (
+                <p className="text-sm text-destructive flex items-center gap-1" data-testid={`error-early-bonus-overlap-${b.id}`}>
+                  <AlertCircle className="h-3 w-3" /> Day(s) overlap with another rule: {describeDays(overlapInfo.conflictingDays)}. Only one early-arrival rule can apply per day — edit or remove the conflicting rule.
+                </p>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -1254,6 +1358,11 @@ function EarlyArrivalBonusEditor({
             "Entire shift" pays the bonus on every hour worked. "Only hours before cutoff" pays only for time worked before the cutoff (e.g. clock-in 05:00 with a 07:00 cutoff = 2 bonus hours).
           </p>
         </div>
+        {draftConflictMessage && (
+          <p className="text-sm text-destructive flex items-center gap-1" data-testid="error-early-bonus-draft-conflict">
+            <AlertCircle className="h-3 w-3" /> {draftConflictMessage}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -1370,13 +1479,15 @@ function PayrollRuleGroupCard({
 }
 
 function StepRules({
-  ruleFields, rulesForm, setRulesForm, errors, policyTypeKey,
+  ruleFields, rulesForm, setRulesForm, errors, policyTypeKey, dowOverlaps, earlyOverlaps,
 }: {
   ruleFields: RuleFieldDef[];
   rulesForm: Record<string, any>;
   setRulesForm: (v: Record<string, any>) => void;
   errors: Record<string, string>;
   policyTypeKey: string;
+  dowOverlaps: Map<string, OverlapInfo>;
+  earlyOverlaps: Map<string, OverlapInfo>;
 }) {
   if (ruleFields.length === 0) {
     return (
@@ -1385,6 +1496,8 @@ function StepRules({
       </div>
     );
   }
+
+  const hasOverlapErrors = dowOverlaps.size > 0 || earlyOverlaps.size > 0;
 
   return (
     <div className="space-y-6" data-testid="wizard-step-rules">
@@ -1395,11 +1508,27 @@ function StepRules({
         </p>
       </div>
 
+      {hasOverlapErrors && (
+        <div
+          className="rounded-md border border-destructive bg-destructive/10 p-3 flex items-start gap-2"
+          data-testid="alert-bonus-overlaps"
+        >
+          <AlertCircle className="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
+          <div className="text-sm text-destructive">
+            <p className="font-medium">Overlapping bonus rules detected.</p>
+            <p className="mt-0.5">
+              Each day can only be covered by one Day-of-Week rule and one Early-Arrival rule. Resolve the conflicts highlighted below before continuing — the payroll engine would otherwise stack these bonuses for the same shift.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-4">
         {policyTypeKey === "payroll" && (
           <DayOfWeekBonusEditor
             bonuses={Array.isArray(rulesForm.dayOfWeekBonuses) ? rulesForm.dayOfWeekBonuses : []}
             onChange={(next) => setRulesForm({ ...rulesForm, dayOfWeekBonuses: next })}
+            overlaps={dowOverlaps}
           />
         )}
         {policyTypeKey === "payroll" && (
@@ -1407,6 +1536,7 @@ function StepRules({
             bonuses={Array.isArray(rulesForm.earlyArrivalBonuses) ? rulesForm.earlyArrivalBonuses : []}
             onChange={(next) => setRulesForm({ ...rulesForm, earlyArrivalBonuses: next })}
             errors={errors}
+            overlaps={earlyOverlaps}
           />
         )}
         {policyTypeKey === "payroll"

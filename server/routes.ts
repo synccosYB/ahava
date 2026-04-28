@@ -24,10 +24,13 @@ import {
   HIGH_CORRECTION_THRESHOLD,
   type CorrectionCountSummary,
 } from "@shared/correctionCounts";
+import {
+  findDayOfWeekBonusOverlaps,
+  findEarlyArrivalBonusOverlaps,
+  describeDays,
+  DAY_NAMES,
+} from "@shared/policyOverlap";
 
-function invalidateUserCache() {
-  appCache.invalidatePrefix("rc:");
-}
 import { shouldRun } from "./lib/cooldown";
 import { drainPending, enqueue } from "./services/jobs";
 import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
@@ -47,6 +50,47 @@ import {
 } from "./services/documentStorage";
 
 const SUPER_ADMIN_USER_ID = "admin-dev-001";
+
+function invalidateUserCache() {
+  appCache.invalidatePrefix("rc:");
+}
+
+function validateBonusRuleOverlaps(rules: any): string | null {
+  if (!rules || typeof rules !== "object") return null;
+  const dowList: any[] = Array.isArray(rules.dayOfWeekBonuses) ? rules.dayOfWeekBonuses : [];
+  const earlyList: any[] = Array.isArray(rules.earlyArrivalBonuses) ? rules.earlyArrivalBonuses : [];
+
+  const dowNormalized = dowList
+    .map((b, i) => ({
+      id: typeof b?.id === "string" && b.id ? b.id : `__dow_${i}__`,
+      dayOfWeek: typeof b?.dayOfWeek === "number" ? b.dayOfWeek : Number(b?.dayOfWeek),
+    }))
+    .filter((b) => Number.isInteger(b.dayOfWeek) && b.dayOfWeek >= 0 && b.dayOfWeek <= 6);
+  const dowOverlaps = findDayOfWeekBonusOverlaps(dowNormalized);
+  if (dowOverlaps.size > 0) {
+    const days = new Set<number>();
+    dowOverlaps.forEach((info) => {
+      info.conflictingDays.forEach((d) => days.add(d));
+    });
+    const dayList = Array.from(days).sort((a, b) => a - b).map((d) => DAY_NAMES[d] || String(d)).join(", ");
+    return `Day-of-week bonus rules overlap on: ${dayList}. Each day may only be covered by one rule.`;
+  }
+
+  const earlyNormalized = earlyList.map((b, i) => ({
+    id: typeof b?.id === "string" && b.id ? b.id : `__early_${i}__`,
+    daysOfWeek: Array.isArray(b?.daysOfWeek) ? b.daysOfWeek : null,
+  }));
+  const earlyOverlaps = findEarlyArrivalBonusOverlaps(earlyNormalized);
+  if (earlyOverlaps.size > 0) {
+    const days = new Set<number>();
+    earlyOverlaps.forEach((info) => {
+      info.conflictingDays.forEach((d) => days.add(d));
+    });
+    return `Early-arrival bonus rules overlap on: ${describeDays(Array.from(days))}. Each day may only be covered by one rule (an empty day list applies to every day).`;
+  }
+
+  return null;
+}
 
 function isSuperAdmin(req: any): boolean {
   return req.userPermissions?.has("system.super_admin") === true;
@@ -3738,6 +3782,12 @@ export async function registerRoutes(
       if (!parsed.success) {
         return res.status(400).json({ message: "Invalid policy data", errors: parsed.error.flatten() });
       }
+      if (req.body.rules) {
+        const overlapError = validateBonusRuleOverlaps(req.body.rules);
+        if (overlapError) {
+          return res.status(400).json({ message: overlapError });
+        }
+      }
       const policy = await storage.createPolicy(parsed.data);
 
       if (req.body.rules) {
@@ -3763,6 +3813,12 @@ export async function registerRoutes(
   app.patch("/api/policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
       const { rules, ...policyData } = req.body;
+      if (rules) {
+        const overlapError = validateBonusRuleOverlaps(rules);
+        if (overlapError) {
+          return res.status(400).json({ message: overlapError });
+        }
+      }
       const policy = await storage.updatePolicy(req.params.id, policyData);
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
@@ -3846,6 +3902,10 @@ export async function registerRoutes(
       const body = req.body && typeof req.body === "object" && "rules" in req.body && req.body.rules
         ? req.body.rules
         : req.body;
+      const overlapError = validateBonusRuleOverlaps(body);
+      if (overlapError) {
+        return res.status(400).json({ message: overlapError });
+      }
       const rule = await storage.upsertPolicyRules(req.params.id, body);
 
       await writeAuditLog({
