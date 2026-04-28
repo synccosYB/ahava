@@ -397,6 +397,7 @@ function PolicyAssignmentBadges({ policyId }: { policyId: string }) {
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
+  const { data: roles } = useQuery<{ id: string; name: string }[]>({ queryKey: ["/api/roles-summary"] });
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -419,22 +420,42 @@ function PolicyAssignmentBadges({ policyId }: { policyId: string }) {
     return <span className="text-xs text-muted-foreground" data-testid={`text-no-assignments-${policyId}`}>None</span>;
   }
 
+  const formatEmploymentType = (v: string) => {
+    const map: Record<string, string> = { full_time: "Full Time", part_time: "Part Time", contractor: "Contractor", per_diem: "Per Diem" };
+    return map[v] || v;
+  };
+  const formatPayType = (v: string) => {
+    const map: Record<string, string> = { hourly: "Hourly", salary: "Salary" };
+    return map[v] || v;
+  };
+
   const getLabel = (a: PolicyAssignment) => {
     if (a.userId) {
       const user = users?.find((u) => u.id === a.userId);
-      return user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Employee" : "Employee";
+      const name = user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Employee" : "Employee";
+      return `Employee · ${name}`;
+    }
+    if (a.roleId) {
+      const role = roles?.find((r) => r.id === a.roleId);
+      return `Role · ${role?.name || "Role"}`;
+    }
+    if (a.employmentType) {
+      return `Employment Type · ${formatEmploymentType(a.employmentType)}`;
+    }
+    if (a.payType) {
+      return `Pay Type · ${formatPayType(a.payType)}`;
     }
     if (a.departmentId) {
       const dept = departments?.find((d) => d.id === a.departmentId);
-      return dept?.name || "Department";
+      return `Department · ${dept?.name || "Department"}`;
     }
     if (a.locationId) {
       const loc = locations?.find((l) => l.id === a.locationId);
-      return loc?.name || "Location";
+      return `Location · ${loc?.name || "Location"}`;
     }
     if (a.companyId) {
       const div = divisions?.find((d) => d.id === a.companyId);
-      return div?.name || "Division";
+      return `Division · ${div?.name || "Division"}`;
     }
     return "Global";
   };

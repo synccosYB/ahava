@@ -11,12 +11,15 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import {
   ChevronLeft, ChevronRight, Check, Clock, CalendarDays,
-  DollarSign, GitBranch, AlertCircle
+  DollarSign, GitBranch, AlertCircle, ChevronsUpDown
 } from "lucide-react";
-import type { Policy, PolicyType, Division, Location, Department, User, PolicyAssignment } from "@shared/schema";
+import type { Policy, PolicyType, Division, Location, Department, User, PolicyAssignment, Role } from "@shared/schema";
 import {
   findDayOfWeekBonusOverlaps,
   findEarlyArrivalBonusOverlaps,
@@ -26,6 +29,32 @@ import {
   DAY_NAMES,
   type OverlapInfo,
 } from "@shared/policyOverlap";
+
+const EMPLOYMENT_TYPE_OPTIONS = [
+  { value: "full_time", label: "Full Time" },
+  { value: "part_time", label: "Part Time" },
+  { value: "contractor", label: "Contractor" },
+  { value: "per_diem", label: "Per Diem" },
+];
+
+const PAY_TYPE_OPTIONS = [
+  { value: "hourly", label: "Hourly" },
+  { value: "salary", label: "Salary" },
+];
+
+const ASSIGNMENT_LEVEL_LABELS: Record<string, string> = {
+  division: "Division",
+  location: "Location",
+  department: "Department",
+  employee: "Employee",
+  role: "Role",
+  employment_type: "Employment Type",
+  pay_type: "Pay Type",
+};
+
+function getAssignmentLevelLabel(level: string): string {
+  return ASSIGNMENT_LEVEL_LABELS[level] || level;
+}
 
 const STEPS = [
   { label: "Basics", description: "Name and type" },
@@ -256,6 +285,7 @@ export function PolicyWizard({
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
+  const { data: roles } = useQuery<Role[]>({ queryKey: ["/api/roles-summary"] });
 
   const matchingType = policyTypes?.find((pt) => pt.key === selectedTypeKey);
   const ruleFields = useMemo(() => getRuleFieldsForType(selectedTypeKey), [selectedTypeKey]);
@@ -273,11 +303,24 @@ export function PolicyWizard({
     locs: Location[],
     depts: Department[],
     usrs: User[],
+    rolesList: Role[],
   ): AssignmentEntry[] {
     return assigns.map((a) => {
       if (a.userId) {
         const user = usrs.find((u) => u.id === a.userId);
         return { level: "employee", id: a.userId, label: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Employee" : "Employee" };
+      }
+      if (a.roleId) {
+        const role = rolesList.find((r) => r.id === a.roleId);
+        return { level: "role", id: a.roleId, label: role?.name || "Role" };
+      }
+      if (a.employmentType) {
+        const opt = EMPLOYMENT_TYPE_OPTIONS.find((o) => o.value === a.employmentType);
+        return { level: "employment_type", id: a.employmentType, label: opt?.label || a.employmentType };
+      }
+      if (a.payType) {
+        const opt = PAY_TYPE_OPTIONS.find((o) => o.value === a.payType);
+        return { level: "pay_type", id: a.payType, label: opt?.label || a.payType };
       }
       if (a.departmentId) {
         const dept = depts.find((d) => d.id === a.departmentId);
@@ -315,7 +358,7 @@ export function PolicyWizard({
       if (existingAssignments && existingAssignments.length > 0) {
         setAssignments(mapAssignmentsToEntries(
           existingAssignments,
-          divisions || [], locations || [], departments || [], users || [],
+          divisions || [], locations || [], departments || [], users || [], roles || [],
         ));
       } else {
         setAssignments([]);
@@ -332,7 +375,7 @@ export function PolicyWizard({
       setAssignments([]);
       setSaveStatus("draft");
     }
-  }, [open, editingPolicy, policyTypeKey, existingRules, existingAssignments, policyTypes, users, departments, locations, divisions]);
+  }, [open, editingPolicy, policyTypeKey, existingRules, existingAssignments, policyTypes, users, departments, locations, divisions, roles]);
 
   useEffect(() => {
     if (open && !editingPolicy && selectedTypeKey) {
@@ -514,20 +557,27 @@ export function PolicyWizard({
       }
 
       if (assignments.length > 0) {
-        for (const a of assignments) {
-          const assignPayload: Record<string, string | null> = {
+        const payloads = assignments.map((a) => {
+          const payload: Record<string, string | null> = {
             policyId,
             companyId: null,
             locationId: null,
             departmentId: null,
             userId: null,
+            roleId: null,
+            employmentType: null,
+            payType: null,
           };
-          if (a.level === "division") assignPayload.companyId = a.id;
-          if (a.level === "location") assignPayload.locationId = a.id;
-          if (a.level === "department") assignPayload.departmentId = a.id;
-          if (a.level === "employee") assignPayload.userId = a.id;
-          await apiRequest("POST", "/api/policy-assignments", assignPayload);
-        }
+          if (a.level === "division") payload.companyId = a.id;
+          if (a.level === "location") payload.locationId = a.id;
+          if (a.level === "department") payload.departmentId = a.id;
+          if (a.level === "employee") payload.userId = a.id;
+          if (a.level === "role") payload.roleId = a.id;
+          if (a.level === "employment_type") payload.employmentType = a.id;
+          if (a.level === "pay_type") payload.payType = a.id;
+          return payload;
+        });
+        await apiRequest("POST", "/api/policy-assignments", payloads);
       }
     },
     onSuccess: () => {
@@ -631,6 +681,7 @@ export function PolicyWizard({
               locations={locations || []}
               departments={departments || []}
               users={users || []}
+              roles={roles || []}
             />
           )}
           {currentStep === 3 && (
@@ -1626,7 +1677,7 @@ function StepRules({
 
 function StepAssignments({
   assignments, setAssignments,
-  divisions, locations, departments, users,
+  divisions, locations, departments, users, roles,
 }: {
   assignments: AssignmentEntry[];
   setAssignments: (v: AssignmentEntry[]) => void;
@@ -1634,11 +1685,13 @@ function StepAssignments({
   locations: Location[];
   departments: Department[];
   users: User[];
+  roles: Role[];
 }) {
   const [addLevel, setAddLevel] = useState("");
-  const [addId, setAddId] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [popoverOpen, setPopoverOpen] = useState(false);
 
-  const getOptions = () => {
+  const getOptions = (): { id: string; label: string }[] => {
     switch (addLevel) {
       case "division":
         return divisions.map((d) => ({ id: d.id, label: d.name }));
@@ -1648,23 +1701,54 @@ function StepAssignments({
         return departments.map((d) => ({ id: d.id, label: d.name }));
       case "employee":
         return users.map((u) => ({ id: u.id, label: `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || u.id }));
+      case "role":
+        return roles.map((r) => ({ id: r.id, label: r.name }));
+      case "employment_type":
+        return EMPLOYMENT_TYPE_OPTIONS.map((o) => ({ id: o.value, label: o.label }));
+      case "pay_type":
+        return PAY_TYPE_OPTIONS.map((o) => ({ id: o.value, label: o.label }));
       default:
         return [];
     }
   };
 
-  const addAssignment = () => {
-    if (!addLevel || !addId) return;
-    const alreadyExists = assignments.some((a) => a.level === addLevel && a.id === addId);
-    if (alreadyExists) return;
-    const opts = getOptions();
-    const match = opts.find((o) => o.id === addId);
-    setAssignments([...assignments, { level: addLevel, id: addId, label: match?.label || addId }]);
-    setAddId("");
+  const options = getOptions();
+
+  const isAlreadyAssigned = (id: string) =>
+    assignments.some((a) => a.level === addLevel && a.id === id);
+
+  const toggleSelected = (id: string) => {
+    if (isAlreadyAssigned(id)) return;
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const addAssignments = () => {
+    if (!addLevel || selectedIds.length === 0) return;
+    const newEntries: AssignmentEntry[] = [];
+    selectedIds.forEach((id) => {
+      if (isAlreadyAssigned(id)) return;
+      const match = options.find((o) => o.id === id);
+      newEntries.push({ level: addLevel, id, label: match?.label || id });
+    });
+    if (newEntries.length === 0) return;
+    setAssignments([...assignments, ...newEntries]);
+    setSelectedIds([]);
+    setPopoverOpen(false);
   };
 
   const removeAssignment = (index: number) => {
     setAssignments(assignments.filter((_, i) => i !== index));
+  };
+
+  const targetButtonLabel = () => {
+    if (!addLevel) return "Select level first";
+    if (selectedIds.length === 0) return `Select ${getAssignmentLevelLabel(addLevel).toLowerCase()}...`;
+    if (selectedIds.length === 1) {
+      return options.find((o) => o.id === selectedIds[0])?.label || "1 selected";
+    }
+    return `${selectedIds.length} selected`;
   };
 
   return (
@@ -1672,7 +1756,7 @@ function StepAssignments({
       <div>
         <h3 className="text-base font-semibold mb-1">Assign Policy</h3>
         <p className="text-sm text-muted-foreground">
-          Choose which divisions, locations, departments, or employees this policy applies to.
+          Choose which divisions, locations, departments, employees, roles, employment types, or pay types this policy applies to.
           You can skip this step and assign later.
         </p>
       </div>
@@ -1680,7 +1764,10 @@ function StepAssignments({
       <div className="flex gap-2 items-end">
         <div className="flex-1">
           <Label>Level</Label>
-          <Select value={addLevel} onValueChange={(v) => { setAddLevel(v); setAddId(""); }}>
+          <Select
+            value={addLevel}
+            onValueChange={(v) => { setAddLevel(v); setSelectedIds([]); }}
+          >
             <SelectTrigger data-testid="select-wizard-assign-level">
               <SelectValue placeholder="Select level..." />
             </SelectTrigger>
@@ -1689,25 +1776,68 @@ function StepAssignments({
               <SelectItem value="location">Location</SelectItem>
               <SelectItem value="department">Department</SelectItem>
               <SelectItem value="employee">Individual Employee</SelectItem>
+              <SelectItem value="role">Role</SelectItem>
+              <SelectItem value="employment_type">Employment Type</SelectItem>
+              <SelectItem value="pay_type">Pay Type</SelectItem>
             </SelectContent>
           </Select>
         </div>
         <div className="flex-1">
           <Label>Target</Label>
-          <Select value={addId} onValueChange={setAddId} disabled={!addLevel}>
-            <SelectTrigger data-testid="select-wizard-assign-target">
-              <SelectValue placeholder={addLevel ? `Select ${addLevel}...` : "Select level first"} />
-            </SelectTrigger>
-            <SelectContent>
-              {getOptions().map((opt) => (
-                <SelectItem key={opt.id} value={opt.id}>{opt.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                role="combobox"
+                disabled={!addLevel}
+                className="w-full justify-between font-normal"
+                data-testid="select-wizard-assign-target"
+              >
+                <span className={selectedIds.length === 0 && addLevel ? "text-muted-foreground" : ""}>
+                  {targetButtonLabel()}
+                </span>
+                <ChevronsUpDown className="h-4 w-4 opacity-50 ml-2" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+              <Command>
+                <CommandInput placeholder="Search..." />
+                <CommandList>
+                  <CommandEmpty>No options found.</CommandEmpty>
+                  <CommandGroup>
+                    {options.map((opt) => {
+                      const alreadyAssigned = isAlreadyAssigned(opt.id);
+                      const isChecked = alreadyAssigned || selectedIds.includes(opt.id);
+                      return (
+                        <CommandItem
+                          key={opt.id}
+                          value={`${opt.label} ${opt.id}`}
+                          disabled={alreadyAssigned}
+                          onSelect={() => toggleSelected(opt.id)}
+                          data-testid={`option-wizard-target-${opt.id}`}
+                          className={alreadyAssigned ? "opacity-60" : ""}
+                        >
+                          <Checkbox
+                            checked={isChecked}
+                            disabled={alreadyAssigned}
+                            className="mr-2 pointer-events-none"
+                          />
+                          <span className="flex-1">{opt.label}</span>
+                          {alreadyAssigned && (
+                            <span className="text-xs text-muted-foreground ml-2">Added</span>
+                          )}
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </div>
         <Button
-          onClick={addAssignment}
-          disabled={!addLevel || !addId}
+          onClick={addAssignments}
+          disabled={!addLevel || selectedIds.length === 0}
           size="sm"
           data-testid="button-wizard-add-assignment"
         >
@@ -1725,7 +1855,7 @@ function StepAssignments({
               data-testid={`assignment-entry-${i}`}
             >
               <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs capitalize">{a.level}</Badge>
+                <Badge variant="outline" className="text-xs">{getAssignmentLevelLabel(a.level)}</Badge>
                 <span className="text-sm">{a.label}</span>
               </div>
               <Button
@@ -1907,7 +2037,7 @@ function StepReview({
           <div className="flex flex-wrap gap-2">
             {assignments.map((a, i) => (
               <Badge key={i} variant="secondary" className="text-xs" data-testid={`review-assignment-${i}`}>
-                <span className="capitalize mr-1 opacity-70">{a.level}:</span> {a.label}
+                <span className="mr-1 opacity-70">{getAssignmentLevelLabel(a.level)} ·</span> {a.label}
               </Badge>
             ))}
           </div>

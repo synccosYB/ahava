@@ -177,13 +177,67 @@ export const policyAssignments = pgTable("policy_assignments", {
   locationId: varchar("location_id").references(() => locations.id),
   departmentId: varchar("department_id").references(() => departments.id),
   userId: varchar("user_id").references(() => users.id),
+  roleId: varchar("role_id").references(() => roles.id),
+  employmentType: varchar("employment_type", { length: 30 }),
+  payType: varchar("pay_type", { length: 20 }),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const insertPolicyAssignmentSchema = createInsertSchema(policyAssignments).omit({
+const baseInsertPolicyAssignmentSchema = createInsertSchema(policyAssignments).omit({
   id: true,
   createdAt: true,
 });
+
+export const POLICY_ASSIGNMENT_TARGET_FIELDS = [
+  "companyId",
+  "locationId",
+  "departmentId",
+  "userId",
+  "roleId",
+  "employmentType",
+  "payType",
+] as const;
+
+export const POLICY_ASSIGNMENT_EMPLOYMENT_TYPES = ["full_time", "part_time", "contractor", "per_diem"] as const;
+export const POLICY_ASSIGNMENT_PAY_TYPES = ["hourly", "salary"] as const;
+
+export const insertPolicyAssignmentSchema = baseInsertPolicyAssignmentSchema.superRefine((val, ctx) => {
+  const set = POLICY_ASSIGNMENT_TARGET_FIELDS.filter(
+    (k) => val[k] !== null && val[k] !== undefined && val[k] !== ""
+  );
+  if (set.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Exactly one assignment target must be set (companyId, locationId, departmentId, userId, roleId, employmentType, or payType).",
+    });
+  } else if (set.length > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Only one assignment target may be set per row. Got: ${set.join(", ")}`,
+    });
+  }
+  if (
+    val.employmentType &&
+    !(POLICY_ASSIGNMENT_EMPLOYMENT_TYPES as readonly string[]).includes(val.employmentType)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["employmentType"],
+      message: `employmentType must be one of: ${POLICY_ASSIGNMENT_EMPLOYMENT_TYPES.join(", ")}`,
+    });
+  }
+  if (
+    val.payType &&
+    !(POLICY_ASSIGNMENT_PAY_TYPES as readonly string[]).includes(val.payType)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["payType"],
+      message: `payType must be one of: ${POLICY_ASSIGNMENT_PAY_TYPES.join(", ")}`,
+    });
+  }
+});
+
 export type InsertPolicyAssignment = z.infer<typeof insertPolicyAssignmentSchema>;
 export type PolicyAssignment = typeof policyAssignments.$inferSelect;
 

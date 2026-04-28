@@ -4025,6 +4025,25 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/roles-summary", requireAuth, requireRole("admin"), async (_req, res) => {
+    try {
+      const allRoles = await storage.getAllRoles();
+      res.json(
+        allRoles.map((r) => ({
+          id: r.id,
+          name: r.name,
+          description: r.description,
+          isSystem: r.isSystem,
+          isActive: r.isActive,
+          companyId: r.companyId,
+        }))
+      );
+    } catch (error) {
+      console.error("Error fetching roles summary:", error);
+      res.status(500).json({ message: "Failed to fetch roles" });
+    }
+  });
+
   app.get("/api/policy-assignments", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const policyId = req.query.policyId as string | undefined;
@@ -4040,22 +4059,55 @@ export async function registerRoutes(
 
   app.post("/api/policy-assignments", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const parsed = insertPolicyAssignmentSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: "Invalid assignment data", errors: parsed.error.flatten() });
+      const isArray = Array.isArray(req.body);
+      const items = isArray ? req.body : [req.body];
+
+      if (items.length === 0) {
+        return res.status(400).json({ message: "No assignments provided" });
       }
-      const assignment = await storage.createPolicyAssignment(parsed.data);
 
-      await writeAuditLog({
-        actorUserId: req.authUser.id,
-        action: "policy_assignment.created",
-        targetId: assignment.id,
-        targetType: "policy_assignment",
-        newValue: { policyId: parsed.data.policyId, companyId: parsed.data.companyId, locationId: parsed.data.locationId, departmentId: parsed.data.departmentId, userId: parsed.data.userId },
-        ...getAuditContext(req),
+      const parsedItems: any[] = [];
+      const errorsByIndex: Record<number, any> = {};
+      items.forEach((item: unknown, idx: number) => {
+        const parsed = insertPolicyAssignmentSchema.safeParse(item);
+        if (parsed.success) {
+          parsedItems.push(parsed.data);
+        } else {
+          errorsByIndex[idx] = parsed.error.flatten();
+        }
       });
+      if (Object.keys(errorsByIndex).length > 0) {
+        return res.status(400).json({ message: "Invalid assignment data", errors: errorsByIndex });
+      }
 
-      res.status(201).json(assignment);
+      const created = [];
+      for (const data of parsedItems) {
+        const assignment = await storage.createPolicyAssignment(data);
+        created.push(assignment);
+
+        await writeAuditLog({
+          actorUserId: req.authUser.id,
+          action: "policy_assignment.created",
+          targetId: assignment.id,
+          targetType: "policy_assignment",
+          newValue: {
+            policyId: data.policyId,
+            companyId: data.companyId,
+            locationId: data.locationId,
+            departmentId: data.departmentId,
+            userId: data.userId,
+            roleId: data.roleId,
+            employmentType: data.employmentType,
+            payType: data.payType,
+          },
+          ...getAuditContext(req),
+        });
+      }
+
+      if (isArray) {
+        return res.status(201).json(created);
+      }
+      res.status(201).json(created[0]);
     } catch (error) {
       console.error("Error creating policy assignment:", error);
       res.status(500).json({ message: "Failed to create policy assignment" });

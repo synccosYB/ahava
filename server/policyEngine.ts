@@ -4,19 +4,41 @@ import {
   policyRules,
   policyAssignments,
   policyTypes,
+  userRoles,
+  userEmploymentProfiles,
+  POLICY_ASSIGNMENT_TARGET_FIELDS,
   type Policy,
+  type PolicyAssignment,
   type PolicyRule,
   type User,
 } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 
+type PolicyAssignmentTargetField = (typeof POLICY_ASSIGNMENT_TARGET_FIELDS)[number];
+
 export interface EffectivePolicy {
   policyId: string;
   policyName: string;
   policyTypeKey: string;
-  assignmentLevel: "global" | "division" | "location" | "department" | "employee";
+  assignmentLevel:
+    | "global"
+    | "division"
+    | "location"
+    | "department"
+    | "role"
+    | "employment_type"
+    | "pay_type"
+    | "employee";
   rules: Record<string, any>;
 }
+
+const isPureTarget = (
+  a: PolicyAssignment,
+  keep: readonly PolicyAssignmentTargetField[]
+) =>
+  POLICY_ASSIGNMENT_TARGET_FIELDS.every((k) =>
+    keep.includes(k) ? !!a[k] : !a[k]
+  );
 
 export async function getEffectivePolicy(
   companyId: string | null,
@@ -56,11 +78,74 @@ export async function getEffectivePolicy(
     assignmentLevel = "employee";
   }
 
+  let userRoleIds: string[] = [];
+  let employmentType: string | null = null;
+  let payType: string | null = null;
+  if (!resolvedPolicy) {
+    const needRoleLookup = allAssignments.some((a) => !!a.assignment.roleId);
+    const needEmploymentLookup = allAssignments.some(
+      (a) => !!a.assignment.employmentType || !!a.assignment.payType
+    );
+    if (needRoleLookup) {
+      const rows = await db
+        .select({ roleId: userRoles.roleId })
+        .from(userRoles)
+        .where(eq(userRoles.userId, userId));
+      userRoleIds = rows.map((r) => r.roleId);
+    }
+    if (needEmploymentLookup) {
+      const [profile] = await db
+        .select({
+          employmentType: userEmploymentProfiles.employmentType,
+          payType: userEmploymentProfiles.payType,
+        })
+        .from(userEmploymentProfiles)
+        .where(eq(userEmploymentProfiles.userId, userId));
+      employmentType = profile?.employmentType ?? null;
+      payType = profile?.payType ?? null;
+    }
+  }
+
+  if (!resolvedPolicy && payType) {
+    const payMatch = allAssignments.find(
+      (a) => a.assignment.payType === payType && isPureTarget(a.assignment, ["payType"])
+    );
+    if (payMatch) {
+      resolvedPolicy = payMatch.policy;
+      assignmentLevel = "pay_type";
+    }
+  }
+
+  if (!resolvedPolicy && employmentType) {
+    const empMatch = allAssignments.find(
+      (a) =>
+        a.assignment.employmentType === employmentType &&
+        isPureTarget(a.assignment, ["employmentType"])
+    );
+    if (empMatch) {
+      resolvedPolicy = empMatch.policy;
+      assignmentLevel = "employment_type";
+    }
+  }
+
+  if (!resolvedPolicy && userRoleIds.length > 0) {
+    const roleMatch = allAssignments.find(
+      (a) =>
+        a.assignment.roleId &&
+        userRoleIds.includes(a.assignment.roleId) &&
+        isPureTarget(a.assignment, ["roleId"])
+    );
+    if (roleMatch) {
+      resolvedPolicy = roleMatch.policy;
+      assignmentLevel = "role";
+    }
+  }
+
   if (!resolvedPolicy && user?.departmentId) {
     const deptMatch = allAssignments.find(
       (a) =>
         a.assignment.departmentId === user.departmentId &&
-        !a.assignment.userId
+        isPureTarget(a.assignment, ["departmentId"])
     );
     if (deptMatch) {
       resolvedPolicy = deptMatch.policy;
@@ -72,8 +157,7 @@ export async function getEffectivePolicy(
     const locMatch = allAssignments.find(
       (a) =>
         a.assignment.locationId === user.locationId &&
-        !a.assignment.departmentId &&
-        !a.assignment.userId
+        isPureTarget(a.assignment, ["locationId"])
     );
     if (locMatch) {
       resolvedPolicy = locMatch.policy;
@@ -85,9 +169,7 @@ export async function getEffectivePolicy(
     const companyMatch = allAssignments.find(
       (a) =>
         a.assignment.companyId === companyId &&
-        !a.assignment.locationId &&
-        !a.assignment.departmentId &&
-        !a.assignment.userId
+        isPureTarget(a.assignment, ["companyId"])
     );
     if (companyMatch) {
       resolvedPolicy = companyMatch.policy;
@@ -96,13 +178,7 @@ export async function getEffectivePolicy(
   }
 
   if (!resolvedPolicy) {
-    const globalMatch = allAssignments.find(
-      (a) =>
-        !a.assignment.companyId &&
-        !a.assignment.locationId &&
-        !a.assignment.departmentId &&
-        !a.assignment.userId
-    );
+    const globalMatch = allAssignments.find((a) => isPureTarget(a.assignment, []));
     if (globalMatch) {
       resolvedPolicy = globalMatch.policy;
       assignmentLevel = "global";
