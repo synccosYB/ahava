@@ -141,7 +141,7 @@ export const DEFAULT_ATTENDANCE_RULES = {
 
 export const DEFAULT_PTO_RULES = {
   accrualType: "annual",
-  accrualRate: 15,
+  accrualHoursPerYear: 120,
   yearlyCapHours: null,
   carryoverCapHours: 0,
   waitingPeriodDays: 0,
@@ -149,12 +149,12 @@ export const DEFAULT_PTO_RULES = {
   sickAccrualRatePerHours: 1,
   sickAccrualPerHoursWorked: 30,
   sickYearlyCapHours: 40,
-  personalDaysPerYear: 5,
+  personalHoursPerYear: 40,
   holidayPayEnabled: true,
   holidayPtoDeduction: false,
   holidayOtExclusion: true,
   requireApproval: true,
-  maxConsecutiveDays: 10,
+  maxConsecutiveHours: 80,
   blackoutDates: [],
 };
 

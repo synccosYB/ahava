@@ -67,13 +67,13 @@ export function summarizePtoPolicy(rules: Record<string, any>): string[] {
   if (!rules || Object.keys(rules).length === 0) return out;
 
   const accrualType = String(rules.accrualType || "");
-  const accrualRate = Number(rules.accrualRate);
-  if (Number.isFinite(accrualRate)) {
+  const accrualHours = Number(rules.accrualHoursPerYear);
+  if (Number.isFinite(accrualHours)) {
     const period =
       accrualType === "monthly" ? "per month"
       : accrualType === "per_pay_period" ? "per pay period"
       : "per year";
-    out.push(`Accrues ${accrualRate} day${accrualRate === 1 ? "" : "s"} ${period}.`);
+    out.push(`Accrues ${accrualHours} hour${accrualHours === 1 ? "" : "s"} ${period}.`);
   }
   const reqApproval = rules.requireApproval;
   const reqNotice = rules.requireAdvanceNotice;
@@ -87,9 +87,9 @@ export function summarizePtoPolicy(rules: Record<string, any>): string[] {
   } else if (reqNotice === true && Number.isFinite(noticeDays)) {
     out.push(`Requires ${noticeDays} day${noticeDays === 1 ? "" : "s"} advance notice.`);
   }
-  const maxConsec = Number(rules.maxConsecutiveDays);
+  const maxConsec = Number(rules.maxConsecutiveHours);
   if (Number.isFinite(maxConsec)) {
-    out.push(`Up to ${maxConsec} consecutive day${maxConsec === 1 ? "" : "s"} at a time.`);
+    out.push(`Up to ${maxConsec} consecutive hour${maxConsec === 1 ? "" : "s"} at a time.`);
   }
   const carry = Number(rules.carryoverCapHours);
   if (Number.isFinite(carry)) {
@@ -229,7 +229,7 @@ const TRIGGER_LABELS: Record<string, string> = {
   overtime_threshold: "When the overtime threshold is reached",
 };
 const CONDITION_FIELD_LABELS: Record<string, string> = {
-  days_requested: "days requested",
+  hours_requested: "hours requested",
   employee_department: "employee department",
   employee_location: "employee location",
   late_count_month: "late arrivals this month",

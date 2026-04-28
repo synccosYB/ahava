@@ -117,7 +117,6 @@ export async function applyPtoAnniversaryAdjustments(): Promise<{
       });
       if (!inserted) continue;
 
-      const daysAdded = Math.round(hoursAdded / 8);
       const balance = await storage.getTimeOffBalance(
         employee.id,
         "vacation",
@@ -127,18 +126,18 @@ export async function applyPtoAnniversaryAdjustments(): Promise<{
       let newTotal: number | null = null;
       if (balance) {
         oldTotal = balance.totalDays ?? 0;
-        newTotal = oldTotal + daysAdded;
+        newTotal = oldTotal + hoursAdded;
         await storage.updateTimeOffBalance(balance.id, {
           totalDays: newTotal,
         });
-      } else if (daysAdded !== 0) {
+      } else if (hoursAdded !== 0) {
         oldTotal = 0;
-        newTotal = daysAdded;
+        newTotal = hoursAdded;
         await storage.createTimeOffBalance({
           userId: employee.id,
           type: "vacation",
           year: today.year,
-          totalDays: daysAdded,
+          totalDays: hoursAdded,
           usedDays: 0,
         });
       }
@@ -149,16 +148,15 @@ export async function applyPtoAnniversaryAdjustments(): Promise<{
         targetId: inserted.id,
         action: "pto.anniversary_adjustment",
         oldValue: {
-          accrualRate: oldRate,
+          accrualHoursPerYear: oldRate,
           tierLabel: previousTier?.tierLabel ?? null,
-          totalDays: oldTotal,
+          totalHours: oldTotal,
         },
         newValue: {
-          accrualRate: currentTier.accrualRate,
+          accrualHoursPerYear: currentTier.accrualRate,
           tierLabel: currentTier.tierLabel ?? null,
-          totalDays: newTotal,
+          totalHours: newTotal,
           hoursAdded,
-          daysAdded,
           yearsOfService,
         },
         context: { employeeId: employee.id, effectiveDate: today.iso },

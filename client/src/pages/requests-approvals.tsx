@@ -304,7 +304,7 @@ function ProcessedRequestCard({ request, showDeptLocation, onClick }: { request:
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-processed-dates-${request.id}`}>
-              {`${request.startDate} to ${request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate} (${request.status === "partially_approved" && request.daysApproved ? `${request.daysApproved} of ${request.daysRequested}` : request.daysRequested} day${(request.daysRequested || 1) > 1 ? "s" : ""})`}
+              {`${request.startDate} to ${request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate} (${request.status === "partially_approved" && request.hoursApproved ? `${request.hoursApproved} of ${request.hoursRequested}` : request.hoursRequested} hrs)`}
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-processed-reason-${request.id}`}>
@@ -410,14 +410,14 @@ function ProcessedRequestDetailDialog({ request, open, onClose }: { request: Pro
             )}
 
             <div>
-              <p className="text-muted-foreground">Days Requested</p>
-              <p className="font-medium" data-testid="detail-days-requested">{request.daysRequested}</p>
+              <p className="text-muted-foreground">Hours Requested</p>
+              <p className="font-medium" data-testid="detail-hours-requested">{request.hoursRequested}</p>
             </div>
 
-            {isPartial && request.daysApproved != null && (
+            {isPartial && request.hoursApproved != null && (
               <div>
-                <p className="text-muted-foreground">Days Approved</p>
-                <p className="font-medium text-amber-700" data-testid="detail-days-approved">{request.daysApproved} of {request.daysRequested}</p>
+                <p className="text-muted-foreground">Hours Approved</p>
+                <p className="font-medium text-amber-700" data-testid="detail-hours-approved">{request.hoursApproved} of {request.hoursRequested}</p>
               </div>
             )}
 
@@ -649,7 +649,7 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-pto-type-${request.id}`}>
-              {`${formatTimeOffTypeLabel(request.type)} — ${request.startDate} to ${request.endDate} (${request.daysRequested} day${request.daysRequested > 1 ? "s" : ""})`}
+              {`${formatTimeOffTypeLabel(request.type)} — ${request.startDate} to ${request.endDate} (${request.hoursRequested} hrs)`}
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-pto-reason-${request.id}`}>

@@ -103,10 +103,10 @@ function PtoBalanceBar({ used, pending, total, color }: { used: number; pending:
         <div className={c.pending} style={{ width: `${pendPct}%` }} />
       </div>
       <div className="flex gap-4 mt-1 text-[11px] text-muted-foreground">
-        <span><span className={`${c.text} font-bold`}>{used}</span> used</span>
-        {pending > 0 && <span><span className={`${c.text} opacity-60 font-bold`}>{pending}</span> pending</span>}
-        <span><span className="font-bold text-foreground">{remaining}</span> remaining</span>
-        <span className="ml-auto">{total} total</span>
+        <span><span className={`${c.text} font-bold`}>{used}</span> hrs used</span>
+        {pending > 0 && <span><span className={`${c.text} opacity-60 font-bold`}>{pending}</span> hrs pending</span>}
+        <span><span className="font-bold text-foreground">{remaining}</span> hrs remaining</span>
+        <span className="ml-auto">{total} hrs total</span>
       </div>
     </div>
   );
@@ -206,7 +206,7 @@ function PtoBalancesTab() {
                         const textColor = color === "blue" ? "text-blue-600" : color === "red" ? "text-red-600" : "text-purple-600";
                         return (
                           <div key={label} className={`border rounded-lg px-3 py-1.5 text-center ${borderColor}`}>
-                            <div className={`text-lg font-black ${textColor}`}>{remaining}</div>
+                            <div className={`text-lg font-black ${textColor}`}>{remaining}<span className="text-[10px] font-medium ml-0.5">hrs</span></div>
                             <div className="text-[10px] text-muted-foreground">{label}</div>
                           </div>
                         );
@@ -242,9 +242,9 @@ function PoliciesTab() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({
-    name: "", description: "", accrualType: "annual", accrualRate: "15",
+    name: "", description: "", accrualType: "annual", accrualHoursPerYear: "120",
     yearlyCapHours: "", carryoverCapHours: "0", waitingPeriodDays: "0",
-    sickAccrualEnabled: true, personalDaysPerYear: "5",
+    sickAccrualEnabled: true, personalHoursPerYear: "40",
     holidayPayEnabled: true, isDefault: false, expirationDate: "",
   });
 
@@ -257,12 +257,12 @@ function PoliciesTab() {
         name: form.name,
         description: form.description || null,
         accrualType: form.accrualType,
-        accrualRate: parseFloat(form.accrualRate) || 15,
+        accrualHoursPerYear: parseFloat(form.accrualHoursPerYear) || 120,
         yearlyCapHours: form.yearlyCapHours ? parseFloat(form.yearlyCapHours) : null,
         carryoverCapHours: parseFloat(form.carryoverCapHours) || 0,
         waitingPeriodDays: parseInt(form.waitingPeriodDays) || 0,
         sickAccrualEnabled: form.sickAccrualEnabled,
-        personalDaysPerYear: parseFloat(form.personalDaysPerYear) || 5,
+        personalHoursPerYear: parseFloat(form.personalHoursPerYear) || 40,
         holidayPayEnabled: form.holidayPayEnabled,
         isDefault: form.isDefault,
         expirationDate: form.expirationDate || null,
@@ -287,9 +287,9 @@ function PoliciesTab() {
 
   const resetForm = () => {
     setForm({
-      name: "", description: "", accrualType: "annual", accrualRate: "15",
+      name: "", description: "", accrualType: "annual", accrualHoursPerYear: "120",
       yearlyCapHours: "", carryoverCapHours: "0", waitingPeriodDays: "0",
-      sickAccrualEnabled: true, personalDaysPerYear: "5",
+      sickAccrualEnabled: true, personalHoursPerYear: "40",
       holidayPayEnabled: true, isDefault: false, expirationDate: "",
     });
     setEditingId(null);
@@ -300,12 +300,12 @@ function PoliciesTab() {
       name: p.name,
       description: p.description || "",
       accrualType: p.accrualType,
-      accrualRate: String(p.accrualRate),
+      accrualHoursPerYear: String(p.accrualHoursPerYear),
       yearlyCapHours: p.yearlyCapHours ? String(p.yearlyCapHours) : "",
       carryoverCapHours: String(p.carryoverCapHours || 0),
       waitingPeriodDays: String(p.waitingPeriodDays || 0),
       sickAccrualEnabled: p.sickAccrualEnabled,
-      personalDaysPerYear: String(p.personalDaysPerYear),
+      personalHoursPerYear: String(p.personalHoursPerYear),
       holidayPayEnabled: p.holidayPayEnabled,
       isDefault: p.isDefault,
       expirationDate: (p as any).expirationDate || "",
@@ -340,7 +340,7 @@ function PoliciesTab() {
                 </Select>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div><Label>Accrual Rate (days/year)</Label><Input type="number" value={form.accrualRate} onChange={(e) => setForm({ ...form, accrualRate: e.target.value })} data-testid="input-accrual-rate" /></div>
+                <div><Label>Accrual Rate (hours/year)</Label><Input type="number" value={form.accrualHoursPerYear} onChange={(e) => setForm({ ...form, accrualHoursPerYear: e.target.value })} data-testid="input-accrual-rate" /></div>
                 <div><Label>Yearly Cap (hours)</Label><Input type="number" value={form.yearlyCapHours} onChange={(e) => setForm({ ...form, yearlyCapHours: e.target.value })} data-testid="input-yearly-cap" /></div>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -348,7 +348,7 @@ function PoliciesTab() {
                 <div><Label>Waiting Period (days)</Label><Input type="number" value={form.waitingPeriodDays} onChange={(e) => setForm({ ...form, waitingPeriodDays: e.target.value })} data-testid="input-waiting-period" /></div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div><Label>Personal Days/Year</Label><Input type="number" value={form.personalDaysPerYear} onChange={(e) => setForm({ ...form, personalDaysPerYear: e.target.value })} data-testid="input-personal-days" /></div>
+                <div><Label>Personal Hours/Year</Label><Input type="number" value={form.personalHoursPerYear} onChange={(e) => setForm({ ...form, personalHoursPerYear: e.target.value })} data-testid="input-personal-hours" /></div>
                 <div><Label>Expiration Date</Label><Input type="date" value={form.expirationDate} onChange={(e) => setForm({ ...form, expirationDate: e.target.value })} placeholder="Defaults to Dec 31" data-testid="input-expiration-date" /></div>
               </div>
               <div className="flex items-center justify-between">
@@ -398,7 +398,7 @@ function PoliciesTab() {
                   <TableRow key={p.id} data-testid={`row-policy-${p.id}`}>
                     <TableCell className="font-medium" data-testid={`text-policy-name-${p.id}`}>{p.name}</TableCell>
                     <TableCell data-testid={`text-policy-accrual-${p.id}`}>{p.accrualType}</TableCell>
-                    <TableCell data-testid={`text-policy-rate-${p.id}`}>{p.accrualRate} days/yr</TableCell>
+                    <TableCell data-testid={`text-policy-rate-${p.id}`}>{p.accrualHoursPerYear} hrs/yr</TableCell>
                     <TableCell>
                       <Badge variant={p.isActive ? "default" : "secondary"} data-testid={`badge-policy-status-${p.id}`}>
                         {p.isActive ? "Active" : "Inactive"}
@@ -437,9 +437,9 @@ function EmployeePtoTab() {
 
   const [form, setForm] = useState({
     ptoPolicyId: "",
-    vacationBalanceOverride: "",
-    sickBalanceOverride: "",
-    personalBalanceOverride: "",
+    vacationHoursOverride: "",
+    sickHoursOverride: "",
+    personalHoursOverride: "",
     notes: "",
   });
 
@@ -448,9 +448,9 @@ function EmployeePtoTab() {
       const payload = {
         userId: selectedUser,
         ptoPolicyId: form.ptoPolicyId || null,
-        vacationBalanceOverride: form.vacationBalanceOverride ? parseFloat(form.vacationBalanceOverride) : null,
-        sickBalanceOverride: form.sickBalanceOverride ? parseFloat(form.sickBalanceOverride) : null,
-        personalBalanceOverride: form.personalBalanceOverride ? parseFloat(form.personalBalanceOverride) : null,
+        vacationHoursOverride: form.vacationHoursOverride ? parseFloat(form.vacationHoursOverride) : null,
+        sickHoursOverride: form.sickHoursOverride ? parseFloat(form.sickHoursOverride) : null,
+        personalHoursOverride: form.personalHoursOverride ? parseFloat(form.personalHoursOverride) : null,
         notes: form.notes || null,
       };
       if (settings?.id) {
@@ -472,9 +472,9 @@ function EmployeePtoTab() {
     setSelectedUser(userId);
     setForm({
       ptoPolicyId: "",
-      vacationBalanceOverride: "",
-      sickBalanceOverride: "",
-      personalBalanceOverride: "",
+      vacationHoursOverride: "",
+      sickHoursOverride: "",
+      personalHoursOverride: "",
       notes: "",
     });
   };
@@ -525,16 +525,16 @@ function EmployeePtoTab() {
                   </div>
                   <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <Label>Vacation Override (days)</Label>
-                      <Input type="number" value={form.vacationBalanceOverride} onChange={(e) => setForm({ ...form, vacationBalanceOverride: e.target.value })} data-testid="input-vacation-override" />
+                      <Label>Vacation Override (hours)</Label>
+                      <Input type="number" value={form.vacationHoursOverride} onChange={(e) => setForm({ ...form, vacationHoursOverride: e.target.value })} data-testid="input-vacation-override" />
                     </div>
                     <div>
-                      <Label>Sick Override (days)</Label>
-                      <Input type="number" value={form.sickBalanceOverride} onChange={(e) => setForm({ ...form, sickBalanceOverride: e.target.value })} data-testid="input-sick-override" />
+                      <Label>Sick Override (hours)</Label>
+                      <Input type="number" value={form.sickHoursOverride} onChange={(e) => setForm({ ...form, sickHoursOverride: e.target.value })} data-testid="input-sick-override" />
                     </div>
                     <div>
-                      <Label>Personal Override (days)</Label>
-                      <Input type="number" value={form.personalBalanceOverride} onChange={(e) => setForm({ ...form, personalBalanceOverride: e.target.value })} data-testid="input-personal-override" />
+                      <Label>Personal Override (hours)</Label>
+                      <Input type="number" value={form.personalHoursOverride} onChange={(e) => setForm({ ...form, personalHoursOverride: e.target.value })} data-testid="input-personal-override" />
                     </div>
                   </div>
                   <div>
@@ -858,7 +858,6 @@ function AnniversaryHistoryTab() {
                 <TableHead>Years</TableHead>
                 <TableHead>Old Tier → New Tier</TableHead>
                 <TableHead>Hours Added</TableHead>
-                <TableHead>Days Added</TableHead>
                 <TableHead>Source Policy</TableHead>
               </TableRow>
             </TableHeader>
@@ -873,7 +872,6 @@ function AnniversaryHistoryTab() {
                     {row.oldTierLabel || "—"} → {row.newTierLabel || "—"}
                   </TableCell>
                   <TableCell data-testid={`text-anniversary-hours-${row.id}`}>+{row.hoursAdded}</TableCell>
-                  <TableCell data-testid={`text-anniversary-days-${row.id}`}>+{Math.round(row.hoursAdded / 8)}</TableCell>
                   <TableCell className="text-sm" data-testid={`text-anniversary-policy-${row.id}`}>
                     {row.ptoPolicyName || "—"}
                   </TableCell>

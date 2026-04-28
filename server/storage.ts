@@ -251,7 +251,7 @@ export interface IStorage {
   getPendingTimeOffRequests(): Promise<TimeOffRequest[]>;
   getAllTimeOffRequests(): Promise<TimeOffRequest[]>;
   createTimeOffRequest(request: InsertTimeOffRequest): Promise<TimeOffRequest>;
-  updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date; daysApproved: number; approvedEndDate: string }>): Promise<TimeOffRequest | undefined>;
+  updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date; hoursApproved: number; approvedEndDate: string }>): Promise<TimeOffRequest | undefined>;
 
   getTimeOffBalance(userId: string, type: string, year: number): Promise<TimeOffBalance | undefined>;
   getTimeOffBalancesByUser(userId: string, year: number): Promise<TimeOffBalance[]>;
@@ -1061,7 +1061,7 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date; daysApproved: number; approvedEndDate: string }>): Promise<TimeOffRequest | undefined> {
+  async updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date; hoursApproved: number; approvedEndDate: string }>): Promise<TimeOffRequest | undefined> {
     const [updated] = await db.update(timeOffRequests).set(request).where(eq(timeOffRequests.id, id)).returning();
     return updated;
   }
@@ -1090,9 +1090,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }> {
-    const ANNUAL_VACATION = 15;
-    const ANNUAL_SICK = 10;
-    const ANNUAL_PERSONAL = 5;
+    const ANNUAL_VACATION = 120;
+    const ANNUAL_SICK = 80;
+    const ANNUAL_PERSONAL = 40;
     const currentYear = new Date().getFullYear();
     const yearStart = `${currentYear}-01-01`;
     const yearEnd = `${currentYear}-12-31`;
@@ -1112,10 +1112,10 @@ export class DatabaseStorage implements IStorage {
 
     for (const r of requests) {
       if (r.status !== "approved" && r.status !== "partially_approved") continue;
-      const days = r.daysApproved ?? r.daysRequested ?? 1;
-      if (r.type === "vacation") usedVacation += days;
-      else if (r.type === "sick") usedSick += days;
-      else if (r.type === "personal") usedPersonal += days;
+      const hours = r.hoursApproved ?? r.hoursRequested ?? 8;
+      if (r.type === "vacation") usedVacation += hours;
+      else if (r.type === "sick") usedSick += hours;
+      else if (r.type === "personal") usedPersonal += hours;
     }
 
     return {
@@ -1618,18 +1618,17 @@ export class DatabaseStorage implements IStorage {
     let annualPersonal: number;
 
     if (policy) {
-      annualVacation = policy.accrualRate;
+      annualVacation = policy.accrualHoursPerYear;
 
       if (policy.sickAccrualEnabled) {
         const hoursWorked = await this.computeTotalHoursWorked(userId, currentYear);
         const accruedSickHours = Math.floor(hoursWorked / policy.sickAccrualPerHoursWorked) * policy.sickAccrualRatePerHours;
-        const cappedSickHours = Math.min(accruedSickHours, policy.sickYearlyCapHours);
-        annualSick = cappedSickHours / 8;
+        annualSick = Math.min(accruedSickHours, policy.sickYearlyCapHours);
       } else {
         annualSick = 0;
       }
 
-      annualPersonal = policy.personalDaysPerYear;
+      annualPersonal = policy.personalHoursPerYear;
 
       if (policy.holidayPayEnabled && policy.holidayPtoDeduction) {
         const holidayRequests = await db.select().from(timeOffRequests)
@@ -1640,11 +1639,11 @@ export class DatabaseStorage implements IStorage {
             gte(timeOffRequests.startDate, yearStart),
             lte(timeOffRequests.startDate, yearEnd)
           ));
-        let holidayDays = 0;
+        let holidayHours = 0;
         for (const r of holidayRequests) {
-          holidayDays += r.daysApproved ?? r.daysRequested ?? 1;
+          holidayHours += r.hoursApproved ?? r.hoursRequested ?? 8;
         }
-        annualVacation = Math.max(0, annualVacation - holidayDays);
+        annualVacation = Math.max(0, annualVacation - holidayHours);
       }
 
       const carryoverCap = policy.carryoverCapHours ?? 0;
@@ -1662,9 +1661,9 @@ export class DatabaseStorage implements IStorage {
         const prevYearStart = `${prevYear}-01-01`;
         const prevYearEnd = `${prevYear}-12-31`;
 
-        let prevAnnualVacation = policy.accrualRate;
-        if (empSettings?.vacationBalanceOverride !== null && empSettings?.vacationBalanceOverride !== undefined) {
-          prevAnnualVacation = empSettings.vacationBalanceOverride;
+        let prevAnnualVacation = policy.accrualHoursPerYear;
+        if (empSettings?.vacationHoursOverride !== null && empSettings?.vacationHoursOverride !== undefined) {
+          prevAnnualVacation = empSettings.vacationHoursOverride;
         }
 
         const prevRequests = await db.select().from(timeOffRequests)
@@ -1678,36 +1677,35 @@ export class DatabaseStorage implements IStorage {
         let prevUsedVacation = 0;
         for (const r of prevRequests) {
           if (r.type === "vacation") {
-            prevUsedVacation += r.daysApproved ?? r.daysRequested ?? 1;
+            prevUsedVacation += r.hoursApproved ?? r.hoursRequested ?? 8;
           }
         }
 
         const prevRemainingVacation = Math.max(0, prevAnnualVacation - prevUsedVacation);
-        const carryoverCapDays = carryoverCap / 8;
-        const carryover = Math.min(prevRemainingVacation, carryoverCapDays);
+        const carryover = Math.min(prevRemainingVacation, carryoverCap);
         annualVacation += carryover;
       }
     } else {
-      annualVacation = 15;
-      annualSick = 10;
-      annualPersonal = 5;
+      annualVacation = 120;
+      annualSick = 80;
+      annualPersonal = 40;
     }
 
     if (empSettings) {
-      if (empSettings.vacationBalanceOverride !== null && empSettings.vacationBalanceOverride !== undefined) {
+      if (empSettings.vacationHoursOverride !== null && empSettings.vacationHoursOverride !== undefined) {
         const carryoverCap = policy?.carryoverCapHours ?? 0;
         if (carryoverCap > 0 && policy) {
-          const baseOverride = empSettings.vacationBalanceOverride;
-          annualVacation = baseOverride + (annualVacation - (policy?.accrualRate ?? baseOverride));
+          const baseOverride = empSettings.vacationHoursOverride;
+          annualVacation = baseOverride + (annualVacation - (policy?.accrualHoursPerYear ?? baseOverride));
         } else {
-          annualVacation = empSettings.vacationBalanceOverride;
+          annualVacation = empSettings.vacationHoursOverride;
         }
       }
-      if (empSettings.sickBalanceOverride !== null && empSettings.sickBalanceOverride !== undefined) {
-        annualSick = empSettings.sickBalanceOverride;
+      if (empSettings.sickHoursOverride !== null && empSettings.sickHoursOverride !== undefined) {
+        annualSick = empSettings.sickHoursOverride;
       }
-      if (empSettings.personalBalanceOverride !== null && empSettings.personalBalanceOverride !== undefined) {
-        annualPersonal = empSettings.personalBalanceOverride;
+      if (empSettings.personalHoursOverride !== null && empSettings.personalHoursOverride !== undefined) {
+        annualPersonal = empSettings.personalHoursOverride;
       }
 
       if (empSettings.hireDate && policy && policy.waitingPeriodDays > 0) {
@@ -1732,10 +1730,10 @@ export class DatabaseStorage implements IStorage {
 
     for (const r of requests) {
       if (r.status !== "approved" && r.status !== "partially_approved") continue;
-      const days = r.daysApproved ?? r.daysRequested ?? 1;
-      if (r.type === "vacation") usedVacation += days;
-      else if (r.type === "sick") usedSick += days;
-      else if (r.type === "personal") usedPersonal += days;
+      const hours = r.hoursApproved ?? r.hoursRequested ?? 8;
+      if (r.type === "vacation") usedVacation += hours;
+      else if (r.type === "sick") usedSick += hours;
+      else if (r.type === "personal") usedPersonal += hours;
     }
 
     return {

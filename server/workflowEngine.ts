@@ -64,7 +64,9 @@ function evaluateCondition(node: WorkflowNode, context: WorkflowContext): boolea
 
 function getContextValue(field: string, context: WorkflowContext): any {
   switch (field) {
-    case "days_requested": return context.data.daysRequested;
+    case "hours_requested":
+    case "days_requested":
+      return context.data.hoursRequested;
     case "employee_department": return context.user?.departmentId || context.data.departmentId;
     case "employee_location": return context.user?.locationId || context.data.locationId;
     case "late_count_month": return context.data.lateCountMonth;

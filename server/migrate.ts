@@ -31,9 +31,9 @@ interface TableRow {
 
 const REQUIRED_COLUMNS: Record<string, string[]> = {
   employee_pto_settings: [
-    "vacation_balance_override",
-    "sick_balance_override",
-    "personal_balance_override",
+    "vacation_hours_override",
+    "sick_hours_override",
+    "personal_hours_override",
     "hire_date",
     "notes",
   ],

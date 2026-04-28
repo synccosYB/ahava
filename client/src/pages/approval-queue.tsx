@@ -49,7 +49,7 @@ export default function ApprovalQueuePage() {
   const { toast } = useToast();
   const [comments, setComments] = useState<Record<string, string>>({});
   const [partialMode, setPartialMode] = useState<Record<string, boolean>>({});
-  const [partialDays, setPartialDays] = useState<Record<string, number>>({});
+  const [partialHours, setPartialHours] = useState<Record<string, number>>({});
   const [partialEndDate, setPartialEndDate] = useState<Record<string, string>>({});
 
   const { data: pendingRequests, isLoading: pendingLoading } = useQuery<PendingRequest[]>({
@@ -61,8 +61,8 @@ export default function ApprovalQueuePage() {
   });
 
   const approveMutation = useMutation({
-    mutationFn: async ({ id, comment, daysApproved, approvedEndDate }: { id: string; comment?: string; daysApproved?: number; approvedEndDate?: string }) => {
-      await apiRequest("POST", `/api/time-off/${id}/approve`, { comment, daysApproved, approvedEndDate });
+    mutationFn: async ({ id, comment, hoursApproved, approvedEndDate }: { id: string; comment?: string; hoursApproved?: number; approvedEndDate?: string }) => {
+      await apiRequest("POST", `/api/time-off/${id}/approve`, { comment, hoursApproved, approvedEndDate });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/pending"] });
@@ -106,14 +106,14 @@ export default function ApprovalQueuePage() {
 
   const handleApprove = (request: PendingRequest) => {
     const isPartial = partialMode[request.id];
-    const days = partialDays[request.id];
+    const hours = partialHours[request.id];
     const endDate = partialEndDate[request.id] || request.endDate;
 
-    if (isPartial && days && days < (request.daysRequested || 1)) {
+    if (isPartial && hours && hours < (request.hoursRequested || 8)) {
       approveMutation.mutate({
         id: request.id,
         comment: comments[request.id],
-        daysApproved: days,
+        hoursApproved: hours,
         approvedEndDate: endDate,
       });
     } else {
@@ -154,7 +154,7 @@ export default function ApprovalQueuePage() {
                       {request.employeeName} - {formatTimeOffTypeLabel(request.type)} Request
                     </p>
                     <p className="text-base" data-testid={`text-request-dates-${request.id}`}>
-                      {formatDateRange(request.startDate, request.endDate)} ({getDayCount(request.startDate, request.endDate)} day{getDayCount(request.startDate, request.endDate) > 1 ? "s" : ""})
+                      {formatDateRange(request.startDate, request.endDate)} ({request.hoursRequested} hrs)
                     </p>
                     <p className="text-sm text-muted-foreground" data-testid={`text-request-submitted-${request.id}`}>
                       Submitted: {request.createdAt ? new Date(request.createdAt).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "N/A"}
@@ -168,7 +168,7 @@ export default function ApprovalQueuePage() {
                       <div className="bg-orange-50 dark:bg-orange-950/20 border border-orange-400 rounded-md p-2 flex items-start gap-2" data-testid={`warning-exceeds-balance-${request.id}`}>
                         <AlertTriangle className="h-4 w-4 text-orange-600 mt-0.5 shrink-0" />
                         <p className="text-sm text-orange-800 dark:text-orange-300">
-                          Exceeds balance: Requested {request.daysRequested} day{request.daysRequested > 1 ? "s" : ""}, balance was {request.balanceAtSubmission ?? "N/A"} day{(request.balanceAtSubmission ?? 0) !== 1 ? "s" : ""} ({request.type})
+                          Exceeds balance: Requested {request.hoursRequested} hrs, balance was {request.balanceAtSubmission ?? "N/A"} hrs ({request.type})
                         </p>
                       </div>
                     )}
@@ -192,16 +192,16 @@ export default function ApprovalQueuePage() {
                       <div className="border rounded-md p-3 space-y-3 bg-muted/30" data-testid={`partial-approval-section-${request.id}`}>
                         <div className="grid grid-cols-2 gap-3">
                           <div className="space-y-1">
-                            <Label className="text-xs font-medium">Days to Approve</Label>
+                            <Label className="text-xs font-medium">Hours to Approve</Label>
                             <Input
                               type="number"
                               min={1}
-                              max={request.daysRequested || 1}
-                              value={partialDays[request.id] ?? request.daysRequested ?? 1}
-                              onChange={(e) => setPartialDays(prev => ({ ...prev, [request.id]: parseInt(e.target.value) || 1 }))}
-                              data-testid={`input-partial-days-${request.id}`}
+                              max={request.hoursRequested || 8}
+                              value={partialHours[request.id] ?? request.hoursRequested ?? 8}
+                              onChange={(e) => setPartialHours(prev => ({ ...prev, [request.id]: parseFloat(e.target.value) || 1 }))}
+                              data-testid={`input-partial-hours-${request.id}`}
                             />
-                            <p className="text-xs text-muted-foreground">of {request.daysRequested} requested</p>
+                            <p className="text-xs text-muted-foreground">of {request.hoursRequested} hrs requested</p>
                           </div>
                           <div className="space-y-1">
                             <Label className="text-xs font-medium">Approved End Date</Label>
@@ -233,7 +233,7 @@ export default function ApprovalQueuePage() {
                       className="flex-1 bg-green-600 hover:bg-green-700 text-white"
                       data-testid={`button-approve-${request.id}`}
                     >
-                      <Check className="h-4 w-4 mr-1" /> {partialMode[request.id] && partialDays[request.id] && partialDays[request.id] < (request.daysRequested || 1) ? "Partial Approve" : "Approve"}
+                      <Check className="h-4 w-4 mr-1" /> {partialMode[request.id] && partialHours[request.id] && partialHours[request.id] < (request.hoursRequested || 8) ? "Partial Approve" : "Approve"}
                     </Button>
                     <Button
                       onClick={() => denyMutation.mutate({ id: request.id, comment: comments[request.id] })}
@@ -271,7 +271,7 @@ export default function ApprovalQueuePage() {
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Dates</TableHead>
-                    <TableHead className="text-xs font-medium uppercase tracking-wider">Days</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Hours</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Processed By</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
@@ -291,10 +291,10 @@ export default function ApprovalQueuePage() {
                           ? formatDateRange(request.startDate, request.approvedEndDate)
                           : formatDateRange(request.startDate, request.endDate)}
                       </TableCell>
-                      <TableCell data-testid={`text-processed-days-${request.id}`}>
-                        {request.status === "partially_approved" && request.daysApproved !== null
-                          ? `${request.daysApproved} / ${request.daysRequested}`
-                          : request.daysRequested}
+                      <TableCell data-testid={`text-processed-hours-${request.id}`}>
+                        {request.status === "partially_approved" && request.hoursApproved !== null
+                          ? `${request.hoursApproved} / ${request.hoursRequested}`
+                          : request.hoursRequested}
                       </TableCell>
                       <TableCell data-testid={`text-processed-status-${request.id}`}>
                         {getStatusBadge(request.status)}

@@ -1344,17 +1344,26 @@ export async function registerRoutes(
         }).filter(n => n);
         deptManagerMap.set(dept.id, names);
       }));
+      const currentYear = new Date().getFullYear();
       const balances = await Promise.all(allUsers.filter(u => u.id !== "admin-dev-001").map(async (user) => {
-        const balance = await storage.computeTimeOffBalance(user.id);
         const ptoSettings = await storage.getEmployeePtoSettings(user.id);
         const policy = ptoSettings?.ptoPolicyId ? await storage.getPtoPolicy(ptoSettings.ptoPolicyId) : await storage.getDefaultPtoPolicy();
-        const totalVacation = ptoSettings?.vacationBalanceOverride ?? policy?.accrualRate ?? 15;
-        const totalSick = ptoSettings?.sickBalanceOverride ?? 10;
-        const totalPersonal = ptoSettings?.personalBalanceOverride ?? policy?.personalDaysPerYear ?? 5;
-        const pendingRequests = await storage.getTimeOffRequestsByUser(user.id);
-        const pendingVacation = pendingRequests.filter(r => r.type === "vacation" && r.status === "pending").reduce((s, r) => s + r.daysRequested, 0);
-        const pendingSick = pendingRequests.filter(r => r.type === "sick" && r.status === "pending").reduce((s, r) => s + r.daysRequested, 0);
-        const pendingPersonal = pendingRequests.filter(r => r.type === "personal" && r.status === "pending").reduce((s, r) => s + r.daysRequested, 0);
+        const totalVacation = ptoSettings?.vacationHoursOverride ?? policy?.accrualHoursPerYear ?? 120;
+        const totalSick = ptoSettings?.sickHoursOverride ?? 80;
+        const totalPersonal = ptoSettings?.personalHoursOverride ?? policy?.personalHoursPerYear ?? 40;
+        const userRequests = await storage.getTimeOffRequestsByUser(user.id);
+        const inCurrentYear = (r: typeof userRequests[number]) =>
+          new Date(r.startDate).getFullYear() === currentYear;
+        const sumHours = (type: string, statuses: string[]) =>
+          userRequests
+            .filter(r => r.type === type && statuses.includes(r.status) && inCurrentYear(r))
+            .reduce((s, r) => s + (r.hoursApproved ?? r.hoursRequested ?? 8), 0);
+        const usedVacation = sumHours("vacation", ["approved", "partially_approved"]);
+        const usedSick = sumHours("sick", ["approved", "partially_approved"]);
+        const usedPersonal = sumHours("personal", ["approved", "partially_approved"]);
+        const pendingVacation = sumHours("vacation", ["pending"]);
+        const pendingSick = sumHours("sick", ["pending"]);
+        const pendingPersonal = sumHours("personal", ["pending"]);
         const managerNames = user.departmentId ? (deptManagerMap.get(user.departmentId) || []) : [];
         return {
           userId: user.id,
@@ -1365,9 +1374,9 @@ export async function registerRoutes(
           departmentName: user.departmentId ? deptMap.get(user.departmentId) || "Unassigned" : "Unassigned",
           profileImageUrl: user.profileImageUrl,
           managerNames,
-          vacation: { total: totalVacation, used: balance.vacation, pending: pendingVacation },
-          sick: { total: totalSick, used: balance.sick, pending: pendingSick },
-          personal: { total: totalPersonal, used: balance.personal, pending: pendingPersonal },
+          vacation: { total: totalVacation, used: usedVacation, pending: pendingVacation },
+          sick: { total: totalSick, used: usedSick, pending: pendingSick },
+          personal: { total: totalPersonal, used: usedPersonal, pending: pendingPersonal },
         };
       }));
       res.json(balances);
@@ -2717,6 +2726,7 @@ export async function registerRoutes(
       if (computedDays === 0) {
         return res.status(400).json({ message: "Request must include at least one business day" });
       }
+      const computedHours = computedDays * 8;
 
       const ptoRules = getPolicyRules(req, "pto");
 
@@ -2732,10 +2742,10 @@ export async function registerRoutes(
         }
       }
 
-      const maxConsecutiveDays = ptoRules.maxConsecutiveDays ?? 10;
-      if (computedDays > maxConsecutiveDays) {
+      const maxConsecutiveHours = ptoRules.maxConsecutiveHours ?? 80;
+      if (computedHours > maxConsecutiveHours) {
         return res.status(400).json({
-          message: `Request exceeds the maximum consecutive days allowed (${maxConsecutiveDays}).`,
+          message: `Request exceeds the maximum consecutive hours allowed (${maxConsecutiveHours}).`,
         });
       }
 
@@ -2763,12 +2773,12 @@ export async function registerRoutes(
         : requestType === "sick" ? balance.sick
         : requestType === "personal" ? balance.personal : null;
 
-      const exceedsBalance = availableBalance !== null && computedDays > availableBalance;
+      const exceedsBalance = availableBalance !== null && computedHours > availableBalance;
 
       const request = await storage.createTimeOffRequest({
         ...parsed,
         status: "pending",
-        daysRequested: computedDays,
+        hoursRequested: computedHours,
         exceedsBalance,
         balanceAtSubmission: availableBalance ?? null,
       });
@@ -2777,7 +2787,7 @@ export async function registerRoutes(
         userId,
         user: req.authUser,
         triggerType: "pto_request_submitted",
-        data: { daysRequested: computedDays, ptoBalance: availableBalance, requestType, requestId: request.id },
+        data: { hoursRequested: computedHours, ptoBalance: availableBalance, requestType, requestId: request.id },
       }).catch(err => console.error("Workflow trigger error:", err));
 
       res.json(request);
@@ -2811,11 +2821,9 @@ export async function registerRoutes(
         : type === "sick" ? balance.sick
         : type === "personal" ? balance.personal : 0;
 
-      const daysRequested = Math.round((hours / 8) * 100) / 100;
-
-      if (daysRequested > availableBalance) {
+      if (hours > availableBalance) {
         return res.status(400).json({
-          message: `Insufficient ${type} balance. You have ${availableBalance} day(s) remaining but requested ${daysRequested} day(s) (${hours} hours).`,
+          message: `Insufficient ${type} balance. You have ${availableBalance} hour(s) remaining but requested ${hours} hour(s).`,
         });
       }
 
@@ -2827,11 +2835,11 @@ export async function registerRoutes(
         requestCategory: "cashout",
         startDate: today,
         endDate: today,
-        daysRequested: Math.max(1, Math.ceil(daysRequested)),
+        hoursRequested: hours,
         status: "pending",
         reason: reason || `PTO Cash-Out: ${hours} hours`,
         exceedsBalance: false,
-        balanceAtSubmission: Math.round(availableBalance),
+        balanceAtSubmission: availableBalance,
       });
 
       res.json(request);
@@ -2872,6 +2880,7 @@ export async function registerRoutes(
       if (computedDays === 0) {
         return res.status(400).json({ message: "Request must include at least one business day" });
       }
+      const computedHours = computedDays * 8;
 
       const ptoRules = getPolicyRules(req, "pto");
 
@@ -2887,10 +2896,10 @@ export async function registerRoutes(
         }
       }
 
-      const maxConsecutiveDays = ptoRules.maxConsecutiveDays ?? 10;
-      if (computedDays > maxConsecutiveDays) {
+      const maxConsecutiveHours = ptoRules.maxConsecutiveHours ?? 80;
+      if (computedHours > maxConsecutiveHours) {
         return res.status(400).json({
-          message: `Request exceeds the maximum consecutive days allowed (${maxConsecutiveDays}).`,
+          message: `Request exceeds the maximum consecutive hours allowed (${maxConsecutiveHours}).`,
         });
       }
 
@@ -2910,9 +2919,9 @@ export async function registerRoutes(
         : requestType === "sick" ? balance.sick
         : requestType === "personal" ? balance.personal : null;
 
-      if (availableBalance !== null && computedDays > availableBalance) {
+      if (availableBalance !== null && computedHours > availableBalance) {
         return res.status(400).json({
-          message: `Insufficient ${requestType} balance. You have ${availableBalance} day(s) remaining but requested ${computedDays}.`,
+          message: `Insufficient ${requestType} balance. You have ${availableBalance} hour(s) remaining but requested ${computedHours}.`,
         });
       }
 
@@ -2920,7 +2929,7 @@ export async function registerRoutes(
         type: existing.type,
         startDate: existing.startDate,
         endDate: existing.endDate,
-        daysRequested: existing.daysRequested,
+        hoursRequested: existing.hoursRequested,
         reason: existing.reason,
       };
 
@@ -2928,7 +2937,7 @@ export async function registerRoutes(
         type: parsed.type,
         startDate: parsed.startDate,
         endDate: parsed.endDate,
-        daysRequested: computedDays,
+        hoursRequested: computedHours,
         reason: parsed.reason,
         editedAt: new Date(),
       });
@@ -2945,7 +2954,7 @@ export async function registerRoutes(
             type: parsed.type,
             startDate: parsed.startDate,
             endDate: parsed.endDate,
-            daysRequested: computedDays,
+            hoursRequested: computedHours,
             reason: parsed.reason,
           },
           ...auditCtx,
@@ -3018,7 +3027,7 @@ export async function registerRoutes(
           startDate: r.startDate,
           endDate: r.endDate,
           status: r.status,
-          daysRequested: r.daysRequested,
+          hoursRequested: r.hoursRequested,
         }));
       res.json(calendarEntries);
     } catch (error) {
@@ -3139,7 +3148,7 @@ export async function registerRoutes(
 
   const approvalSchema = z.object({
     comment: z.string().optional(),
-    daysApproved: z.number().int().positive().optional(),
+    hoursApproved: z.number().positive().optional(),
     approvedEndDate: z.string().optional(),
   });
 
@@ -3148,7 +3157,7 @@ export async function registerRoutes(
       const user = (req as any).authUser as User;
       const parsed = approvalSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Invalid request body" });
-      const { comment, daysApproved, approvedEndDate } = parsed.data;
+      const { comment, hoursApproved, approvedEndDate } = parsed.data;
       const requestId = req.params.id as string;
       const request = await storage.getTimeOffRequest(requestId);
       if (!request) return res.status(404).json({ message: "Request not found" });
@@ -3157,24 +3166,25 @@ export async function registerRoutes(
       const teamIds = await getTeamUserIds(user);
       if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to approve this request" });
 
-      if (daysApproved !== undefined && daysApproved > (request.daysRequested || 1)) {
-        return res.status(400).json({ message: "Days approved cannot exceed days requested" });
+      if (hoursApproved !== undefined && hoursApproved > (request.hoursRequested || 8)) {
+        return res.status(400).json({ message: "Hours approved cannot exceed hours requested" });
       }
       if (approvedEndDate && (approvedEndDate < request.startDate || approvedEndDate > request.endDate)) {
         return res.status(400).json({ message: "Approved end date must be within the requested date range" });
       }
 
-      const isPartial = daysApproved !== undefined && daysApproved < (request.daysRequested || 1);
+      const isPartial = hoursApproved !== undefined && hoursApproved < (request.hoursRequested || 8);
       const status = isPartial ? "partially_approved" : "approved";
 
-      const finalDaysApproved = isPartial ? daysApproved : undefined;
+      const finalHoursApproved = isPartial ? hoursApproved : undefined;
       let finalApprovedEndDate: string | undefined;
       if (isPartial) {
         if (approvedEndDate) {
           finalApprovedEndDate = approvedEndDate;
         } else {
+          const approvedDays = Math.max(1, Math.ceil((hoursApproved ?? 0) / 8));
           const start = new Date(request.startDate + "T00:00:00");
-          start.setDate(start.getDate() + daysApproved! - 1);
+          start.setDate(start.getDate() + approvedDays - 1);
           finalApprovedEndDate = start.toISOString().split("T")[0];
         }
       }
@@ -3186,7 +3196,7 @@ export async function registerRoutes(
           status,
           reviewedBy: user.id,
           reviewedAt: new Date(),
-          ...(finalDaysApproved !== undefined ? { daysApproved: finalDaysApproved } : {}),
+          ...(finalHoursApproved !== undefined ? { hoursApproved: finalHoursApproved } : {}),
           ...(finalApprovedEndDate ? { approvedEndDate: finalApprovedEndDate } : {}),
           ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
         }).where(eq(timeOffRequests.id, requestId)).returning();
@@ -3197,8 +3207,8 @@ export async function registerRoutes(
           targetId: requestId,
           action: isPartial ? "time_off.partially_approved" : "time_off.approved",
           oldValue: { status: "pending" },
-          newValue: { status, ...(isPartial ? { daysApproved: finalDaysApproved, approvedEndDate: finalApprovedEndDate ?? request.endDate } : {}) },
-          context: { comment, employeeId: request.userId, type: request.type, daysRequested: request.daysRequested, ...(isPartial ? { daysApproved: finalDaysApproved, approvedEndDate: finalApprovedEndDate ?? request.endDate } : {}) },
+          newValue: { status, ...(isPartial ? { hoursApproved: finalHoursApproved, approvedEndDate: finalApprovedEndDate ?? request.endDate } : {}) },
+          context: { comment, employeeId: request.userId, type: request.type, hoursRequested: request.hoursRequested, ...(isPartial ? { hoursApproved: finalHoursApproved, approvedEndDate: finalApprovedEndDate ?? request.endDate } : {}) },
           ...auditCtx,
         }, tx);
 
@@ -3242,7 +3252,7 @@ export async function registerRoutes(
           action: "time_off.denied",
           oldValue: { status: "pending" },
           newValue: { status: "denied" },
-          context: { comment, employeeId: request.userId, type: request.type, days: request.daysRequested },
+          context: { comment, employeeId: request.userId, type: request.type, hours: request.hoursRequested },
           ...auditCtx,
         }, tx);
 
@@ -4265,7 +4275,7 @@ export async function registerRoutes(
         }
 
         for (const tor of approvedTimeOff) {
-          const ptoHours = (tor.daysRequested || 1) * 8;
+          const ptoHours = tor.hoursRequested || 8;
           const effectiveStart = tor.startDate > startDate ? tor.startDate : startDate;
 
           await tx.insert(payrollBatchRecordsTable).values({
@@ -4284,7 +4294,7 @@ export async function registerRoutes(
         }
 
         for (const co of approvedCashouts) {
-          const cashoutHours = (co.daysRequested || 1) * 8;
+          const cashoutHours = co.hoursRequested || 8;
 
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,

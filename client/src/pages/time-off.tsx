@@ -59,12 +59,12 @@ export default function TimeOff() {
 
   const submitMutation = useMutation({
     mutationFn: async () => {
-      const daysRequested = calculateDays();
+      const hoursRequested = calculateDays() * 8;
       return apiRequest("POST", "/api/time-off", {
         type,
         startDate,
         endDate,
-        daysRequested,
+        hoursRequested,
         reason: reason || null,
       });
     },
@@ -87,12 +87,12 @@ export default function TimeOff() {
   const editMutation = useMutation({
     mutationFn: async () => {
       if (!editingRequest) return;
-      const daysRequested = calculateDaysForRange(editStartDate, editEndDate);
+      const hoursRequested = calculateDaysForRange(editStartDate, editEndDate) * 8;
       return apiRequest("PUT", `/api/time-off/${editingRequest.id}`, {
         type: editType,
         startDate: editStartDate,
         endDate: editEndDate,
-        daysRequested,
+        hoursRequested,
         reason: editReason || null,
       });
     },
@@ -138,6 +138,7 @@ export default function TimeOff() {
   };
 
   const editDaysRequested = calculateDaysForRange(editStartDate, editEndDate);
+  const editHoursRequested = editDaysRequested * 8;
 
   const calculateDays = () => {
     if (!startDate || !endDate) return 0;
@@ -159,6 +160,7 @@ export default function TimeOff() {
   };
 
   const daysRequested = calculateDays();
+  const hoursRequested = daysRequested * 8;
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -244,8 +246,8 @@ export default function TimeOff() {
             </div>
 
             {startDate && endDate && daysRequested > 0 && (
-              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-days-summary">
-                <p className="text-sm font-semibold">Days Requested: <span className="tabular-nums">{daysRequested}</span></p>
+              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-hours-summary">
+                <p className="text-sm font-semibold">Hours Requested: <span className="tabular-nums">{hoursRequested}</span> hrs</p>
               </div>
             )}
 
@@ -294,7 +296,7 @@ export default function TimeOff() {
                       {formatDateRange(request.startDate, request.endDate)}
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      {formatTypeLabel(request.type)} &bull; <span className="tabular-nums">{request.daysRequested}</span> day{request.daysRequested > 1 ? "s" : ""}
+                      {formatTypeLabel(request.type)} &bull; <span className="tabular-nums">{request.hoursRequested}</span> hrs
                     </p>
                     {request.status === "pending" && (
                       <div className="flex items-center justify-between mt-1">
@@ -314,7 +316,7 @@ export default function TimeOff() {
                     )}
                     {request.status === "partially_approved" && (
                       <p className="text-sm text-amber-600 mt-1">
-                        Partially Approved — {request.daysApproved} of {request.daysRequested} day{request.daysRequested > 1 ? "s" : ""}
+                        Partially Approved — {request.hoursApproved} of {request.hoursRequested} hrs
                         {request.approvedEndDate ? ` (through ${new Date(request.approvedEndDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })})` : ""}
                       </p>
                     )}
@@ -387,8 +389,8 @@ export default function TimeOff() {
             </div>
 
             {editStartDate && editEndDate && editDaysRequested > 0 && (
-              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-edit-days-summary">
-                <p className="text-sm font-semibold">Days Requested: <span className="tabular-nums">{editDaysRequested}</span></p>
+              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-edit-hours-summary">
+                <p className="text-sm font-semibold">Hours Requested: <span className="tabular-nums">{editHoursRequested}</span> hrs</p>
               </div>
             )}
 
