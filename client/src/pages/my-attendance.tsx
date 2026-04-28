@@ -506,8 +506,8 @@ function CorrectionFormBody({
   const isEditing = !!editingExceptionId;
   const defaultReason = initialReason ?? (missingPunch ? "I forgot to clock out at the end of my shift." : "");
   const [date, setDate] = useState(initialDate);
-  const [origIn, setOrigIn] = useState(initialOrigIn);
-  const [origOut, setOrigOut] = useState(initialOrigOut);
+  const origIn = initialOrigIn;
+  const origOut = initialOrigOut;
   const [reqIn, setReqIn] = useState(initialReqIn);
   const [reqOut, setReqOut] = useState(initialReqOut);
   const [reason, setReason] = useState(defaultReason);
@@ -517,12 +517,10 @@ function CorrectionFormBody({
 
   useEffect(() => {
     setDate(initialDate);
-    setOrigIn(initialOrigIn);
-    setOrigOut(initialOrigOut);
     setReqIn(initialReqIn);
     setReqOut(initialReqOut);
     setReason(initialReason ?? (missingPunch ? "I forgot to clock out at the end of my shift." : ""));
-  }, [initialDate, initialOrigIn, initialOrigOut, initialReqIn, initialReqOut, initialReason, missingPunch]);
+  }, [initialDate, initialReqIn, initialReqOut, initialReason, missingPunch]);
 
   const submitMutation = useMutation({
     mutationFn: async () => {
@@ -547,8 +545,6 @@ function CorrectionFormBody({
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
       if (!lockDate && !isEditing) {
         setDate("");
-        setOrigIn("");
-        setOrigOut("");
         setReqIn("");
         setReqOut("");
         setReason("");
@@ -584,22 +580,23 @@ function CorrectionFormBody({
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground">Clock In</Label>
-            <Input
-              type="time"
-              value={origIn}
-              onChange={(e) => setOrigIn(e.target.value)}
-              data-testid="input-orig-clock-in"
-            />
+            <div
+              className="flex h-10 items-center rounded-md border border-input bg-muted/40 px-3 text-sm font-mono text-foreground select-text cursor-default"
+              aria-readonly="true"
+              data-testid="display-orig-clock-in"
+            >
+              {origIn || <span className="text-muted-foreground">—</span>}
+            </div>
           </div>
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground">Clock Out</Label>
-            <Input
-              type="time"
-              value={origOut}
-              onChange={(e) => setOrigOut(e.target.value)}
-              placeholder={missingPunch ? "missing" : ""}
-              data-testid="input-orig-clock-out"
-            />
+            <div
+              className="flex h-10 items-center rounded-md border border-input bg-muted/40 px-3 text-sm font-mono text-foreground select-text cursor-default"
+              aria-readonly="true"
+              data-testid="display-orig-clock-out"
+            >
+              {origOut || <span className="text-muted-foreground">{missingPunch ? "missing" : "—"}</span>}
+            </div>
           </div>
         </div>
       </div>
