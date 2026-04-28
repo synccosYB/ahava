@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -65,22 +65,95 @@ type AlertsExceptionsFilters = {
   reset: () => void;
 };
 
+const ALERTS_EXCEPTIONS_FILTERS_STORAGE_KEY = "pto-leave:alerts-exceptions-filters:v1";
+
+type PersistedAlertsExceptionsFilters = {
+  statusFilter: string;
+  typeFilter: string;
+  departmentFilter: string;
+  locationFilter: string;
+  employeeSearch: string;
+  dateFrom: string;
+  dateTo: string;
+};
+
+const ALERTS_EXCEPTIONS_FILTER_DEFAULTS: PersistedAlertsExceptionsFilters = {
+  statusFilter: "pending",
+  typeFilter: "all",
+  departmentFilter: "all",
+  locationFilter: "all",
+  employeeSearch: "",
+  dateFrom: "",
+  dateTo: "",
+};
+
+function readPersistedAlertsExceptionsFilters(): PersistedAlertsExceptionsFilters {
+  if (typeof window === "undefined") return ALERTS_EXCEPTIONS_FILTER_DEFAULTS;
+  try {
+    const raw = window.localStorage.getItem(ALERTS_EXCEPTIONS_FILTERS_STORAGE_KEY);
+    if (!raw) return ALERTS_EXCEPTIONS_FILTER_DEFAULTS;
+    const parsed = JSON.parse(raw) as Partial<PersistedAlertsExceptionsFilters> | null;
+    if (!parsed || typeof parsed !== "object") return ALERTS_EXCEPTIONS_FILTER_DEFAULTS;
+    const pickString = (value: unknown, fallback: string) =>
+      typeof value === "string" ? value : fallback;
+    return {
+      statusFilter: pickString(parsed.statusFilter, ALERTS_EXCEPTIONS_FILTER_DEFAULTS.statusFilter),
+      typeFilter: pickString(parsed.typeFilter, ALERTS_EXCEPTIONS_FILTER_DEFAULTS.typeFilter),
+      departmentFilter: pickString(parsed.departmentFilter, ALERTS_EXCEPTIONS_FILTER_DEFAULTS.departmentFilter),
+      locationFilter: pickString(parsed.locationFilter, ALERTS_EXCEPTIONS_FILTER_DEFAULTS.locationFilter),
+      employeeSearch: pickString(parsed.employeeSearch, ALERTS_EXCEPTIONS_FILTER_DEFAULTS.employeeSearch),
+      dateFrom: pickString(parsed.dateFrom, ALERTS_EXCEPTIONS_FILTER_DEFAULTS.dateFrom),
+      dateTo: pickString(parsed.dateTo, ALERTS_EXCEPTIONS_FILTER_DEFAULTS.dateTo),
+    };
+  } catch {
+    return ALERTS_EXCEPTIONS_FILTER_DEFAULTS;
+  }
+}
+
 function useAlertsExceptionsFilters(): AlertsExceptionsFilters {
-  const [statusFilter, setStatusFilter] = useState("pending");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [departmentFilter, setDepartmentFilter] = useState("all");
-  const [locationFilter, setLocationFilter] = useState("all");
-  const [employeeSearch, setEmployeeSearch] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const initialRef = useRef<PersistedAlertsExceptionsFilters | null>(null);
+  if (initialRef.current === null) {
+    initialRef.current = readPersistedAlertsExceptionsFilters();
+  }
+  const initial = initialRef.current;
+
+  const [statusFilter, setStatusFilter] = useState(initial.statusFilter);
+  const [typeFilter, setTypeFilter] = useState(initial.typeFilter);
+  const [departmentFilter, setDepartmentFilter] = useState(initial.departmentFilter);
+  const [locationFilter, setLocationFilter] = useState(initial.locationFilter);
+  const [employeeSearch, setEmployeeSearch] = useState(initial.employeeSearch);
+  const [dateFrom, setDateFrom] = useState(initial.dateFrom);
+  const [dateTo, setDateTo] = useState(initial.dateTo);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const payload: PersistedAlertsExceptionsFilters = {
+        statusFilter,
+        typeFilter,
+        departmentFilter,
+        locationFilter,
+        employeeSearch,
+        dateFrom,
+        dateTo,
+      };
+      window.localStorage.setItem(
+        ALERTS_EXCEPTIONS_FILTERS_STORAGE_KEY,
+        JSON.stringify(payload),
+      );
+    } catch {
+      // Ignore quota or access errors; filters simply won't persist.
+    }
+  }, [statusFilter, typeFilter, departmentFilter, locationFilter, employeeSearch, dateFrom, dateTo]);
+
   const reset = () => {
-    setStatusFilter("pending");
-    setTypeFilter("all");
-    setDepartmentFilter("all");
-    setLocationFilter("all");
-    setEmployeeSearch("");
-    setDateFrom("");
-    setDateTo("");
+    setStatusFilter(ALERTS_EXCEPTIONS_FILTER_DEFAULTS.statusFilter);
+    setTypeFilter(ALERTS_EXCEPTIONS_FILTER_DEFAULTS.typeFilter);
+    setDepartmentFilter(ALERTS_EXCEPTIONS_FILTER_DEFAULTS.departmentFilter);
+    setLocationFilter(ALERTS_EXCEPTIONS_FILTER_DEFAULTS.locationFilter);
+    setEmployeeSearch(ALERTS_EXCEPTIONS_FILTER_DEFAULTS.employeeSearch);
+    setDateFrom(ALERTS_EXCEPTIONS_FILTER_DEFAULTS.dateFrom);
+    setDateTo(ALERTS_EXCEPTIONS_FILTER_DEFAULTS.dateTo);
   };
   return {
     statusFilter, setStatusFilter,
