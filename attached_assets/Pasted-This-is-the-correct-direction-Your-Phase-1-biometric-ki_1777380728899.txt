@@ -1,0 +1,165 @@
+This is the correct direction.
+
+Your Phase 1 biometric kiosk scope is properly structured and enterprise-ready. The plan covers the major legal, technical, and operational requirements without overbuilding too early.
+
+Strategic Assessment
+This is the right build:
+Start with:
+Face recognition
+PIN fallback
+Consent controls
+Browser-side template generation
+Admin review
+Audit logs
+Configurable legal notices
+Future biometric extensibility
+Why This Is Strong
+Major strengths:
+Security:
+No raw image storage
+Numeric descriptors only
+Consent logging
+Revocation support
+Threshold controls
+Audit history
+Legal:
+BIPA-aware
+NY compliance-conscious
+Configurable consent text
+Revocation + deletion workflows
+Technical:
+Existing kiosk preserved
+Additive only
+No disruption to current clock flow
+Future fingerprint schema-ready
+Browser-based implementation avoids hardware lock-in
+Operational:
+Admin review dashboard
+Failed attempts monitoring
+Enrollment management
+Feature toggle for staged rollout
+My Recommendations Before Development Starts
+Add These Missing Hardening Items
+1. Anti-Spoofing
+
+Even Phase 1 should include:
+
+Blink detection
+Head turn
+Motion prompt
+Screen glare check
+
+Without this, printed photos or phone screens could spoof clocks.
+
+2. Device Trust Integration
+
+Biometrics should only run on:
+
+Registered kiosks
+Approved devices
+Paired hardware
+
+Do not allow open-browser biometric enrollment from unmanaged devices without security controls.
+
+3. Template Encryption
+
+Store descriptors:
+
+Encrypted at rest
+Tenant isolated
+Rotatable
+Access logged
+4. Confidence Score Governance
+
+Admin settings should define:
+
+Minimum threshold
+Auto-fallback threshold
+Manual review threshold
+Forced PIN threshold
+
+Example:
+
+0.90 = auto approve
+
+0.75–0.89 = low confidence + log
+<0.75 = reject
+5. Retention Policy
+
+Must include:
+
+Auto-delete after X inactive days
+Delete immediately on termination
+Delete on consent revoke
+Legal hold override
+Recommended Developer Phase Sequence
+Phase 1A:
+Foundation
+DB schema
+Consent
+Enrollment
+Template storage
+API
+Feature flags
+Phase 1B:
+Kiosk Integration
+Face capture
+Match flow
+PIN fallback
+Privacy notices
+Phase 1C:
+Admin Governance
+Review dashboard
+Failed attempts
+Settings
+Revocation
+Phase 1D:
+Hardening
+Anti-spoofing
+Encryption
+Monitoring
+Device trust
+Future Phase 2
+Fingerprint:
+
+Build only after:
+
+Device pairing
+Hardware selection
+SDK integration
+Legal validation
+Biggest Risk Areas
+Developer Must Avoid:
+Raw image storage
+Face photos in logs
+Weak thresholds
+No spoof checks
+Missing revocation
+No tenant isolation
+Biometric use without consent
+Browser compatibility assumptions
+Final Verdict
+Approved with hardening additions.
+
+This is a highly viable:
+
+Enterprise biometric workforce kiosk roadmap
+
+and aligns with:
+
+Compliance
+Workforce control
+Multi-location scalability
+Payroll integrity
+Future hardware expansion
+Recommended Task Name:
+“Biometric Kiosk Phase 1 — Face Recognition + Consent + Governance”
+Bottom Line:
+
+You are planning this correctly.
+
+Your next move should be:
+
+Build the biometric foundation safely,
+
+not just “add face login.”
