@@ -1,0 +1,225 @@
+# Phase 2 Spec Review — APPROVED WITH GOVERNANCE DECISIONS
+
+The documentation is strong, detailed, and appropriately enterprise-grade.
+
+## Approval Status:
+
+### APPROVED for Task #86 implementation
+
+---
+
+# Final Product Decisions on Open Questions
+
+---
+
+## 1. Retroactive Scheduled Rule Changes
+
+### Decision:
+
+**Non-retroactive**
+
+### Rule:
+
+* Scheduled policy changes apply only to future evaluations after `effectiveAt`
+* Existing in-progress shifts retain original policy calculations unless manually corrected
+
+---
+
+## 2. Maximum Emergency Override Duration
+
+### Decision:
+
+**Soft cap: 30 days**
+
+* Warning above 14 days
+* Requires explicit admin acknowledgement above 30 days
+* No hard backend block unless future compliance rules demand it
+
+---
+
+## 3. Holiday Calendar Bootstrap
+
+### Decision:
+
+**Do NOT auto-seed**
+
+* Start empty
+* Provide one-click import for:
+
+  * US Federal Holidays
+  * Custom company calendar templates
+  * Medical/healthcare operational templates later
+
+---
+
+## 4. Conflict Acknowledgement Persistence
+
+### Decision:
+
+**Fresh conflict validation required every publish/schedule**
+
+* No permanent dismissals
+* Prior acknowledgements logged
+* Every new activation/schedule must rerun checks
+
+---
+
+## 5. Publish Permissions
+
+### Decision:
+
+**Create dedicated permission**
+
+### Add:
+
+`policies.publish`
+
+### Rule:
+
+* Admin role alone is insufficient
+* Publishing/scheduling/rollback/emergency creation requires explicit publish rights
+
+---
+
+## 6. Version Snapshot Trigger
+
+### Decision:
+
+**Snapshot on:**
+
+* Publish
+* Schedule
+* Activate
+* Rollback
+* Emergency override activation
+
+### Draft saves:
+
+* No full version snapshot
+* Standard draft persistence only
+
+---
+
+## 7. Holiday Calendar Scope Precedence
+
+### Decision:
+
+**Use existing policy hierarchy**
+Employee → Department → Location → Division → Global
+
+---
+
+## 8. Blackout Date vs Existing Approved PTO
+
+### Decision:
+
+**Allow blackout creation**
+
+### But:
+
+* Surface impacted approved PTO list
+* Require re-review queue
+* Do NOT auto-cancel existing approved PTO
+
+---
+
+# Additional Governance Requirements
+
+---
+
+## Add Required Testing:
+
+### Must include:
+
+* Mid-shift scheduled activation test
+* Emergency override expiry test
+* Conflict collision tests
+* Version rollback regression tests
+* Publish permission enforcement tests
+* Holiday precedence tests
+* Blackout conflict tests
+* Legacy API coexistence tests
+
+---
+
+# Implementation Controls
+
+---
+
+## Developer Must:
+
+* Follow approved spec exactly
+* Keep route modularization strict
+* Preserve policy enforcement logic
+* Preserve current UI language
+* Preserve Ahava design system
+* Keep migrations additive only
+* Preserve legacy APIs
+* Maintain rollback safety
+* Preserve audit integrity
+
+---
+
+# Design Authority Approved
+
+### Locked:
+
+* Ahava palette
+* Shadcn UI
+* PageHeader
+* max-w-6xl
+* space-y-6
+* Sticky navigation
+* Enterprise HR operational aesthetic
+
+---
+
+# Final Governance Rule
+
+> Any implementation deviation from approved docs requires:
+>
+> 1. Spec revision
+> 2. Re-approval
+> 3. Resume
+
+---
+
+# Developer Green Light
+
+## Proceed to:
+
+### Task #86 — Full Rules Command Center implementation
+
+---
+
+# Strategic Outcome
+
+When complete, Ahava will have:
+
+## Enterprise Rule Governance
+
+### Comparable to:
+
+* UKG
+* Workday
+* ADP Workforce Now
+* Rippling HR governance layers
+
+---
+
+# Executive Summary
+
+### Approved:
+
+* Architecture
+* Schema
+* Resolver
+* Scheduling
+* Simulation
+* Conflict detection
+* UI/UX
+* Product decisions
+
+## Next:
+
+### Build Task #86 exactly as governed. 

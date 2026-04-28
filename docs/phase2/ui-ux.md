@@ -1,683 +1,682 @@
 # Rules Command Center — UI/UX Design Spec (Phase 2)
 
-> Companion document: [`docs/phase2/architecture.md`](./architecture.md). Every screen described here is wired to the routes and engines defined there; cross-references are inline.
-
-This spec is the source of truth for what the Rules Command Center looks like and how it behaves. A frontend developer should be able to build it from this document alone, with the architecture spec as the API contract.
+> **Status:** Draft for review. No code or visual prototypes have been produced. This document is the source of truth for what a frontend engineer would build once Task #86 starts.
+>
+> **Companion document:** [`./architecture.md`](./architecture.md). Each screen below references the API endpoints it consumes by their numbered IDs from architecture §10.
 
 ---
 
 ## 1. Design system constraints
 
-These rules are **non-negotiable**. The Command Center inherits the existing Ahava design language (`replit.md` "Corporate Design System") and tightens the conventions for an enterprise-grade admin surface.
+These rules apply to every screen in the Rules Command Center without exception.
 
-- **Colors (Ahava palette only)**:
-  - Dark Navy `#123047` — primary text, page backgrounds in dark mode, header bars.
-  - Teal `#56b9ca` — primary accent, active state on tabs, CTA buttons (`Button` default variant maps to this in our theme).
-  - Green `#009972` — success, "Active" badge background, positive deltas.
-  - Blue `#1f97d4` — informational, "Scheduled" badge, simulator chips, links.
-  - Severity colors (used **only** for warnings/errors, never decorative): `text-amber-600` for `medium`, `text-destructive` for `high`. Emergency banners use a destructive-toned background.
-- **Components**: Shadcn UI only (`Card`, `Button`, `Badge`, `Tabs`, `Dialog`, `Sheet`, `Form`, `Select`, `Switch`, `Table`, `Alert`, `Skeleton`, `Tooltip`, `Progress`, `Calendar`, `Popover`, `Separator`, `Accordion`). No new third-party UI deps.
-- **Typography**: existing Inter stack. Numeric values (counts, version numbers, hours) use `tabular-nums`. Table headers use `text-xs font-medium uppercase tracking-wider` per existing convention.
-- **Layout**: `PageHeader` component at the top. Page container is `max-w-6xl` (admin standard). Section rhythm is `space-y-6`. Internal card padding stays `p-4` to `p-6` consistent with existing admin pages.
-- **Touch safety**: every interactive control ≥ 36px tall (Shadcn default). Click targets in tables use the standard `h-8 w-8` icon button.
-- **Aesthetic**: enterprise HR. No emojis. No marketing language. Empty states are explanatory, not playful.
-- **Dark mode**: all new components must declare both light and dark variants when using arbitrary colors. Tokens from `tailwind.config.ts` (e.g. `bg-card`, `bg-muted`) are preferred.
+- **Color palette (Ahava):**
+  - **Dark Navy `#123047`** — primary text, page header background, top of severity-neutral chips.
+  - **Teal `#56b9ca`** — primary accent. CTA buttons, active tab underline, focus rings.
+  - **Green `#009972`** — success / "active" status / "added" lines in diffs.
+  - **Blue `#1f97d4`** — informational / "scheduled" badges / charts.
+  - Severity colors derived from the palette (no new hues): `info` → Blue, `success` → Green, `warning` → existing Shadcn amber token, `error` → existing Shadcn destructive token, `emergency` → Dark Navy on Teal background.
+- **Components:** Shadcn UI only (`Card`, `CardHeader`, `CardContent`, `Button`, `Badge`, `Dialog`, `Sheet`, `Select`, `Tabs`, `Table`, `Skeleton`, `Switch`, `Tooltip`, `Alert`, `Form`, `Input`, `Textarea`, `Label`, `Separator`, `Progress`, `Calendar`, `Popover`, `Command`). No custom one-off components for things Shadcn already covers.
+- **Layout primitives:** every page uses `<PageHeader />` (`client/src/components/page-header.tsx`) for title/subtitle/actions. Page container is `max-w-6xl` (matches every other admin page in this product). Vertical rhythm is `space-y-6`.
+- **Tables:** column headers use `text-xs font-medium uppercase tracking-wider` (matches today's Rules & Controls page). Numeric cells use `tabular-nums`. First column is left-aligned, count/number columns right-aligned.
+- **Touch-safe:** every interactive control is at least 40×40px. Dialog primary buttons are full-width on screens narrower than `sm`.
+- **Typography:** body 14px, table cells 14px, numerics `tabular-nums`, page title 24px/semibold, section headings 18px/semibold. No drop shadows beyond Shadcn's default Card elevation.
+- **Voice:** terse, present tense, no exclamation marks. Errors describe what to do next ("Resolve the conflict before publishing"), not what failed ("Failed to publish").
+- **Aesthetic:** enterprise HR. No marketing language, no hero illustrations, no animated gradients.
 
 ---
 
 ## 2. Information architecture
 
-### 2.1 Navigation order
+The Rules Command Center lives at `/rules` (new top-level route) and replaces `/rules-controls` for admins.
 
-The Command Center owns 13 rule categories, exposed as a sticky left nav rail (Page A & B share it). Listed in their final navigation order:
+Navigation surface:
 
-1. **Attendance** — clock-in/out, grace period, rounding
-2. **Breaks** — required break length and timing
-3. **Auto Clock-Out** — stale-punch sweep behavior
-4. **Overtime** — daily/weekly thresholds, multipliers
-5. **PTO Accrual** — accrual rate, caps, carryover
-6. **Holiday Calendars** — opens the Holiday Calendar Manager (Page H)
-7. **Blackout Dates** — opens the Blackout Date Manager (Page I)
-8. **Approval Chains** — approval workflows for PTO/exceptions
-9. **Kiosk Restrictions** — kiosk PIN, photo, session timeout
-10. **Payroll Rounding** — pay period, bonuses, rounding
-11. **Department Overrides** — sub-view filtered to department-scoped assignments across categories
-12. **Employee Overrides** — sub-view filtered to employee-scoped assignments across categories
-13. **Emergency Policy Overrides** — opens the Emergency Override Center (Page E)
+- **Sidebar nav (sticky, 220px wide, Dark Navy `#123047` background, white text):**
+  - **Dashboard** — landing screen, Page A.
+  - **Categories** — collapsible group containing the 13 policy categories listed in order below. Clicking a category opens Page B for that category.
+  - **Simulator Lab** — Page C.
+  - **Emergency Center** — Page E.
+  - **Holiday Calendars** — Page H.
+  - **Blackout Dates** — Page I.
+  - **Audit** — filtered audit log scoped to `targetType='policy'`/`policy_assignment'`/`policy_version`/`holiday_calendar_entry`/`blackout_date`.
 
-The first 5 + 8 + 9 + 10 (8 categories) map 1:1 to existing `policy_types` keys. **Breaks**, **Auto Clock-Out**, and **Overtime** are surface views that filter and group fields out of the existing `attendance` and `payroll` rule sets — they edit subsets of the same underlying `policy_rules` rows. This keeps the underlying schema and enforcement code unchanged (architecture §1.6).
+The 13 categories appear in this final order (matches the policy hierarchy from operational priority, locked into nav and into the dashboard tile order):
 
-### 2.2 Global tabs
+1. **Attendance** — clock-in/out rules, grace periods, rounding.
+2. **Overtime** — daily/weekly thresholds, multipliers, double-time.
+3. **Breaks** — required-break thresholds, break duration.
+4. **PTO Accrual** — accrual rates, caps, carryover.
+5. **PTO Requests** — advance notice, max consecutive, blackout integration.
+6. **Holidays** — holiday-pay multiplier, holiday OT exclusion.
+7. **Payroll** — pay period, day-of-week bonuses, early-arrival bonuses.
+8. **Approvals** — approval chains, escalation, auto-approve thresholds.
+9. **Alerts & Notifications** — late arrival, no-show, OT, missed clock-out alerting.
+10. **Kiosk & Devices** — PIN policy, session timeout, photo verification.
+11. **Schedules** — early/late clock-in window, required-shift behavior.
+12. **Documents** — pay-stub release rules, retention.
+13. **Roles & Permissions** — display only in Phase 2 (read-only; full editor remains under `/permissions`).
 
-A top-level tab bar inside the page (Shadcn `Tabs`) sits beneath the `PageHeader`:
+**Legacy redirect:** the old `/rules-controls` route stays mounted for backwards-compat but renders a non-dismissable `Alert` of `variant='default'` at the top:
 
-- **Dashboard** (default landing — Page A)
-- **Simulator Lab** (Page C)
-- **Emergency Center** (Page E)
-- **Holiday Calendars** (Page H)
-- **Blackout Dates** (Page I)
-- **Audit** (filtered audit log scoped to `targetType IN (policy, policy_assignment, holiday_calendar, blackout_list)`)
+> "Rules & Controls has moved. Open the new Rules Command Center for scheduling, simulation, and emergency overrides." — primary `Button` "Open Command Center" navigates to `/rules`.
 
-The Category Detail (Page B) and Version History (Page D) are sub-routes reached by clicking into a category card from the Dashboard or Simulator. They use the same persistent left nav rail, so the admin can hop between categories without losing the tab they're on.
-
-### 2.3 Legacy redirect
-
-`client/src/App.tsx` keeps the route `/rules-controls` but renders the new `RulesCommandCenterPage` instead of the existing `RulesControlsPage`. Sidebar menu items in `client/src/components/app-layout.tsx` continue to point at `/rules-controls`. The legacy file is renamed to `rules-controls-legacy.tsx` and held in the repo through Phase 2.1 (architecture §11.1).
+After the deprecation window (set by environment flag `VITE_RULES_LEGACY_REDIRECT_DAYS`, default 14) the page issues a `wouter` 302-equivalent redirect to `/rules`.
 
 ---
 
 ## 3. Page A — Command Center Dashboard
 
-**URL**: `/rules-controls` (default tab `dashboard`).
+**Route:** `/rules` (default `Dashboard` tab).
+**Purpose:** at a glance, every category's health and recent activity, with one-click access to the Category Detail page or to Simulator Lab pre-filled with that category.
 
 ### 3.1 Layout
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ PageHeader: "Rules Command Center"   subtitle: "Manage every policy …" │
-├──────┬─────────────────────────────────────────────────────────────────┤
-│ NAV  │ Tabs: [ Dashboard | Simulator | Emergency | Holidays | Black… ] │
-│ rail ├─────────────────────────────────────────────────────────────────┤
-│      │ Live Emergency Banner (only when activeEmergencyCount > 0)      │
-│      ├─────────────────────────────────────────────────────────────────┤
-│ A1   │ Card grid (3 columns desktop, 2 tablet, 1 mobile)               │
-│ A2   │  ┌────────────┐  ┌────────────┐  ┌────────────┐                │
-│ ...  │  │ Attendance │  │ Breaks     │  │ Auto C/Out │  ...           │
-│ A13  │  │  …card…    │  │  …card…    │  │  …card…    │                │
-│      │  └────────────┘  └────────────┘  └────────────┘                │
-└──────┴─────────────────────────────────────────────────────────────────┘
-```
-
-- Left nav rail: same `w-56 shrink-0` rail used today in `rules-controls.tsx`. Each item is a `Button variant="ghost"` with the category icon (`lucide-react`) and label, with the active item using the Teal accent.
-- Tab strip uses Shadcn `Tabs` immediately below the header.
+- `<PageHeader title="Rules Command Center" subtitle="Manage every policy. Schedule changes. Simulate impact." />` with an actions slot containing two buttons: **"Open Simulator Lab"** (`variant='outline'`, navigates to Page C) and **"Create Emergency Override"** (`variant='default'`, opens the Page E creation flow as a modal).
+- Below the header, a row of four compact `Card` summary tiles full-width (4-column grid on `lg`, 2-column on `sm`):
+  - **Active policies** — total count.
+  - **Drafts** — total count.
+  - **Scheduled changes** — count of policies with `effectiveAt > now` AND `status='active'`. Badge `Blue`.
+  - **Live emergency overrides** — count from `/api/rules/emergency-overrides` filtered to in-window. Badge `Dark Navy on Teal`.
+- Below summary, the **category grid**: 13 cards in a responsive grid (3 cols `lg`, 2 cols `md`, 1 col `sm`) **in the order from §2**.
 
 ### 3.2 Category card
 
-Each card uses `Card` with the following structure:
+Per card (consumes endpoint #1):
 
 ```
-CardHeader:
-  Icon (lucide) — category-specific
-  CardTitle (text-base)
-  Right-aligned: ConflictBadge (only if conflictCount > 0)
-CardContent:
-  Row: Active count    | Draft count    | Scheduled count
-       (Badge variant="default" Green)  (Badge variant="secondary" Slate)  (Badge variant="outline" Blue)
-  Row: "Live emergency overrides: N"  (Badge destructive when > 0; hidden when 0)
-  Row: "Last changed by {name} · {relativeTime}"
-CardFooter:
-  Button "Open" (primary) — navigates to Page B (`/rules-controls/category/:typeKey`)
-  Button "Open in Simulator" (variant="outline") — opens Page C with this category preselected
+┌──────────────────────────────────────┐
+│  [icon]  Attendance                  │  ← title row, icon left
+│  Last changed by Sarah Cohen, 2h ago │  ← muted small text
+│                                       │
+│  3 active   1 draft   1 scheduled    │  ← stat row, tabular-nums
+│  ●  No emergency override            │  ← optional emergency line, Teal dot if active
+│                                       │
+│  ⚠ 1 conflict                        │  ← only if conflicts > 0, severity color
+│                                       │
+│  [ Open ]   [ Open in Simulator ]    │  ← two Buttons, sm variant
+└──────────────────────────────────────┘
 ```
 
-`data-testid` per card: `card-category-${typeKey}` and per CTA: `button-open-category-${typeKey}`, `button-simulate-category-${typeKey}`.
+- Counts use `Badge` with these tokens: `active` → `default` (Teal), `draft` → `secondary` (gray), `scheduled` → custom Blue, `emergency` → custom Dark Navy bg with Teal text.
+- "Open" navigates to Page B for that category. "Open in Simulator" navigates to Page C with `?policyTypeKey=` pre-set.
+- Conflict line is only rendered if `conflictCount > 0`. Click toggles a `Tooltip` listing the first 3 conflict messages from `/api/rules/categories/:typeKey` (endpoint #2).
 
-### 3.3 Severity color usage
+### 3.3 States
 
-- **Green** badge = something is healthy (`active` policy exists for this category, no conflicts).
-- **Blue** badge = scheduled future change present (informational).
-- **Amber** text or icon = `medium`-severity conflict.
-- **Destructive** background or text = `high`-severity conflict OR live emergency override active.
+- **Loading:** 13 `Skeleton` cards in the grid, 4 `Skeleton` tiles in the summary row.
+- **Empty (fresh install):** the page still renders the 13 cards. Each shows `0 active 0 draft 0 scheduled` and a muted prompt "Create your first policy" linking to Page B.
+- **Error (endpoint #1 fails):** Shadcn `Alert variant='destructive'` at the top of the page with a Retry button that re-runs the query. Cards collapse to a single compact "couldn't load summary" row.
+- **Conflict severity color usage:** `error` → red dot + red badge; `warning` → amber dot; `info` → blue dot. No emoji — Lucide icons (`AlertTriangle`, `AlertCircle`, `Info`) only.
 
-### 3.4 States
+### 3.4 `data-testid` on this page
 
-- **Loading**: 13 `Skeleton` cards (same grid layout) shown for up to 1.5s, then content fades in.
-- **Empty** (fresh install with zero policies): every card shows "No active policy yet" with a primary CTA "Set up {category}". Empty state never blocks navigation.
-- **Error**: `Alert variant="destructive"` at the top of the grid, "Couldn't load category status. [Retry]". The grid still renders skeletons until retry succeeds.
-
-### 3.5 Wired endpoint
-
-`GET /api/rules/categories` (architecture §10 route #1). One round trip serves the whole grid.
+- `page-rules-dashboard`
+- `card-summary-active`, `card-summary-drafts`, `card-summary-scheduled`, `card-summary-emergencies`
+- `card-category-${typeKey}` (e.g., `card-category-attendance`)
+- `text-category-last-changed-${typeKey}`
+- `badge-category-active-count-${typeKey}`, `badge-category-draft-count-${typeKey}`, `badge-category-scheduled-count-${typeKey}`, `badge-category-emergency-${typeKey}`, `badge-category-conflicts-${typeKey}`
+- `button-open-category-${typeKey}`, `button-open-simulator-${typeKey}`
 
 ---
 
 ## 4. Page B — Category Detail View
 
-**URL**: `/rules-controls/category/:typeKey`.
+**Route:** `/rules/categories/:typeKey`.
+**Endpoints:** #2 (initial load), #3/#4 (save), #5 (schedule), #6 (publish), #7 (rollback), #8 (versions), #10 (conflicts), #11 (impact preview), plus #12 (simulate) when the inline preview tab is opened.
 
 ### 4.1 Header
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ ← Back to Dashboard                                                    │
-│                                                                        │
-│ {Category Icon} {Category Name}                                        │
-│                                                                        │
-│ Chips:                                                                 │
-│   ●Active v{N}  ◐Draft  ⏰Scheduled (effective {date})                 │
-│                                                                        │
-│ Right-aligned actions:                                                 │
-│   [ Save Draft ]  [ Schedule ]  [ Publish Now ]  [ Rollback… ]         │
-└────────────────────────────────────────────────────────────────────────┘
-```
+`<PageHeader>` with:
+- **Title:** category display name (e.g., "Attendance").
+- **Subtitle:** one-line description from `policy_types.description`.
+- **Active version chip:** `Badge variant='default'` Teal — `v{policies.version}`.
+- **Draft chip:** `Badge variant='secondary'` — "Editing draft" (only when there are unsaved changes).
+- **Scheduled chip:** `Badge` Blue — "Scheduled · Apr 30, 9:00 AM" (only when `effectiveAt > now`).
+- **Actions slot (right-aligned):**
+  - **Publish** (`Button variant='default'`) — disabled when conflicts of severity `error` exist OR when no draft changes pending. Tooltip explains why.
+  - **Schedule** (`Button variant='outline'`) — opens schedule date/time popover (uses `Calendar` + time `Input`).
+  - **Rollback** (`Button variant='ghost'`) — opens the Version History panel pre-scrolled.
 
-- The chips use Shadcn `Badge`: Active = Green (`bg-[hsl(160_100%_30%)]`), Draft = Slate, Scheduled = Blue, with the version number using `tabular-nums`.
-- Disabled-state rules:
-  - **Save Draft** disabled if the rule form has no validation errors AND no unsaved changes.
-  - **Schedule** disabled if the form is invalid OR there is no draft yet.
-  - **Publish Now** disabled if the form is invalid OR conflict check returned `blockingCount > 0` and the user hasn't acknowledged the warnings (see §4.6).
-  - **Rollback** disabled if there is exactly one version (nothing to roll back to).
+### 4.2 Sections (rendered top-to-bottom in this order)
 
-### 4.2 Section order
+#### 4.2.1 Rule Builder Form
 
-Below the header, six stacked sections separated by `Separator`:
+Per-category field map. Each category reuses the shape of the corresponding `DEFAULT_*_RULES` constant from `server/policyEngine.ts` so we never duplicate field metadata. The wizard logic in `getRuleFieldsForType` (`client/src/components/policy-wizard.tsx`) is extracted to `client/src/lib/ruleFieldDefs.ts` and extended to cover all 13 categories.
 
-1. **Rule Builder** (the editable form, §4.3)
-2. **Assignment Scope** (§4.4)
-3. **Impact Preview** (§4.5)
-4. **Conflict Warnings** (§4.6)
-5. **Simulation Preview** (§4.7)
-6. **Version History** (§4.8 — links to Page D)
+Form layout: 2-column grid on `md`+, single column on `sm`. Each field is a Shadcn `FormField` with `FormLabel`, `FormControl` (`Input` / `Switch` / `Select`), and `FormDescription` for the rule rationale. Validation errors render under the field via `FormMessage`.
 
-### 4.3 Rule Builder form
+Special handling:
+- **Number fields** show min/max in the description.
+- **Boolean fields** use `Switch` (touch-safe).
+- **List-of-rules fields** (e.g., `dayOfWeekBonuses`, `earlyArrivalBonuses` for the Payroll category) render as a sub-`Card` per entry with an "Add rule" `Button variant='outline'` underneath.
 
-Per category, the form renders the field map from `getRuleFieldsForType(typeKey)` in `client/src/components/policy-wizard.tsx` lines 39–85, **extended** to cover the additional categories. Reuse the existing field definitions verbatim where present; for the new sub-views (Breaks, Auto Clock-Out, Overtime, Holidays, Blackout, Department Overrides, Employee Overrides) the form is composed of subsets of the underlying `attendance` / `payroll` / `pto` rule sets:
+#### 4.2.2 Assignment Scope Picker
 
-| Category | Underlying rules subset |
-|----------|------------------------|
-| Attendance | `gracePeriodMinutes`, `roundingRule`, `roundingIntervalMinutes`, `requirePhotoVerification`, `allowEarlyClockIn`, `earlyClockInMinutes` |
-| Breaks | `requireBreakAfterHours`, `breakDurationMinutes` (subset of attendance rules) |
-| Auto Clock-Out | `autoClockOutEnabled`, `autoClockOutAfterHours` (subset of attendance rules) |
-| Overtime | `otThresholdDaily`, `otThresholdWeekly`, `overtimeMultiplier`, `doubleTimeThresholdDaily`, `doubleTimeMultiplier` (split between attendance + payroll) |
-| Payroll Rounding | full payroll rules including `dayOfWeekBonuses`, `earlyArrivalBonuses` |
-| PTO Accrual | full PTO rules |
-| Holiday Calendars | not a rule — opens Page H |
-| Blackout Dates | not a rule — opens Page I |
-| Approval Chains | full approvals rules |
-| Kiosk Restrictions | full kiosk rules |
-| Department/Employee Overrides | a tabular view (no rule fields), filtering all assignments by `assignment.departmentId IS NOT NULL` / `assignment.userId IS NOT NULL` |
+A reusable `<AssignmentScopePicker />` (see §11). Shows the current list of assignments as removable `Badge`s. Below the list, an "Add assignment" `Button` opens a `Popover` containing a Shadcn `Command` palette: pick level (Global / Division / Location / Department / Employee) → autocomplete the target. Below each assignment a `Switch` toggles `isEmergency` — flipping it on reveals reason `Textarea` and start/end `Input` fields (this is the lightweight in-line emergency creator; the full Center is on Page E).
 
-Form layout uses Shadcn `Form` + `useForm` + `zodResolver` per the fullstack-js skill. Validation messages render inline beneath each field. Number fields use `Input type="number"` with `tabular-nums`. Booleans use `Switch`. Selects use Shadcn `Select`.
+#### 4.2.3 Impact Preview Panel
 
-A muted subline beneath the form title shows: "Editing draft (v{nextVersionNumber}). Active is v{activeVersionNumber}."
+Embeds the reusable `<ImpactPreviewPanel />` (see §10). On every change to the form or assignments, debounced 500ms, the panel calls endpoint #11 with the draft scope and renders:
+- Big number — "**142 employees** would be affected if you publish now."
+- Two small bar groups — by department and by location.
+- A `Button variant='link'` "View affected employees" opens a `Sheet` with the first 25 names and a "Showing 25 of 142" footer.
 
-### 4.4 Assignment Scope picker
+#### 4.2.4 Conflict Warnings Panel
 
-Reusable component `<AssignmentScopePicker>` (component inventory §12). UI:
+Embeds the reusable `<ConflictWarningPanel />` (see §10). Renders one `Alert` per conflict from endpoint #10, ordered `error → warning → info`. Each conflict has its severity icon, message, and an "Acknowledge" `Button` (warnings/infos only — errors cannot be acknowledged away).
+
+If at least one `error` conflict is present, the **Publish** button in the header is disabled and shows tooltip: "Resolve the X conflict listed below before publishing." Clicking the disabled button scrolls to the panel.
+
+#### 4.2.5 Simulation Preview Panel
+
+A `Tabs` block with two tabs: **"Resolved policy"** and **"Sample scenario"**.
+- **Resolved policy** tab — shows what the rule builder produces for an example employee (defaulting to the page admin themselves), via endpoint #12. Renders the `chain` array from §3.2 of architecture.md as a vertical list of `Card`s — one per assignment level — with the matched one outlined in Teal and skipped ones muted.
+- **Sample scenario** tab — adds inputs for a sample punch (clock in/out, break minutes), or a sample PTO request (start/end date, hours), and re-runs simulate. Output mirrors Page C but in compact form.
+
+#### 4.2.6 Version History List
+
+Uses the reusable `<PolicyVersionTimeline />` (see §12). Inline list (last 5) with a "View all" link that navigates to Page D (Version History full screen).
+
+### 4.3 Publish-blocking flow
 
 ```
-Apply this policy to:
-  ( ) Global (all divisions)
-  (•) Division          [ Select division ▼ ]
-  ( ) Location          [ Select location ▼ ]
-  ( ) Department        [ Select department ▼ ]
-  ( ) Specific employee [ Search employees… ]
-
-Existing assignments (chips):
-  [Engineering ×]  [Mountain View ×]  [+ Add assignment]
+admin clicks Publish
+  → if conflicts.error.length > 0:
+      button is disabled (handled in §4.2.4) — never reaches click handler
+  → if scheduled (effectiveAt > now):
+      Dialog: "Schedule this draft to go live on Apr 30, 9:00 AM?" with Cancel / Confirm
+  → if not scheduled:
+      Dialog: "Publish version v(N+1) now?
+               This affects 142 employees (impact preview)."
+      with Cancel / Confirm Publish
+  → on Confirm: call endpoint #6 (or #5 if scheduling)
+  → success toast "Policy v(N+1) published" + reload Page B
+  → failure: Alert at top of dialog with the API error message
 ```
 
-Each chip is a Shadcn `Badge` with an `X` button. Clicking `+ Add assignment` opens a Shadcn `Dialog` with the picker. The component supports a `disabled` prop for view-only contexts.
+### 4.4 States
 
-### 4.5 Impact Preview panel
+- **Loading:** form fields render as `Skeleton` rows; assignment list shows 3 skeleton chips; impact and conflict panels render skeletons.
+- **Empty (no policy yet for this category):** centered Card "No policy created for {category} yet — Create your first policy" with a `Button` that creates a Draft and immediately puts the form in edit mode.
+- **Save error:** non-blocking inline `Alert variant='destructive'` above the form's primary buttons.
 
-Uses `<ImpactPreviewPanel>` (§12). Renders:
+### 4.5 `data-testid`
 
-- A summary line: "**{totalUsers} employees** would be affected by this draft."
-- Two horizontal bar lists: by Location and by Department, showing top 5 with counts. A "Show all" link expands to full lists (paginated via route #17).
-- A disclosure: "Show employees" reveals the first 50 names from `sample[]` in a 2-column grid.
-- A button "Refresh impact preview" recomputes via route #16.
-
-Empty state: "No employees match the current scope yet." Loading state: 3-row `Skeleton`.
-
-### 4.6 Conflict Warnings panel
-
-Uses `<ConflictWarningPanel>` (§12). Renders one `Alert` per conflict from `analyzeDraftConflicts` (architecture §6):
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ ⚠ HIGH — Overlapping windows                                │
-│ "Holiday OT v3" overlaps with "Holiday OT v4" for           │
-│   42 employees in Mountain View between Jan 1–Jan 5.        │
-│ Related policies: Holiday OT v3 (link), v4 (link)           │
-│ [ Acknowledge ]                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-Severity → color mapping:
-- `high` → `Alert variant="destructive"` + bold "HIGH" pill.
-- `medium` → `Alert` with `border-amber-500` + "MEDIUM" pill.
-- `low` → `Alert variant="default"` + "INFO" pill.
-
-**Publish-blocking flow**: The `Publish Now` and `Schedule` buttons stay disabled while there are unacknowledged `high` conflicts. Each `high` conflict has an "Acknowledge" button that adds its `class+relatedPolicyIds` hash into a local set, which is then sent as `acknowledgedConflicts` in the publish/schedule request body. The backend re-runs the conflict check and rejects the request if any high conflict isn't in that set, so the UI cannot be bypassed by stale state.
-
-Empty state: "No conflicts detected — safe to publish."
-
-### 4.7 Simulation Preview panel
-
-Inline mini-version of Page C (Simulator Lab). Three quick inputs (employee, date, optional sample punch/PTO request) and a single output card showing what the resolved policy would be **if this draft were active**. A link "Open in Simulator Lab" navigates to the full Page C with the same inputs preserved via URL params.
-
-### 4.8 Version History list (preview)
-
-The last 5 versions displayed inline: version number, created by, created at, note, and a "Diff vs Active" button. A "View full history" button navigates to Page D.
-
-### 4.9 `data-testid` plan for Page B
-
-- `page-category-detail-${typeKey}`
-- `text-active-version-${policyId}`, `text-draft-version-${policyId}`
-- `button-save-draft-${policyId}`, `button-schedule-${policyId}`, `button-publish-${policyId}`, `button-rollback-${policyId}`
-- `panel-impact-preview`, `panel-conflict-warnings`, `panel-simulation-preview`, `panel-version-history`
-- `badge-conflict-${conflictId}`, `button-acknowledge-conflict-${conflictId}`
+- `page-category-${typeKey}`
+- `text-active-version-${policyId}`, `badge-draft-${policyId}`, `badge-scheduled-${policyId}`
+- `button-publish-policy-${policyId}`, `button-schedule-policy-${policyId}`, `button-rollback-policy-${policyId}`
+- `form-rule-builder-${typeKey}`
+- `panel-assignment-scope`, `panel-impact-preview`, `panel-conflicts`, `panel-simulation`, `panel-version-history`
+- `button-add-assignment`, `button-add-bonus-rule`
+- `button-acknowledge-conflict-${conflictId}`
+- `button-confirm-publish`, `button-cancel-publish`
 
 ---
 
 ## 5. Page C — Simulator Lab
 
-**URL**: `/rules-controls/simulator`.
+**Route:** `/rules/simulator` (optional `?policyTypeKey=&userId=&atTimestamp=` query string for deep links from Page A and Page B).
+**Endpoint:** #12.
 
 ### 5.1 Layout
 
-Two-column layout (lg breakpoint and above), stacked on smaller screens:
+Two-pane layout on `lg`+: left **Inputs** (`w-1/3`), right **Outputs** (`w-2/3`). On `sm` they stack.
+
+### 5.2 Inputs panel (left)
+
+Card "Simulation inputs" with:
+- **Employee** — Shadcn `Command`-backed combobox over `/api/users` (existing endpoint). Required.
+- **At date/time** — `Popover` with `Calendar` + a 24-h time `Input`. Defaults to "Now". Required.
+- **Department override** — optional Select (defaults to the employee's department). Useful for "what if I moved them?".
+- **Location override** — optional Select.
+- **Policy categories to simulate** — multi-select chip group (default: all 13).
+- **Optional sample punch** — collapsible `Card` with `clockIn`, `clockOut`, `breakMinutes`.
+- **Optional sample PTO request** — collapsible `Card` with `startDate`, `endDate`, `hoursPerDay`.
+- **Optional sample overtime scenario** — collapsible `Card` with `workDate`, `hoursWorked`.
+- **Compare against current Active** — `Switch`, default ON. When on, the request is sent twice and the right pane shows side-by-side.
+- Footer: **Run simulation** primary button.
+
+### 5.3 Outputs panel (right)
+
+Per simulated category, a `Card`:
 
 ```
-┌──────────────────────┬────────────────────────────────────────────────┐
-│ INPUTS               │ OUTPUTS                                         │
-│                      │                                                 │
-│ Employee  [combobox] │  ┌─ Resolved policy ──────────────────────────┐ │
-│ Date      [date]     │  │ Attendance: "Standard Attendance" v4       │ │
-│ Time      [time]     │  │ Resolved at: department-level (Engineering)│ │
-│                      │  │ via emergency override: NO                 │ │
-│ Department override  │  │ Effective from 2026-01-01 (no end)         │ │
-│ Location override    │  └────────────────────────────────────────────┘ │
-│                      │                                                 │
-│ ▾ Sample punch       │  ┌─ Resolution chain ─────────────────────────┐ │
-│   Clock-in   [time]  │  │ employee   — no match                       │ │
-│   Clock-out  [time]  │  │ department — MATCHED (Standard Attendance) │ │
-│   Break (m)  [num]   │  │ location   — skipped                       │ │
-│                      │  │ division   — skipped                       │ │
-│ ▾ Sample PTO request │  │ global     — skipped                       │ │
-│   Start, End         │  └────────────────────────────────────────────┘ │
-│                      │                                                 │
-│ ▾ Sample overtime    │  ┌─ Outcome ──────────────────────────────────┐ │
-│   Hours today, week  │  │ Allowed: ✓                                 │ │
-│                      │  │ Late: NO   Late minutes: 0                 │ │
-│ [ Run simulation ]   │  │ Hours worked: 8.25                         │ │
-│                      │  │ Overtime hours: 0.25                       │ │
-│                      │  └────────────────────────────────────────────┘ │
-│                      │                                                 │
-│                      │  ┌─ Side-by-side vs Active ──────────────────┐ │
-│                      │  │  See §5.2 below                            │ │
-│                      │  └────────────────────────────────────────────┘ │
-└──────────────────────┴────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Attendance                              [v3 · Active]      │
+│  Resolved at: Department  →  Acme HQ Nursing                │
+│  ─────────────────────────────────────────────────────────  │
+│  Resolution chain                                           │
+│  ✓ Employee — none                                          │
+│  ✓ Department — Acme HQ Nursing  ← matched, Teal outline    │
+│  ↳ Location — would have matched, lower priority            │
+│  ↳ Division — Acme HQ                                       │
+│  ↳ Global — Default                                         │
+│  ─────────────────────────────────────────────────────────  │
+│  Rule evaluation                                            │
+│  • Clock-in 08:07 → rounded 08:00, late (grace 5)           │
+│  • Late by 7 min — generates "late_clock_in" alert          │
+│  • OT threshold daily 8h — not triggered                    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-Inputs render with Shadcn `Form` + `Combobox`, `Calendar`+`Popover` for date, native `Input type="time"`, and `Accordion` for the optional sample sections. The "Department override" and "Location override" inputs let the admin simulate "what if this employee were in another department for a moment" without touching their record.
+### 5.4 Side-by-side diff
 
-### 5.2 Side-by-side comparison
+When **Compare against current Active** is ON, each category card shows two columns ("Current Active" left, "Simulated" right) above the "Rule evaluation" section. Differences are highlighted:
+- **Added** (key only present in simulated) — left cell muted, right cell `bg-green-500/10` text Green `#009972`.
+- **Removed** (key only present in current) — right cell muted, left cell `bg-destructive/10` text destructive.
+- **Changed** — both cells with the differing values bolded; an arrow `→` between them in Dark Navy.
 
-Two columns labeled **Currently Active** and **What you'd get** showing the same outcome card. Differences are highlighted:
+A small `Badge` in the card header summarizes: "3 added · 1 changed · 0 removed".
 
-- Fields with same value → muted gray text.
-- Fields where the value differs → background `bg-blue-500/10` with a pill in the right margin: "+0.5h" (green) or "−5min" (red), using the Ahava Green/Destructive tones.
-- Fields only present on one side render as `<missing>` in the other.
+### 5.5 States
 
-### 5.3 Wired endpoint
+- **Loading (after Run):** the right pane shows a skeleton `Card` per requested category.
+- **Empty (before Run):** the right pane shows an empty-state `Card` with an icon and the copy: "Pick an employee and a time, then Run simulation. The simulator never writes anything — it's safe to experiment."
+- **Error:** `Alert variant='destructive'` at the top of the outputs pane.
 
-`POST /api/rules/simulate` (architecture §10 route #20). One call returns both the projected (against draft) and current (against active) results, computed inside `simulatePolicies()` (architecture §5).
+### 5.6 `data-testid`
 
-### 5.4 `data-testid` plan
-
-- `panel-simulator-inputs`, `panel-simulator-outputs`
-- `input-simulator-user`, `input-simulator-date`, `input-simulator-time`
+- `page-simulator-lab`
+- `combobox-simulator-employee`, `input-simulator-datetime`, `select-simulator-department`, `select-simulator-location`
+- `multiselect-simulator-categories`, `switch-simulator-compare`
 - `button-run-simulation`
-- `text-simulator-resolved-policy`, `text-simulator-resolution-trace`, `text-simulator-outcome`
-- `panel-simulator-comparison`, `text-comparison-field-${fieldName}`
+- `card-simulation-result-${typeKey}`
+- `text-resolved-level-${typeKey}`, `text-resolved-policy-${typeKey}`
+- `row-resolution-chain-${typeKey}-${level}`
+- `text-evaluation-${typeKey}-${index}`
+- `badge-diff-summary-${typeKey}`
 
 ---
 
 ## 6. Page D — Version History
 
-**URL**: `/rules-controls/category/:typeKey/policy/:policyId/history`.
+**Route:** `/rules/categories/:typeKey/versions` (also reachable via "View all" from Page B §4.2.6).
+**Endpoints:** #7 (rollback), #8 (versions list), #9 (diff).
 
 ### 6.1 Table
 
-Shadcn `Table` with these columns:
+Full-width `Table` inside a `Card`:
 
-| Column | Notes |
-|--------|-------|
-| Version # | `tabular-nums`, with a Green dot if it's the currently active version |
-| Created by | First/last name + role badge |
-| Created at | Localized timestamp + relative ("3 hours ago") |
-| Note | The `note` field; truncated to ~80 chars with full text on hover via `Tooltip` |
-| Activated | Activation date if known, blank otherwise |
-| Emergency? | `Badge variant="destructive"` if this version was published as emergency, else blank |
-| Diff | `Button variant="ghost" size="sm"` — opens the Diff Viewer modal |
-| Rollback | `Button variant="outline" size="sm"` — opens Rollback confirmation modal |
+| Column | Content |
+|---|---|
+| Version | `v{versionNumber}` — Teal `Badge` if it's the current active. |
+| Created by | `firstName lastName` (from `users` join) — link opens employee profile. |
+| Created at | locale date/time, tabular-nums. |
+| Note | left-truncated text; full text in `Tooltip` on hover. |
+| Activation date | from `effectiveAt` if set; otherwise "—". |
+| Emergency | `Badge` Dark Navy + Teal text "Emergency" if `isRollback=false` AND associated with an emergency assignment; otherwise "Rollback" `Badge` if `isRollback=true`; else empty. |
+| Diff | `Button variant='outline' size='sm'` "Diff vs current" → opens Diff Viewer modal. |
+| Rollback | `Button variant='ghost' size='sm'` "Rollback" — disabled for the current active version. |
 
-Sorting is fixed to "newest first." Pagination: 25 per page using Shadcn `Pagination`.
+Sort default: `versionNumber DESC`. Pagination: 20 rows per page, server-driven.
 
 ### 6.2 Diff Viewer modal
 
-Shadcn `Dialog`, full width on lg, scrollable. Header: "Diff: v{from} → v{to}" with a `Select` to pick the comparison version on either side.
+Triggered from the Diff column. `Dialog` (`max-w-3xl`):
 
-Body uses a key-value diff renderer (`<RuleDiffViewer>` §12):
-
-```
-gracePeriodMinutes:  5    →    10   ← changed
-roundingRule:        nearest_15   (unchanged)
-breakDurationMinutes: removed ← was: 30
-holidayCalendarIds: + added ← ["holiday-cal-uuid"]
-```
-
-- Removed lines: red text, `bg-red-500/10`.
-- Added lines: green text, `bg-green-500/10`.
-- Changed lines: amber text with the old → new arrow.
-- Unchanged lines: muted, collapsible behind an `Accordion` set to closed by default for diffs > 20 fields.
-
-Footer: a `Close` button.
+- Header: "Diff: v3 → v5" with two `Select`s to change either side ("Compare v3 with vN").
+- Body: `Tabs` with **"Side-by-side"** and **"Unified"**.
+- **Side-by-side**: a 2-column scrollable area; each rule key occupies one row across both columns. Rule keys removed are red-tinted on the left; added keys are green-tinted on the right; changed keys highlight the differing values in both columns.
+  - Color tokens: `bg-green-500/10` + text `#009972` for additions; `bg-destructive/10` + text destructive for removals; `bg-blue-500/10` + text `#1f97d4` for "type changed" (rare).
+- **Unified**: a single column with `+` / `−` line prefixes in green/red.
+- Footer: `Button "Close"` and `Button variant='default' "Rollback to v3"` (only visible if v3 is the current's predecessor, otherwise hidden).
 
 ### 6.3 Rollback confirmation modal
 
-Shadcn `Dialog` with the following fields:
+Reusable component (see §11). When triggered:
 
-```
-Roll back to v{N}?
-  This will create a new version v{latest+1} that copies v{N}'s rules.
-  History is preserved — v{latest} stays in the timeline.
+- Header: "Roll back to v3?"
+- Body: short paragraph with the version's `note` and `createdAt`. A required `Textarea` with label "Note (required)" — minimum 5 chars (matches API constraint).
+- An `<ImpactPreviewPanel />` mini-instance showing how many employees this rollback would affect right now.
+- Footer: `Button variant='outline' "Cancel"` and `Button variant='destructive' "Confirm rollback"` — disabled until note is valid.
 
-  Reason / note (required):
-  [ Textarea, min 1 character ]
+### 6.4 `data-testid`
 
-  [ Cancel ]   [ Confirm rollback ]
-```
-
-The Confirm button is disabled until the textarea has content. On submit, calls route #8 (`POST /api/rules/policies/:policyId/rollback/:versionNumber`). On success, closes the modal, refetches version list, shows a toast "Rolled back to v{N} (now at v{newVersionNumber})."
-
-### 6.4 `data-testid` plan
-
-- `table-version-history-${policyId}`, `row-version-${versionNumber}`
+- `page-version-history-${typeKey}`
+- `table-version-history`
+- `row-version-${versionNumber}`, `text-version-note-${versionNumber}`, `badge-version-emergency-${versionNumber}`
 - `button-diff-version-${versionNumber}`, `button-rollback-version-${versionNumber}`
-- `dialog-rollback-${policyId}`, `input-rollback-note`, `button-confirm-rollback`
+- `dialog-diff-viewer`, `tab-diff-side-by-side`, `tab-diff-unified`
+- `dialog-rollback-confirm`, `textarea-rollback-note`, `button-confirm-rollback`, `button-cancel-rollback`
 
 ---
 
 ## 7. Page E — Emergency Override Center
 
-**URL**: `/rules-controls/emergency`.
+**Route:** `/rules/emergency`.
+**Endpoints:** #13 (create), #14 (list), #15 (end).
 
 ### 7.1 Live overrides list
 
-`Card` titled "Live overrides" with a Shadcn `Table`:
+Top of page: `Card` "Live emergency overrides" containing a table of overrides where `now ∈ [emergencyStartsAt, emergencyEndsAt)`. Columns:
 
-| Column | Notes |
-|--------|-------|
-| Category | Policy type with icon |
-| Policy | Linked name + version |
-| Scope | "Global" / "Division: …" / "Location: …" / "Department: …" / "Employee: …" |
-| Reason | Truncated; tooltip on hover |
-| Started | Time + relative |
-| Ends in | Live-counting countdown (`react-use` interval-based or a small `useEffect` with `setInterval(1000)`) — "2h 14m" |
-| Created by | Name |
-| Actions | `End now` button (sets `emergency_ends_at = now()`, audited as `emergency.ended_manually`) |
+| Column | Content |
+|---|---|
+| Policy | "Attendance · Acme HQ Snowstorm Override" — link to Page B for that category. |
+| Scope | resolved label, e.g., "Department: Nursing" or "Division: Acme HQ" or "Employee: Sarah Cohen". |
+| Reason | truncated, full in `Tooltip`. |
+| Started | locale time, tabular-nums. |
+| Ends | locale time + a live countdown `Badge` Teal — "Ends in 3h 12m". |
+| Created by | name + avatar (Shadcn `Avatar`). |
+| End now | `Button variant='destructive' size='sm'` — opens confirm modal. |
 
-A persistent banner across the entire Command Center reads "{N} live emergency override(s) — view details" linking here when count > 0. Banner uses destructive background.
+Auto-refresh every 60 seconds via TanStack Query refetch interval.
 
-### 7.2 Create override form
+Below this table, a second `Card` "Upcoming overrides" for those scheduled with `emergencyStartsAt > now`, same columns minus the countdown.
 
-`Card` titled "Create override" with these inputs (single-page form, no wizard — speed matters in an emergency):
+### 7.2 "Create override" form
 
-```
-Category    [ Select policyType ▼ ]
-Base policy [ Select policy of that type ▼ ]   (defaults to the currently active one)
+Top-right `Button variant='default'` **"Create override"** opens a `Dialog` (`max-w-2xl`):
 
-Scope       [ AssignmentScopePicker — see §11 ]
-Priority    [ Number 0–100, default 100 ]      (so emergency outranks even other emergencies if needed)
+1. **Step 1 — Scope:** `<AssignmentScopePicker />` (§11). Required.
+2. **Step 2 — Target categories:** multi-select chips of the 13 categories. Required, ≥ 1.
+3. **Step 3 — Reason:** `Textarea`, required, min 10 chars. Helper text: "Visible to anyone reviewing the override later."
+4. **Step 4 — Window:** two `Popover` date/time pickers for `startsAt` and `endsAt`. Default: now → +24h. Hard cap from architecture §13 open question #2 (default 30 days).
+5. **Step 5 — Priority:** `Input type='number'` 0–100, default 100 (so emergencies always outrank normal assignments by default).
 
-Reason *    [ Textarea — required ]
-Starts at   [ Date + time, default = now ]
-Ends at *   [ Date + time, no default; quick-set buttons "+1h", "+8h", "+24h", "+7d" ]
-
-[ Preview impact ]   [ Create override ]
-```
-
-**Validation**:
-- Reason: min 1 char.
-- Ends at: must be after Starts at.
-- Scope: at least one level selected (or explicit "Global").
-
-The `Preview impact` button opens an `ImpactPreviewPanel` modal (component §10) showing who will be affected before commit.
+Below the form, an inline `<ImpactPreviewPanel />` updates as scope and categories change, showing total affected.
 
 ### 7.3 Confirmation modal
 
-When `Create override` is clicked, a Shadcn `Dialog` appears:
+After clicking "Create" in the form, a second `Dialog` (`max-w-md`):
 
-```
-Create emergency override for {N} employees?
-  This will take effect at {start} and auto-expire at {end}.
-  The policy will outrank all normal department/location rules
-  for these employees during this window.
+> "This will override **142 employees** with the Snowstorm Override across **Attendance, Overtime, Schedules** from Apr 28 4:00 PM until Apr 29 4:00 PM. Continue?"
 
-  [ Cancel ]   [ Create override ]
-```
+`Button variant='outline' "Back"` returns to the form. `Button variant='default' "Create override"` calls endpoint #13 and writes the audit row described in architecture §9.
 
-The Create button is `variant="destructive"` to convey weight.
+### 7.4 Auto-expire badge state
 
-### 7.4 Auto-expire badge
+In the Live list, when `emergencyEndsAt - now < 1 hour`, the countdown badge changes from Teal to amber. When it crosses 0, the row drops out of "Live" on next refetch and a `Toast` fires: "Snowstorm Override expired."
 
-In the live list, when `emergency_ends_at` passes, the row's countdown becomes "Expired" (slate badge) and the Sweep job (architecture §4.3) eventually writes the `emergency.expired` audit row. The row stays visible in the list for 24h after expiry, then drops off; "View expired (last 30 days)" button opens a separate table.
+### 7.5 `data-testid`
 
-### 7.5 `data-testid` plan
-
-- `table-live-emergencies`, `row-emergency-${assignmentId}`
-- `text-emergency-countdown-${assignmentId}`
-- `button-end-emergency-${assignmentId}`
-- `form-create-emergency`, `input-emergency-reason`, `input-emergency-ends-at`
-- `button-emergency-preview-impact`, `button-emergency-create`
+- `page-emergency-center`
+- `table-live-overrides`, `row-override-${id}`, `badge-countdown-${id}`, `button-end-override-${id}`
+- `table-upcoming-overrides`
+- `button-create-override`, `dialog-create-override`, `textarea-override-reason`, `input-override-priority`
+- `dialog-confirm-override`, `text-confirm-impact-count`
 
 ---
 
 ## 8. Holiday Calendar Manager (Page H)
 
-**URL**: `/rules-controls/holiday-calendars`.
+**Route:** `/rules/holidays`.
+**Endpoints:** #16–#22.
 
 ### 8.1 Layout
 
-Two-pane: left list of calendars, right detail of selected calendar.
+Two columns on `lg`+: left list of calendars (`w-1/3`), right detail of the selected calendar (`w-2/3`).
+
+### 8.2 Calendar list (left)
+
+`Card` with header "Calendars" and a `Button variant='outline' size='sm'` "+ New". Each list item:
 
 ```
-┌────────────────────┬─────────────────────────────────────────────┐
-│ My Calendars       │ {Calendar name}              [ Edit name ] │
-│ + New calendar     │                                             │
-│ ▸ US Federal       │ Scope: Division "Ahava Medical Center"     │
-│ ▸ Ahava Holidays   │ Description: ...                           │
-│ ▸ NY State         │                                             │
-│                    │ Entries:                                    │
-│                    │  ┌──────────────────────────────────────┐  │
-│                    │  │ Date      Name           Recurrence  │  │
-│                    │  │ 2026-01-01 New Year's    yearly      │  │
-│                    │  │ 2026-07-04 Independence  yearly      │  │
-│                    │  │ 2026-11-26 Thanksgiving  yearly      │  │
-│                    │  │ + Add entry                          │  │
-│                    │  └──────────────────────────────────────┘  │
-│                    │                                             │
-│                    │ Used by: 3 PTO policies, 1 payroll policy  │
-│                    │ [ View dependents ]                         │
-└────────────────────┴─────────────────────────────────────────────┘
+[●]  Acme U.S. Federal Holidays            12 entries
+     Active · 3 locations
 ```
 
-### 8.2 CRUD flows
+Click an item to load detail on the right. Active dot is Teal; inactive is muted.
 
-- **Create calendar**: opens a `Dialog` with name, scope (`AssignmentScopePicker` limited to global or division), description, and a starter list of entries.
-- **Add entry**: inline row at the bottom of the entries table with Date picker, name input, recurrence `Select` (`none` | `yearly`), and `is_paid` `Switch`.
-- **Delete**: trash icon per row with `Dialog` confirmation. If the calendar is referenced by any active policy (`Used by` count > 0), the confirm modal warns "This calendar is referenced by N policies. Removing it may change PTO/holiday calculations." with a checkbox "I understand."
+### 8.3 Calendar detail (right)
 
-### 8.3 Wired endpoints
+`Card` with:
+- **Header row:** calendar name (inline-editable on click), description (inline-editable Textarea), `Switch` "Active", and a `Button variant='destructive' size='sm'` "Delete" (Confirm modal).
+- **Scope assignment subsection:** the same `<AssignmentScopePicker />` from §11 (limited to Division / Location / Department levels — no per-employee).
+- **Entries table:**
+  - Columns: Date, Name, Recurrence (`Select` cell — None / Annual), Pay multiplier (`Input` cell, optional), Actions (delete icon).
+  - Footer: `Button variant='outline' size='sm'` "+ Add entry" — appends an editable row.
+- **Save bar (sticky bottom):** appears only when there are unsaved changes. `Button variant='outline' "Discard"` and `Button variant='default' "Save changes"`.
 
-Routes #19, #19a–d in architecture §10.
+### 8.4 States
 
-### 8.4 `data-testid` plan
+- **Loading:** left list skeleton rows; right pane skeleton.
+- **Empty:** left "No calendars yet — Create one"; right "Select a calendar from the left."
+- **No entries:** the entries table renders the header row plus a single muted row "No holiday entries yet."
 
-- `list-holiday-calendars`, `item-holiday-calendar-${id}`
-- `button-new-calendar`, `dialog-new-calendar`
-- `table-calendar-entries`, `row-calendar-entry-${entryId}`
-- `button-add-entry`, `button-delete-entry-${entryId}`
+### 8.5 `data-testid`
+
+- `page-holiday-calendars`
+- `button-new-calendar`, `list-calendars`, `item-calendar-${id}`
+- `input-calendar-name-${id}`, `switch-calendar-active-${id}`, `button-delete-calendar-${id}`
+- `table-calendar-entries`, `row-calendar-entry-${entryId}`, `input-entry-date-${entryId}`, `input-entry-name-${entryId}`, `select-entry-recurrence-${entryId}`, `input-entry-multiplier-${entryId}`, `button-delete-entry-${entryId}`
+- `button-add-calendar-entry`, `button-save-calendar`, `button-discard-calendar`
 
 ---
 
 ## 9. Blackout Date Manager (Page I)
 
-**URL**: `/rules-controls/blackout-dates`.
+**Route:** `/rules/blackouts`.
+**Endpoints:** #23–#25.
 
-Same two-pane layout as Page H, scoped to PTO blackout date lists. Each list contains date **ranges** (start + end) rather than single dates.
+### 9.1 Layout
 
-### 9.1 Conflict warning
+Single-column page. `<PageHeader />` with title "Blackout Dates" and an actions slot containing `Button variant='default' "+ New blackout"`.
 
-When an admin adds a new range (or creates a new list referenced by an active PTO policy), the backend cross-checks `time_off_requests` for `status='approved'` requests overlapping the range. If any exist, a `ConflictWarningPanel` (§10) renders inline:
+### 9.2 List
 
-```
-⚠ MEDIUM — 4 approved PTO requests fall inside this blackout
-  • Jane Doe — 2026-01-02 to 2026-01-04
-  • John Smith — 2026-01-03 to 2026-01-03
-  • ...
-  These existing approvals are not auto-revoked. Future requests in this window will be blocked.
-  [ Acknowledge ]
-```
+Full-width `Table`:
 
-Acknowledgement is required to save.
+| Column | Content |
+|---|---|
+| Range | "Apr 28 → May 1" |
+| Scope | "Division: Acme HQ" / "Location: West Tower" / "Department: Surgery" |
+| Reason | text |
+| Created | date + creator name |
+| Actions | trash icon → confirm modal |
 
-### 9.2 `data-testid` plan
+Sortable by Range (default DESC).
 
-- `list-blackout-lists`, `item-blackout-list-${id}`
-- `table-blackout-ranges`, `row-blackout-range-${rangeId}`
-- `button-add-range`, `panel-blackout-conflict-${listId}`
+### 9.3 Create form
+
+`Dialog` (`max-w-lg`) with:
+- Start date (`Calendar`)
+- End date (`Calendar`)
+- Reason (`Textarea`, required, min 5 chars)
+- Scope (`Select`: Division / Location / Department) → second `Select` to pick the target
+
+After valid submission, an inline `<ConflictWarningPanel />` runs against existing **approved** PTO requests (read from `/api/time-off-requests?status=approved`). If any approved PTO falls inside the new blackout, the panel renders:
+
+> "**3 approved PTO requests** overlap this blackout. They will need to be re-approved by a manager."
+
+with a `Button variant='link' "View affected requests"` listing them in a Sheet. The user can still click the primary `Button variant='default' "Create blackout"` — per architecture §13 open question #8, default is option (c): allow with a flag and surface the list. The button copy changes to "Create blackout · 3 requests need re-approval" when conflicts exist.
+
+### 9.4 `data-testid`
+
+- `page-blackout-dates`
+- `button-new-blackout`, `dialog-new-blackout`
+- `input-blackout-start`, `input-blackout-end`, `textarea-blackout-reason`, `select-blackout-scope-level`, `select-blackout-scope-target`
+- `panel-blackout-conflicts`, `button-view-affected-pto`
+- `button-create-blackout`, `button-cancel-blackout`
+- `table-blackouts`, `row-blackout-${id}`, `button-delete-blackout-${id}`
 
 ---
 
-## 10. Conflict Detector & Impact Preview panels (reusable)
+## 10. Reusable panels — `<ConflictWarningPanel />` & `<ImpactPreviewPanel />`
 
-These two panels are used in Pages B, C, and E. Both are presentational components — they take props, render UI, and emit callbacks; they never fetch on their own.
+Both are pure presentational components that take their data via props (so they can be used inside a draft form before the policy exists).
 
-### 10.1 `<ConflictWarningPanel>` props
+### 10.1 `<ConflictWarningPanel />`
 
 ```ts
 interface ConflictWarningPanelProps {
-  conflicts: ConflictReport["conflicts"];     // architecture §6.2
-  acknowledgedIds: Set<string>;                // hash of class+relatedPolicyIds
-  onAcknowledge: (id: string) => void;
-  onIgnore?: (id: string) => void;             // for `low` severity only
-  emptyMessage?: string;
+  conflicts: Conflict[];                           // from architecture §6
+  onAcknowledge?: (conflictId: string) => void;
+  onResolve?: (conflict: Conflict) => void;        // optional CTA per conflict
+  emptyState?: React.ReactNode;                    // override default empty
+  testIdPrefix?: string;                           // defaults to 'panel-conflicts'
 }
 ```
 
-Severity → color rules: `high` = destructive `Alert`, `medium` = amber border, `low` = default. Each conflict has a "View details" disclosure showing `affectedUserIds` (count + first 10 names with "Show all" link to a modal). The "acknowledge to proceed" pattern: for `high` severity, an `Acknowledge` button appears; for `medium`/`low`, an `OK, got it` button just dismisses inline. The parent component is responsible for blocking the publish button while `acknowledgedIds.size < blockingCount`.
+Render rules:
+- Group by severity. Render order: `error` → `warning` → `info`.
+- One Shadcn `Alert` per conflict with the severity icon (`AlertTriangle` for error, `AlertCircle` for warning, `Info` for info).
+- `error` severity: red background tint, no Acknowledge button; an `onResolve` button if provided shows as `Button variant='outline' size='sm'` "Resolve".
+- `warning` and `info`: `Button variant='ghost' size='sm'` "Acknowledge" — calling `onAcknowledge` removes the row optimistically.
+- **Empty state:** small Teal-on-light-Teal `Alert variant='default'` with an `Info` icon and copy "No conflicts detected. Safe to publish."
 
-Empty state: "No conflicts detected." in muted text.
-
-### 10.2 `<ImpactPreviewPanel>` props
+### 10.2 `<ImpactPreviewPanel />`
 
 ```ts
 interface ImpactPreviewPanelProps {
-  result: ImpactPreviewResult | null;          // architecture §7.1
-  isLoading?: boolean;
-  onRefresh?: () => void;
-  onShowAllUsers?: () => void;                 // navigates to paginated list
+  policyId?: string;
+  draftScope?: { companyId?: string; locationId?: string; departmentId?: string; userId?: string };
+  policyTypeKey: string;
+  showByDepartment?: boolean;     // default true
+  showByLocation?: boolean;       // default true
+  defaultView?: 'count' | 'names'; // default 'count' — see architecture §13 question
+  testIdPrefix?: string;
 }
 ```
 
-When `result.totalUsers === 0`, render "No employees match this scope." When `result.truncated`, the names disclosure shows the first 50 names plus a "+ {totalUsers - 50} more" link that calls `onShowAllUsers`.
+Render rules:
+- Internally calls endpoint #11 with TanStack Query, debounced 500ms when props change.
+- Shows a single big number (`text-3xl font-semibold tabular-nums`) — "**142** employees affected".
+- Two horizontal bar mini-charts (Shadcn `Progress` per row, sized to fit the panel). Colors: Teal for departments, Blue for locations.
+- "View affected employees" `Button variant='link'` opens a `Sheet` with the `sample` array (first 25), then a footer "Showing 25 of 142".
+- **Empty:** "No employees would be affected — this assignment is unscoped or matches nobody."
+- **Loading:** `Skeleton` for the big number plus 3 bar rows.
+- **Severity color usage** is reused inside the warning when the count exceeds the cautious threshold (default 500): the count badge flips from neutral to amber.
+
+### 10.3 "Acknowledge to proceed" pattern
+
+Used in Pages B and E. Pattern:
+1. Render the `<ConflictWarningPanel />` as described.
+2. The Publish/Create button is disabled if any `error` exists and shows tooltip "Resolve the X errors below."
+3. If only `warning` conflicts exist, the button stays enabled but its click triggers an extra `Dialog` listing the warnings with checkboxes "I acknowledge this risk" — all must be checked to enable the modal's primary button.
+
+### 10.4 Empty / loading / error standards (cross-page)
+
+- **Empty:** muted `Card` with a Lucide icon centered, one-line title, one-line description, and at most one CTA.
+- **Loading:** `Skeleton` placeholders, never a spinner alone.
+- **Error:** Shadcn `Alert variant='destructive'` with the API error message and a `Button variant='outline' size='sm'` "Retry".
 
 ---
 
-## 11. Reusable component specs
+## 11. Reusable components — Rollback & Assignment Scope Picker
 
-### 11.1 Rollback confirmation modal
-
-Already specified in §6.3. Component exported as `<RollbackConfirmationModal>`:
+### 11.1 `<RollbackConfirmationModal />`
 
 ```ts
 interface RollbackConfirmationModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   policyId: string;
-  fromVersion: number;            // current latest
-  toVersion: number;              // version being rolled back to
+  policyTypeKey: string;
+  targetVersion: PolicyVersion;
   onConfirm: (note: string) => Promise<void>;
 }
 ```
 
-Required note (min 1 char). Confirm button uses `variant="destructive"` to convey weight; disabled while note is empty or submission is in flight.
+- Title: `"Roll back to v{targetVersion.versionNumber}?"`
+- Body:
+  - Read-only summary of the target version (`note`, `createdAt`, `createdBy`).
+  - Required `Textarea` "Note" (min 5 chars). `FormMessage` on blur.
+  - Embedded `<ImpactPreviewPanel policyId={policyId} policyTypeKey={policyTypeKey} />`.
+- Footer: `Button variant='outline' "Cancel"` and `Button variant='destructive' "Confirm rollback"` — disabled until note ≥ 5 chars; in flight shows spinner.
 
-### 11.2 Assignment scope selector
+### 11.2 `<AssignmentScopePicker />`
 
 ```ts
 interface AssignmentScopePickerProps {
-  value: AssignmentScope;          // { companyId?, locationId?, departmentId?, userId? } — exactly one or none for global
-  onChange: (scope: AssignmentScope) => void;
-  disabledLevels?: Array<"global" | "division" | "location" | "department" | "employee">;
-  showGlobalOption?: boolean;      // default true
-  data-testid prefix              // e.g. "assignment-scope-emergency"
+  value: AssignmentEntry[];                         // existing AssignmentEntry from policy-wizard.tsx
+  onChange: (next: AssignmentEntry[]) => void;
+  allowEmergency?: boolean;                         // default false
+  allowedLevels?: Array<'global'|'division'|'location'|'department'|'employee'>;
+  emergencyDefaults?: { startsAt: string; endsAt: string; priority: number };
+  testIdPrefix?: string;                            // defaults to 'picker-assignment-scope'
 }
 ```
 
-UI: 5 radio rows (`global`, `division`, `location`, `department`, `employee`). Each row except `global` reveals a Shadcn `Select` (or `Combobox` for employees) with the appropriate options once selected. Validation: radio must be picked; the dependent select must have a value (except for `global`).
+- Renders existing entries as removable Shadcn `Badge`s (matching today's `PolicyAssignmentBadges` styling in `rules-controls.tsx`).
+- "Add assignment" `Button variant='outline' size='sm'` opens a `Popover` with a `Command` palette: first pick level (filtered by `allowedLevels`), then autocomplete the target (driven by the existing `/api/companies`, `/api/locations`, `/api/departments`, `/api/users` endpoints).
+- When `allowEmergency=true`, after picking a target the popover reveals a `Switch` "Emergency override" + reason `Textarea` + start/end inputs + priority `Input`.
+
+### 11.3 `<EffectiveDatePicker />`
+
+```ts
+interface EffectiveDatePickerProps {
+  value: { effectiveAt: Date|null; effectiveUntil: Date|null };
+  onChange: (next: EffectiveDatePickerProps['value']) => void;
+  minDate?: Date;       // default: now
+  testIdPrefix?: string;
+}
+```
+
+- Pair of Shadcn `Popover` + `Calendar` + 24-h time `Input`.
+- A small Teal `Badge` shows "Now" when `effectiveAt` is null/in the past, "Scheduled" with the formatted date when in future.
+- An optional `Switch` "Auto-end" reveals the `effectiveUntil` controls.
 
 ---
 
-## 12. Component inventory
+## 12. Component inventory (new reusable components to add)
 
-New reusable components introduced in this work, all under `client/src/components/rules/`:
+| Component | Path (proposed) | Props | Used by |
+|---|---|---|---|
+| `<PolicyVersionTimeline />` | `client/src/components/policy/policy-version-timeline.tsx` | `policyId: string; limit?: number; onRollback?: (v: PolicyVersion) => void` | Page B (§4.2.6), Page D (§6) |
+| `<RuleDiffViewer />` | `client/src/components/policy/rule-diff-viewer.tsx` | `from: PolicyVersion; to: PolicyVersion; mode: 'unified'\|'side-by-side'` | Page D Diff modal (§6.2) |
+| `<ImpactPreviewPanel />` | `client/src/components/policy/impact-preview-panel.tsx` | see §10.2 | Pages B, E, I, Rollback modal |
+| `<ConflictWarningPanel />` | `client/src/components/policy/conflict-warning-panel.tsx` | see §10.1 | Pages B, C, E, I |
+| `<SimulationResultPanel />` | `client/src/components/policy/simulation-result-panel.tsx` | `result: SimulationOutput['resolutions'][number]; compare?: SimulationOutput['resolutions'][number]` | Page C (§5.3) |
+| `<EmergencyOverrideForm />` | `client/src/components/policy/emergency-override-form.tsx` | `defaultScope?; onSubmit: (data) => Promise<void>` | Page E (§7.2), Page A header action |
+| `<AssignmentScopePicker />` | `client/src/components/policy/assignment-scope-picker.tsx` | see §11.2 | Pages B, E, H, I |
+| `<EffectiveDatePicker />` | `client/src/components/policy/effective-date-picker.tsx` | see §11.3 | Page B header (Schedule), Page E |
+| `<RollbackConfirmationModal />` | `client/src/components/policy/rollback-confirmation-modal.tsx` | see §11.1 | Pages B, D |
+| `<RuleBuilderForm />` | `client/src/components/policy/rule-builder-form.tsx` | `policyTypeKey: string; value; onChange; errors?` | Page B (§4.2.1); reused inside `policy-wizard.tsx` so the wizard and the new page share field maps. |
 
-| Component | Props sketch |
-|-----------|--------------|
-| `<RulesCommandCenterPage />` | Top-level page; owns tab state and the left nav rail. |
-| `<CategoryDashboardCard />` | `{ category, stats, onOpen, onSimulate }` — Page A card |
-| `<CategoryDetailView />` | `{ typeKey, policyId? }` — Page B layout |
-| `<RuleBuilderForm />` | `{ typeKey, defaults, value, onChange, errors }` — wraps Shadcn `Form` |
-| `<AssignmentScopePicker />` | §11.2 |
-| `<ImpactPreviewPanel />` | §10.2 |
-| `<ConflictWarningPanel />` | §10.1 |
-| `<SimulationResultPanel />` | `{ result, comparison, isLoading }` — used both inline (B) and standalone (C) |
-| `<PolicyVersionTimeline />` | `{ policyId, versions, activeVersion, onDiff, onRollback }` |
-| `<RuleDiffViewer />` | `{ from, to, fields }` — §6.2 diff modal body |
-| `<RollbackConfirmationModal />` | §11.1 |
-| `<EmergencyOverrideForm />` | `{ defaultPolicyTypeKey?, onCreated }` — Page E form |
-| `<EmergencyOverrideList />` | `{ overrides, onEnd }` — Page E table with countdowns |
-| `<HolidayCalendarManager />` | top-level for Page H |
-| `<BlackoutDateManager />` | top-level for Page I |
-| `<EffectiveDatePicker />` | `{ value, onChange, minDate? }` — date+time picker w/ quick-set chips ("Now", "+1h", "+24h", "Next Monday 8am") |
+`client/src/lib/ruleFieldDefs.ts` (new): the extracted-and-extended `getRuleFieldsForType(...)` map covering all 13 categories, sourced from the `DEFAULT_*_RULES` constants in `server/policyEngine.ts`. The existing `policy-wizard.tsx` is updated to import from this file instead of redefining the map.
 
 ---
 
-## 13. Accessibility & data-testid plan
+## 13. Accessibility & `data-testid` plan
 
-### 13.1 `data-testid` patterns
+### 13.1 Naming convention (matches `fullstack-js` skill)
 
-Project convention from `replit.md` and the fullstack-js skill:
+- Interactive elements: `{action}-{target}` — e.g., `button-publish-policy`, `input-override-priority`, `select-rollback-version`, `link-open-category`.
+- Display elements: `{type}-{content}` — e.g., `text-active-version`, `badge-emergency-active`, `text-conflict-message`.
+- For per-row identifiers, append the unique entity id: `row-version-${versionNumber}`, `card-category-${typeKey}`, `badge-assignment-${assignmentId}`.
 
-| Element type | Pattern |
-|--------------|---------|
-| Buttons | `button-{action}-{target}`, e.g. `button-publish-policy-${policyId}`, `button-acknowledge-conflict-${conflictId}` |
-| Inputs | `input-{purpose}`, e.g. `input-rollback-note`, `input-emergency-reason`, `input-simulator-user` |
-| Selects | `select-{purpose}` |
-| Switches | `switch-{purpose}` |
-| Display text | `text-{content}`, e.g. `text-active-version-${policyId}`, `text-emergency-countdown-${assignmentId}` |
-| Badges | `badge-{type}-${id}`, e.g. `badge-conflict-${conflictId}`, `badge-emergency-${assignmentId}` |
-| Tables | `table-{name}` and rows `row-{name}-${id}` |
-| Cards/panels | `card-{name}` / `panel-{name}` |
-| Dialogs | `dialog-{purpose}-${id?}` |
+### 13.2 Required test-ids per page (selection)
 
-Every Page A card, every Page B section, every Diff modal field, every Emergency row gets a stable `data-testid` so the e2e test in implementation step 7 (Task #86) can drive the full flow.
+Page A: `page-rules-dashboard`, `card-summary-active`, `card-category-${typeKey}`, `button-open-category-${typeKey}`.
+Page B: `page-category-${typeKey}`, `text-active-version-${policyId}`, `button-publish-policy-${policyId}`, `panel-conflicts`, `panel-impact-preview`, `panel-version-history`.
+Page C: `page-simulator-lab`, `button-run-simulation`, `card-simulation-result-${typeKey}`, `text-resolved-policy-${typeKey}`.
+Page D: `table-version-history`, `row-version-${n}`, `dialog-rollback-confirm`, `textarea-rollback-note`, `button-confirm-rollback`.
+Page E: `page-emergency-center`, `table-live-overrides`, `button-create-override`, `badge-countdown-${id}`.
+Page H: `page-holiday-calendars`, `button-new-calendar`, `table-calendar-entries`.
+Page I: `page-blackout-dates`, `button-new-blackout`, `panel-blackout-conflicts`, `button-create-blackout`.
 
-### 13.2 Keyboard & focus rules
+### 13.3 Keyboard & focus
 
-- All Shadcn dialogs use `Dialog`, which provides focus trap and ESC-to-close out of the box. The Rollback modal must move focus to the textarea on open.
-- The left nav rail items are `<button>` elements (focusable via Tab). `Enter` activates.
-- Form fields follow the standard label-association pattern via Shadcn `Form`. All labels are associated with their controls via `id`/`htmlFor` (handled by Shadcn `FormField`).
-- Conflict acknowledgement buttons must be reachable via Tab from the publish button area and announce their state via `aria-live="polite"` ("Conflict acknowledged. Publish is now enabled." / "1 unacknowledged conflict remains.").
-- Emergency countdown text uses `aria-live="off"` (it changes every second; we don't want screen readers reading every tick). The total time remaining is announced once when the page loads via `aria-label` on the row.
-- Color is never the only carrier of meaning. Severity badges always pair color with the literal text "HIGH" / "MEDIUM" / "INFO". Active vs Draft chips have icons (●/◐) in addition to color.
+- Every `Dialog` uses Shadcn's default focus trap. The first focusable element is the primary input (e.g., the note `Textarea` in the rollback modal); the close button is the last tab stop.
+- `Sheet` panels (e.g., affected-employees list) restore focus to the trigger button on close.
+- `Tabs` are keyboard-navigable with arrow keys (Shadcn default).
+- Severity colors are paired with Lucide icons so colorblind admins still see the severity at a glance.
+- Live countdowns in the Emergency Center use `aria-live='polite'` so screen readers announce the change once per minute (not every second).
+- Tables marked with `<caption className='sr-only'>` for screen-reader context.
+
+### 13.4 Color contrast
+
+- Body text on white meets WCAG AA at minimum (the four palette colors all pass against white at 14px+).
+- Teal `#56b9ca` is used on Dark Navy for emergency badges (the only place white text on Teal is avoided since contrast is borderline at small sizes).
+- Severity badges always include an icon, so contrast does not rely on color alone.
 
 ---
 
 ## 14. Open design questions for product
 
-Decisions needed from product before implementation begins. Each lists the proposed default and the alternatives.
+Mirror of architecture.md §13 plus design-only decisions.
 
-1. **Color of the "Scheduled" badge.** Proposed: Ahava Blue `#1f97d4`. Alternatives: muted slate, amber. *The choice should not collide with "Informational" use elsewhere.*
-2. **Impact preview default disclosure.** Proposed: counts + breakdowns visible by default; employee names hidden behind a "Show employees" disclosure to reduce sensitive data exposure on screen. Alternative: names visible by default (more transparency, more PII on screen).
-3. **Emergency override max duration.** Proposed: 30-day soft cap (warning at 14 days, hard limit at 30). Alternative: no cap.
-4. **Diff viewer default expand depth.** Proposed: changes visible, unchanged collapsed. Alternative: everything expanded for full audit visibility.
-5. **Sticky left nav rail vs collapsing rail.** Proposed: sticky always visible at lg+, becomes a `Sheet`-style drawer at md and below. Alternative: collapsing per the existing employee profile sidebar pattern.
-6. **Where Department/Employee Override sub-views live.** Proposed: dedicated entries in the left nav rail (#11 and #12 in §2.1). Alternative: tabs inside each category detail page.
-7. **Should the simulator allow simulating a future date relative to a *scheduled* policy that's not yet live?** Proposed: yes — that's the point of scheduling preview. The simulator's `atTimestamp` input is unrestricted. Alternative: clamp to "now" with a separate "scheduled-date preview" mode for clarity.
-8. **What appears under "Department Overrides" / "Employee Overrides" left-nav entries.** Proposed: a flat table grouping every assignment with `departmentId` (or `userId`) non-null across all policy types, with click-through to the corresponding category detail. Alternative: separate detail pages per scope.
+1. **Scheduled badge color.** Default proposed: Blue `#1f97d4`. Alternative: a derived "future Teal" lighter tint. Choose one for visual consistency with the Live emergency badge.
+2. **Impact preview default view.** Show "**142** employees" (count) by default, with a "View affected employees" link, or always show the first 5 names inline? Default proposed: **count by default**, names behind the link. Faster page load; fewer privacy concerns.
+3. **Category icons.** Each category needs a Lucide icon for the dashboard tile. Proposed: Attendance `Clock`, Overtime `AlarmClock`, Breaks `Coffee`, PTO Accrual `CalendarPlus`, PTO Requests `CalendarDays`, Holidays `PartyPopper`, Payroll `DollarSign`, Approvals `GitBranch`, Alerts `Bell`, Kiosk `Tablet`, Schedules `CalendarRange`, Documents `FileText`, Roles `Shield`. Confirm or substitute.
+4. **"Acknowledge to proceed" friction.** For warnings, do we require a single bulk acknowledgement or one checkbox per warning? Default proposed: **one checkbox per warning** for clarity.
+5. **Diff viewer default mode.** Side-by-side or unified? Default proposed: **side-by-side** (matches Git review tools admins are likely familiar with).
+6. **Emergency creation entry points.** Two exist (Page A header button and Page E primary). Should the Page A button open the same `<EmergencyOverrideForm />` Dialog, or navigate to Page E? Default proposed: **open Dialog** for fewer clicks.
+7. **Legacy `/rules-controls` deprecation banner copy.** Confirm the wording in §2 above is acceptable for HR admins, who may have bookmarked the old route.
+8. **Holiday entry pay multiplier visibility.** Show the multiplier column always, or only when at least one entry uses it? Default proposed: **always**, to make the field discoverable.
+
+---
+
+> ⬅️ Back to [`docs/phase2/architecture.md`](./architecture.md) for the schema, resolver, and API definitions backing each screen.
