@@ -2,8 +2,14 @@ import { db } from "../db";
 import { jobs, type Job, type InsertJob } from "@shared/schema";
 import { and, eq, asc } from "drizzle-orm";
 import { runAutoClockOut, createPolicyAlerts } from "./policyEnforcement";
+import { applyPtoAnniversaryAdjustments } from "./ptoAnniversary";
+import { evaluatePerformanceReviews } from "./performanceReviews";
 
-export type JobType = "auto-clock-out" | "rebuild-report";
+export type JobType =
+  | "auto-clock-out"
+  | "rebuild-report"
+  | "apply-pto-anniversary-adjustments"
+  | "evaluate-performance-reviews";
 
 export async function enqueue(type: JobType, payload?: unknown): Promise<Job> {
   const [created] = await db
@@ -27,6 +33,17 @@ async function processJob(job: Job): Promise<void> {
       return;
     }
     case "rebuild-report": {
+      return;
+    }
+    case "apply-pto-anniversary-adjustments": {
+      await applyPtoAnniversaryAdjustments();
+      return;
+    }
+    case "evaluate-performance-reviews": {
+      const alerts = await evaluatePerformanceReviews();
+      if (alerts.length > 0) {
+        await createPolicyAlerts(alerts);
+      }
       return;
     }
     default:
@@ -78,12 +95,19 @@ export async function drainPending(limit: number): Promise<{ processed: number; 
 }
 
 export async function ensureRecurringEnqueued(): Promise<void> {
-  const existing = await db
-    .select()
-    .from(jobs)
-    .where(and(eq(jobs.type, "auto-clock-out"), eq(jobs.status, "pending")))
-    .limit(1);
-  if (existing.length === 0) {
-    await enqueue("auto-clock-out");
+  const recurring: JobType[] = [
+    "auto-clock-out",
+    "apply-pto-anniversary-adjustments",
+    "evaluate-performance-reviews",
+  ];
+  for (const type of recurring) {
+    const existing = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.type, type), eq(jobs.status, "pending")))
+      .limit(1);
+    if (existing.length === 0) {
+      await enqueue(type);
+    }
   }
 }

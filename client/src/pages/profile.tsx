@@ -12,7 +12,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { PageHeader } from "@/components/page-header";
-import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Timer } from "lucide-react";
+import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Timer, Sparkles } from "lucide-react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import type { PtoAnniversaryAdjustment } from "@shared/schema";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface ProfileDetails {
@@ -217,6 +226,69 @@ function SectionSkeleton({ rows = 3 }: { rows?: number }) {
   );
 }
 
+function PtoAnniversaryHistoryCard({ userId }: { userId: string | null }) {
+  const { data, isLoading } = useQuery<(PtoAnniversaryAdjustment & { ptoPolicyName: string | null })[]>({
+    queryKey: ["/api/users", userId, "pto-anniversary-adjustments"],
+    queryFn: async () => {
+      if (!userId) return [];
+      const res = await fetch(`/api/users/${userId}/pto-anniversary-adjustments`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load anniversary history");
+      return res.json();
+    },
+    enabled: !!userId,
+  });
+
+  return (
+    <Card data-testid="card-pto-anniversary-history" id="pto-anniversary">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-muted-foreground" />
+          PTO Anniversary History
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : !data || data.length === 0 ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-no-pto-anniversary">
+            No anniversary adjustments yet — your PTO accrual rate hasn't crossed a tier boundary.
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Effective</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Years</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Old → New tier</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Hours added</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Source policy</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((row) => (
+                <TableRow key={row.id} data-testid={`row-pto-anniversary-${row.id}`}>
+                  <TableCell data-testid={`text-pto-anniversary-date-${row.id}`}>{formatDate(row.effectiveDate)}</TableCell>
+                  <TableCell>{row.yearsOfService}</TableCell>
+                  <TableCell className="text-sm">
+                    {row.oldTierLabel || "—"} → {row.newTierLabel || "—"}
+                  </TableCell>
+                  <TableCell data-testid={`text-pto-anniversary-hours-${row.id}`}>+{row.hoursAdded}</TableCell>
+                  <TableCell className="text-sm" data-testid={`text-pto-anniversary-policy-${row.id}`}>
+                    {row.ptoPolicyName || "—"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+        <p className="text-xs text-muted-foreground mt-3">
+          PTO anniversary adjustments are calculated automatically based on your hire date and the active PTO policy.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="space-y-0.5" data-testid={`field-${label.toLowerCase().replace(/\s+/g, "-")}`}>
@@ -342,6 +414,8 @@ export default function ProfilePage() {
           )}
         </CardContent>
       </Card>
+
+      <PtoAnniversaryHistoryCard userId={user?.id ?? null} />
 
       <Card data-testid="card-employment">
         <CardHeader className="pb-3">

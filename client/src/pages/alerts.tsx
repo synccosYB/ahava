@@ -24,6 +24,16 @@ import {
 } from "@/components/ui/table";
 import { AlertTriangle, Bell, CheckCircle, Eye, Loader2, Play } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 type SystemAlert = {
   id: string;
@@ -60,6 +70,7 @@ const typeLabels: Record<string, string> = {
   overtime_threshold: "Overtime Threshold",
   no_show: "No Show",
   repeated_exception: "Repeated Exception",
+  review_due: "Performance Review Due",
 };
 
 export default function AlertsPage() {
@@ -69,6 +80,8 @@ export default function AlertsPage() {
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
+  const [completeDialog, setCompleteDialog] = useState<{ reminderId: string } | null>(null);
+  const [completeNotes, setCompleteNotes] = useState("");
 
   const queryParams = new URLSearchParams();
   if (typeFilter !== "all") queryParams.set("type", typeFilter);
@@ -110,6 +123,22 @@ export default function AlertsPage() {
       toast({ title: "Alert resolved" });
     },
     onError: () => toast({ title: "Failed to resolve alert", variant: "destructive" }),
+  });
+
+  const completeReviewMutation = useMutation({
+    mutationFn: async (args: { reminderId: string; notes?: string }) => {
+      const body: { status: "completed"; notes?: string } = { status: "completed" };
+      if (args.notes && args.notes.trim()) body.notes = args.notes.trim();
+      await apiRequest("PATCH", `/api/review-reminders/${args.reminderId}`, body);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/review-reminders"] });
+      toast({ title: "Review marked complete" });
+      setCompleteDialog(null);
+      setCompleteNotes("");
+    },
+    onError: () => toast({ title: "Failed to complete review", variant: "destructive" }),
   });
 
   const openCount = alerts?.filter(a => a.status === "open").length || 0;
@@ -261,6 +290,26 @@ export default function AlertsPage() {
                             <CheckCircle className="h-3 w-3 mr-1" /> Resolve
                           </Button>
                         )}
+                        {alert.type === "review_due" &&
+                          (alert.status === "open" || alert.status === "acknowledged") &&
+                          (isAdmin || user?.role === "manager") &&
+                          alert.details &&
+                          typeof (alert.details as Record<string, unknown>).reminderId === "string" && (
+                            <Button
+                              size="sm"
+                              variant="default"
+                              onClick={() => {
+                                setCompleteNotes("");
+                                setCompleteDialog({
+                                  reminderId: (alert.details as { reminderId: string }).reminderId,
+                                });
+                              }}
+                              disabled={completeReviewMutation.isPending}
+                              data-testid={`button-complete-review-${alert.id}`}
+                            >
+                              <CheckCircle className="h-3 w-3 mr-1" /> Mark Complete
+                            </Button>
+                          )}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -274,6 +323,66 @@ export default function AlertsPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={!!completeDialog}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCompleteDialog(null);
+            setCompleteNotes("");
+          }
+        }}
+      >
+        <DialogContent data-testid="dialog-complete-review">
+          <DialogHeader>
+            <DialogTitle>Mark performance review complete</DialogTitle>
+            <DialogDescription>
+              Optionally add notes for the audit log before marking this reminder complete.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="complete-review-notes">Notes (optional)</Label>
+            <Textarea
+              id="complete-review-notes"
+              value={completeNotes}
+              onChange={(e) => setCompleteNotes(e.target.value)}
+              placeholder="e.g. Review completed during 1:1 on May 5"
+              rows={4}
+              data-testid="textarea-complete-review-notes"
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCompleteDialog(null);
+                setCompleteNotes("");
+              }}
+              data-testid="button-cancel-complete-review"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!completeDialog) return;
+                completeReviewMutation.mutate({
+                  reminderId: completeDialog.reminderId,
+                  notes: completeNotes,
+                });
+              }}
+              disabled={completeReviewMutation.isPending}
+              data-testid="button-confirm-complete-review"
+            >
+              {completeReviewMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <CheckCircle className="h-4 w-4 mr-2" />
+              )}
+              Mark Complete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

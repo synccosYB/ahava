@@ -23,7 +23,7 @@ import { CalendarDays, Plus, Pencil, Settings, Search, AlertTriangle, Check, X, 
 import { PageHeader } from "@/components/page-header";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Progress } from "@/components/ui/progress";
-import type { PtoPolicy, User, Division, Department, AttendanceException } from "@shared/schema";
+import type { PtoPolicy, User, Division, Department, AttendanceException, PtoAnniversaryAdjustment } from "@shared/schema";
 
 type PtoBalanceEntry = {
   userId: string;
@@ -70,11 +70,13 @@ export default function PtoLeavePage() {
               </Badge>
             )}
           </TabsTrigger>
+          <TabsTrigger value="anniversary-history" data-testid="tab-anniversary-history">Anniversary History</TabsTrigger>
         </TabsList>
         <TabsContent value="balances"><PtoBalancesTab /></TabsContent>
         <TabsContent value="policies"><PoliciesTab /></TabsContent>
         <TabsContent value="employee-settings"><EmployeePtoTab /></TabsContent>
         <TabsContent value="alerts-exceptions"><AlertsExceptionsTab /></TabsContent>
+        <TabsContent value="anniversary-history"><AnniversaryHistoryTab /></TabsContent>
       </Tabs>
     </div>
   );
@@ -729,5 +731,89 @@ function AlertsExceptionsTab() {
         </div>
       )}
     </div>
+  );
+}
+
+function AnniversaryHistoryTab() {
+  const { data: users, isLoading: usersLoading } = useQuery<User[]>({ queryKey: ["/api/users"] });
+  const [selectedUserId, setSelectedUserId] = useState<string>("");
+
+  const { data: history, isLoading: historyLoading } = useQuery<(PtoAnniversaryAdjustment & { ptoPolicyName: string | null })[]>({
+    queryKey: ["/api/users", selectedUserId, "pto-anniversary-adjustments"],
+    queryFn: async () => {
+      if (!selectedUserId) return [];
+      const res = await fetch(`/api/users/${selectedUserId}/pto-anniversary-adjustments`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load anniversary history");
+      return res.json();
+    },
+    enabled: !!selectedUserId,
+  });
+
+  return (
+    <Card data-testid="card-anniversary-history">
+      <CardHeader>
+        <CardTitle className="text-base">PTO Anniversary Adjustments</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="max-w-sm">
+          <Label className="text-xs uppercase tracking-wider text-muted-foreground">Employee</Label>
+          <Select value={selectedUserId} onValueChange={setSelectedUserId}>
+            <SelectTrigger data-testid="select-anniversary-employee" className="mt-1">
+              <SelectValue placeholder={usersLoading ? "Loading…" : "Select an employee"} />
+            </SelectTrigger>
+            <SelectContent>
+              {users?.map((u) => (
+                <SelectItem key={u.id} value={u.id} data-testid={`option-anniversary-employee-${u.id}`}>
+                  {u.firstName} {u.lastName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {!selectedUserId ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-anniversary-pick-employee">
+            Pick an employee to view their PTO anniversary tier-bump history.
+          </p>
+        ) : historyLoading ? (
+          <Skeleton className="h-32 w-full" />
+        ) : !history || history.length === 0 ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-anniversary-empty">
+            No anniversary adjustments recorded for this employee.
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Effective Date</TableHead>
+                <TableHead>Years</TableHead>
+                <TableHead>Old Tier → New Tier</TableHead>
+                <TableHead>Hours Added</TableHead>
+                <TableHead>Days Added</TableHead>
+                <TableHead>Source Policy</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {history.map((row) => (
+                <TableRow key={row.id} data-testid={`row-anniversary-${row.id}`}>
+                  <TableCell data-testid={`text-anniversary-effective-${row.id}`}>
+                    {new Date(row.effectiveDate).toLocaleDateString()}
+                  </TableCell>
+                  <TableCell>{row.yearsOfService}</TableCell>
+                  <TableCell className="text-sm">
+                    {row.oldTierLabel || "—"} → {row.newTierLabel || "—"}
+                  </TableCell>
+                  <TableCell data-testid={`text-anniversary-hours-${row.id}`}>+{row.hoursAdded}</TableCell>
+                  <TableCell data-testid={`text-anniversary-days-${row.id}`}>+{Math.round(row.hoursAdded / 8)}</TableCell>
+                  <TableCell className="text-sm" data-testid={`text-anniversary-policy-${row.id}`}>
+                    {row.ptoPolicyName || "—"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
 }

@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import {
@@ -742,3 +742,138 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
 });
 export type InsertJob = z.infer<typeof insertJobSchema>;
 export type Job = typeof jobs.$inferSelect;
+
+export const ptoAnniversaryAdjustments = pgTable(
+  "pto_anniversary_adjustments",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    employeeId: varchar("employee_id").notNull().references(() => users.id),
+    effectiveDate: date("effective_date").notNull(),
+    oldAccrualRate: real("old_accrual_rate"),
+    newAccrualRate: real("new_accrual_rate").notNull(),
+    oldTierLabel: varchar("old_tier_label", { length: 100 }),
+    newTierLabel: varchar("new_tier_label", { length: 100 }),
+    yearsOfService: integer("years_of_service").notNull(),
+    hoursAdded: real("hours_added").notNull(),
+    ptoPolicyId: varchar("pto_policy_id").references(() => ptoPolicies.id),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("pto_anniversary_adjustments_employee_effective_unique").on(
+      table.employeeId,
+      table.effectiveDate,
+    ),
+  ],
+);
+
+export const insertPtoAnniversaryAdjustmentSchema = createInsertSchema(
+  ptoAnniversaryAdjustments,
+).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertPtoAnniversaryAdjustment = z.infer<typeof insertPtoAnniversaryAdjustmentSchema>;
+export type PtoAnniversaryAdjustment = typeof ptoAnniversaryAdjustments.$inferSelect;
+
+export const ptoAnniversaryAdjustmentsRelations = relations(
+  ptoAnniversaryAdjustments,
+  ({ one }) => ({
+    employee: one(users, {
+      fields: [ptoAnniversaryAdjustments.employeeId],
+      references: [users.id],
+    }),
+    ptoPolicy: one(ptoPolicies, {
+      fields: [ptoAnniversaryAdjustments.ptoPolicyId],
+      references: [ptoPolicies.id],
+    }),
+  }),
+);
+
+export const performanceReviewCycles = pgTable("performance_review_cycles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").references(() => companies.id),
+  name: varchar("name", { length: 200 }).notNull(),
+  cadence: varchar("cadence", { length: 30 }).notNull(),
+  anchor: varchar("anchor", { length: 30 }).notNull(),
+  leadTimes: jsonb("lead_times").$type<number[]>().default(sql`'[14,7,0]'::jsonb`).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertPerformanceReviewCycleSchema = createInsertSchema(
+  performanceReviewCycles,
+).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  cadence: z.enum(["annual", "semi_annual", "quarterly", "new_hire_90"]),
+  anchor: z.enum(["hire_date", "calendar_year"]),
+  leadTimes: z.array(z.number().int().min(0)).optional(),
+});
+export type InsertPerformanceReviewCycle = z.infer<typeof insertPerformanceReviewCycleSchema>;
+export type PerformanceReviewCycle = typeof performanceReviewCycles.$inferSelect;
+
+export const performanceReviewCyclesRelations = relations(
+  performanceReviewCycles,
+  ({ one, many }) => ({
+    company: one(companies, {
+      fields: [performanceReviewCycles.companyId],
+      references: [companies.id],
+    }),
+    reminders: many(performanceReviewReminders),
+  }),
+);
+
+export const performanceReviewReminders = pgTable(
+  "performance_review_reminders",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    employeeId: varchar("employee_id").notNull().references(() => users.id),
+    cycleId: varchar("cycle_id").notNull().references(() => performanceReviewCycles.id),
+    dueDate: date("due_date").notNull(),
+    status: varchar("status", { length: 20 }).default("pending").notNull(),
+    completedBy: varchar("completed_by").references(() => users.id),
+    completedAt: timestamp("completed_at"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("performance_review_reminders_employee_cycle_due_unique").on(
+      table.employeeId,
+      table.cycleId,
+      table.dueDate,
+    ),
+  ],
+);
+
+export const insertPerformanceReviewReminderSchema = createInsertSchema(
+  performanceReviewReminders,
+).omit({
+  id: true,
+  createdAt: true,
+  completedBy: true,
+  completedAt: true,
+});
+export type InsertPerformanceReviewReminder = z.infer<typeof insertPerformanceReviewReminderSchema>;
+export type PerformanceReviewReminder = typeof performanceReviewReminders.$inferSelect;
+
+export const performanceReviewRemindersRelations = relations(
+  performanceReviewReminders,
+  ({ one }) => ({
+    employee: one(users, {
+      fields: [performanceReviewReminders.employeeId],
+      references: [users.id],
+    }),
+    cycle: one(performanceReviewCycles, {
+      fields: [performanceReviewReminders.cycleId],
+      references: [performanceReviewCycles.id],
+    }),
+    completer: one(users, {
+      fields: [performanceReviewReminders.completedBy],
+      references: [users.id],
+    }),
+  }),
+);

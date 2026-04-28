@@ -6,7 +6,7 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
@@ -4357,6 +4357,220 @@ export async function registerRoutes(
     }
   });
 
+  // ===== Performance review cycles =====
+  app.get("/api/review-cycles", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const isActive =
+        typeof req.query.isActive === "string"
+          ? req.query.isActive === "true"
+          : undefined;
+      const requestedCompanyId =
+        typeof req.query.companyId === "string" ? req.query.companyId : undefined;
+
+      let companyIdFilter: string | null | undefined;
+      if (requestedCompanyId === "null") {
+        companyIdFilter = null;
+      } else if (requestedCompanyId) {
+        companyIdFilter = requestedCompanyId;
+      } else {
+        companyIdFilter = undefined;
+      }
+
+      const cycles = await storage.getReviewCycles({
+        isActive,
+        companyId: companyIdFilter,
+      });
+      res.json(cycles);
+    } catch (err) {
+      console.error("[GET /api/review-cycles]", err);
+      res.status(500).json({ message: "Failed to fetch review cycles" });
+    }
+  });
+
+  app.post("/api/review-cycles", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const parsed = insertPerformanceReviewCycleSchema.parse(req.body);
+      const created = await storage.createReviewCycle(parsed);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        action: "review_cycle.created",
+        targetType: "review_cycle",
+        targetId: created.id,
+        newValue: { name: created.name, cadence: created.cadence, anchor: created.anchor },
+        ...getAuditContext(req),
+      });
+      res.status(201).json(created);
+    } catch (err: any) {
+      if (err?.issues) return res.status(400).json({ message: "Invalid review cycle", issues: err.issues });
+      console.error("[POST /api/review-cycles]", err);
+      res.status(500).json({ message: "Failed to create review cycle" });
+    }
+  });
+
+  app.patch("/api/review-cycles/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const existing = await storage.getReviewCycle(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Review cycle not found" });
+      const parsed = insertPerformanceReviewCycleSchema.partial().parse(req.body);
+      const updated = await storage.updateReviewCycle(req.params.id, parsed);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        action: "review_cycle.updated",
+        targetType: "review_cycle",
+        targetId: req.params.id,
+        oldValue: { name: existing.name, isActive: existing.isActive },
+        newValue: { name: updated?.name, isActive: updated?.isActive },
+        ...getAuditContext(req),
+      });
+      res.json(updated);
+    } catch (err: any) {
+      if (err?.issues) return res.status(400).json({ message: "Invalid review cycle", issues: err.issues });
+      console.error("[PATCH /api/review-cycles/:id]", err);
+      res.status(500).json({ message: "Failed to update review cycle" });
+    }
+  });
+
+  app.delete("/api/review-cycles/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const existing = await storage.getReviewCycle(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Review cycle not found" });
+      const updated = await storage.updateReviewCycle(req.params.id, { isActive: false });
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        action: "review_cycle.deactivated",
+        targetType: "review_cycle",
+        targetId: req.params.id,
+        oldValue: { isActive: existing.isActive },
+        newValue: { isActive: false },
+        ...getAuditContext(req),
+      });
+      res.json(updated);
+    } catch (err) {
+      console.error("[DELETE /api/review-cycles/:id]", err);
+      res.status(500).json({ message: "Failed to deactivate review cycle" });
+    }
+  });
+
+  // ===== Performance review reminders =====
+  app.get("/api/review-reminders", requireAuth, async (req: any, res) => {
+    try {
+      const employeeIdParam = typeof req.query.employeeId === "string" ? req.query.employeeId : undefined;
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      const cycleId = typeof req.query.cycleId === "string" ? req.query.cycleId : undefined;
+      const authUser = req.authUser as User;
+      const isAdmin = authUser.role === "admin";
+      const isManager = authUser.role === "manager";
+
+      if (isAdmin) {
+        const reminders = await storage.listReviewReminders({
+          employeeId: employeeIdParam,
+          status,
+          cycleId,
+        });
+        return res.json(reminders);
+      }
+
+      if (isManager) {
+        const teamIds = await getTeamUserIds(authUser);
+        teamIds.add(authUser.id);
+        if (employeeIdParam) {
+          if (!teamIds.has(employeeIdParam)) {
+            return res.status(403).json({ message: "Forbidden" });
+          }
+          const reminders = await storage.listReviewReminders({
+            employeeId: employeeIdParam,
+            status,
+            cycleId,
+          });
+          return res.json(reminders);
+        }
+        const all = await storage.listReviewReminders({ status, cycleId });
+        return res.json(all.filter((r) => teamIds.has(r.employeeId)));
+      }
+
+      // Employees can only see their own reminders
+      const reminders = await storage.listReviewReminders({
+        employeeId: authUser.id,
+        status,
+        cycleId,
+      });
+      res.json(reminders);
+    } catch (err) {
+      console.error("[GET /api/review-reminders]", err);
+      res.status(500).json({ message: "Failed to fetch review reminders" });
+    }
+  });
+
+  app.patch("/api/review-reminders/:id", requireAuth, requireRole("admin", "manager"), async (req: any, res) => {
+    try {
+      const existing = await storage.getReviewReminder(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Reminder not found" });
+      const authUser = req.authUser as User;
+      if (authUser.role === "manager") {
+        const teamIds = await getTeamUserIds(authUser);
+        if (!teamIds.has(existing.employeeId)) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+      }
+      const bodySchema = z.object({
+        status: z.enum(["completed", "skipped"]),
+        notes: z.string().optional(),
+      });
+      const parsed = bodySchema.parse(req.body);
+      const updated = await storage.updateReviewReminder(req.params.id, {
+        status: parsed.status,
+        completedBy: req.authUser.id,
+        notes: parsed.notes,
+      });
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        action: "review_reminder.updated",
+        targetType: "review_reminder",
+        targetId: req.params.id,
+        oldValue: { status: existing.status },
+        newValue: { status: parsed.status, notes: parsed.notes ?? null },
+        ...getAuditContext(req),
+      });
+      if (parsed.status === "completed" || parsed.status === "skipped") {
+        await storage.resolveReviewDueAlertsFor(req.params.id, req.authUser.id);
+      }
+      res.json(updated);
+    } catch (err: any) {
+      if (err?.issues) return res.status(400).json({ message: "Invalid update", issues: err.issues });
+      console.error("[PATCH /api/review-reminders/:id]", err);
+      res.status(500).json({ message: "Failed to update reminder" });
+    }
+  });
+
+  // ===== PTO anniversary adjustments (read-only) =====
+  app.get("/api/users/:id/pto-anniversary-adjustments", requireAuth, async (req: any, res) => {
+    try {
+      const targetId = req.params.id;
+      const isSelf = req.authUser.id === targetId;
+      const isAdmin = req.authUser.role === "admin";
+      if (!isSelf && !isAdmin) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+      const rows = await storage.listPtoAnniversaryAdjustments(targetId);
+      const policyIds = Array.from(
+        new Set(rows.map((r) => r.ptoPolicyId).filter((v): v is string => Boolean(v))),
+      );
+      const policyNameById = new Map<string, string>();
+      for (const pid of policyIds) {
+        const policy = await storage.getPtoPolicy(pid);
+        if (policy) policyNameById.set(pid, policy.name);
+      }
+      const enriched = rows.map((row) => ({
+        ...row,
+        ptoPolicyName: row.ptoPolicyId ? policyNameById.get(row.ptoPolicyId) ?? null : null,
+      }));
+      res.json(enriched);
+    } catch (err) {
+      console.error("[GET /api/users/:id/pto-anniversary-adjustments]", err);
+      res.status(500).json({ message: "Failed to fetch anniversary adjustments" });
+    }
+  });
+
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
   const wsClients = new Set<WebSocket>();
 
@@ -4406,7 +4620,12 @@ export async function registerRoutes(
     if (!config.cronSecret || provided !== config.cronSecret) {
       return res.status(401).json({ message: "Unauthorized" });
     }
-    const ALLOWED_JOB_TYPES = ["auto-clock-out", "rebuild-report"] as const;
+    const ALLOWED_JOB_TYPES = [
+      "auto-clock-out",
+      "rebuild-report",
+      "apply-pto-anniversary-adjustments",
+      "evaluate-performance-reviews",
+    ] as const;
     type AllowedJobType = typeof ALLOWED_JOB_TYPES[number];
     const rawType = req.body?.type ?? "auto-clock-out";
     if (typeof rawType !== "string" || !ALLOWED_JOB_TYPES.includes(rawType as AllowedJobType)) {

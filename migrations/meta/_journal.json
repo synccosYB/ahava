@@ -127,6 +127,20 @@
       "when": 1777000000000,
       "tag": "0017_jobs_table",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1777100000000,
+      "tag": "0018_phase3_recurring_hr_reminders",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1777200000000,
+      "tag": "0019_pto_anniversary_notes",
+      "breakpoints": true
     }
   ]
 }

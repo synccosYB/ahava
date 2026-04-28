@@ -22,7 +22,7 @@ import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy,
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
 import { formatCurrency } from "@/lib/utils";
-import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division } from "@shared/schema";
+import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
 
 type EmployeeListItem = User & {
   departmentName?: string;
@@ -937,6 +937,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                   {profile?.overtimeEligible ? "Yes" : "No"}
                 </p>
               </div>
+              <NextReviewIndicator userId={userId} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -1005,6 +1006,63 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           <EmployeeAuditHistory userId={userId} />
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function NextReviewIndicator({ userId }: { userId: string }) {
+  const { data: reminders, isLoading } = useQuery<PerformanceReviewReminder[]>({
+    queryKey: ["/api/review-reminders", { employeeId: userId, status: "pending" }],
+    queryFn: async () => {
+      const params = new URLSearchParams({ employeeId: userId, status: "pending" });
+      const res = await fetch(`/api/review-reminders?${params.toString()}`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to fetch review reminders");
+      return res.json();
+    },
+  });
+
+  const { data: cycles } = useQuery<PerformanceReviewCycle[]>({
+    queryKey: ["/api/review-cycles"],
+    queryFn: async () => {
+      const res = await fetch("/api/review-cycles", { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+  });
+
+  const next = (reminders ?? [])
+    .slice()
+    .sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? ""))[0];
+
+  let text = "—";
+  let testidSuffix = "none";
+  if (next) {
+    const cycleName = cycles?.find((c) => c.id === next.cycleId)?.name;
+    const due = new Date(`${next.dueDate}T00:00:00Z`);
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const days = Math.round((due.getTime() - today.getTime()) / 86_400_000);
+    const dayLabel =
+      days === 0
+        ? "today"
+        : days > 0
+          ? `in ${days} day${days === 1 ? "" : "s"}`
+          : `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} overdue`;
+    text = `${next.dueDate} (${dayLabel})${cycleName ? ` — ${cycleName}` : ""}`;
+    testidSuffix = next.id;
+  }
+
+  return (
+    <div data-testid="field-next-review">
+      <Label className="text-muted-foreground text-xs">Next Review</Label>
+      <p
+        className="font-medium"
+        data-testid={`text-profile-next-review-${testidSuffix}`}
+      >
+        {isLoading ? "Loading…" : text}
+      </p>
     </div>
   );
 }

@@ -18,11 +18,12 @@ import {
 } from "@/components/ui/dialog";
 import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
-  GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2
+  GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2, ClipboardCheck
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PolicyWizard } from "@/components/policy-wizard";
 import { WorkflowBuilder } from "@/components/workflow-builder";
+import { ReviewCyclesSection } from "@/components/review-cycles/review-cycles-section";
 import type { Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User, Workflow as WorkflowType } from "@shared/schema";
 
 const sections = [
@@ -34,6 +35,7 @@ const sections = [
   { key: "approval", label: "Approval Workflows", icon: GitBranch },
   { key: "roles", label: "Roles & Permissions", icon: Shield },
   { key: "alerts", label: "Alerts & Notifications", icon: Bell },
+  { key: "review-cycles", label: "Review Cycles", icon: ClipboardCheck },
   { key: "kiosk", label: "Kiosk & Devices", icon: Tablet },
   { key: "audit", label: "Audit Logs", icon: FileSearch },
 ];
@@ -73,6 +75,7 @@ export default function RulesControlsPage() {
           {activeSection === "approval" && <ApprovalWorkflowsSection />}
           {activeSection === "roles" && <RolesSection />}
           {activeSection === "alerts" && <AlertsSection />}
+          {activeSection === "review-cycles" && <ReviewCyclesSection />}
           {activeSection === "kiosk" && <KioskSection />}
           {activeSection === "audit" && <AuditSection />}
         </div>

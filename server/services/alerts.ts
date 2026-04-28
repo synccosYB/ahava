@@ -11,7 +11,8 @@ export type AlertType =
   | "no_show"
   | "repeated_exception"
   | "break_violation"
-  | "auto_clock_out";
+  | "auto_clock_out"
+  | "review_due";
 
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
 
@@ -339,6 +340,14 @@ export async function runAlertDetection(): Promise<GeneratedAlert[]> {
     allAlerts.push(...noShows);
   } catch (e) {
     console.error("Alert detection - no-shows error:", e);
+  }
+
+  try {
+    const { detectPerformanceReviewsDue } = await import("./lifecycleAlerts");
+    const reviews = await detectPerformanceReviewsDue();
+    allAlerts.push(...reviews);
+  } catch (e) {
+    console.error("Alert detection - performance reviews error:", e);
   }
 
   return allAlerts;

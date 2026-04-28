@@ -93,6 +93,15 @@ import {
   workflows,
   type Workflow,
   type InsertWorkflow,
+  ptoAnniversaryAdjustments,
+  type PtoAnniversaryAdjustment,
+  type InsertPtoAnniversaryAdjustment,
+  performanceReviewCycles,
+  type PerformanceReviewCycle,
+  type InsertPerformanceReviewCycle,
+  performanceReviewReminders,
+  type PerformanceReviewReminder,
+  type InsertPerformanceReviewReminder,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull } from "drizzle-orm";
@@ -343,6 +352,19 @@ export interface IStorage {
   createWorkflow(workflow: InsertWorkflow): Promise<Workflow>;
   updateWorkflow(id: string, workflow: Partial<InsertWorkflow>): Promise<Workflow | undefined>;
   deleteWorkflow(id: string): Promise<void>;
+
+  listPtoAnniversaryAdjustments(employeeId: string): Promise<PtoAnniversaryAdjustment[]>;
+  recordPtoAnniversaryAdjustment(data: InsertPtoAnniversaryAdjustment): Promise<PtoAnniversaryAdjustment | undefined>;
+
+  getReviewCycle(id: string): Promise<PerformanceReviewCycle | undefined>;
+  getReviewCycles(filters?: { companyId?: string | null; isActive?: boolean }): Promise<PerformanceReviewCycle[]>;
+  createReviewCycle(data: InsertPerformanceReviewCycle): Promise<PerformanceReviewCycle>;
+  updateReviewCycle(id: string, data: Partial<InsertPerformanceReviewCycle>): Promise<PerformanceReviewCycle | undefined>;
+  getReviewReminder(id: string): Promise<PerformanceReviewReminder | undefined>;
+  listReviewReminders(filters?: { employeeId?: string; status?: string; cycleId?: string }): Promise<PerformanceReviewReminder[]>;
+  upsertReviewReminder(data: InsertPerformanceReviewReminder): Promise<PerformanceReviewReminder>;
+  updateReviewReminder(id: string, data: { status: string; completedBy?: string; notes?: string }): Promise<PerformanceReviewReminder | undefined>;
+  resolveReviewDueAlertsFor(reminderId: string, resolverUserId: string): Promise<number>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -1809,6 +1831,173 @@ export class DatabaseStorage implements IStorage {
 
   async deleteWorkflow(id: string): Promise<void> {
     await db.delete(workflows).where(eq(workflows.id, id));
+  }
+
+  async listPtoAnniversaryAdjustments(employeeId: string): Promise<PtoAnniversaryAdjustment[]> {
+    return db
+      .select()
+      .from(ptoAnniversaryAdjustments)
+      .where(eq(ptoAnniversaryAdjustments.employeeId, employeeId))
+      .orderBy(desc(ptoAnniversaryAdjustments.effectiveDate));
+  }
+
+  async recordPtoAnniversaryAdjustment(
+    data: InsertPtoAnniversaryAdjustment,
+  ): Promise<PtoAnniversaryAdjustment | undefined> {
+    const inserted = await db
+      .insert(ptoAnniversaryAdjustments)
+      .values(data)
+      .onConflictDoNothing({
+        target: [
+          ptoAnniversaryAdjustments.employeeId,
+          ptoAnniversaryAdjustments.effectiveDate,
+        ],
+      })
+      .returning();
+    return inserted[0];
+  }
+
+  async getReviewCycle(id: string): Promise<PerformanceReviewCycle | undefined> {
+    const [cycle] = await db
+      .select()
+      .from(performanceReviewCycles)
+      .where(eq(performanceReviewCycles.id, id));
+    return cycle;
+  }
+
+  async getReviewCycles(
+    filters?: { companyId?: string | null; isActive?: boolean },
+  ): Promise<PerformanceReviewCycle[]> {
+    const conds: any[] = [];
+    if (filters?.companyId !== undefined) {
+      conds.push(
+        filters.companyId === null
+          ? isNull(performanceReviewCycles.companyId)
+          : eq(performanceReviewCycles.companyId, filters.companyId),
+      );
+    }
+    if (filters?.isActive !== undefined) {
+      conds.push(eq(performanceReviewCycles.isActive, filters.isActive));
+    }
+    const where = conds.length ? and(...conds) : undefined;
+    return db
+      .select()
+      .from(performanceReviewCycles)
+      .where(where)
+      .orderBy(desc(performanceReviewCycles.createdAt));
+  }
+
+  async createReviewCycle(data: InsertPerformanceReviewCycle): Promise<PerformanceReviewCycle> {
+    const [created] = await db.insert(performanceReviewCycles).values(data).returning();
+    return created;
+  }
+
+  async updateReviewCycle(
+    id: string,
+    data: Partial<InsertPerformanceReviewCycle>,
+  ): Promise<PerformanceReviewCycle | undefined> {
+    const [updated] = await db
+      .update(performanceReviewCycles)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(performanceReviewCycles.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getReviewReminder(id: string): Promise<PerformanceReviewReminder | undefined> {
+    const [r] = await db
+      .select()
+      .from(performanceReviewReminders)
+      .where(eq(performanceReviewReminders.id, id));
+    return r;
+  }
+
+  async listReviewReminders(
+    filters?: { employeeId?: string; status?: string; cycleId?: string },
+  ): Promise<PerformanceReviewReminder[]> {
+    const conds: any[] = [];
+    if (filters?.employeeId) conds.push(eq(performanceReviewReminders.employeeId, filters.employeeId));
+    if (filters?.status) conds.push(eq(performanceReviewReminders.status, filters.status));
+    if (filters?.cycleId) conds.push(eq(performanceReviewReminders.cycleId, filters.cycleId));
+    const where = conds.length ? and(...conds) : undefined;
+    return db
+      .select()
+      .from(performanceReviewReminders)
+      .where(where)
+      .orderBy(performanceReviewReminders.dueDate);
+  }
+
+  async upsertReviewReminder(
+    data: InsertPerformanceReviewReminder,
+  ): Promise<PerformanceReviewReminder> {
+    const inserted = await db
+      .insert(performanceReviewReminders)
+      .values(data)
+      .onConflictDoNothing({
+        target: [
+          performanceReviewReminders.employeeId,
+          performanceReviewReminders.cycleId,
+          performanceReviewReminders.dueDate,
+        ],
+      })
+      .returning();
+    if (inserted[0]) return inserted[0];
+    const [existing] = await db
+      .select()
+      .from(performanceReviewReminders)
+      .where(
+        and(
+          eq(performanceReviewReminders.employeeId, data.employeeId),
+          eq(performanceReviewReminders.cycleId, data.cycleId),
+          eq(performanceReviewReminders.dueDate, data.dueDate),
+        ),
+      );
+    return existing;
+  }
+
+  async updateReviewReminder(
+    id: string,
+    data: { status: string; completedBy?: string; notes?: string },
+  ): Promise<PerformanceReviewReminder | undefined> {
+    const setData: Record<string, unknown> = { status: data.status };
+    if (data.notes !== undefined) setData.notes = data.notes;
+    if (data.status === "completed" || data.status === "skipped") {
+      setData.completedAt = new Date();
+      if (data.completedBy) setData.completedBy = data.completedBy;
+    }
+    const [updated] = await db
+      .update(performanceReviewReminders)
+      .set(setData)
+      .where(eq(performanceReviewReminders.id, id))
+      .returning();
+    return updated;
+  }
+
+  async resolveReviewDueAlertsFor(
+    reminderId: string,
+    resolverUserId: string,
+  ): Promise<number> {
+    const open = await db
+      .select()
+      .from(systemAlerts)
+      .where(
+        and(
+          eq(systemAlerts.type, "review_due"),
+          inArray(systemAlerts.status, ["open", "acknowledged"]),
+        ),
+      );
+    let count = 0;
+    for (const alert of open) {
+      const details = (alert.details as Record<string, unknown> | null) || {};
+      if (details.reminderId === reminderId) {
+        await db
+          .update(systemAlerts)
+          .set({ status: "resolved", resolvedAt: new Date(), resolvedBy: resolverUserId })
+          .where(eq(systemAlerts.id, alert.id));
+        count += 1;
+      }
+    }
+    return count;
   }
 }
 
