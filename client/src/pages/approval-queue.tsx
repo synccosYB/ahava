@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatDate, formatDateRange } from "@/lib/utils";
 import { Check, X, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { TimeOffRequest } from "@shared/schema";
+import type { TimeOffRequest, TimeOffBalanceBucket } from "@shared/schema";
 import {
   Table,
   TableBody,
@@ -39,7 +39,12 @@ function formatTimeOffTypeLabel(type: string): string {
 
 type PendingRequest = TimeOffRequest & {
   employeeName: string;
+  currentBalance: TimeOffBalanceBucket | null;
 };
+
+function formatDays(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+}
 
 type EnrichedRequest = TimeOffRequest & {
   employeeName: string;
@@ -165,6 +170,55 @@ export default function ApprovalQueuePage() {
                         </p>
                       </div>
                     )}
+                    {request.currentBalance && (() => {
+                      const isPartial = partialMode[request.id];
+                      const hoursToApprove = isPartial
+                        ? (partialHours[request.id] ?? request.hoursRequested ?? 8)
+                        : (request.hoursRequested ?? 8);
+                      const projected = Math.round((request.currentBalance.remaining - hoursToApprove) * 100) / 100;
+                      const projectedExceeds = projected < 0;
+                      return (
+                        <div
+                          className={`rounded-md border p-3 space-y-1 ${
+                            projectedExceeds
+                              ? "bg-orange-50 dark:bg-orange-950/20 border-orange-400"
+                              : "bg-muted/30 border-border"
+                          }`}
+                          data-testid={`balance-section-${request.id}`}
+                        >
+                          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                            {formatTimeOffTypeLabel(request.type)} Balance
+                          </p>
+                          <p className="text-sm" data-testid={`text-current-balance-${request.id}`}>
+                            <span className="text-muted-foreground">Total:</span>{" "}
+                            <span className="font-medium tabular-nums">{formatDays(request.currentBalance.total)}</span>
+                            <span className="text-muted-foreground"> · Used:</span>{" "}
+                            <span className="font-medium tabular-nums">{formatDays(request.currentBalance.used)}</span>
+                            <span className="text-muted-foreground"> · Remaining:</span>{" "}
+                            <span className="font-semibold tabular-nums">{formatDays(request.currentBalance.remaining)}</span>
+                          </p>
+                          <p className="text-sm" data-testid={`text-projected-balance-${request.id}`}>
+                            <span className="text-muted-foreground">If approved as-is:</span>{" "}
+                            <span
+                              className={`font-semibold tabular-nums ${projectedExceeds ? "text-orange-700 dark:text-orange-400" : ""}`}
+                              data-testid={`text-projected-balance-value-${request.id}`}
+                            >
+                              {formatDays(projected)}
+                            </span>{" "}
+                            <span className="text-muted-foreground">hr{projected === 1 ? "" : "s"} remaining</span>
+                          </p>
+                          {projectedExceeds && (
+                            <p
+                              className="text-xs text-orange-700 dark:text-orange-400 flex items-center gap-1"
+                              data-testid={`warning-projected-exceeds-${request.id}`}
+                            >
+                              <AlertTriangle className="h-3 w-3" />
+                              Approving this request will exceed the employee's available balance.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
                     {request.reason && (
                       <p className="text-sm bg-muted/50 p-2 rounded" data-testid={`text-request-reason-${request.id}`}>
                         "{request.reason}"

@@ -34,6 +34,7 @@ import {
   timeOffBalances,
   type TimeOffBalance,
   type InsertTimeOffBalance,
+  type TimeOffBalanceDetailed,
   employeePins,
   type EmployeePin,
   type InsertEmployeePin,
@@ -271,6 +272,7 @@ export interface IStorage {
   createTimeOffBalance(balance: InsertTimeOffBalance): Promise<TimeOffBalance>;
   updateTimeOffBalance(id: string, balance: Partial<InsertTimeOffBalance>): Promise<TimeOffBalance | undefined>;
   computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }>;
+  computeTimeOffBalanceDetailed(userId: string): Promise<TimeOffBalanceDetailed>;
   getOverlappingTimeOffRequests(userId: string, startDate: string, endDate: string): Promise<TimeOffRequest[]>;
 
   getEmployeePin(userId: string): Promise<EmployeePin | undefined>;
@@ -314,6 +316,7 @@ export interface IStorage {
 
   getEmployeePtoPolicy(userId: string): Promise<PtoPolicy | undefined>;
   computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }>;
+  computeTimeOffBalanceDetailed(userId: string): Promise<TimeOffBalanceDetailed>;
   computeTotalHoursWorked(userId: string, year: number, fromDate?: string): Promise<number>;
   computeAnnualVacationEntitlement(userId: string): Promise<number>;
 
@@ -1169,6 +1172,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }> {
+    const detailed = await this.computeTimeOffBalanceDetailed(userId);
+    return {
+      vacation: detailed.vacation.remaining,
+      sick: detailed.sick.remaining,
+      personal: detailed.personal.remaining,
+    };
+  }
+
+  async computeTimeOffBalanceDetailed(userId: string): Promise<TimeOffBalanceDetailed> {
     const ANNUAL_VACATION = 120;
     const ANNUAL_SICK = 80;
     const ANNUAL_PERSONAL = 40;
@@ -1198,11 +1210,12 @@ export class DatabaseStorage implements IStorage {
     }
 
     return {
-      vacation: ANNUAL_VACATION - usedVacation,
-      sick: ANNUAL_SICK - usedSick,
-      personal: ANNUAL_PERSONAL - usedPersonal,
+      vacation: { total: ANNUAL_VACATION, used: usedVacation, remaining: ANNUAL_VACATION - usedVacation },
+      sick: { total: ANNUAL_SICK, used: usedSick, remaining: ANNUAL_SICK - usedSick },
+      personal: { total: ANNUAL_PERSONAL, used: usedPersonal, remaining: ANNUAL_PERSONAL - usedPersonal },
     };
   }
+
 
   async getOverlappingTimeOffRequests(userId: string, startDate: string, endDate: string): Promise<TimeOffRequest[]> {
     const userRequests = await db
@@ -1741,6 +1754,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }> {
+    const detailed = await this.computeTimeOffBalanceDetailed(userId);
+    return {
+      vacation: detailed.vacation.remaining,
+      sick: detailed.sick.remaining,
+      personal: detailed.personal.remaining,
+    };
+  }
+
+  async computeTimeOffBalanceDetailed(userId: string): Promise<TimeOffBalanceDetailed> {
     const policy = await this.getEmployeePtoPolicy(userId);
     const empSettings = await this.getEmployeePtoSettings(userId);
     const currentYear = new Date().getFullYear();
@@ -1862,7 +1884,11 @@ export class DatabaseStorage implements IStorage {
         const hireMs = new Date(empSettings.hireDate).getTime();
         const waitingEnd = hireMs + policy.waitingPeriodDays * 24 * 60 * 60 * 1000;
         if (Date.now() < waitingEnd) {
-          return { vacation: 0, sick: 0, personal: 0 };
+          return {
+            vacation: { total: 0, used: 0, remaining: 0 },
+            sick: { total: 0, used: 0, remaining: 0 },
+            personal: { total: 0, used: 0, remaining: 0 },
+          };
         }
       }
     }
@@ -1886,10 +1912,24 @@ export class DatabaseStorage implements IStorage {
       else if (r.type === "personal") usedPersonal += hours;
     }
 
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+
     return {
-      vacation: Math.round((annualVacation - usedVacation) * 100) / 100,
-      sick: Math.round((annualSick - usedSick) * 100) / 100,
-      personal: Math.round((annualPersonal - usedPersonal) * 100) / 100,
+      vacation: {
+        total: round2(annualVacation),
+        used: round2(usedVacation),
+        remaining: round2(annualVacation - usedVacation),
+      },
+      sick: {
+        total: round2(annualSick),
+        used: round2(usedSick),
+        remaining: round2(annualSick - usedSick),
+      },
+      personal: {
+        total: round2(annualPersonal),
+        used: round2(usedPersonal),
+        remaining: round2(annualPersonal - usedPersonal),
+      },
     };
   }
 

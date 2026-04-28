@@ -14,8 +14,9 @@ import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { formatDate, formatDateRange } from "@/lib/utils";
-import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle, MessageSquare } from "lucide-react";
-import type { TimeOffRequest } from "@shared/schema";
+import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle, Wallet } from "lucide-react";
+import type { TimeOffRequest, TimeOffBalanceDetailed } from "@shared/schema";
+import { isBalanceTrackedTimeOffType } from "@shared/schema";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
   vacation: "Vacation",
@@ -30,6 +31,14 @@ const TIME_OFF_TYPE_LABELS: Record<string, string> = {
 
 function formatTypeLabel(type: string): string {
   return TIME_OFF_TYPE_LABELS[type] || type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function formatDays(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
 }
 
 export default function TimeOff() {
@@ -58,6 +67,11 @@ export default function TimeOff() {
     enabled: isAuthenticated,
   });
 
+  const { data: balance, isLoading: balanceLoading } = useQuery<TimeOffBalanceDetailed>({
+    queryKey: ["/api/time-off/my-balance"],
+    enabled: isAuthenticated,
+  });
+
   const submitMutation = useMutation({
     mutationFn: async () => {
       const hoursRequested = calculateDays() * 8;
@@ -72,6 +86,7 @@ export default function TimeOff() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/time-off/my-balance"] });
 
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
       setType("vacation");
@@ -100,6 +115,7 @@ export default function TimeOff() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off"] });
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/team"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/time-off/my-balance"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
       setEditingRequest(null);
       toast({ title: "Request Updated", description: "Your time off request has been updated." });
@@ -163,6 +179,11 @@ export default function TimeOff() {
   const daysRequested = calculateDays();
   const hoursRequested = daysRequested * 8;
 
+  const isBalanceTracked = isBalanceTrackedTimeOffType(type);
+  const selectedBalance = isBalanceTracked && balance ? balance[type as "vacation" | "sick" | "personal"] : null;
+  const projectedRemaining = selectedBalance ? round2(selectedBalance.remaining - hoursRequested) : null;
+  const projectedExceeds = projectedRemaining !== null && projectedRemaining < 0;
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "pending":
@@ -185,8 +206,56 @@ export default function TimeOff() {
         subtitle="Request time off and view your upcoming schedule"
       />
 
-
-
+      <Card data-testid="card-balance-summary">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Wallet className="h-4 w-4 text-muted-foreground" />
+            My PTO Balance ({new Date().getFullYear()})
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {balanceLoading ? (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}
+            </div>
+          ) : balance ? (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {(["vacation", "sick", "personal"] as const).map((bucketKey) => {
+                const bucket = balance[bucketKey];
+                const remainingLow = bucket.remaining <= 0;
+                return (
+                  <div
+                    key={bucketKey}
+                    className="rounded-md border p-3 bg-muted/20"
+                    data-testid={`card-balance-${bucketKey}`}
+                  >
+                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      {formatTypeLabel(bucketKey)}
+                    </p>
+                    <p className="mt-1">
+                      <span
+                        className={`text-2xl font-semibold tabular-nums ${remainingLow ? "text-orange-600 dark:text-orange-400" : ""}`}
+                        data-testid={`text-balance-remaining-${bucketKey}`}
+                      >
+                        {formatDays(bucket.remaining)}
+                      </span>
+                      <span className="text-sm text-muted-foreground"> day{bucket.remaining === 1 ? "" : "s"} remaining</span>
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      <span data-testid={`text-balance-used-${bucketKey}`}>{formatDays(bucket.used)}</span> used of{" "}
+                      <span data-testid={`text-balance-total-${bucketKey}`}>{formatDays(bucket.total)}</span> total
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground" data-testid="text-balance-unavailable">
+              Balance information is currently unavailable.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card data-testid="card-new-request">
@@ -194,11 +263,6 @@ export default function TimeOff() {
             <CardTitle className="text-base">New Request</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 rounded-md p-3 text-xs text-blue-800 dark:text-blue-300 flex items-center gap-2" data-testid="note-balance-info">
-              <MessageSquare className="h-4 w-4 shrink-0" />
-              <span>For inquiries, please contact your manager or HR department.</span>
-            </div>
-
             <div className="space-y-1">
               <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Request Type</Label>
               <Select value={type} onValueChange={setType}>
@@ -247,8 +311,39 @@ export default function TimeOff() {
             </div>
 
             {startDate && endDate && daysRequested > 0 && (
-              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-hours-summary">
-                <p className="text-sm font-semibold">Hours Requested: <span className="tabular-nums">{hoursRequested}</span> hrs</p>
+              <div
+                className={`rounded-md border p-3 space-y-1 ${
+                  projectedExceeds
+                    ? "bg-orange-50 dark:bg-orange-950/20 border-orange-400"
+                    : "bg-amber-50 dark:bg-amber-950/20 border-amber-300"
+                }`}
+                data-testid="card-hours-summary"
+              >
+                <p className="text-sm font-semibold">
+                  Hours Requested: <span className="tabular-nums">{hoursRequested}</span> hrs
+                </p>
+                {selectedBalance && projectedRemaining !== null && (
+                  <p className="text-sm" data-testid="text-projected-remaining">
+                    Remaining after this request:{" "}
+                    <span
+                      className={`font-semibold tabular-nums ${
+                        projectedExceeds ? "text-orange-700 dark:text-orange-400" : ""
+                      }`}
+                      data-testid="text-projected-remaining-value"
+                    >
+                      {formatDays(projectedRemaining)}
+                    </span>{" "}
+                    <span className="text-muted-foreground">
+                      hr{projectedRemaining === 1 ? "" : "s"} of {formatTypeLabel(type)}
+                    </span>
+                  </p>
+                )}
+                {projectedExceeds && (
+                  <p className="text-xs text-orange-700 dark:text-orange-400 flex items-center gap-1" data-testid="warning-projected-exceeds">
+                    <AlertTriangle className="h-3 w-3" />
+                    This request exceeds your remaining balance.
+                  </p>
+                )}
               </div>
             )}
 

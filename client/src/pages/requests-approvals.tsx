@@ -16,7 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { formatDate, formatDateRange } from "@/lib/utils";
 import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
+import type { TimeOffRequest, AttendanceException, Department, Location, TimeOffBalanceBucket } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
 import { formatTime12FromHHmm } from "@/lib/utils";
 import {
@@ -46,7 +46,12 @@ type PendingPtoRequest = TimeOffRequest & {
   departmentName?: string;
   locationName?: string;
   managerNames?: string[];
+  currentBalance: TimeOffBalanceBucket | null;
 };
+
+function formatDays(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+}
 type EnrichedException = AttendanceException & {
   employeeName?: string;
   departmentName?: string;
@@ -661,6 +666,12 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
     },
   });
 
+  const balance = request.currentBalance;
+  const projectedRemaining = balance
+    ? Math.round((balance.remaining - (request.hoursRequested ?? 0)) * 100) / 100
+    : null;
+  const projectedExceeds = projectedRemaining !== null && projectedRemaining < 0;
+
   return (
     <Card data-testid={`card-pto-request-${request.id}`}>
       <CardContent className="p-5">
@@ -669,6 +680,12 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
             <div className="flex items-center gap-2">
               <Badge variant="outline">PTO</Badge>
               <Badge variant="secondary" className="bg-amber-100 text-amber-800">Pending</Badge>
+              {request.exceedsBalance && (
+                <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-300" data-testid={`badge-pto-exceeds-balance-${request.id}`}>
+                  <AlertTriangle className="h-3 w-3 mr-1" />
+                  Exceeds Balance
+                </Badge>
+              )}
             </div>
             <p className="font-semibold" data-testid={`text-pto-employee-${request.id}`}>
               {request.employeeName}
@@ -676,6 +693,47 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
             <p className="text-sm" data-testid={`text-pto-type-${request.id}`}>
               {`${formatTimeOffTypeLabel(request.type)} — ${formatDateRange(request.startDate, request.endDate)} (${request.hoursRequested} hrs)`}
             </p>
+            {balance && projectedRemaining !== null && (
+              <div
+                className={`rounded-md border p-3 space-y-1 ${
+                  projectedExceeds
+                    ? "bg-orange-50 dark:bg-orange-950/20 border-orange-400"
+                    : "bg-muted/30 border-border"
+                }`}
+                data-testid={`balance-section-${request.id}`}
+              >
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {formatTimeOffTypeLabel(request.type)} Balance
+                </p>
+                <p className="text-sm" data-testid={`text-current-balance-${request.id}`}>
+                  <span className="text-muted-foreground">Total:</span>{" "}
+                  <span className="font-medium tabular-nums">{formatDays(balance.total)}</span>
+                  <span className="text-muted-foreground"> · Used:</span>{" "}
+                  <span className="font-medium tabular-nums">{formatDays(balance.used)}</span>
+                  <span className="text-muted-foreground"> · Remaining:</span>{" "}
+                  <span className="font-semibold tabular-nums">{formatDays(balance.remaining)}</span>
+                </p>
+                <p className="text-sm" data-testid={`text-projected-balance-${request.id}`}>
+                  <span className="text-muted-foreground">If approved as-is:</span>{" "}
+                  <span
+                    className={`font-semibold tabular-nums ${projectedExceeds ? "text-orange-700 dark:text-orange-400" : ""}`}
+                    data-testid={`text-projected-balance-value-${request.id}`}
+                  >
+                    {formatDays(projectedRemaining)}
+                  </span>{" "}
+                  <span className="text-muted-foreground">day{projectedRemaining === 1 ? "" : "s"} remaining</span>
+                </p>
+                {projectedExceeds && (
+                  <p
+                    className="text-xs text-orange-700 dark:text-orange-400 flex items-center gap-1"
+                    data-testid={`warning-projected-exceeds-${request.id}`}
+                  >
+                    <AlertTriangle className="h-3 w-3" />
+                    Approving this request will exceed the employee's available balance.
+                  </p>
+                )}
+              </div>
+            )}
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-pto-reason-${request.id}`}>
                 "{request.reason}"

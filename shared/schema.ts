@@ -392,6 +392,25 @@ export const insertTimeOffBalanceSchema = createInsertSchema(timeOffBalances).om
 export type InsertTimeOffBalance = z.infer<typeof insertTimeOffBalanceSchema>;
 export type TimeOffBalance = typeof timeOffBalances.$inferSelect;
 
+export type TimeOffBalanceBucket = {
+  total: number;
+  used: number;
+  remaining: number;
+};
+
+export type TimeOffBalanceDetailed = {
+  vacation: TimeOffBalanceBucket;
+  sick: TimeOffBalanceBucket;
+  personal: TimeOffBalanceBucket;
+};
+
+export const BALANCE_TRACKED_TIME_OFF_TYPES = ["vacation", "sick", "personal"] as const;
+export type BalanceTrackedTimeOffType = (typeof BALANCE_TRACKED_TIME_OFF_TYPES)[number];
+
+export function isBalanceTrackedTimeOffType(type: string): type is BalanceTrackedTimeOffType {
+  return (BALANCE_TRACKED_TIME_OFF_TYPES as readonly string[]).includes(type);
+}
+
 export const employeePins = pgTable("employee_pins", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique().references(() => users.id),

@@ -1921,11 +1921,32 @@ export async function registerRoutes(
         deptManagerMap.set(dept.id, names);
       }));
     }
+
+    const balanceTrackedTypes = new Set(["vacation", "sick", "personal"]);
+    const uniqueUserIds = Array.from(new Set(scopedRequests
+      .filter(r => balanceTrackedTypes.has(r.type))
+      .map(r => r.userId)));
+    const balanceEntries = await Promise.all(uniqueUserIds.map(async (uid) => {
+      try {
+        const balance = await storage.computeTimeOffBalanceDetailed(uid);
+        return [uid, balance] as const;
+      } catch (err) {
+        console.error(`Failed to compute balance for user ${uid}:`, err);
+        return [uid, null] as const;
+      }
+    }));
+    const balanceMap = new Map(balanceEntries);
+
     const enriched = scopedRequests.map(r => {
       const u = userMap.get(r.userId);
+      const userBalance = balanceMap.get(r.userId) ?? null;
+      const currentBalance = (userBalance && balanceTrackedTypes.has(r.type))
+        ? (userBalance as any)[r.type] ?? null
+        : null;
       const base = {
         ...r,
         employeeName: u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown",
+        currentBalance,
       };
       if (!isRequesterAdmin) return base;
       const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;
@@ -3306,7 +3327,7 @@ export async function registerRoutes(
   app.get("/api/time-off/my-balance", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
-      const balance = await storage.computeTimeOffBalance(userId);
+      const balance = await storage.computeTimeOffBalanceDetailed(userId);
       res.json(balance);
     } catch (error) {
       console.error("Error fetching balance:", error);
