@@ -19,6 +19,11 @@ import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middle
 import { runWorkflowsForTrigger } from "./workflowEngine";
 import { requestCache } from "./lib/requestCache";
 import { appCache } from "./lib/cache";
+import {
+  CORRECTION_COUNT_WINDOW_DAYS,
+  HIGH_CORRECTION_THRESHOLD,
+  type CorrectionCountSummary,
+} from "@shared/correctionCounts";
 
 function invalidateUserCache() {
   appCache.invalidatePrefix("rc:");
@@ -2214,12 +2219,15 @@ export async function registerRoutes(
         const all = await storage.getAllAttendanceExceptions();
         const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
         const userMap = new Map(allUsers.map(u => [u.id, u]));
+        const employeeIds = Array.from(new Set(all.map(e => e.employeeId)));
+        const counts = await storage.getCorrectionRequestCountsBulk(employeeIds, { windowDays: CORRECTION_COUNT_WINDOW_DAYS });
         const enriched = all.map(e => ({
           ...e,
           employeeName: (() => {
             const u = userMap.get(e.employeeId);
             return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
           })(),
+          correctionCount90d: counts.get(e.employeeId) || { total: 0, pending: 0, approved: 0, denied: 0 },
         }));
         return res.json(enriched);
       }
@@ -2232,6 +2240,49 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/attendance/exceptions/correction-counts/me", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id as string;
+      const excludeId = typeof req.query.excludeId === "string" ? req.query.excludeId : undefined;
+      const summary = await storage.getCorrectionRequestCounts(userId, { windowDays: CORRECTION_COUNT_WINDOW_DAYS, excludeId });
+      const enriched: CorrectionCountSummary = {
+        ...summary,
+        windowDays: CORRECTION_COUNT_WINDOW_DAYS,
+        threshold: HIGH_CORRECTION_THRESHOLD,
+      };
+      res.json(enriched);
+    } catch (error) {
+      console.error("Error fetching self correction counts:", error);
+      res.status(500).json({ message: "Failed to fetch correction counts" });
+    }
+  });
+
+  app.get(
+    "/api/attendance/exceptions/correction-counts/:employeeId",
+    requireAuth,
+    requireRole("manager", "admin"),
+    async (req: any, res) => {
+      try {
+        const reviewer = req.authUser as User;
+        const employeeId = req.params.employeeId as string;
+        const teamIds = await getTeamUserIds(reviewer);
+        if (employeeId !== reviewer.id && !teamIds.has(employeeId)) {
+          return res.status(403).json({ message: "Not authorized to view this employee's counts" });
+        }
+        const summary = await storage.getCorrectionRequestCounts(employeeId, { windowDays: CORRECTION_COUNT_WINDOW_DAYS });
+        const enriched: CorrectionCountSummary = {
+          ...summary,
+          windowDays: CORRECTION_COUNT_WINDOW_DAYS,
+          threshold: HIGH_CORRECTION_THRESHOLD,
+        };
+        res.json(enriched);
+      } catch (error) {
+        console.error("Error fetching correction counts:", error);
+        res.status(500).json({ message: "Failed to fetch correction counts" });
+      }
+    }
+  );
+
   app.get("/api/attendance/exceptions/pending", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
     try {
       const user = req.authUser as User;
@@ -2241,6 +2292,8 @@ export async function registerRoutes(
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
       const isRequesterAdmin = user.role === "admin";
+      const employeeIdsForCounts = Array.from(new Set(scopedPending.map(e => e.employeeId)));
+      const correctionCounts = await storage.getCorrectionRequestCountsBulk(employeeIdsForCounts, { windowDays: CORRECTION_COUNT_WINDOW_DAYS });
       let deptMap = new Map<string, Department>();
       let locMap = new Map<string, Location>();
       let deptManagerMap = new Map<string, string[]>();
@@ -2263,6 +2316,7 @@ export async function registerRoutes(
         const base = {
           ...e,
           employeeName: u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown",
+          correctionCount90d: correctionCounts.get(e.employeeId) || { total: 0, pending: 0, approved: 0, denied: 0 },
         };
         if (!isRequesterAdmin) return base;
         const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;

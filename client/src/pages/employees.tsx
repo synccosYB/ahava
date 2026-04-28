@@ -25,6 +25,11 @@ import { PageHeader } from "@/components/page-header";
 import { formatCurrency } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
+import {
+  type CorrectionCountSummary,
+  isHighCorrectionCount,
+  HIGH_CORRECTION_THRESHOLD,
+} from "@shared/correctionCounts";
 
 type EmployeeListItem = User & {
   departmentName?: string;
@@ -1096,6 +1101,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </p>
               </div>
               <NextReviewIndicator userId={userId} />
+              <CorrectionRequestStat userId={userId} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -1229,6 +1235,61 @@ function NextReviewIndicator({ userId }: { userId: string }) {
       >
         {isLoading ? "Loading…" : text}
       </p>
+    </div>
+  );
+}
+
+function CorrectionRequestStat({ userId }: { userId: string }) {
+  const { data, isLoading } = useQuery<CorrectionCountSummary>({
+    queryKey: ["/api/attendance/exceptions/correction-counts", userId],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/attendance/exceptions/correction-counts/${encodeURIComponent(userId)}`,
+        { credentials: "include" }
+      );
+      if (!res.ok) throw new Error("Failed to fetch correction counts");
+      return res.json();
+    },
+  });
+
+  const total = data?.total ?? 0;
+  const high = isHighCorrectionCount(total);
+
+  return (
+    <div data-testid="field-correction-counts" className="md:col-span-2">
+      <Label className="text-muted-foreground text-xs">
+        Correction Requests (last {data?.windowDays ?? 90} days)
+      </Label>
+      {isLoading ? (
+        <p className="font-medium" data-testid="text-profile-correction-loading">
+          Loading…
+        </p>
+      ) : (
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge
+              variant={high ? "default" : "outline"}
+              className={
+                high ? "bg-amber-500 text-white hover:bg-amber-500" : "text-muted-foreground"
+              }
+              data-testid="badge-profile-correction-total"
+            >
+              {total} total
+            </Badge>
+            <span className="text-xs text-muted-foreground" data-testid="text-profile-correction-breakdown">
+              {data?.approved ?? 0} approved · {data?.denied ?? 0} denied · {data?.pending ?? 0} pending
+            </span>
+          </div>
+          {high && (
+            <p
+              className="text-xs text-amber-700 dark:text-amber-400"
+              data-testid="text-profile-correction-frequent"
+            >
+              Frequent corrections — may need attention (≥{HIGH_CORRECTION_THRESHOLD} in last 90 days).
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

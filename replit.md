@@ -46,7 +46,7 @@ The system is built with an Express.js backend (TypeScript), a React frontend (V
 - **Dashboards:** Employee dashboard (clock status, hours, PTO) and Manager/Admin dashboards (team/division stats, approval queues).
 - **Admin Pages:** Dedicated sections for Employees, Locations & Departments, Time Clock Rules, PTO & Leave, Alerts & Exceptions, Payroll Prep, Payroll Documents, Reports, Permissions, Roles, Kiosks, Audit Log.
 - **Payroll Documents:** Employee-facing and admin pages for managing pay stubs and tax forms.
-- **Punch Correction:** Forms for employee punch correction and manager exception queue with side-by-side comparisons.
+- **Punch Correction:** Forms for employee punch correction and manager exception queue with side-by-side comparisons. 90-day correction request counts (time_correction + missing_punch) are surfaced to employees in the correction dialog (`text-self-correction-count`), to managers in incoming exception rows (`CorrectionCountBadge`), and on the manager Employee Profile (Employment tab, `field-correction-counts`). Threshold of 5+ within 90 days is emphasized as "Frequent corrections" via shared constants in `shared/correctionCounts.ts`.
 - **HR Onboarding & Employee Management:** Multi-step "Add Employee" dialog, admin password reset, forced password change, document management (W-9, I-9, etc., stored in Replit Object Storage), onboarding checklist.
 - **Bulk Division Assignment:** Frontend multi-select with bulk action bar; backend endpoint for assigning users to divisions.
 - **Policy Builder Wizard:** Reusable 4-step wizard for creating/editing policies with type selection, rule configuration, assignments, and review.

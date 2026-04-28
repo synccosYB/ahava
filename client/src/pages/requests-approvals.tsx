@@ -17,6 +17,7 @@ import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserChec
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
+import { isHighCorrectionCount, HIGH_CORRECTION_THRESHOLD } from "@shared/correctionCounts";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
   vacation: "Vacation",
@@ -44,7 +45,37 @@ type EnrichedException = AttendanceException & {
   departmentName?: string;
   locationName?: string;
   managerNames?: string[];
+  correctionCount90d?: { total: number; pending: number; approved: number; denied: number };
 };
+function CorrectionCountBadge({
+  count,
+  exceptionId,
+}: {
+  count: number;
+  exceptionId: string;
+}) {
+  if (count <= 0) return null;
+  const high = isHighCorrectionCount(count);
+  return (
+    <Badge
+      variant={high ? "default" : "outline"}
+      className={
+        high
+          ? "bg-amber-500 text-white hover:bg-amber-500"
+          : "text-muted-foreground"
+      }
+      title={
+        high
+          ? `Frequent corrections — may need attention (≥${HIGH_CORRECTION_THRESHOLD} in last 90 days)`
+          : `Total correction requests in the last 90 days`
+      }
+      data-testid={`badge-correction-count-${exceptionId}`}
+    >
+      {count} correction{count === 1 ? "" : "s"} in last 90 days
+    </Badge>
+  );
+}
+
 type ProcessedPtoRequest = TimeOffRequest & {
   employeeName: string;
   departmentName: string;
@@ -714,6 +745,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/correction-counts"] });
       toast({ title: "Exception approved" });
     },
     onError: (err: Error) => {
@@ -728,6 +760,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/correction-counts"] });
       toast({ title: "Exception denied" });
     },
     onError: (err: Error) => {
@@ -752,12 +785,26 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
               <Badge variant="outline">{exception.type.replace(/_/g, " ")}</Badge>
               <Badge variant="secondary" className="bg-amber-100 text-amber-800">Pending</Badge>
             </div>
-            <p className="font-semibold" data-testid={`text-exc-employee-${exception.id}`}>
-              {exception.employeeName || "Employee"}
-            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="font-semibold" data-testid={`text-exc-employee-${exception.id}`}>
+                {exception.employeeName || "Employee"}
+              </p>
+              <CorrectionCountBadge
+                count={exception.correctionCount90d?.total ?? 0}
+                exceptionId={exception.id}
+              />
+            </div>
             <p className="text-xs text-muted-foreground" data-testid={`text-exc-date-${exception.id}`}>
               {exception.exceptionDate}
             </p>
+            {isHighCorrectionCount(exception.correctionCount90d?.total ?? 0) && (
+              <p
+                className="text-xs text-amber-700 dark:text-amber-400"
+                data-testid={`text-frequent-corrections-${exception.id}`}
+              >
+                Frequent corrections — may need attention.
+              </p>
+            )}
 
             {hasTimeInfo && (
               <div className="grid grid-cols-2 gap-3 max-w-[400px] mt-2">

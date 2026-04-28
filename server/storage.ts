@@ -234,6 +234,14 @@ export interface IStorage {
   getAllAttendanceExceptions(): Promise<AttendanceException[]>;
   createAttendanceException(exception: InsertAttendanceException): Promise<AttendanceException>;
   updateAttendanceException(id: string, data: Partial<AttendanceException>): Promise<AttendanceException | undefined>;
+  getCorrectionRequestCounts(
+    employeeId: string,
+    options?: { windowDays?: number; excludeId?: string }
+  ): Promise<{ total: number; pending: number; approved: number; denied: number }>;
+  getCorrectionRequestCountsBulk(
+    employeeIds: string[],
+    options?: { windowDays?: number }
+  ): Promise<Map<string, { total: number; pending: number; approved: number; denied: number }>>;
 
   createAuditLog(entry: InsertAuditLog): Promise<AuditLog>;
   getAuditLogs(targetType?: string, targetId?: string): Promise<AuditLog[]>;
@@ -931,6 +939,86 @@ export class DatabaseStorage implements IStorage {
   async updateAttendanceException(id: string, data: Partial<AttendanceException>): Promise<AttendanceException | undefined> {
     const [updated] = await db.update(attendanceExceptions).set(data).where(eq(attendanceExceptions.id, id)).returning();
     return updated;
+  }
+
+  async getCorrectionRequestCounts(
+    employeeId: string,
+    options?: { windowDays?: number; excludeId?: string }
+  ): Promise<{ total: number; pending: number; approved: number; denied: number }> {
+    const windowDays = options?.windowDays ?? 90;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - windowDays);
+    const conditions = [
+      eq(attendanceExceptions.employeeId, employeeId),
+      inArray(attendanceExceptions.type, ["time_correction", "missing_punch"]),
+      inArray(attendanceExceptions.status, ["pending", "approved", "denied"]),
+      gte(attendanceExceptions.createdAt, cutoff),
+    ];
+    if (options?.excludeId) {
+      conditions.push(ne(attendanceExceptions.id, options.excludeId));
+    }
+    const rows = await db
+      .select({ status: attendanceExceptions.status })
+      .from(attendanceExceptions)
+      .where(and(...conditions));
+    const summary = { total: 0, pending: 0, approved: 0, denied: 0 };
+    for (const row of rows) {
+      if (row.status === "pending") {
+        summary.pending++;
+        summary.total++;
+      } else if (row.status === "approved") {
+        summary.approved++;
+        summary.total++;
+      } else if (row.status === "denied") {
+        summary.denied++;
+        summary.total++;
+      }
+    }
+    return summary;
+  }
+
+  async getCorrectionRequestCountsBulk(
+    employeeIds: string[],
+    options?: { windowDays?: number }
+  ): Promise<Map<string, { total: number; pending: number; approved: number; denied: number }>> {
+    const result = new Map<string, { total: number; pending: number; approved: number; denied: number }>();
+    if (employeeIds.length === 0) return result;
+    const uniqueIds = Array.from(new Set(employeeIds));
+    for (const id of uniqueIds) {
+      result.set(id, { total: 0, pending: 0, approved: 0, denied: 0 });
+    }
+    const windowDays = options?.windowDays ?? 90;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - windowDays);
+    const rows = await db
+      .select({
+        employeeId: attendanceExceptions.employeeId,
+        status: attendanceExceptions.status,
+      })
+      .from(attendanceExceptions)
+      .where(
+        and(
+          inArray(attendanceExceptions.employeeId, uniqueIds),
+          inArray(attendanceExceptions.type, ["time_correction", "missing_punch"]),
+          inArray(attendanceExceptions.status, ["pending", "approved", "denied"]),
+          gte(attendanceExceptions.createdAt, cutoff),
+        )
+      );
+    for (const row of rows) {
+      const summary = result.get(row.employeeId);
+      if (!summary) continue;
+      if (row.status === "pending") {
+        summary.pending++;
+        summary.total++;
+      } else if (row.status === "approved") {
+        summary.approved++;
+        summary.total++;
+      } else if (row.status === "denied") {
+        summary.denied++;
+        summary.total++;
+      }
+    }
+    return result;
   }
 
   async createAuditLog(entry: InsertAuditLog): Promise<AuditLog> {

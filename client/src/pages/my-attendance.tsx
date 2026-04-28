@@ -17,6 +17,17 @@ import { useToast } from "@/hooks/use-toast";
 import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench } from "lucide-react";
 import type { AttendanceRecord, AttendanceException } from "@shared/schema";
 import { parseExceptionTimeInfo } from "@/lib/exceptionTimeInfo";
+import {
+  HIGH_CORRECTION_THRESHOLD,
+  type CorrectionCountSummary,
+  isHighCorrectionCount,
+} from "@shared/correctionCounts";
+
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
+}
 
 type SortKey = "date" | "clockIn" | "totalHours" | "status";
 type SortDir = "asc" | "desc";
@@ -515,6 +526,26 @@ function CorrectionFormBody({
   const hasPendingForDate =
     !isEditing && !!(date && pendingDates && pendingDates.has(date));
 
+  const correctionCountKey = isEditing
+    ? ["/api/attendance/exceptions/correction-counts/me", { excludeId: editingExceptionId }]
+    : ["/api/attendance/exceptions/correction-counts/me"];
+
+  const { data: correctionCount } = useQuery<CorrectionCountSummary>({
+    queryKey: correctionCountKey,
+    queryFn: async () => {
+      const url = isEditing
+        ? `/api/attendance/exceptions/correction-counts/me?excludeId=${encodeURIComponent(editingExceptionId!)}`
+        : `/api/attendance/exceptions/correction-counts/me`;
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch correction count");
+      return res.json();
+    },
+  });
+
+  const displayCount = correctionCount?.total ?? 0;
+  const nextOrdinal = ordinal(displayCount + 1);
+  const isHighCount = isHighCorrectionCount(displayCount);
+
   useEffect(() => {
     setDate(initialDate);
     setReqIn(initialReqIn);
@@ -543,6 +574,8 @@ function CorrectionFormBody({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/my"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/correction-counts/me"] });
       if (!lockDate && !isEditing) {
         setDate("");
         setReqIn("");
@@ -639,6 +672,29 @@ function CorrectionFormBody({
         />
       </div>
 
+      {correctionCount && (
+        <div
+          className={`text-xs rounded-md border px-3 py-2 ${
+            isHighCount
+              ? "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200"
+              : "border-muted bg-muted/30 text-muted-foreground"
+          }`}
+          data-testid="text-self-correction-count"
+        >
+          {displayCount === 0 ? (
+            <>This will be your first correction request in the last {correctionCount.windowDays} days.</>
+          ) : (
+            <>
+              This is your {nextOrdinal} correction request in the last {correctionCount.windowDays} days.
+              {isHighCount && (
+                <span className="ml-1 font-medium">
+                  Frequent corrections may be a sign to double-check your clock-in/out.
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      )}
       {hasPendingForDate && !lockDate && (
         <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="text-duplicate-warning">
           A correction request for this date is already pending review.
@@ -686,6 +742,7 @@ function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, on
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/my"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/correction-counts/me"] });
       toast({ title: "Request Cancelled", description: "Your correction request has been cancelled." });
     },
     onError: (error: unknown) => {

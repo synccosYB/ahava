@@ -16,11 +16,42 @@ import { AlertTriangle, Check, X, Filter } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { AttendanceException } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
+import { isHighCorrectionCount, HIGH_CORRECTION_THRESHOLD } from "@shared/correctionCounts";
 
 type EnrichedException = AttendanceException & {
   employeeName?: string;
   reviewerName?: string;
+  correctionCount90d?: { total: number; pending: number; approved: number; denied: number };
 };
+
+function CorrectionCountBadge({
+  count,
+  exceptionId,
+}: {
+  count: number;
+  exceptionId: string;
+}) {
+  if (count <= 0) return null;
+  const high = isHighCorrectionCount(count);
+  return (
+    <Badge
+      variant={high ? "default" : "outline"}
+      className={
+        high
+          ? "bg-amber-500 text-white hover:bg-amber-500"
+          : "text-muted-foreground"
+      }
+      title={
+        high
+          ? `Frequent corrections — may need attention (≥${HIGH_CORRECTION_THRESHOLD} in last 90 days)`
+          : `Total correction requests in the last 90 days`
+      }
+      data-testid={`badge-correction-count-${exceptionId}`}
+    >
+      {count} correction{count === 1 ? "" : "s"} in last 90 days
+    </Badge>
+  );
+}
 
 export default function AttendanceExceptionsPage() {
   const [statusFilter, setStatusFilter] = useState("pending");
@@ -172,6 +203,7 @@ function ExceptionRow({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/correction-counts"] });
       toast({ title: "Exception approved" });
     },
     onError: (err: Error) => {
@@ -186,6 +218,7 @@ function ExceptionRow({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/correction-counts"] });
       toast({ title: "Exception denied" });
     },
     onError: (err: Error) => {
@@ -207,13 +240,27 @@ function ExceptionRow({
               {getTypeBadge(ex.type)}
               {getStatusBadge(ex.status)}
             </div>
-            <p className="font-semibold" data-testid={`text-exception-employee-${ex.id}`}>
-              {ex.employeeName || "Employee"}
-            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="font-semibold" data-testid={`text-exception-employee-${ex.id}`}>
+                {ex.employeeName || "Employee"}
+              </p>
+              <CorrectionCountBadge
+                count={ex.correctionCount90d?.total ?? 0}
+                exceptionId={ex.id}
+              />
+            </div>
             <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
               Date: {ex.exceptionDate}
               {ex.exceptionTime && ` at ${new Date(ex.exceptionTime).toLocaleTimeString()}`}
             </p>
+            {isHighCorrectionCount(ex.correctionCount90d?.total ?? 0) && (
+              <p
+                className="text-xs text-amber-700 dark:text-amber-400"
+                data-testid={`text-frequent-corrections-${ex.id}`}
+              >
+                Frequent corrections — may need attention.
+              </p>
+            )}
             <p className="text-sm" data-testid={`text-exception-reason-${ex.id}`}>
               {ex.reason}
             </p>
