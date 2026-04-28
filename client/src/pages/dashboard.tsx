@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours, getOvernightShiftInfo } from "@/lib/utils";
+import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours, getOvernightShiftInfo, formatTime12 } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -123,7 +123,7 @@ export default function Dashboard() {
                   {status?.isClockedIn && status.currentRecord?.clockIn && (
                     <>
                       <p className="text-xs text-muted-foreground" data-testid="text-clocked-in-since">
-                        Since {new Date(status.currentRecord.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        Since {formatTime12(status.currentRecord.clockIn)}
                       </p>
                       <p className="text-xs font-medium tabular-nums text-green-700 dark:text-green-400" data-testid="text-live-elapsed">
                         {elapsedLabel}
@@ -267,11 +267,11 @@ export default function Dashboard() {
                     </TableCell>
                     <TableCell className="text-sm">
                       {record.clockIn
-                        ? new Date(record.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                        ? formatTime12(record.clockIn)
                         : "—"}
                       {record.clockOut ? (
                         <>
-                          {` – ${new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                          {` – ${formatTime12(record.clockOut)}`}
                           {overnightInfo && (
                             <span
                               className="ml-1 text-xs text-muted-foreground"

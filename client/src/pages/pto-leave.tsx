@@ -26,6 +26,7 @@ import { Progress } from "@/components/ui/progress";
 import type { PtoPolicy, User, Division, Department, Location, AttendanceException, PtoAnniversaryAdjustment } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
 import { useAuth } from "@/hooks/use-auth";
+import { formatTime12 } from "@/lib/utils";
 
 type PtoBalanceEntry = {
   userId: string;
@@ -962,7 +963,7 @@ function PtoAlertExceptionRow({
             </p>
             <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
               Date: {ex.exceptionDate}
-              {ex.exceptionTime && ` at ${new Date(ex.exceptionTime).toLocaleTimeString()}`}
+              {ex.exceptionTime && ` at ${formatTime12(ex.exceptionTime)}`}
             </p>
             <p className="text-sm" data-testid={`text-exception-reason-${ex.id}`}>
               {ex.reason}

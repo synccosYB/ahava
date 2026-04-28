@@ -15,6 +15,48 @@ export function formatCurrency(value: number | null | undefined): string {
   }).format(value);
 }
 
+/**
+ * Format a Date or ISO timestamp as a 12-hour time string with AM/PM
+ * (e.g. "1:42 PM"). Locale-independent — always uses en-US 12-hour format.
+ * Returns an empty string for missing/invalid input.
+ */
+export function formatTime12(value: Date | string | null | undefined): string {
+  if (!value) return "";
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+/**
+ * Format an "HH:mm" 24-hour time string as a 12-hour time string with AM/PM
+ * (e.g. "13:42" -> "1:42 PM"). Returns the input unchanged when it cannot be
+ * parsed, and "" for missing input.
+ */
+export function formatTime12FromHHmm(hhmm: string | null | undefined): string {
+  if (!hhmm) return "";
+  const m = /^(\d{1,2}):(\d{2})/.exec(hhmm.trim());
+  if (!m) return hhmm;
+  const hours = parseInt(m[1], 10);
+  const minutes = parseInt(m[2], 10);
+  if (
+    !Number.isFinite(hours) ||
+    !Number.isFinite(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return hhmm;
+  }
+  const period = hours >= 12 ? "PM" : "AM";
+  const hour12 = hours % 12 === 0 ? 12 : hours % 12;
+  return `${hour12}:${String(minutes).padStart(2, "0")} ${period}`;
+}
+
 export function formatHoursMinutes(decimalHours: number | null | undefined): string {
   if (decimalHours == null || decimalHours === 0) return "0h 0m";
   const totalMinutes = Math.round(decimalHours * 60);
@@ -57,7 +99,7 @@ export function getOvernightShiftInfo(
   const dd = String(out.getDate()).padStart(2, "0");
   const endDate = `${yyyy}-${mm}-${dd}`;
   if (endDate <= workDate) return null;
-  const endTime = out.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const endTime = formatTime12(out);
   const [wy, wmo, wda] = workDate.split("-").map(Number);
   let daysSpan = 1;
   let endDateLabel = endDate;

@@ -17,6 +17,7 @@ import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserChec
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
+import { formatTime12FromHHmm } from "@/lib/utils";
 import { isHighCorrectionCount, HIGH_CORRECTION_THRESHOLD } from "@shared/correctionCounts";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
@@ -812,14 +813,14 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
                   <div className="text-[10px] font-bold uppercase text-red-600 mb-1">Recorded</div>
                   <div className="text-xs text-muted-foreground">{exception.exceptionDate}</div>
                   <div className="text-sm font-mono font-bold text-red-700 dark:text-red-400">
-                    {timeInfo.origIn || "—"} – {timeInfo.origOut || "—"}
+                    {timeInfo.origIn ? formatTime12FromHHmm(timeInfo.origIn) : "—"} – {timeInfo.origOut ? formatTime12FromHHmm(timeInfo.origOut) : "—"}
                   </div>
                 </div>
                 <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3" data-testid={`box-requested-${exception.id}`}>
                   <div className="text-[10px] font-bold uppercase text-green-600 mb-1">Requested</div>
                   <div className="text-xs text-muted-foreground">{exception.exceptionDate}</div>
                   <div className="text-sm font-mono font-bold text-green-700 dark:text-green-400">
-                    {timeInfo.reqIn || "—"} – {timeInfo.reqOut || "—"}
+                    {timeInfo.reqIn ? formatTime12FromHHmm(timeInfo.reqIn) : "—"} – {timeInfo.reqOut ? formatTime12FromHHmm(timeInfo.reqOut) : "—"}
                   </div>
                 </div>
               </div>

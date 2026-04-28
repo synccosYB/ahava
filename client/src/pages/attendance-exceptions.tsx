@@ -17,6 +17,7 @@ import { PageHeader } from "@/components/page-header";
 import type { AttendanceException } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
 import { isHighCorrectionCount, HIGH_CORRECTION_THRESHOLD } from "@shared/correctionCounts";
+import { formatTime12 } from "@/lib/utils";
 
 type EnrichedException = AttendanceException & {
   employeeName?: string;
@@ -251,7 +252,7 @@ function ExceptionRow({
             </div>
             <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
               Date: {ex.exceptionDate}
-              {ex.exceptionTime && ` at ${new Date(ex.exceptionTime).toLocaleTimeString()}`}
+              {ex.exceptionTime && ` at ${formatTime12(ex.exceptionTime)}`}
             </p>
             {isHighCorrectionCount(ex.correctionCount90d?.total ?? 0) && (
               <p

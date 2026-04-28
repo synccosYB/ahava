@@ -15,7 +15,21 @@ function formatTime(t?: string): string {
   if (!t) return "";
   const m = /^(\d{1,2}):(\d{2})/.exec(t);
   if (!m) return t;
-  return `${m[1].padStart(2, "0")}:${m[2]}`;
+  const hours = parseInt(m[1], 10);
+  const minutes = parseInt(m[2], 10);
+  if (
+    !Number.isFinite(hours) ||
+    !Number.isFinite(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return t;
+  }
+  const period = hours >= 12 ? "PM" : "AM";
+  const hour12 = hours % 12 === 0 ? 12 : hours % 12;
+  return `${hour12}:${String(minutes).padStart(2, "0")} ${period}`;
 }
 
 function formatMoney(n: number): string {

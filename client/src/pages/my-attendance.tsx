@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { formatHoursMinutes, getOvernightShiftInfo } from "@/lib/utils";
+import { formatHoursMinutes, getOvernightShiftInfo, formatTime12, formatTime12FromHHmm } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -222,8 +222,8 @@ export default function MyAttendance() {
     const headers = ["Date", "Clock In", "Clock Out", "Break (min)", "Total Hours", "Status"];
     const rows = records.map((r) => [
       r.date,
-      r.clockIn ? new Date(r.clockIn).toLocaleTimeString() : "",
-      r.clockOut ? new Date(r.clockOut).toLocaleTimeString() : "",
+      r.clockIn ? formatTime12(r.clockIn) : "",
+      r.clockOut ? formatTime12(r.clockOut) : "",
       r.breakMinutes || 0,
       r.totalHours != null ? formatHoursMinutes(r.totalHours) : "",
       r.status,
@@ -462,14 +462,14 @@ export default function MyAttendance() {
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">
                         {record.clockIn
-                          ? new Date(record.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                          ? formatTime12(record.clockIn)
                           : "—"}
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">
                         {record.clockOut
                           ? (
                             <span className="inline-flex items-baseline gap-1">
-                              <span>{new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              <span>{formatTime12(record.clockOut)}</span>
                               {overnightInfo && (
                                 <span
                                   className="text-xs text-muted-foreground"
@@ -734,7 +734,7 @@ function CorrectionFormBody({
               aria-readonly="true"
               data-testid="display-orig-clock-in"
             >
-              {origIn || <span className="text-muted-foreground">—</span>}
+              {origIn ? formatTime12FromHHmm(origIn) : <span className="text-muted-foreground">—</span>}
             </div>
           </div>
           <div className="space-y-1">
@@ -744,7 +744,7 @@ function CorrectionFormBody({
               aria-readonly="true"
               data-testid="display-orig-clock-out"
             >
-              {origOut || <span className="text-muted-foreground">{missingPunch ? "missing" : "—"}</span>}
+              {origOut ? formatTime12FromHHmm(origOut) : <span className="text-muted-foreground">{missingPunch ? "missing" : "—"}</span>}
             </div>
           </div>
         </div>
