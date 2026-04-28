@@ -65,6 +65,9 @@ const REQUIRED_COLUMNS: Record<string, string[]> = {
     "state",
     "zip",
   ],
+  users: [
+    "deactivated_at",
+  ],
 };
 
 const REQUIRED_TABLES: string[] = [

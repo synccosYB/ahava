@@ -169,6 +169,13 @@
       "when": 1777500000000,
       "tag": "0023_biometric_settings_extras",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1777600000000,
+      "tag": "0024_users_deactivated_at",
+      "breakpoints": true
     }
   ]
 }
