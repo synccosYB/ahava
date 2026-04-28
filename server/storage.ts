@@ -337,6 +337,7 @@ export interface IStorage {
   getRolePermissions(roleId: string): Promise<Permission[]>;
   addRolePermission(roleId: string, permissionId: string): Promise<RolePermission>;
   removeRolePermission(roleId: string, permissionId: string): Promise<void>;
+  setRolePermissions(roleId: string, permissionIds: string[]): Promise<void>;
 
   getUserRoles(userId: string): Promise<(UserRole & { role?: Role })[]>;
   assignUserRole(userId: string, roleId: string, companyId?: string): Promise<UserRole>;
@@ -1352,6 +1353,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateRole(id: string, role: Partial<InsertRole>): Promise<Role | undefined> {
+    if (!role || Object.keys(role).length === 0) {
+      const [existing] = await db.select().from(roles).where(eq(roles.id, id));
+      return existing;
+    }
     const [updated] = await db.update(roles).set(role).where(eq(roles.id, id)).returning();
     return updated;
   }
@@ -1392,6 +1397,18 @@ export class DatabaseStorage implements IStorage {
     await db.delete(rolePermissions).where(
       and(eq(rolePermissions.roleId, roleId), eq(rolePermissions.permissionId, permissionId))
     );
+  }
+
+  async setRolePermissions(roleId: string, permissionIds: string[]): Promise<void> {
+    const uniqueIds = Array.from(new Set(permissionIds));
+    await db.transaction(async (tx) => {
+      await tx.delete(rolePermissions).where(eq(rolePermissions.roleId, roleId));
+      if (uniqueIds.length > 0) {
+        await tx
+          .insert(rolePermissions)
+          .values(uniqueIds.map((permissionId) => ({ roleId, permissionId })));
+      }
+    });
   }
 
   async getUserRoles(userId: string): Promise<(UserRole & { role?: Role })[]> {

@@ -4810,16 +4810,15 @@ export async function registerRoutes(
           return res.status(403).json({ message: "Cannot assign super admin permission" });
         }
       }
-      const role = await storage.updateRole(req.params.id, roleData);
+      let role;
+      if (Object.keys(roleData).length > 0) {
+        role = await storage.updateRole(req.params.id, roleData);
+      } else {
+        role = await storage.getRole(req.params.id);
+      }
       if (!role) return res.status(404).json({ message: "Role not found" });
       if (permissionIds && Array.isArray(permissionIds)) {
-        const currentPerms = await storage.getRolePermissions(role.id);
-        for (const perm of currentPerms) {
-          await storage.removeRolePermission(role.id, perm.id);
-        }
-        for (const permId of permissionIds) {
-          await storage.addRolePermission(role.id, permId);
-        }
+        await storage.setRolePermissions(role.id, permissionIds);
       }
       const auditCtx = getAuditContext(req);
       await writeAuditLog({

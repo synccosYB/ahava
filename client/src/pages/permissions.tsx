@@ -45,7 +45,25 @@ export default function PermissionsPage() {
       setPendingChanges(new Map());
       toast({ title: "Permissions updated" });
     },
-    onError: () => toast({ title: "Failed to update permissions", variant: "destructive" }),
+    onError: (error: unknown) => {
+      const raw = error instanceof Error ? error.message : "";
+      const stripped = raw.replace(/^\d+:\s*/, "").trim();
+      let serverMessage = "";
+      if (stripped) {
+        try {
+          const parsed = JSON.parse(stripped);
+          if (parsed && typeof parsed.message === "string") {
+            serverMessage = parsed.message;
+          }
+        } catch {
+          serverMessage = stripped;
+        }
+      }
+      toast({
+        title: serverMessage || "Failed to update permissions",
+        variant: "destructive",
+      });
+    },
   });
 
   if (rolesLoading || permsLoading) {
