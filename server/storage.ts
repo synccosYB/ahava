@@ -396,6 +396,7 @@ export interface IStorage {
   createSystemAlert(alert: InsertSystemAlert): Promise<SystemAlert>;
   updateSystemAlert(id: string, data: Partial<SystemAlert>): Promise<SystemAlert | undefined>;
   getAuditLogsFiltered(filters: { actorUserId?: string; action?: string; targetType?: string; startDate?: string; endDate?: string; search?: string; limit?: number; offset?: number }): Promise<{ logs: AuditLog[]; total: number }>;
+  getAuditLogsByUser(userId: string, options?: { limit?: number; offset?: number; startDate?: string; endDate?: string }): Promise<{ logs: AuditLog[]; total: number }>;
 
   createUser(user: UpsertUser): Promise<User>;
   updateUser(id: string, data: Partial<UpsertUser>): Promise<User | undefined>;
@@ -2024,6 +2025,41 @@ export class DatabaseStorage implements IStorage {
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
     const lim = filters.limit || 50;
     const off = filters.offset || 0;
+
+    const [totalResult] = await db
+      .select({ count: count() })
+      .from(auditLogs)
+      .where(whereClause);
+
+    const logs = await db
+      .select()
+      .from(auditLogs)
+      .where(whereClause)
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(lim)
+      .offset(off);
+
+    return { logs, total: totalResult?.count || 0 };
+  }
+
+  async getAuditLogsByUser(
+    userId: string,
+    options: { limit?: number; offset?: number; startDate?: string; endDate?: string } = {},
+  ): Promise<{ logs: AuditLog[]; total: number }> {
+    const conditions: any[] = [
+      or(eq(auditLogs.actorUserId, userId), eq(auditLogs.targetId, userId)),
+    ];
+    if (options.startDate) {
+      conditions.push(gte(auditLogs.createdAt, new Date(options.startDate)));
+    }
+    if (options.endDate) {
+      const endDate = new Date(options.endDate);
+      endDate.setDate(endDate.getDate() + 1);
+      conditions.push(lte(auditLogs.createdAt, endDate));
+    }
+    const whereClause = and(...conditions);
+    const lim = options.limit ?? 25;
+    const off = options.offset ?? 0;
 
     const [totalResult] = await db
       .select({ count: count() })

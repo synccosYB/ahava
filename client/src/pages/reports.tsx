@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Download, FileText, Loader2, Clock, CalendarDays, AlertTriangle, FileSearch, Users } from "lucide-react";
+import { Download, FileText, Loader2, Clock, CalendarDays, AlertTriangle, FileSearch, Users, CalendarRange } from "lucide-react";
+import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
 import { PageHeader } from "@/components/page-header";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -43,6 +44,7 @@ const reportTypes = [
   { key: "missing-punches", label: "Missing Punches", icon: AlertTriangle },
   { key: "exceptions", label: "Exceptions", icon: FileSearch },
   { key: "audit", label: "Audit", icon: Users },
+  { key: "employee-timesheet", label: "Employee Timesheet", icon: CalendarRange },
 ];
 
 export default function ReportsPage() {
@@ -68,6 +70,7 @@ export default function ReportsPage() {
         <TabsContent value="missing-punches"><StandardReport reportType="company" title="Missing Punches Report" /></TabsContent>
         <TabsContent value="exceptions"><StandardReport reportType="company" title="Exceptions Report" /></TabsContent>
         <TabsContent value="audit"><AuditReport /></TabsContent>
+        <TabsContent value="employee-timesheet"><EmployeeTimesheetReport /></TabsContent>
       </Tabs>
     </div>
   );
@@ -352,5 +355,134 @@ function AuditReport() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+type TimesheetEligibleEmployee = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  departmentId: string | null;
+};
+
+type GeneratedTimesheet = {
+  employeeId: string;
+  employeeName: string;
+  startDate: string;
+  endDate: string;
+};
+
+function EmployeeTimesheetReport() {
+  const today = new Date();
+  const twoWeeksAgo = new Date();
+  twoWeeksAgo.setDate(today.getDate() - 13);
+  const [employeeId, setEmployeeId] = useState<string>("");
+  const [startDate, setStartDate] = useState(twoWeeksAgo.toISOString().split("T")[0]);
+  const [endDate, setEndDate] = useState(today.toISOString().split("T")[0]);
+  const [generated, setGenerated] = useState<GeneratedTimesheet | null>(null);
+
+  const { data: employees, isLoading: loadingEmployees } = useQuery<TimesheetEligibleEmployee[]>({
+    queryKey: ["/api/timesheet/eligible-employees"],
+  });
+
+  const sortedEmployees = (employees || []).slice().sort((a, b) => {
+    const an = `${a.firstName} ${a.lastName}`.trim().toLowerCase();
+    const bn = `${b.firstName} ${b.lastName}`.trim().toLowerCase();
+    return an.localeCompare(bn);
+  });
+
+  const selectedEmployee = sortedEmployees.find((e) => e.id === employeeId);
+  const rangeInvalid = startDate > endDate;
+  const generateDisabled = !employeeId || rangeInvalid;
+
+  const handleGenerate = () => {
+    if (generateDisabled || !selectedEmployee) return;
+    setGenerated({
+      employeeId,
+      employeeName: `${selectedEmployee.firstName} ${selectedEmployee.lastName}`.trim(),
+      startDate,
+      endDate,
+    });
+  };
+
+  const fileName = generated
+    ? `timesheet-${generated.employeeName.replace(/\s+/g, "_")}-${generated.startDate}-${generated.endDate}.csv`
+    : undefined;
+
+  return (
+    <Card data-testid="card-employee-timesheet-report">
+      <CardHeader>
+        <CardTitle>Employee Timesheet</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+          <div>
+            <Label htmlFor="emp-select" className="text-xs uppercase tracking-wider text-muted-foreground">Employee</Label>
+            <Select value={employeeId} onValueChange={setEmployeeId} disabled={loadingEmployees}>
+              <SelectTrigger id="emp-select" data-testid="select-timesheet-employee">
+                <SelectValue placeholder={loadingEmployees ? "Loading..." : "Select an employee"} />
+              </SelectTrigger>
+              <SelectContent>
+                {sortedEmployees.map((e) => (
+                  <SelectItem key={e.id} value={e.id} data-testid={`option-employee-${e.id}`}>
+                    {`${e.firstName} ${e.lastName}`.trim() || "Unnamed"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label htmlFor="ts-rep-start" className="text-xs uppercase tracking-wider text-muted-foreground">Start Date</Label>
+            <Input
+              id="ts-rep-start"
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              data-testid="input-report-timesheet-start"
+            />
+          </div>
+          <div>
+            <Label htmlFor="ts-rep-end" className="text-xs uppercase tracking-wider text-muted-foreground">End Date</Label>
+            <Input
+              id="ts-rep-end"
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              data-testid="input-report-timesheet-end"
+            />
+          </div>
+          <div>
+            <Button
+              onClick={handleGenerate}
+              disabled={generateDisabled}
+              data-testid="button-generate-timesheet"
+              className="w-full"
+            >
+              <FileText className="h-4 w-4 mr-2" /> Generate
+            </Button>
+          </div>
+        </div>
+
+        {rangeInvalid && (
+          <p className="text-sm text-destructive py-2" data-testid="text-timesheet-bad-range">
+            Start date must be on or before the end date.
+          </p>
+        )}
+
+        {!generated ? (
+          <p className="text-sm text-muted-foreground py-6 text-center" data-testid="text-timesheet-select-prompt">
+            Choose an employee and a date range, then click Generate.
+          </p>
+        ) : (
+          <EmployeeTimesheetTable
+            employeeId={generated.employeeId}
+            startDate={generated.startDate}
+            endDate={generated.endDate}
+            showExport
+            exportFileName={fileName}
+          />
+        )}
+      </CardContent>
+    </Card>
   );
 }

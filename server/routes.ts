@@ -11,6 +11,7 @@ import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Locati
 import { eq, desc, and, isNull, isNotNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
+import { buildEmployeeTimesheet, computeAttendanceTotals } from "./timesheetService";
 import { runAlertDetection } from "./services/alerts";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
 import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./services/onboarding";
@@ -2253,6 +2254,86 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/attendance/timesheet/:employeeId", requireAuth, async (req: any, res) => {
+    try {
+      const requester = req.authUser as User;
+      const { employeeId } = req.params;
+      const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+
+      if (!startDate || !endDate) {
+        return res.status(400).json({ message: "startDate and endDate are required (YYYY-MM-DD)." });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+        return res.status(400).json({ message: "Dates must be in YYYY-MM-DD format." });
+      }
+      if (startDate > endDate) {
+        return res.status(400).json({ message: "startDate must be on or before endDate." });
+      }
+
+      // Permissions: employees can only view their own; managers see their team; admins see anyone.
+      if (employeeId !== requester.id) {
+        if (requester.role !== "admin" && requester.role !== "manager") {
+          return res.status(403).json({ message: "Not authorized to view this timesheet." });
+        }
+        const teamIds = await getTeamUserIds(requester);
+        if (!teamIds.has(employeeId)) {
+          return res.status(403).json({ message: "Not authorized to view this employee's timesheet." });
+        }
+      }
+
+      const target = await storage.getUser(employeeId);
+      if (!target) {
+        return res.status(404).json({ message: "Employee not found." });
+      }
+      if (target.id === SUPER_ADMIN_USER_ID && requester.id !== SUPER_ADMIN_USER_ID) {
+        return res.status(404).json({ message: "Employee not found." });
+      }
+
+      const result = await buildEmployeeTimesheet(target, startDate, endDate);
+
+      res.json({
+        employeeId,
+        employeeName: `${target.firstName || ""} ${target.lastName || ""}`.trim() || "Unknown",
+        startDate,
+        endDate,
+        otThresholdDaily: result.otThresholdDaily,
+        entries: result.entries,
+        totals: result.totals,
+      });
+    } catch (error) {
+      console.error("Error fetching employee timesheet:", error);
+      res.status(500).json({ message: "Failed to fetch employee timesheet" });
+    }
+  });
+
+  app.get("/api/timesheet/eligible-employees", requireAuth, async (req: any, res) => {
+    try {
+      const requester = req.authUser as User;
+      if (requester.role !== "admin" && requester.role !== "manager") {
+        return res.json([]);
+      }
+      const teamIds = await getTeamUserIds(requester);
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const visible = allUsers
+        .filter(u => teamIds.has(u.id) || u.id === requester.id)
+        .map(u => ({
+          id: u.id,
+          firstName: u.firstName || "",
+          lastName: u.lastName || "",
+          departmentId: u.departmentId || null,
+        }))
+        .sort((a, b) => {
+          const an = `${a.firstName} ${a.lastName}`.trim().toLowerCase();
+          const bn = `${b.firstName} ${b.lastName}`.trim().toLowerCase();
+          return an.localeCompare(bn);
+        });
+      res.json(visible);
+    } catch (error) {
+      console.error("Error fetching timesheet-eligible employees:", error);
+      res.status(500).json({ message: "Failed to fetch eligible employees" });
+    }
+  });
+
   app.post("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
@@ -3655,15 +3736,9 @@ export async function registerRoutes(
 
     const reportData = filteredUsers.map(user => {
       const userAttendance = filteredAttendance.filter(a => a.employeeId === user.id);
-      let totalHours = 0;
-      let daysWorked = new Set<string>();
-      userAttendance.forEach(r => {
-        if (r.clockIn) {
-          const end = r.clockOut ? new Date(r.clockOut) : new Date();
-          totalHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
-          daysWorked.add(r.workDate);
-        }
-      });
+      // Shared with /api/attendance/timesheet/:employeeId — guarantees the
+      // per-employee timesheet's totals row matches this report row exactly.
+      const { totalHours, daysWorked } = computeAttendanceTotals(userAttendance);
 
       const userTimeOff = filteredTimeOff.filter(r => r.userId === user.id && (r.status === "approved" || r.status === "partially_approved"));
       let daysOff = 0;
@@ -3673,14 +3748,14 @@ export async function registerRoutes(
         daysOff += Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
       });
 
-      const overtime = Math.max(0, totalHours - (daysWorked.size * 8));
+      const overtime = Math.max(0, totalHours - (daysWorked * 8));
 
       return {
         employeeId: user.id,
         employeeName: `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Unknown",
         department: user.departmentId ? (deptMap.get(user.departmentId) || "Unassigned") : "Unassigned",
         totalHours: Math.round(totalHours * 10) / 10,
-        daysWorked: daysWorked.size,
+        daysWorked,
         daysOff,
         overtime: Math.round(overtime * 10) / 10,
       };
@@ -3837,6 +3912,43 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching audit logs:", error);
       res.status(500).json({ message: "Failed to fetch audit logs" });
+    }
+  });
+
+  // Server-side, user-scoped audit log feed for the Employee Profile
+  // History/Audit tab. Replaces a client-side filter over a global limit=1000
+  // fetch so older entries are no longer dropped.
+  app.get("/api/audit-logs/employee/:userId", requireAuth, async (req: any, res) => {
+    try {
+      const requester = req.authUser as User;
+      const { userId } = req.params;
+
+      if (userId !== requester.id) {
+        if (requester.role !== "admin" && requester.role !== "manager") {
+          return res.status(403).json({ message: "Not authorized to view this employee's audit history." });
+        }
+        const teamIds = await getTeamUserIds(requester);
+        if (!teamIds.has(userId)) {
+          return res.status(403).json({ message: "Not authorized to view this employee's audit history." });
+        }
+      }
+
+      const target = await storage.getUser(userId);
+      if (!target) return res.status(404).json({ message: "Employee not found." });
+      if (target.id === SUPER_ADMIN_USER_ID && requester.id !== SUPER_ADMIN_USER_ID) {
+        return res.status(404).json({ message: "Employee not found." });
+      }
+
+      const limit = Math.min(parseInt((req.query.limit as string) || "25", 10) || 25, 200);
+      const offset = Math.max(parseInt((req.query.offset as string) || "0", 10) || 0, 0);
+      const startDate = req.query.startDate as string | undefined;
+      const endDate = req.query.endDate as string | undefined;
+
+      const result = await storage.getAuditLogsByUser(userId, { limit, offset, startDate, endDate });
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching employee audit logs:", error);
+      res.status(500).json({ message: "Failed to fetch employee audit logs" });
     }
   });
 

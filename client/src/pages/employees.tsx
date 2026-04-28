@@ -24,9 +24,10 @@ import {
 import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatHoursMinutes } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
+import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
   type CorrectionCountSummary,
   isHighCorrectionCount,
@@ -2332,11 +2333,35 @@ interface AuditLogEntry {
 }
 
 function EmployeeAuditHistory({ userId }: { userId: string }) {
-  const { data: logs, isLoading } = useQuery<AuditLogEntry[]>({
-    queryKey: ["/api/audit-logs"],
+  return (
+    <div className="space-y-6" data-testid="employee-history-tab">
+      <EmployeeTimesheetCard userId={userId} />
+      <EmployeeAuditLogTable userId={userId} />
+    </div>
+  );
+}
+
+const AUDIT_LOG_PAGE_SIZE = 25;
+
+type EmployeeAuditResponse = { logs: AuditLogEntry[]; total: number };
+
+function EmployeeAuditLogTable({ userId }: { userId: string }) {
+  const [pageSize, setPageSize] = useState(AUDIT_LOG_PAGE_SIZE);
+  const { data, isLoading } = useQuery<EmployeeAuditResponse>({
+    queryKey: ["/api/audit-logs/employee", userId, pageSize],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/audit-logs/employee/${userId}?limit=${pageSize}&offset=0`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Failed to load audit logs");
+      return res.json();
+    },
   });
 
-  const userLogs = (logs || []).filter((l) => l.actorUserId === userId || l.targetId === userId).slice(0, 20);
+  const logs = data?.logs || [];
+  const total = data?.total || 0;
+  const hasMore = logs.length < total;
 
   return (
     <Card data-testid="card-audit-history">
@@ -2346,29 +2371,47 @@ function EmployeeAuditHistory({ userId }: { userId: string }) {
           <div className="space-y-2">
             {[1, 2, 3].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
           </div>
-        ) : userLogs.length === 0 ? (
+        ) : logs.length === 0 ? (
           <p className="text-muted-foreground text-center py-4" data-testid="text-no-audit">No audit history found.</p>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-xs font-medium uppercase tracking-wider">Action</TableHead>
-                <TableHead className="text-xs font-medium uppercase tracking-wider">Target</TableHead>
-                <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {userLogs.map((log) => (
-                <TableRow key={log.id} data-testid={`row-audit-${log.id}`}>
-                  <TableCell className="font-medium">{log.action}</TableCell>
-                  <TableCell>{log.targetType}</TableCell>
-                  <TableCell>{log.createdAt ? new Date(log.createdAt).toLocaleString() : "—"}</TableCell>
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Action</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Target</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {logs.map((log) => (
+                  <TableRow key={log.id} data-testid={`row-audit-${log.id}`}>
+                    <TableCell className="font-medium">{log.action}</TableCell>
+                    <TableCell>{log.targetType}</TableCell>
+                    <TableCell>{log.createdAt ? new Date(log.createdAt).toLocaleString() : "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div className="flex items-center justify-between text-xs text-muted-foreground mt-3">
+              <span data-testid="text-audit-count">
+                Showing {logs.length} of {total}
+              </span>
+              {hasMore && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPageSize((c) => c + AUDIT_LOG_PAGE_SIZE)}
+                  data-testid="button-audit-load-more"
+                >
+                  Show more
+                </Button>
+              )}
+            </div>
+          </>
         )}
       </CardContent>
     </Card>
   );
 }
+
