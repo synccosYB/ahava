@@ -622,3 +622,213 @@ test("POST /attendance/exceptions/:id/resolve approves a time_correction for an 
     "exception should link to the older (correction-date) punch, not the newer one",
   );
 });
+
+test("POST /attendance/exceptions targeting a specific punch (Task #183) updates that punch even when a newer punch exists on the same date", async (t) => {
+  const fx = await setupFixture("target-punch-fk-time-correction");
+  t.after(fx.cleanup);
+
+  // Same employee, same workDate, two distinct punches — e.g. an overnight
+  // split or a manual fix that produced two rows. The OLDER one (created
+  // first) is the one the employee wants corrected, but the legacy
+  // date-based lookup would silently pick the NEWER one because it has the
+  // higher createdAt. With the punchLogId FK populated at submission time,
+  // the resolve handler must operate on the punch the employee picked.
+  const workDate = "2026-04-26";
+  const olderClockIn = new Date("2026-04-26T02:00:00Z");
+  const olderClockOut = new Date("2026-04-26T08:00:00Z");
+  const [olderPunch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn: olderClockIn,
+      roundedClockIn: olderClockIn,
+      clockOut: olderClockOut,
+      roundedClockOut: olderClockOut,
+      hoursWorked: 6,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+  // Force a measurable createdAt gap so the "latest by createdAt" query is
+  // deterministic across both rows.
+  await new Promise((r) => setTimeout(r, 10));
+  const newerClockIn = new Date("2026-04-26T14:00:00Z");
+  const newerClockOut = new Date("2026-04-26T22:00:00Z");
+  const [newerPunch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn: newerClockIn,
+      roundedClockIn: newerClockIn,
+      clockOut: newerClockOut,
+      roundedClockOut: newerClockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Submit the correction request through the public API so we exercise the
+  // FK-validation path on the POST endpoint as well.
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+  const correctedClockIn = new Date("2026-04-26T01:30:00Z");
+  const correctedClockOut = new Date("2026-04-26T08:30:00Z");
+  const submitRes = await fetch(`${fx.baseUrl}/api/attendance/exceptions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${employeeToken}`,
+    },
+    body: JSON.stringify({
+      exceptionDate: workDate,
+      type: "time_correction",
+      reason:
+        "Fixing the early morning shift, not the evening one. [Original In: 02:00, Original Out: 08:00, Corrected In: 01:30, Corrected Out: 08:30]",
+      punchLogId: olderPunch.id,
+    }),
+  });
+  const submitBody = await submitRes.text();
+  assert.equal(
+    submitRes.status,
+    201,
+    `expected 201 from POST /api/attendance/exceptions, got ${submitRes.status} (${submitBody})`,
+  );
+  const created = JSON.parse(submitBody);
+  assert.equal(created.punchLogId, olderPunch.id, "submitted exception should carry the FK");
+
+  const resolveRes = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${created.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({
+      action: "approve",
+      reviewNotes: "approve via FK target",
+      correctedClockIn: correctedClockIn.toISOString(),
+      correctedClockOut: correctedClockOut.toISOString(),
+    }),
+  });
+  assert.equal(
+    resolveRes.status,
+    200,
+    `expected 200 from resolve route, got ${resolveRes.status} (${await resolveRes.text().catch(() => "")})`,
+  );
+
+  const [updatedOlder] = await db.select().from(punchLogs).where(eq(punchLogs.id, olderPunch.id));
+  assert.equal(
+    new Date(updatedOlder.clockIn!).getTime(),
+    correctedClockIn.getTime(),
+    "the FK-targeted (older) punch must be updated",
+  );
+  assert.equal(
+    new Date(updatedOlder.clockOut!).getTime(),
+    correctedClockOut.getTime(),
+    "the FK-targeted (older) punch clockOut must be updated",
+  );
+  assert.equal(updatedOlder.hoursWorked, 7, "older punch hours should be 1:30–8:30 = 7h");
+
+  // The "later in createdAt" punch must NOT have been touched, which used to
+  // be the bug under the date-based lookup.
+  const [untouchedNewer] = await db.select().from(punchLogs).where(eq(punchLogs.id, newerPunch.id));
+  assert.equal(
+    new Date(untouchedNewer.clockIn!).getTime(),
+    newerClockIn.getTime(),
+    "the non-targeted (newer) punch clockIn must not have changed",
+  );
+  assert.equal(
+    new Date(untouchedNewer.clockOut!).getTime(),
+    newerClockOut.getTime(),
+    "the non-targeted (newer) punch clockOut must not have changed",
+  );
+  assert.equal(untouchedNewer.hoursWorked, 8, "the non-targeted (newer) punch hoursWorked must not have changed");
+
+  const [resolved] = await db.select().from(attendanceExceptions).where(eq(attendanceExceptions.id, created.id));
+  assert.equal(resolved.status, "approved");
+  assert.equal(
+    resolved.punchLogId,
+    olderPunch.id,
+    "post-resolve punchLogId should record the FK-targeted punch",
+  );
+});
+
+test("POST /attendance/exceptions rejects a punchLogId that belongs to another employee (Task #183)", async (t) => {
+  const fx = await setupFixture("target-punch-fk-cross-user");
+  t.after(fx.cleanup);
+
+  // A second employee in the same company with their own punch.
+  const otherEmail = `${TEST_EMAIL_PREFIX}target-fk-other@example.invalid`;
+  const reviewer = await storage.getUser(REVIEWER_ID);
+  const [otherEmployee] = await db
+    .insert(users)
+    .values({
+      email: otherEmail,
+      firstName: "Task183",
+      lastName: "Other",
+      role: "employee",
+      companyId: reviewer!.companyId,
+    })
+    .returning();
+  t.after(async () => {
+    await db.delete(punchLogs).where(eq(punchLogs.employeeId, otherEmployee.id));
+    await db.delete(users).where(eq(users.id, otherEmployee.id));
+  });
+
+  const workDate = "2026-04-26";
+  const [otherPunch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: otherEmployee.id,
+      workDate,
+      clockIn: new Date("2026-04-26T09:00:00Z"),
+      roundedClockIn: new Date("2026-04-26T09:00:00Z"),
+      clockOut: new Date("2026-04-26T17:00:00Z"),
+      roundedClockOut: new Date("2026-04-26T17:00:00Z"),
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${employeeToken}`,
+    },
+    body: JSON.stringify({
+      exceptionDate: workDate,
+      type: "time_correction",
+      reason: "trying to target someone else's punch",
+      punchLogId: otherPunch.id,
+    }),
+  });
+  assert.equal(res.status, 400, "must reject submission targeting another employee's punch");
+  const body = await res.json().catch(() => ({}));
+  assert.match(
+    String(body.message ?? ""),
+    /Invalid punch reference/i,
+    "should report invalid punch reference",
+  );
+});

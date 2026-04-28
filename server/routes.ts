@@ -7,7 +7,7 @@ import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBa
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema } from "@shared/schema";
-import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location } from "@shared/schema";
+import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
@@ -2383,6 +2383,10 @@ export async function registerRoutes(
         return res.status(400).json({ message: `Invalid type. Must be one of: ${validTypes.join(", ")}` });
       }
 
+      // When a punchLogId is provided, validate it points at one of this
+      // employee's punches on the same date. The same column doubles as the
+      // submission-time target (so the resolve handler can update the right
+      // punch on multi-punch days) and as the post-resolve link.
       let resolvedPunchLogId: string | null = null;
       if (typeof punchLogId === "string" && punchLogId.length > 0) {
         const punchLog = await storage.getPunchLog(punchLogId);
@@ -2441,7 +2445,7 @@ export async function registerRoutes(
     try {
       const userId = req.authUser.id;
       const exceptionId = req.params.id as string;
-      const { exceptionDate, exceptionTime, type, reason } = req.body;
+      const { exceptionDate, exceptionTime, type, reason, punchLogId } = req.body;
 
       const existing = await storage.getAttendanceException(exceptionId);
       if (!existing) {
@@ -2463,12 +2467,32 @@ export async function registerRoutes(
         return res.status(400).json({ message: `Invalid type. Must be one of: ${validTypes.join(", ")}` });
       }
 
-      const updated = await storage.updateAttendanceException(exceptionId, {
+      // If the client supplies a punchLogId on edit, validate it the same way
+      // the POST does. Treating an explicit `null`/empty string as "clear the
+      // target" lets the UI move a request from a punch-targeted type back to
+      // e.g. missing_punch if the employee changed their mind.
+      const updateData: Partial<AttendanceException> = {
         exceptionDate,
         exceptionTime: exceptionTime ? new Date(exceptionTime) : null,
         type,
         reason,
-      });
+      };
+      if (punchLogId !== undefined) {
+        if (punchLogId === null || punchLogId === "") {
+          updateData.punchLogId = null;
+        } else {
+          const punchLog = await storage.getPunchLog(punchLogId);
+          if (!punchLog || punchLog.employeeId !== userId) {
+            return res.status(400).json({ message: "Invalid punch reference" });
+          }
+          if (punchLog.workDate !== exceptionDate) {
+            return res.status(400).json({ message: "Punch reference does not match the request date" });
+          }
+          updateData.punchLogId = punchLog.id;
+        }
+      }
+
+      const updated = await storage.updateAttendanceException(exceptionId, updateData);
 
       res.json(updated);
     } catch (error) {
@@ -2743,19 +2767,41 @@ export async function registerRoutes(
 
       const correctedTimestamp = correctedTime ? new Date(correctedTime) : exception.exceptionTime;
 
+      // Helper that loads the punch this exception targets. Prefer the FK
+      // (`punchLogId`) populated at submission time so the resolve handler
+      // operates on the punch the employee actually meant to fix even when
+      // there are multiple punches on the same date (e.g. overnight shifts,
+      // manual splits). Fall back to the legacy employee+date lookup for
+      // older rows that don't yet carry the FK.
+      const loadTargetedPunch = async (): Promise<PunchLog | undefined> => {
+        if (exception.punchLogId) {
+          const [byId] = await db
+            .select()
+            .from(punchLogs)
+            .where(eq(punchLogs.id, exception.punchLogId));
+          if (byId && byId.employeeId === exception.employeeId) {
+            return byId;
+          }
+          // Fall through to date-based lookup if the FK target was deleted
+          // or somehow points at a different employee — the validations
+          // below will flag the resulting state as invalid.
+        }
+        return storage.getAttendanceForUserOnDate(exception.employeeId, exception.exceptionDate);
+      };
+
       if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
         const existingOpen = await storage.getCurrentAttendance(exception.employeeId);
         if (existingOpen && existingOpen.workDate === exception.exceptionDate) {
           return res.status(400).json({ message: "Employee already has an open punch for this date" });
         }
       } else if (exception.type === "forgotten_clock_out") {
-        const dateRecord = await storage.getAttendanceForUserOnDate(exception.employeeId, exception.exceptionDate);
-        if (!dateRecord || !dateRecord.clockIn || dateRecord.clockOut) {
+        const targetedRecord = await loadTargetedPunch();
+        if (!targetedRecord || !targetedRecord.clockIn || targetedRecord.clockOut) {
           return res.status(400).json({ message: "No open punch record found for this date to close" });
         }
       } else if (exception.type === "time_correction") {
-        const dateRecord = await storage.getAttendanceForUserOnDate(exception.employeeId, exception.exceptionDate);
-        if (!dateRecord) {
+        const targetedRecord = await loadTargetedPunch();
+        if (!targetedRecord) {
           return res.status(400).json({ message: "No punch record found for this date to correct" });
         }
       }
@@ -2793,9 +2839,19 @@ export async function registerRoutes(
           }).returning();
           punchLog = created;
         } else if (exception.type === "forgotten_clock_out") {
-          const [latestRecord] = await tx.select().from(punchLogs)
-            .where(and(eq(punchLogs.employeeId, exception.employeeId), eq(punchLogs.workDate, exception.exceptionDate)))
-            .orderBy(desc(punchLogs.createdAt)).limit(1);
+          // Prefer the FK target so multi-punch days resolve unambiguously;
+          // fall back to "latest punch on this date" for legacy rows that
+          // pre-date the FK column.
+          const [latestRecord] = exception.punchLogId
+            ? await tx.select().from(punchLogs)
+                .where(and(
+                  eq(punchLogs.id, exception.punchLogId),
+                  eq(punchLogs.employeeId, exception.employeeId),
+                ))
+                .limit(1)
+            : await tx.select().from(punchLogs)
+                .where(and(eq(punchLogs.employeeId, exception.employeeId), eq(punchLogs.workDate, exception.exceptionDate)))
+                .orderBy(desc(punchLogs.createdAt)).limit(1);
           if (latestRecord && latestRecord.clockIn && !latestRecord.clockOut) {
             const clockOutTime = correctedTimestamp || new Date();
             const roundedClockInTime = new Date(latestRecord.roundedClockIn ?? latestRecord.clockIn);
@@ -2820,9 +2876,19 @@ export async function registerRoutes(
             punchLog = updated;
           }
         } else if (exception.type === "time_correction") {
-          const [latestRecord] = await tx.select().from(punchLogs)
-            .where(and(eq(punchLogs.employeeId, exception.employeeId), eq(punchLogs.workDate, exception.exceptionDate)))
-            .orderBy(desc(punchLogs.createdAt)).limit(1);
+          // Same as forgotten_clock_out: prefer the FK target so the right
+          // punch is updated even when an employee has multiple punches on
+          // the same date (e.g. an overnight or split shift).
+          const [latestRecord] = exception.punchLogId
+            ? await tx.select().from(punchLogs)
+                .where(and(
+                  eq(punchLogs.id, exception.punchLogId),
+                  eq(punchLogs.employeeId, exception.employeeId),
+                ))
+                .limit(1)
+            : await tx.select().from(punchLogs)
+                .where(and(eq(punchLogs.employeeId, exception.employeeId), eq(punchLogs.workDate, exception.exceptionDate)))
+                .orderBy(desc(punchLogs.createdAt)).limit(1);
           if (latestRecord) {
             const oldValue = {
               clockIn: latestRecord.clockIn,

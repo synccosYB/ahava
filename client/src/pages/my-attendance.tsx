@@ -266,7 +266,11 @@ export default function MyAttendance() {
       origIn: toTimeInputValue(record.clockIn),
       origOut: toTimeInputValue(record.clockOut),
       missingPunch,
-      punchLogId: record.id,
+      // Tie the new request to the punch the employee is looking at so the
+      // resolve handler updates that exact punch — not whichever happens to
+      // be the most recent on this date. Missing-punch flows leave it null
+      // because there's no existing punch to attach to yet.
+      punchLogId: missingPunch ? null : record.id,
     });
   };
 
@@ -680,6 +684,11 @@ function CorrectionFormBody({
         reason: fullReason,
       };
       if (isEditing) {
+        // Allow callers to clear or change the punch target on edit by
+        // explicitly sending punchLogId (null clears it).
+        if (!missingPunch) {
+          payload.punchLogId = punchLogId ?? null;
+        }
         return apiRequest("PATCH", `/api/attendance/exceptions/${editingExceptionId}`, payload);
       }
       if (punchLogId) {

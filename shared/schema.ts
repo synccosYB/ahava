@@ -590,7 +590,10 @@ export const punchLogsRelations = relations(punchLogs, ({ one }) => ({
 export const attendanceExceptionsRelations = relations(attendanceExceptions, ({ one }) => ({
   employee: one(users, { fields: [attendanceExceptions.employeeId], references: [users.id] }),
   reviewer: one(users, { fields: [attendanceExceptions.reviewedBy], references: [users.id] }),
-  punchLog: one(punchLogs, { fields: [attendanceExceptions.punchLogId], references: [punchLogs.id] }),
+  punchLog: one(punchLogs, {
+    fields: [attendanceExceptions.punchLogId],
+    references: [punchLogs.id],
+  }),
 }));
 
 export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
