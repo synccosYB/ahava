@@ -37,6 +37,9 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
       const payload = jwt.verify(token, JWT_SECRET) as { userId: string };
       const user = await authStorage.getUser(payload.userId);
       if (user) {
+        if (user.deactivatedAt) {
+          return res.status(403).json({ message: "Account has been deactivated", code: "ACCOUNT_DEACTIVATED" });
+        }
         (req as any).authUser = user;
         return next();
       }
@@ -48,6 +51,9 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
   if (userId) {
     const user = await authStorage.getUser(userId);
     if (user) {
+      if (user.deactivatedAt) {
+        return res.status(403).json({ message: "Account has been deactivated", code: "ACCOUNT_DEACTIVATED" });
+      }
       (req as any).authUser = user;
       return next();
     }

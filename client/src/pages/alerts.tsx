@@ -77,6 +77,13 @@ const typeLabels: Record<string, string> = {
   missing_document: "Missing Document",
   certification_expiring: "Certification Expiring",
   certification_expired: "Certification Expired",
+  onboarding_overdue: "Onboarding Overdue",
+  onboarding_stalled: "Onboarding Stalled",
+  onboarding_no_template: "Onboarding — No Template",
+  onboarding_materialization_failed: "Onboarding Setup Failed",
+  offboarding_overdue: "Offboarding Overdue",
+  offboarding_blocking_termination: "Offboarding Blocking Termination",
+  offboarding_no_template: "Offboarding — No Template",
 };
 
 export default function AlertsPage() {

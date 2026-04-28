@@ -19,8 +19,10 @@ import {
 import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
   GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2, ClipboardCheck,
-  UserCog, CalendarRange, RefreshCw, Send, FileCheck,
+  UserCog, CalendarRange, RefreshCw, Send, FileCheck, UserPlus, UserMinus,
 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
 import { PolicyWizard } from "@/components/policy-wizard";
 import { WorkflowBuilder } from "@/components/workflow-builder";
@@ -48,6 +50,8 @@ const sections = [
   { key: "alerts", label: "Alerts & Notifications", icon: Bell },
   { key: "review-cycles", label: "Review Cycles", icon: ClipboardCheck },
   { key: "required_docs", label: "Required Documents", icon: FileCheck },
+  { key: "onboarding", label: "Onboarding Templates", icon: UserPlus },
+  { key: "offboarding", label: "Offboarding Templates", icon: UserMinus },
   { key: "kiosk", label: "Kiosk & Devices", icon: Tablet },
   { key: "audit", label: "Audit Logs", icon: FileSearch },
 ];
@@ -91,6 +95,8 @@ export default function RulesControlsPage() {
           {activeSection === "alerts" && <AlertsSection />}
           {activeSection === "review-cycles" && <ReviewCyclesSection />}
           {activeSection === "required_docs" && <RequiredDocumentsSection />}
+          {activeSection === "onboarding" && <LifecycleTemplatesSection kind="onboarding" />}
+          {activeSection === "offboarding" && <LifecycleTemplatesSection kind="offboarding" />}
           {activeSection === "kiosk" && <KioskSection />}
           {activeSection === "audit" && <AuditSection />}
         </div>
@@ -832,6 +838,7 @@ function AuditSection() {
   );
 }
 
+
 // ========= Auto Role Assignment Rules =========
 
 const RULE_FIELDS = [
@@ -1435,6 +1442,181 @@ function ScheduleTemplatesSection() {
   );
 }
 
+interface LifecycleTemplate {
+  id: string;
+  companyId: string | null;
+  name: string;
+  description: string | null;
+  isDefault: boolean;
+  isActive: boolean;
+}
+interface LifecycleTask {
+  id: string;
+  templateId: string;
+  title: string;
+  description: string | null;
+  category: string;
+  ownerRole: string;
+  isRequired: boolean;
+  documentType?: string | null;
+  blocksDeactivation?: boolean;
+  dueOffsetDays: number;
+  sortOrder: number;
+}
+
+interface LifecycleTaskForm {
+  title: string;
+  description: string;
+  category: string;
+  ownerRole: string;
+  isRequired: boolean;
+  documentType: string;
+  blocksDeactivation: boolean;
+  dueOffsetDays: number;
+  sortOrder: number;
+}
+
+type LifecycleTaskPatch = Partial<{
+  title: string;
+  description: string | null;
+  category: string;
+  ownerRole: string;
+  isRequired: boolean;
+  documentType: string | null;
+  blocksDeactivation: boolean;
+  dueOffsetDays: number;
+  sortOrder: number;
+}>;
+
+interface LifecycleTaskCreatePayload {
+  title: string;
+  description: string;
+  category: string;
+  ownerRole: string;
+  isRequired: boolean;
+  dueOffsetDays: number;
+  sortOrder: number;
+  documentType?: string | null;
+  blocksDeactivation?: boolean;
+}
+
+function getMutationErrorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  return "Unknown error";
+}
+
+const ONBOARDING_DOCUMENT_TYPES = [
+  { value: "", label: "None" },
+  { value: "w9", label: "W-9" },
+  { value: "i9", label: "I-9" },
+  { value: "direct_deposit", label: "Direct Deposit" },
+  { value: "emergency_contact", label: "Emergency Contact" },
+  { value: "handbook_ack", label: "Handbook Acknowledgement" },
+];
+
+function LifecycleTemplatesSection({ kind }: { kind: "onboarding" | "offboarding" }) {
+  const { toast } = useToast();
+  const baseUrl = `/api/${kind}-templates`;
+  const { data: templates, isLoading } = useQuery<LifecycleTemplate[]>({ queryKey: [baseUrl] });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [openCreate, setOpenCreate] = useState(false);
+  const [form, setForm] = useState({ name: "", description: "", isDefault: false });
+
+  const createMut = useMutation({
+    mutationFn: async () => apiRequest("POST", baseUrl, form),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [baseUrl] });
+      setOpenCreate(false);
+      setForm({ name: "", description: "", isDefault: false });
+      toast({ title: "Template created" });
+    },
+    onError: (e: unknown) => toast({ title: "Failed to create template", description: getMutationErrorMessage(e), variant: "destructive" }),
+  });
+
+  const setDefaultMut = useMutation({
+    mutationFn: async (id: string) => apiRequest("PATCH", `${baseUrl}/${id}`, { isDefault: true }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: [baseUrl] }); toast({ title: "Default template updated" }); },
+  });
+
+  const toggleActiveMut = useMutation({
+    mutationFn: async ({ id, isActive }: { id: string; isActive: boolean }) => apiRequest("PATCH", `${baseUrl}/${id}`, { isActive }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [baseUrl] }),
+  });
+
+  const selected = templates?.find(t => t.id === selectedId);
+
+  return (
+    <Card data-testid={`card-${kind}-templates`}>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="capitalize">{kind} Templates</CardTitle>
+        <Dialog open={openCreate} onOpenChange={setOpenCreate}>
+          <DialogTrigger asChild>
+            <Button size="sm" data-testid={`button-new-${kind}-template`}><Plus className="h-4 w-4 mr-1" /> New Template</Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader><DialogTitle>New {kind} template</DialogTitle></DialogHeader>
+            <div className="space-y-3 py-2">
+              <div><Label>Name</Label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} data-testid={`input-${kind}-template-name`} /></div>
+              <div><Label>Description</Label><Textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={3} /></div>
+              <div className="flex items-center gap-2"><Checkbox checked={form.isDefault} onCheckedChange={(v) => setForm({ ...form, isDefault: !!v })} /><Label className="m-0">Set as default</Label></div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpenCreate(false)}>Cancel</Button>
+              <Button onClick={() => createMut.mutate()} disabled={!form.name || createMut.isPending} data-testid={`button-save-${kind}-template`}>Create</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? <Skeleton className="h-24 w-full" /> : !templates || templates.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No templates yet.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2 md:col-span-1">
+              {templates.map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setSelectedId(t.id)}
+                  className={`w-full text-left p-3 rounded-md border ${selectedId === t.id ? "border-primary bg-primary/5" : "hover-elevate"}`}
+                  data-testid={`row-${kind}-template-${t.id}`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">{t.name}</span>
+                    {t.isDefault && <Badge variant="secondary">Default</Badge>}
+                  </div>
+                  {t.description && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{t.description}</p>}
+                  <div className="flex gap-2 mt-2">
+                    <Badge variant={t.isActive ? "default" : "outline"}>{t.isActive ? "Active" : "Inactive"}</Badge>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="md:col-span-2">
+              {selected ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    {!selected.isDefault && (
+                      <Button size="sm" variant="outline" onClick={() => setDefaultMut.mutate(selected.id)} data-testid={`button-set-default-${selected.id}`}>Set as default</Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={() => toggleActiveMut.mutate({ id: selected.id, isActive: !selected.isActive })}>
+                      {selected.isActive ? "Deactivate" : "Activate"}
+                    </Button>
+                  </div>
+                  <LifecycleTemplateTaskEditor kind={kind} templateId={selected.id} />
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">Select a template to edit its tasks.</p>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+
 function ScheduleTemplateDialog({ template, onClose }: { template: ScheduleTemplate | null; onClose: () => void }) {
   const { toast } = useToast();
   const isEdit = !!template;
@@ -1995,5 +2177,163 @@ function RequiredDocDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function LifecycleTemplateTaskEditor({ kind, templateId }: { kind: "onboarding" | "offboarding"; templateId: string }) {
+  const { toast } = useToast();
+  const detailUrl = `/api/${kind}-templates/${templateId}`;
+  const tasksCreateUrl = `/api/${kind}-templates/${templateId}/tasks`;
+  const { data: detail, isLoading } = useQuery<LifecycleTemplate & { tasks: LifecycleTask[] }>({ queryKey: [detailUrl] });
+  const [openAdd, setOpenAdd] = useState(false);
+  const [form, setForm] = useState<LifecycleTaskForm>({
+    title: "",
+    description: "",
+    category: kind === "onboarding" ? "paperwork" : "access",
+    ownerRole: kind === "onboarding" ? "new_hire" : "manager",
+    isRequired: true,
+    documentType: "",
+    blocksDeactivation: false,
+    dueOffsetDays: 0,
+    sortOrder: 0,
+  });
+
+  const addMut = useMutation({
+    mutationFn: async () => {
+      const payload: LifecycleTaskCreatePayload = {
+        title: form.title,
+        description: form.description,
+        category: form.category,
+        ownerRole: form.ownerRole,
+        isRequired: form.isRequired,
+        dueOffsetDays: form.dueOffsetDays,
+        sortOrder: form.sortOrder,
+      };
+      if (kind === "onboarding") {
+        payload.documentType = !form.documentType || form.documentType === "_none" ? null : form.documentType;
+      } else {
+        payload.blocksDeactivation = form.blocksDeactivation;
+      }
+      return apiRequest("POST", tasksCreateUrl, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [detailUrl] });
+      setOpenAdd(false);
+      setForm({ ...form, title: "", description: "" });
+      toast({ title: "Task added" });
+    },
+    onError: (e: unknown) => toast({ title: "Failed to add task", description: getMutationErrorMessage(e), variant: "destructive" }),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: async (id: string) => apiRequest("DELETE", `/api/${kind}-template-tasks/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [detailUrl] }),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: LifecycleTaskPatch }) => apiRequest("PATCH", `/api/${kind}-template-tasks/${id}`, patch),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [detailUrl] }),
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-medium">Tasks</h4>
+        <Dialog open={openAdd} onOpenChange={setOpenAdd}>
+          <DialogTrigger asChild><Button size="sm" variant="outline" data-testid={`button-add-${kind}-task`}><Plus className="h-4 w-4 mr-1" /> Add task</Button></DialogTrigger>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Add {kind} task</DialogTitle></DialogHeader>
+            <div className="space-y-3 py-2">
+              <div><Label>Title</Label><Input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} data-testid={`input-${kind}-task-title`} /></div>
+              <div><Label>Description</Label><Textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Owner role</Label>
+                  <Select value={form.ownerRole} onValueChange={(v) => setForm({ ...form, ownerRole: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hr">HR</SelectItem>
+                      <SelectItem value="manager">Manager</SelectItem>
+                      {kind === "onboarding" && <SelectItem value="new_hire">New Hire</SelectItem>}
+                      <SelectItem value="it">IT</SelectItem>
+                      {kind === "offboarding" && <SelectItem value="finance">Finance</SelectItem>}
+                      <SelectItem value="system">System (auto)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Category</Label>
+                  <Input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Due offset (days)</Label><Input type="number" value={form.dueOffsetDays} onChange={e => setForm({ ...form, dueOffsetDays: Number(e.target.value) })} /></div>
+                <div><Label>Sort order</Label><Input type="number" value={form.sortOrder} onChange={e => setForm({ ...form, sortOrder: Number(e.target.value) })} /></div>
+              </div>
+              {kind === "onboarding" ? (
+                <div>
+                  <Label>Document type (auto-completes when uploaded)</Label>
+                  <Select value={form.documentType || ""} onValueChange={(v) => setForm({ ...form, documentType: v })}>
+                    <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                    <SelectContent>
+                      {ONBOARDING_DOCUMENT_TYPES.map(d => <SelectItem key={d.value || "none"} value={d.value || "_none"}>{d.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2"><Checkbox checked={form.blocksDeactivation} onCheckedChange={(v) => setForm({ ...form, blocksDeactivation: !!v })} /><Label className="m-0">Blocks account deactivation until complete</Label></div>
+              )}
+              <div className="flex items-center gap-2"><Checkbox checked={form.isRequired} onCheckedChange={(v) => setForm({ ...form, isRequired: !!v })} /><Label className="m-0">Required</Label></div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpenAdd(false)}>Cancel</Button>
+              <Button onClick={() => addMut.mutate()} disabled={!form.title || addMut.isPending} data-testid={`button-save-${kind}-task`}>Add</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+      {isLoading ? <Skeleton className="h-24 w-full" /> : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Title</TableHead>
+              <TableHead>Owner</TableHead>
+              <TableHead>Required</TableHead>
+              {kind === "onboarding" ? <TableHead>Document</TableHead> : <TableHead>Blocks Deact.</TableHead>}
+              <TableHead>Due</TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {(detail?.tasks ?? []).map(t => (
+              <TableRow key={t.id} data-testid={`row-task-${t.id}`}>
+                <TableCell>
+                  <div className="font-medium">{t.title}</div>
+                  {t.description && <div className="text-xs text-muted-foreground">{t.description}</div>}
+                </TableCell>
+                <TableCell><Badge variant="outline">{t.ownerRole}</Badge></TableCell>
+                <TableCell>
+                  <Switch checked={t.isRequired} onCheckedChange={(v) => updateMut.mutate({ id: t.id, patch: { isRequired: v } })} />
+                </TableCell>
+                {kind === "onboarding" ? (
+                  <TableCell className="text-xs">{t.documentType || "—"}</TableCell>
+                ) : (
+                  <TableCell>
+                    <Switch checked={!!t.blocksDeactivation} onCheckedChange={(v) => updateMut.mutate({ id: t.id, patch: { blocksDeactivation: v } })} />
+                  </TableCell>
+                )}
+                <TableCell className="text-xs">+{t.dueOffsetDays}d</TableCell>
+                <TableCell>
+                  <Button size="sm" variant="ghost" onClick={() => deleteMut.mutate(t.id)} data-testid={`button-delete-task-${t.id}`}><Trash2 className="h-4 w-4" /></Button>
+                </TableCell>
+              </TableRow>
+            ))}
+            {(detail?.tasks ?? []).length === 0 && (
+              <TableRow><TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-6">No tasks yet.</TableCell></TableRow>
+            )}
+          </TableBody>
+        </Table>
+      )}
+    </div>
   );
 }

@@ -89,6 +89,7 @@ export const users = pgTable("users", {
   departmentId: varchar("department_id"),
   forcePasswordChange: boolean("force_password_change").default(false).notNull(),
   roleManuallyOverriddenAt: timestamp("role_manually_overridden_at"),
+  deactivatedAt: timestamp("deactivated_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

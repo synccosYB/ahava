@@ -14,6 +14,8 @@ import { and, eq, isNull, or, gt, sql, desc, inArray } from "drizzle-orm";
 import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_CERTIFICATION_RULES } from "../policyEngine";
 import type { GeneratedAlert } from "./alerts";
+import type { PolicyAlert } from "./policyEnforcement";
+import { createPolicyAlerts } from "./policyEnforcement";
 
 const REQUIRED_DOC_LABELS: Record<string, string> = {
   w9: "W-9",
@@ -26,6 +28,8 @@ const REQUIRED_DOC_LABELS: Record<string, string> = {
 function todayStr(): string {
   return new Date().toISOString().split("T")[0];
 }
+
+// ===== Performance review reminders (Task #92) =====
 
 function todayUtcMidnight(): Date {
   const now = new Date();
@@ -586,4 +590,113 @@ export async function resolveCertificationAlertsFor(
     });
   }
   return open.length;
+}
+
+// ===== Onboarding / Offboarding lifecycle alerts (Task #89) =====
+// STALL_DAYS aligned with Phase 3 architecture §3 line 386 (30 days).
+const STALL_DAYS = 30;
+
+function daysBetweenDates(a: Date, b: Date): number {
+  return Math.floor((a.getTime() - b.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+export async function detectOnboardingOverdue(now: Date = new Date()): Promise<PolicyAlert[]> {
+  const checklists = await storage.listOnboardingChecklists({ status: "in_progress" });
+  const alerts: PolicyAlert[] = [];
+  for (const cl of checklists) {
+    const tasks = await storage.getOnboardingTasks(cl.id);
+    const overdue = tasks.filter(t => {
+      if (t.status === "completed" || t.status === "skipped") return false;
+      if (!t.dueDate) return false;
+      return new Date(t.dueDate) < now;
+    });
+    if (overdue.length > 0) {
+      alerts.push({
+        type: "onboarding_overdue",
+        severity: "medium",
+        employeeId: cl.employeeId,
+        message: `Onboarding has ${overdue.length} overdue task${overdue.length === 1 ? "" : "s"}`,
+        details: { checklistId: cl.id, overdueCount: overdue.length },
+      });
+    }
+  }
+  return alerts;
+}
+
+export async function detectOnboardingStalled(now: Date = new Date()): Promise<PolicyAlert[]> {
+  const checklists = await storage.listOnboardingChecklists({ status: "in_progress" });
+  const alerts: PolicyAlert[] = [];
+  for (const cl of checklists) {
+    const tasks = await storage.getOnboardingTasks(cl.id);
+    const lastActivity = tasks.reduce<Date>((acc, t) => {
+      const cand = t.completedAt ?? t.updatedAt;
+      const d = cand ? new Date(cand) : null;
+      if (d && d > acc) return d;
+      return acc;
+    }, cl.startedAt ? new Date(cl.startedAt) : new Date(0));
+    if (daysBetweenDates(now, lastActivity) >= STALL_DAYS) {
+      alerts.push({
+        type: "onboarding_stalled",
+        severity: "low",
+        employeeId: cl.employeeId,
+        message: `Onboarding has had no activity in ${STALL_DAYS}+ days`,
+        details: { checklistId: cl.id, lastActivity: lastActivity.toISOString() },
+      });
+    }
+  }
+  return alerts;
+}
+
+export async function detectOffboardingOverdue(now: Date = new Date()): Promise<PolicyAlert[]> {
+  const checklists = await storage.listOffboardingChecklists({ status: "in_progress" });
+  const alerts: PolicyAlert[] = [];
+  for (const cl of checklists) {
+    const tasks = await storage.getOffboardingTasks(cl.id);
+    const overdue = tasks.filter(t => {
+      if (t.status === "completed" || t.status === "skipped") return false;
+      if (!t.dueDate) return false;
+      return new Date(t.dueDate) < now;
+    });
+    if (overdue.length > 0) {
+      alerts.push({
+        type: "offboarding_overdue",
+        severity: "medium",
+        employeeId: cl.employeeId,
+        message: `Offboarding has ${overdue.length} overdue task${overdue.length === 1 ? "" : "s"}`,
+        details: { checklistId: cl.id, overdueCount: overdue.length },
+      });
+    }
+  }
+  return alerts;
+}
+
+export async function detectOffboardingBlockingTermination(now: Date = new Date()): Promise<PolicyAlert[]> {
+  const checklists = await storage.listOffboardingChecklists({ status: "in_progress" });
+  const alerts: PolicyAlert[] = [];
+  for (const cl of checklists) {
+    if (!cl.terminationDate) continue;
+    const termDate = new Date(cl.terminationDate);
+    if (termDate > now) continue;
+    const tasks = await storage.getOffboardingTasks(cl.id);
+    const blocking = tasks.filter(t => t.blocksDeactivation && t.status !== "completed" && t.status !== "skipped");
+    if (blocking.length > 0) {
+      alerts.push({
+        type: "offboarding_blocking_termination",
+        severity: "high",
+        employeeId: cl.employeeId,
+        message: `Termination date passed but ${blocking.length} blocking task${blocking.length === 1 ? "" : "s"} remain`,
+        details: { checklistId: cl.id, blockingTasks: blocking.map(b => b.title), terminationDate: cl.terminationDate },
+      });
+    }
+  }
+  return alerts;
+}
+
+export async function runLifecycleAlertDetection(now: Date = new Date()): Promise<void> {
+  const all: PolicyAlert[] = [];
+  try { all.push(...(await detectOnboardingOverdue(now))); } catch (e) { console.error("lifecycleAlerts.onboardingOverdue:", e); }
+  try { all.push(...(await detectOnboardingStalled(now))); } catch (e) { console.error("lifecycleAlerts.onboardingStalled:", e); }
+  try { all.push(...(await detectOffboardingOverdue(now))); } catch (e) { console.error("lifecycleAlerts.offboardingOverdue:", e); }
+  try { all.push(...(await detectOffboardingBlockingTermination(now))); } catch (e) { console.error("lifecycleAlerts.offboardingBlocking:", e); }
+  if (all.length > 0) await createPolicyAlerts(all);
 }

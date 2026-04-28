@@ -6,6 +6,7 @@ import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -470,6 +471,20 @@ function AddEmployeeDialog({
     payType: "hourly",
     hourlyRate: "",
     weeklySalary: "",
+    onboardingTemplateId: "",
+  });
+
+  const { data: onboardingTemplates = [] } = useQuery<Array<{ id: string; name: string; isDefault: boolean; companyId: string | null; isActive: boolean }>>({
+    queryKey: ["/api/onboarding-templates", { companyId: formData.companyId }],
+    queryFn: async () => {
+      const url = formData.companyId
+        ? `/api/onboarding-templates?companyId=${formData.companyId}`
+        : `/api/onboarding-templates`;
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch onboarding templates");
+      return res.json();
+    },
+    enabled: open && !!formData.companyId,
   });
 
   const { data: scopedDepartments = [] } = useQuery<Department[]>({
@@ -512,6 +527,9 @@ function AddEmployeeDialog({
       if (formData.payType === "salary" && formData.weeklySalary) {
         body.weeklySalary = parseFloat(formData.weeklySalary);
       }
+      if (formData.onboardingTemplateId) {
+        body.onboardingTemplateId = formData.onboardingTemplateId;
+      }
       const res = await apiRequest("POST", "/api/users", body);
       return res.json();
     },
@@ -533,7 +551,7 @@ function AddEmployeeDialog({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentId: "", locationId: "", employmentType: "full_time",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
-      hourlyRate: "", weeklySalary: "",
+      hourlyRate: "", weeklySalary: "", onboardingTemplateId: "",
     });
     onOpenChange(false);
   };
@@ -686,6 +704,28 @@ function AddEmployeeDialog({
                 onChange={(e) => setFormData({ ...formData, hireDate: e.target.value })}
                 data-testid="input-add-hire-date"
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Onboarding Template</Label>
+              <Select
+                value={formData.onboardingTemplateId || "default"}
+                onValueChange={(v) => setFormData({ ...formData, onboardingTemplateId: v === "default" ? "" : v })}
+              >
+                <SelectTrigger data-testid="select-add-onboarding-template">
+                  <SelectValue placeholder="Use company default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Use company default</SelectItem>
+                  {onboardingTemplates
+                    .filter(t => t.isActive && (t.companyId === null || t.companyId === formData.companyId))
+                    .map(t => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.name}{t.isDefault ? " (default)" : ""}{t.companyId === null ? " — Global" : ""}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Optional — overrides the company default for this hire only.</p>
             </div>
           </div>
         )}
@@ -908,6 +948,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           <TabsTrigger value="pto" data-testid="tab-pto-leave">PTO/Leave</TabsTrigger>
           <TabsTrigger value="schedule" data-testid="tab-schedule">Schedule</TabsTrigger>
           <TabsTrigger value="documents" data-testid="tab-documents">Documents</TabsTrigger>
+          <TabsTrigger value="onboarding" data-testid="tab-onboarding">Onboarding</TabsTrigger>
+          <TabsTrigger value="offboarding" data-testid="tab-offboarding">Offboarding</TabsTrigger>
           <TabsTrigger value="history" data-testid="tab-history">History/Audit</TabsTrigger>
         </TabsList>
 
@@ -1116,6 +1158,14 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
 
         <TabsContent value="documents">
           <DocumentsTab userId={userId} focusDocType={focusDocType} />
+        </TabsContent>
+
+        <TabsContent value="onboarding">
+          <OnboardingTab userId={userId} />
+        </TabsContent>
+
+        <TabsContent value="offboarding">
+          <OffboardingTab userId={userId} />
         </TabsContent>
 
         <TabsContent value="history">
@@ -1681,69 +1731,441 @@ function DocumentsTab({ userId, focusDocType }: { userId: string; focusDocType?:
   );
 }
 
+interface OnboardingChecklistDetail {
+  id: string;
+  status: string;
+  hireDate: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  templateId: string | null;
+  tasks: Array<{
+    id: string;
+    title: string;
+    description: string | null;
+    category: string;
+    ownerRole: string;
+    isRequired: boolean;
+    documentType: string | null;
+    dueDate: string | null;
+    status: string;
+    notes: string | null;
+    skippedReason: string | null;
+  }>;
+  progress: { progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number };
+}
+
 function OnboardingChecklist({
   userId,
   user,
-  profile,
+  profile: _profile,
 }: {
   userId: string;
   user: User | undefined;
   profile: EmploymentProfile | undefined;
 }) {
-  const { data: docs } = useQuery<DocumentRecord[]>({
-    queryKey: ["/api/users", userId, "documents"],
+  const { data: checklist } = useQuery<OnboardingChecklistDetail | null>({
+    queryKey: ["/api/onboarding-checklists/by-employee", userId],
   });
 
-  const hasBasicInfo = !!(user?.firstName && user?.lastName && user?.email);
-  const hasEmployment = !!(profile?.employmentType && profile?.hireDate);
-  const hasPaySetup = !!(profile?.payType && (profile?.hourlyRate || profile?.weeklySalary));
-
-  const uploadedDocTypes = new Set((docs || []).map((d) => d.documentType));
-  const allDocsCollected = REQUIRED_DOCUMENT_TYPES.every((dt) => uploadedDocTypes.has(dt.key));
-  const docsCount = REQUIRED_DOCUMENT_TYPES.filter((dt) => uploadedDocTypes.has(dt.key)).length;
-
-  const steps = [
-    { label: "Basic Info Complete", done: hasBasicInfo },
-    { label: "Employment Set Up", done: hasEmployment },
-    { label: "Pay Configured", done: hasPaySetup },
-    { label: `Documents Collected (${docsCount}/${REQUIRED_DOCUMENT_TYPES.length})`, done: allDocsCollected },
-  ];
-
-  const completedCount = steps.filter((s) => s.done).length;
-  const allComplete = completedCount === steps.length;
+  if (!checklist) return null;
+  if (checklist.status === "completed") return null;
+  const pct = checklist.progress?.progressPct ?? 0;
 
   return (
     <Card data-testid="card-onboarding-checklist">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Onboarding Checklist</CardTitle>
-          <Badge
-            variant={allComplete ? "default" : "secondary"}
-            className={allComplete ? "bg-green-600" : ""}
-            data-testid="badge-onboarding-status"
-          >
-            {allComplete ? "Complete" : `${completedCount}/${steps.length}`}
-          </Badge>
+          <CardTitle className="text-base">Onboarding in progress {user?.firstName ? `for ${user.firstName}` : ""}</CardTitle>
+          <Badge variant="secondary" data-testid="badge-onboarding-status">{pct}% complete</Badge>
         </div>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {steps.map((step) => (
-            <div
-              key={step.label}
-              className="flex items-center gap-2 p-2 rounded"
-              data-testid={`checklist-item-${step.label.toLowerCase().replace(/[^a-z0-9]/g, "-")}`}
-            >
-              {step.done ? (
-                <CheckCircle2 className="h-4 w-4 text-green-600 flex-shrink-0" />
-              ) : (
-                <Circle className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-              )}
-              <span className={`text-sm ${step.done ? "text-foreground" : "text-muted-foreground"}`}>
-                {step.label}
-              </span>
+        <div className="text-sm text-muted-foreground">{checklist.progress.completedRequired}/{checklist.progress.totalRequired} required tasks complete. See the Onboarding tab for details.</div>
+      </CardContent>
+    </Card>
+  );
+}
+
+type OnboardingTaskPatch = Partial<{
+  status: "pending" | "in_progress" | "completed" | "skipped";
+  notes: string | null;
+  skippedReason: string | null;
+}>;
+
+type OffboardingTaskPatch = Partial<{
+  status: "pending" | "in_progress" | "completed" | "skipped";
+  notes: string | null;
+  skippedReason: string | null;
+}>;
+
+function getErrorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  return "Unknown error";
+}
+
+function OnboardingTab({ userId }: { userId: string }) {
+  const { toast } = useToast();
+  const { data: checklist, isLoading } = useQuery<OnboardingChecklistDetail | null>({
+    queryKey: ["/api/onboarding-checklists/by-employee", userId],
+  });
+  const { data: templates } = useQuery<Array<{ id: string; name: string; isDefault: boolean }>>({
+    queryKey: ["/api/onboarding-templates"],
+  });
+  const [templateId, setTemplateId] = useState<string>("");
+  const [hireDate, setHireDate] = useState<string>("");
+  const [skipReasonByTask, setSkipReasonByTask] = useState<Record<string, string>>({});
+  const [notesByTask, setNotesByTask] = useState<Record<string, string>>({});
+
+  const startMut = useMutation({
+    mutationFn: async () => apiRequest("POST", `/api/employees/${userId}/start-onboarding`, {
+      templateId: templateId || null,
+      hireDate: hireDate || null,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/onboarding-checklists/by-employee", userId] });
+      toast({ title: "Onboarding started" });
+    },
+    onError: (e: unknown) => toast({ title: "Failed to start onboarding", description: getErrorMessage(e), variant: "destructive" }),
+  });
+
+  const updateTaskMut = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: OnboardingTaskPatch }) => apiRequest("PATCH", `/api/onboarding-tasks/${id}`, patch),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/onboarding-checklists/by-employee", userId] }),
+    onError: (e: unknown) => toast({ title: "Failed to update task", description: getErrorMessage(e), variant: "destructive" }),
+  });
+
+  const cancelMut = useMutation({
+    mutationFn: async () => checklist ? apiRequest("POST", `/api/onboarding-checklists/${checklist.id}/cancel`, { reason: "Cancelled by HR" }) : Promise.resolve(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/onboarding-checklists/by-employee", userId] });
+      toast({ title: "Onboarding cancelled" });
+    },
+  });
+
+  if (isLoading) return <Skeleton className="h-32 w-full" />;
+
+  if (!checklist) {
+    return (
+      <Card data-testid="card-onboarding-tab">
+        <CardHeader><CardTitle>Onboarding</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">No onboarding checklist for this employee yet.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-2xl">
+            <div>
+              <Label>Template</Label>
+              <Select value={templateId} onValueChange={setTemplateId}>
+                <SelectTrigger data-testid="select-onboarding-template"><SelectValue placeholder="Default" /></SelectTrigger>
+                <SelectContent>
+                  {(templates ?? []).map(t => <SelectItem key={t.id} value={t.id}>{t.name}{t.isDefault ? " (default)" : ""}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
-          ))}
+            <div>
+              <Label>Hire date</Label>
+              <Input type="date" value={hireDate} onChange={e => setHireDate(e.target.value)} data-testid="input-onboarding-hire-date" />
+            </div>
+            <div className="flex items-end">
+              <Button onClick={() => startMut.mutate()} disabled={startMut.isPending} data-testid="button-start-onboarding">Start onboarding</Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card data-testid="card-onboarding-tab">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>Onboarding {checklist.status === "completed" ? "(Completed)" : checklist.status === "cancelled" ? "(Cancelled)" : ""}</CardTitle>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" data-testid="text-onboarding-progress">{checklist.progress.progressPct}% — {checklist.progress.completedRequired}/{checklist.progress.totalRequired} required</Badge>
+            {checklist.status === "in_progress" && (
+              <Button variant="outline" size="sm" onClick={() => cancelMut.mutate()} data-testid="button-cancel-onboarding">Cancel</Button>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-2">
+          {checklist.tasks.map(task => {
+            const done = task.status === "completed" || task.status === "skipped";
+            return (
+              <div key={task.id} className="border rounded-md p-3 flex items-start gap-3" data-testid={`row-onboarding-task-${task.id}`}>
+                <button
+                  className="mt-0.5"
+                  onClick={() => {
+                    if (done) {
+                      updateTaskMut.mutate({ id: task.id, patch: { status: "pending" } });
+                    } else {
+                      updateTaskMut.mutate({ id: task.id, patch: { status: "completed" } });
+                    }
+                  }}
+                  data-testid={`button-toggle-task-${task.id}`}
+                >
+                  {done ? <CheckCircle2 className="h-5 w-5 text-green-600" /> : <Circle className="h-5 w-5 text-muted-foreground" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`font-medium ${done ? "line-through text-muted-foreground" : ""}`}>{task.title}</span>
+                    {task.isRequired && <Badge variant="outline" className="text-xs">Required</Badge>}
+                    <Badge variant="outline" className="text-xs capitalize">{task.ownerRole}</Badge>
+                    {task.status === "skipped" && <Badge variant="secondary" className="text-xs">Skipped</Badge>}
+                  </div>
+                  {task.description && <p className="text-xs text-muted-foreground mt-1">{task.description}</p>}
+                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {task.dueDate}</p>}
+                  {task.skippedReason && <p className="text-xs italic text-muted-foreground mt-1">Reason: {task.skippedReason}</p>}
+                  <div className="mt-2">
+                    <Textarea
+                      placeholder="Notes (optional)"
+                      value={notesByTask[task.id] ?? task.notes ?? ""}
+                      onChange={e => setNotesByTask({ ...notesByTask, [task.id]: e.target.value })}
+                      onBlur={e => {
+                        const next = e.target.value;
+                        if ((task.notes ?? "") !== next) {
+                          updateTaskMut.mutate({ id: task.id, patch: { notes: next || null } });
+                        }
+                      }}
+                      rows={2}
+                      className="text-xs"
+                      data-testid={`textarea-notes-${task.id}`}
+                    />
+                  </div>
+                  {!done && task.status !== "skipped" && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <Input
+                        placeholder="Reason to skip"
+                        value={skipReasonByTask[task.id] || ""}
+                        onChange={e => setSkipReasonByTask({ ...skipReasonByTask, [task.id]: e.target.value })}
+                        className="h-8 text-xs"
+                        data-testid={`input-skip-reason-${task.id}`}
+                      />
+                      <Button size="sm" variant="outline" onClick={() => {
+                        const reason = skipReasonByTask[task.id]?.trim();
+                        if (!reason) { toast({ title: "Provide a reason to skip", variant: "destructive" }); return; }
+                        updateTaskMut.mutate({ id: task.id, patch: { status: "skipped", skippedReason: reason } });
+                      }} data-testid={`button-skip-task-${task.id}`}>Skip</Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+interface OffboardingProgress { progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }
+interface OffboardingChecklistDetail {
+  id: string;
+  status: string;
+  terminationDate: string | null;
+  accountDeactivatedAt: string | null;
+  tasks: Array<{
+    id: string;
+    title: string;
+    description: string | null;
+    category: string;
+    ownerRole: string;
+    isRequired: boolean;
+    blocksDeactivation: boolean;
+    dueDate: string | null;
+    status: string;
+    notes: string | null;
+    skippedReason: string | null;
+  }>;
+  gate: { ok: boolean; blocking: { id: string; title: string }[] };
+  progress: OffboardingProgress;
+}
+
+function OffboardingTab({ userId }: { userId: string }) {
+  const { toast } = useToast();
+  const { data: user } = useQuery<User>({ queryKey: ["/api/users", userId] });
+  const { data: checklist, isLoading } = useQuery<OffboardingChecklistDetail | null>({
+    queryKey: ["/api/offboarding-checklists/by-employee", userId],
+  });
+  const { data: templates } = useQuery<Array<{ id: string; name: string; isDefault: boolean }>>({
+    queryKey: ["/api/offboarding-templates"],
+  });
+  const [templateId, setTemplateId] = useState<string>("");
+  const [terminationDate, setTerminationDate] = useState<string>("");
+  const [skipReasonByTask, setSkipReasonByTask] = useState<Record<string, string>>({});
+  const [notesByTask, setNotesByTask] = useState<Record<string, string>>({});
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const startMut = useMutation({
+    mutationFn: async () => apiRequest("POST", `/api/offboarding/start`, {
+      employeeId: userId,
+      templateId: templateId || null,
+      terminationDate: terminationDate || null,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] });
+      toast({ title: "Offboarding started" });
+    },
+    onError: (e: unknown) => toast({ title: "Failed to start offboarding", description: getErrorMessage(e), variant: "destructive" }),
+  });
+
+  const updateTaskMut = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: OffboardingTaskPatch }) => apiRequest("PATCH", `/api/offboarding-tasks/${id}`, patch),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] }),
+  });
+
+  const deactivateMut = useMutation({
+    mutationFn: async () => checklist ? apiRequest("POST", `/api/offboarding-checklists/${checklist.id}/deactivate`) : Promise.resolve(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setConfirmOpen(false);
+      toast({ title: "Account deactivated" });
+    },
+    onError: (e: unknown) => {
+      const raw = getErrorMessage(e);
+      try {
+        const body = JSON.parse(raw.split(":").slice(1).join(":") || "{}");
+        const msg = typeof body?.message === "string" ? body.message : raw;
+        toast({ title: "Cannot deactivate", description: msg, variant: "destructive" });
+      } catch {
+        toast({ title: "Cannot deactivate", description: raw, variant: "destructive" });
+      }
+    },
+  });
+
+  if (isLoading) return <Skeleton className="h-32 w-full" />;
+
+  if (!checklist) {
+    const isDeactivated = !!user?.deactivatedAt;
+    return (
+      <Card data-testid="card-offboarding-tab">
+        <CardHeader><CardTitle>Offboarding</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          {isDeactivated && <p className="text-sm text-destructive">This account is deactivated.</p>}
+          <p className="text-sm text-muted-foreground">No offboarding in progress.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-2xl">
+            <div>
+              <Label>Template</Label>
+              <Select value={templateId} onValueChange={setTemplateId}>
+                <SelectTrigger data-testid="select-offboarding-template"><SelectValue placeholder="Default" /></SelectTrigger>
+                <SelectContent>
+                  {(templates ?? []).map(t => <SelectItem key={t.id} value={t.id}>{t.name}{t.isDefault ? " (default)" : ""}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Termination date</Label>
+              <Input type="date" value={terminationDate} onChange={e => setTerminationDate(e.target.value)} data-testid="input-offboarding-termination-date" />
+            </div>
+            <div className="flex items-end">
+              <Button onClick={() => startMut.mutate()} disabled={startMut.isPending} data-testid="button-start-offboarding">Start offboarding</Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const gateOk = checklist.gate?.ok ?? false;
+  const isCompleted = checklist.status === "completed";
+
+  return (
+    <Card data-testid="card-offboarding-tab">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>Offboarding {isCompleted ? "(Completed)" : ""}</CardTitle>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" data-testid="text-offboarding-progress">{checklist.progress.progressPct}% — {checklist.progress.completedRequired}/{checklist.progress.totalRequired} required</Badge>
+            {checklist.terminationDate && <Badge variant="outline">Termination: {checklist.terminationDate}</Badge>}
+            {!isCompleted && (
+              <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="destructive" size="sm" disabled={!gateOk} data-testid="button-deactivate-account">
+                    Deactivate Account
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader><DialogTitle>Deactivate account</DialogTitle></DialogHeader>
+                  <p className="text-sm">This will set the termination date and prevent the user from logging in.</p>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+                    <Button variant="destructive" onClick={() => deactivateMut.mutate()} disabled={deactivateMut.isPending} data-testid="button-confirm-deactivate">Deactivate</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!gateOk && !isCompleted && (
+          <div className="rounded-md border border-destructive/50 bg-destructive/5 p-3 text-sm">
+            <p className="font-medium text-destructive">Deactivation blocked. Complete or skip these tasks first:</p>
+            <ul className="list-disc ml-5 text-destructive mt-1">
+              {checklist.gate.blocking.map(b => <li key={b.id}>{b.title}</li>)}
+            </ul>
+          </div>
+        )}
+        <div className="space-y-2">
+          {checklist.tasks.map(task => {
+            const done = task.status === "completed" || task.status === "skipped";
+            return (
+              <div key={task.id} className="border rounded-md p-3 flex items-start gap-3" data-testid={`row-offboarding-task-${task.id}`}>
+                <button
+                  className="mt-0.5"
+                  onClick={() => updateTaskMut.mutate({ id: task.id, patch: { status: done ? "pending" : "completed" } })}
+                  data-testid={`button-toggle-off-task-${task.id}`}
+                >
+                  {done ? <CheckCircle2 className="h-5 w-5 text-green-600" /> : <Circle className="h-5 w-5 text-muted-foreground" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`font-medium ${done ? "line-through text-muted-foreground" : ""}`}>{task.title}</span>
+                    {task.isRequired && <Badge variant="outline" className="text-xs">Required</Badge>}
+                    {task.blocksDeactivation && <Badge variant="destructive" className="text-xs">Blocks Deact.</Badge>}
+                    <Badge variant="outline" className="text-xs capitalize">{task.ownerRole}</Badge>
+                    {task.status === "skipped" && <Badge variant="secondary" className="text-xs">Skipped</Badge>}
+                  </div>
+                  {task.description && <p className="text-xs text-muted-foreground mt-1">{task.description}</p>}
+                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {task.dueDate}</p>}
+                  {task.skippedReason && <p className="text-xs italic text-muted-foreground mt-1">Reason: {task.skippedReason}</p>}
+                  <div className="mt-2">
+                    <Textarea
+                      placeholder="Notes (optional)"
+                      value={notesByTask[task.id] ?? task.notes ?? ""}
+                      onChange={e => setNotesByTask({ ...notesByTask, [task.id]: e.target.value })}
+                      onBlur={e => {
+                        const next = e.target.value;
+                        if ((task.notes ?? "") !== next) {
+                          updateTaskMut.mutate({ id: task.id, patch: { notes: next || null } });
+                        }
+                      }}
+                      rows={2}
+                      className="text-xs"
+                      data-testid={`textarea-off-notes-${task.id}`}
+                    />
+                  </div>
+                  {!done && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <Input
+                        placeholder="Reason to skip"
+                        value={skipReasonByTask[task.id] || ""}
+                        onChange={e => setSkipReasonByTask({ ...skipReasonByTask, [task.id]: e.target.value })}
+                        className="h-8 text-xs"
+                        data-testid={`input-skip-off-${task.id}`}
+                      />
+                      <Button size="sm" variant="outline" onClick={() => {
+                        const reason = skipReasonByTask[task.id]?.trim();
+                        if (!reason) { toast({ title: "Provide a reason to skip", variant: "destructive" }); return; }
+                        updateTaskMut.mutate({ id: task.id, patch: { status: "skipped", skippedReason: reason } });
+                      }} data-testid={`button-skip-off-${task.id}`}>Skip</Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </CardContent>
     </Card>

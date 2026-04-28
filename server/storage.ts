@@ -117,6 +117,30 @@ import {
   requiredDocumentRules,
   type RequiredDocumentRule,
   type InsertRequiredDocumentRule,
+  onboardingTemplates,
+  type OnboardingTemplate,
+  type InsertOnboardingTemplate,
+  onboardingTemplateTasks,
+  type OnboardingTemplateTask,
+  type InsertOnboardingTemplateTask,
+  onboardingChecklists,
+  type OnboardingChecklist,
+  type InsertOnboardingChecklist,
+  onboardingTasks,
+  type OnboardingTask,
+  type InsertOnboardingTask,
+  offboardingTemplates,
+  type OffboardingTemplate,
+  type InsertOffboardingTemplate,
+  offboardingTemplateTasks,
+  type OffboardingTemplateTask,
+  type InsertOffboardingTemplateTask,
+  offboardingChecklists,
+  type OffboardingChecklist,
+  type InsertOffboardingChecklist,
+  offboardingTasks,
+  type OffboardingTask,
+  type InsertOffboardingTask,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, type SQL } from "drizzle-orm";
@@ -412,6 +436,56 @@ export interface IStorage {
   createRequiredDocumentRule(data: InsertRequiredDocumentRule): Promise<RequiredDocumentRule>;
   updateRequiredDocumentRule(id: string, data: Partial<InsertRequiredDocumentRule>): Promise<RequiredDocumentRule | undefined>;
   deleteRequiredDocumentRule(id: string): Promise<void>;
+
+  // Onboarding templates / tasks / checklists
+  getOnboardingTemplate(id: string): Promise<OnboardingTemplate | undefined>;
+  getOnboardingTemplates(filters: { companyId?: string | null; isActive?: boolean }): Promise<OnboardingTemplate[]>;
+  getDefaultOnboardingTemplate(companyId: string | null): Promise<OnboardingTemplate | undefined>;
+  createOnboardingTemplate(data: InsertOnboardingTemplate): Promise<OnboardingTemplate>;
+  updateOnboardingTemplate(id: string, data: Partial<InsertOnboardingTemplate>): Promise<OnboardingTemplate | undefined>;
+  getOnboardingTemplateTasks(templateId: string): Promise<OnboardingTemplateTask[]>;
+  getOnboardingTemplateTask(id: string): Promise<OnboardingTemplateTask | undefined>;
+  createOnboardingTemplateTask(data: InsertOnboardingTemplateTask): Promise<OnboardingTemplateTask>;
+  updateOnboardingTemplateTask(id: string, data: Partial<InsertOnboardingTemplateTask>): Promise<OnboardingTemplateTask | undefined>;
+  deleteOnboardingTemplateTask(id: string): Promise<void>;
+
+  getOnboardingChecklist(id: string): Promise<OnboardingChecklist | undefined>;
+  getOnboardingChecklistByEmployee(employeeId: string): Promise<OnboardingChecklist | undefined>;
+  listOnboardingChecklists(filters: { status?: string; employeeIds?: string[] }): Promise<OnboardingChecklist[]>;
+  createOnboardingChecklistRow(data: InsertOnboardingChecklist): Promise<OnboardingChecklist>;
+  createOnboardingTaskRow(data: InsertOnboardingTask & { completedBy?: string | null; completedAt?: Date | null }): Promise<OnboardingTask>;
+  getOnboardingTasks(checklistId: string): Promise<OnboardingTask[]>;
+  getOnboardingTask(id: string): Promise<OnboardingTask | undefined>;
+  updateOnboardingTask(id: string, data: { status?: string; skippedReason?: string | null; completedBy?: string | null; completedAt?: Date | null; notes?: string | null; documentId?: string | null }): Promise<OnboardingTask | undefined>;
+  cancelOnboardingChecklist(id: string, reason: string, actorUserId: string): Promise<OnboardingChecklist | undefined>;
+  completeOnboardingChecklistIfFinished(checklistId: string): Promise<OnboardingChecklist | undefined>;
+  computeOnboardingProgress(checklistId: string): Promise<{ progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }>;
+
+  // Offboarding templates / tasks / checklists
+  getOffboardingTemplate(id: string): Promise<OffboardingTemplate | undefined>;
+  getOffboardingTemplates(filters: { companyId?: string | null; isActive?: boolean }): Promise<OffboardingTemplate[]>;
+  getDefaultOffboardingTemplate(companyId: string | null): Promise<OffboardingTemplate | undefined>;
+  createOffboardingTemplate(data: InsertOffboardingTemplate): Promise<OffboardingTemplate>;
+  updateOffboardingTemplate(id: string, data: Partial<InsertOffboardingTemplate>): Promise<OffboardingTemplate | undefined>;
+  getOffboardingTemplateTasks(templateId: string): Promise<OffboardingTemplateTask[]>;
+  getOffboardingTemplateTask(id: string): Promise<OffboardingTemplateTask | undefined>;
+  createOffboardingTemplateTask(data: InsertOffboardingTemplateTask): Promise<OffboardingTemplateTask>;
+  updateOffboardingTemplateTask(id: string, data: Partial<InsertOffboardingTemplateTask>): Promise<OffboardingTemplateTask | undefined>;
+  deleteOffboardingTemplateTask(id: string): Promise<void>;
+
+  getOffboardingChecklist(id: string): Promise<OffboardingChecklist | undefined>;
+  getOffboardingChecklistByEmployee(employeeId: string): Promise<OffboardingChecklist | undefined>;
+  listOffboardingChecklists(filters: { status?: string; employeeIds?: string[] }): Promise<OffboardingChecklist[]>;
+  createOffboardingChecklistRow(data: InsertOffboardingChecklist): Promise<OffboardingChecklist>;
+  createOffboardingTaskRow(data: InsertOffboardingTask & { completedBy?: string | null; completedAt?: Date | null }): Promise<OffboardingTask>;
+  getOffboardingTasks(checklistId: string): Promise<OffboardingTask[]>;
+  getOffboardingTask(id: string): Promise<OffboardingTask | undefined>;
+  updateOffboardingTask(id: string, data: { status?: string; skippedReason?: string | null; completedBy?: string | null; completedAt?: Date | null; notes?: string | null }): Promise<OffboardingTask | undefined>;
+  setOffboardingChecklistDeactivation(id: string, actorUserId: string): Promise<OffboardingChecklist | undefined>;
+  computeOffboardingProgress(checklistId: string): Promise<{ progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }>;
+
+  setUserDeactivated(userId: string, actorUserId: string): Promise<User | undefined>;
+  clearUserDeactivated(userId: string): Promise<User | undefined>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -2244,6 +2318,281 @@ export class DatabaseStorage implements IStorage {
       .update(requiredDocumentRules)
       .set({ isActive: false })
       .where(eq(requiredDocumentRules.id, id));
+  }
+
+  // ===== Onboarding templates =====
+  async getOnboardingTemplate(id: string): Promise<OnboardingTemplate | undefined> {
+    const [t] = await db.select().from(onboardingTemplates).where(eq(onboardingTemplates.id, id));
+    return t;
+  }
+
+  async getOnboardingTemplates(filters: { companyId?: string | null; isActive?: boolean }): Promise<OnboardingTemplate[]> {
+    const conds: any[] = [];
+    if (filters.companyId === null) conds.push(isNull(onboardingTemplates.companyId));
+    else if (filters.companyId) conds.push(or(eq(onboardingTemplates.companyId, filters.companyId), isNull(onboardingTemplates.companyId)));
+    if (filters.isActive !== undefined) conds.push(eq(onboardingTemplates.isActive, filters.isActive));
+    return await db.select().from(onboardingTemplates).where(conds.length ? and(...conds) : sql`true`).orderBy(desc(onboardingTemplates.isDefault), onboardingTemplates.name);
+  }
+
+  async getDefaultOnboardingTemplate(companyId: string | null): Promise<OnboardingTemplate | undefined> {
+    if (companyId) {
+      const [scoped] = await db.select().from(onboardingTemplates).where(and(eq(onboardingTemplates.companyId, companyId), eq(onboardingTemplates.isDefault, true), eq(onboardingTemplates.isActive, true)));
+      if (scoped) return scoped;
+    }
+    const [global] = await db.select().from(onboardingTemplates).where(and(isNull(onboardingTemplates.companyId), eq(onboardingTemplates.isDefault, true), eq(onboardingTemplates.isActive, true)));
+    return global;
+  }
+
+  async createOnboardingTemplate(data: InsertOnboardingTemplate): Promise<OnboardingTemplate> {
+    if (data.isDefault) {
+      await db.update(onboardingTemplates).set({ isDefault: false, updatedAt: new Date() }).where(data.companyId ? eq(onboardingTemplates.companyId, data.companyId) : isNull(onboardingTemplates.companyId));
+    }
+    const [created] = await db.insert(onboardingTemplates).values(data).returning();
+    return created;
+  }
+
+  async updateOnboardingTemplate(id: string, data: Partial<InsertOnboardingTemplate>): Promise<OnboardingTemplate | undefined> {
+    if (data.isDefault) {
+      const [existing] = await db.select().from(onboardingTemplates).where(eq(onboardingTemplates.id, id));
+      if (existing) {
+        await db.update(onboardingTemplates).set({ isDefault: false, updatedAt: new Date() }).where(and(existing.companyId ? eq(onboardingTemplates.companyId, existing.companyId) : isNull(onboardingTemplates.companyId), ne(onboardingTemplates.id, id)));
+      }
+    }
+    const [updated] = await db.update(onboardingTemplates).set({ ...data, updatedAt: new Date() }).where(eq(onboardingTemplates.id, id)).returning();
+    return updated;
+  }
+
+  async getOnboardingTemplateTasks(templateId: string): Promise<OnboardingTemplateTask[]> {
+    return await db.select().from(onboardingTemplateTasks).where(eq(onboardingTemplateTasks.templateId, templateId)).orderBy(onboardingTemplateTasks.sortOrder, onboardingTemplateTasks.createdAt);
+  }
+
+  async getOnboardingTemplateTask(id: string): Promise<OnboardingTemplateTask | undefined> {
+    const [t] = await db.select().from(onboardingTemplateTasks).where(eq(onboardingTemplateTasks.id, id));
+    return t;
+  }
+
+  async createOnboardingTemplateTask(data: InsertOnboardingTemplateTask): Promise<OnboardingTemplateTask> {
+    const [created] = await db.insert(onboardingTemplateTasks).values(data).returning();
+    return created;
+  }
+
+  async updateOnboardingTemplateTask(id: string, data: Partial<InsertOnboardingTemplateTask>): Promise<OnboardingTemplateTask | undefined> {
+    const [updated] = await db.update(onboardingTemplateTasks).set(data).where(eq(onboardingTemplateTasks.id, id)).returning();
+    return updated;
+  }
+
+  async deleteOnboardingTemplateTask(id: string): Promise<void> {
+    await db.delete(onboardingTemplateTasks).where(eq(onboardingTemplateTasks.id, id));
+  }
+
+  // ===== Onboarding checklists / tasks =====
+  async getOnboardingChecklist(id: string): Promise<OnboardingChecklist | undefined> {
+    const [c] = await db.select().from(onboardingChecklists).where(eq(onboardingChecklists.id, id));
+    return c;
+  }
+
+  async getOnboardingChecklistByEmployee(employeeId: string): Promise<OnboardingChecklist | undefined> {
+    const [c] = await db.select().from(onboardingChecklists).where(eq(onboardingChecklists.employeeId, employeeId)).orderBy(desc(onboardingChecklists.startedAt)).limit(1);
+    return c;
+  }
+
+  async listOnboardingChecklists(filters: { status?: string; employeeIds?: string[] }): Promise<OnboardingChecklist[]> {
+    const conds: any[] = [];
+    if (filters.status) conds.push(eq(onboardingChecklists.status, filters.status));
+    if (filters.employeeIds) {
+      if (filters.employeeIds.length === 0) return [];
+      conds.push(inArray(onboardingChecklists.employeeId, filters.employeeIds));
+    }
+    return await db.select().from(onboardingChecklists).where(conds.length ? and(...conds) : sql`true`).orderBy(desc(onboardingChecklists.startedAt));
+  }
+
+  async createOnboardingChecklistRow(data: InsertOnboardingChecklist): Promise<OnboardingChecklist> {
+    const [created] = await db.insert(onboardingChecklists).values(data).returning();
+    return created;
+  }
+
+  async createOnboardingTaskRow(data: InsertOnboardingTask & { completedBy?: string | null; completedAt?: Date | null }): Promise<OnboardingTask> {
+    const { completedBy, completedAt, ...rest } = data;
+    const [created] = await db.insert(onboardingTasks).values({ ...rest, completedBy: completedBy ?? null, completedAt: completedAt ?? null }).returning();
+    return created;
+  }
+
+  async getOnboardingTasks(checklistId: string): Promise<OnboardingTask[]> {
+    return await db.select().from(onboardingTasks).where(eq(onboardingTasks.checklistId, checklistId)).orderBy(onboardingTasks.sortOrder, onboardingTasks.createdAt);
+  }
+
+  async getOnboardingTask(id: string): Promise<OnboardingTask | undefined> {
+    const [t] = await db.select().from(onboardingTasks).where(eq(onboardingTasks.id, id));
+    return t;
+  }
+
+  async updateOnboardingTask(id: string, data: { status?: string; skippedReason?: string | null; completedBy?: string | null; completedAt?: Date | null; notes?: string | null; documentId?: string | null }): Promise<OnboardingTask | undefined> {
+    const [updated] = await db.update(onboardingTasks).set({ ...data, updatedAt: new Date() }).where(eq(onboardingTasks.id, id)).returning();
+    return updated;
+  }
+
+  async cancelOnboardingChecklist(id: string, reason: string, actorUserId: string): Promise<OnboardingChecklist | undefined> {
+    const [updated] = await db.update(onboardingChecklists).set({ status: "cancelled", cancelledAt: new Date(), cancelledBy: actorUserId, cancelReason: reason }).where(eq(onboardingChecklists.id, id)).returning();
+    return updated;
+  }
+
+  async completeOnboardingChecklistIfFinished(checklistId: string): Promise<OnboardingChecklist | undefined> {
+    const tasks = await this.getOnboardingTasks(checklistId);
+    const requiredOpen = tasks.filter(t => t.isRequired && t.status !== "completed" && t.status !== "skipped");
+    if (requiredOpen.length === 0 && tasks.length > 0) {
+      const [updated] = await db.update(onboardingChecklists).set({ status: "completed", completedAt: new Date() }).where(and(eq(onboardingChecklists.id, checklistId), ne(onboardingChecklists.status, "completed"))).returning();
+      return updated;
+    }
+    return undefined;
+  }
+
+  async computeOnboardingProgress(checklistId: string): Promise<{ progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }> {
+    const tasks = await this.getOnboardingTasks(checklistId);
+    const required = tasks.filter(t => t.isRequired);
+    const optional = tasks.filter(t => !t.isRequired);
+    const completedRequired = required.filter(t => t.status === "completed" || t.status === "skipped").length;
+    const optionalCompleted = optional.filter(t => t.status === "completed" || t.status === "skipped").length;
+    const totalRequired = required.length;
+    const progressPct = totalRequired === 0 ? 100 : Math.round((completedRequired / totalRequired) * 100);
+    return { progressPct, completedRequired, totalRequired, optionalCompleted, optionalTotal: optional.length };
+  }
+
+  // ===== Offboarding templates =====
+  async getOffboardingTemplate(id: string): Promise<OffboardingTemplate | undefined> {
+    const [t] = await db.select().from(offboardingTemplates).where(eq(offboardingTemplates.id, id));
+    return t;
+  }
+
+  async getOffboardingTemplates(filters: { companyId?: string | null; isActive?: boolean }): Promise<OffboardingTemplate[]> {
+    const conds: any[] = [];
+    if (filters.companyId === null) conds.push(isNull(offboardingTemplates.companyId));
+    else if (filters.companyId) conds.push(or(eq(offboardingTemplates.companyId, filters.companyId), isNull(offboardingTemplates.companyId)));
+    if (filters.isActive !== undefined) conds.push(eq(offboardingTemplates.isActive, filters.isActive));
+    return await db.select().from(offboardingTemplates).where(conds.length ? and(...conds) : sql`true`).orderBy(desc(offboardingTemplates.isDefault), offboardingTemplates.name);
+  }
+
+  async getDefaultOffboardingTemplate(companyId: string | null): Promise<OffboardingTemplate | undefined> {
+    if (companyId) {
+      const [scoped] = await db.select().from(offboardingTemplates).where(and(eq(offboardingTemplates.companyId, companyId), eq(offboardingTemplates.isDefault, true), eq(offboardingTemplates.isActive, true)));
+      if (scoped) return scoped;
+    }
+    const [global] = await db.select().from(offboardingTemplates).where(and(isNull(offboardingTemplates.companyId), eq(offboardingTemplates.isDefault, true), eq(offboardingTemplates.isActive, true)));
+    return global;
+  }
+
+  async createOffboardingTemplate(data: InsertOffboardingTemplate): Promise<OffboardingTemplate> {
+    if (data.isDefault) {
+      await db.update(offboardingTemplates).set({ isDefault: false, updatedAt: new Date() }).where(data.companyId ? eq(offboardingTemplates.companyId, data.companyId) : isNull(offboardingTemplates.companyId));
+    }
+    const [created] = await db.insert(offboardingTemplates).values(data).returning();
+    return created;
+  }
+
+  async updateOffboardingTemplate(id: string, data: Partial<InsertOffboardingTemplate>): Promise<OffboardingTemplate | undefined> {
+    if (data.isDefault) {
+      const [existing] = await db.select().from(offboardingTemplates).where(eq(offboardingTemplates.id, id));
+      if (existing) {
+        await db.update(offboardingTemplates).set({ isDefault: false, updatedAt: new Date() }).where(and(existing.companyId ? eq(offboardingTemplates.companyId, existing.companyId) : isNull(offboardingTemplates.companyId), ne(offboardingTemplates.id, id)));
+      }
+    }
+    const [updated] = await db.update(offboardingTemplates).set({ ...data, updatedAt: new Date() }).where(eq(offboardingTemplates.id, id)).returning();
+    return updated;
+  }
+
+  async getOffboardingTemplateTasks(templateId: string): Promise<OffboardingTemplateTask[]> {
+    return await db.select().from(offboardingTemplateTasks).where(eq(offboardingTemplateTasks.templateId, templateId)).orderBy(offboardingTemplateTasks.sortOrder, offboardingTemplateTasks.createdAt);
+  }
+
+  async getOffboardingTemplateTask(id: string): Promise<OffboardingTemplateTask | undefined> {
+    const [t] = await db.select().from(offboardingTemplateTasks).where(eq(offboardingTemplateTasks.id, id));
+    return t;
+  }
+
+  async createOffboardingTemplateTask(data: InsertOffboardingTemplateTask): Promise<OffboardingTemplateTask> {
+    const [created] = await db.insert(offboardingTemplateTasks).values(data).returning();
+    return created;
+  }
+
+  async updateOffboardingTemplateTask(id: string, data: Partial<InsertOffboardingTemplateTask>): Promise<OffboardingTemplateTask | undefined> {
+    const [updated] = await db.update(offboardingTemplateTasks).set(data).where(eq(offboardingTemplateTasks.id, id)).returning();
+    return updated;
+  }
+
+  async deleteOffboardingTemplateTask(id: string): Promise<void> {
+    await db.delete(offboardingTemplateTasks).where(eq(offboardingTemplateTasks.id, id));
+  }
+
+  // ===== Offboarding checklists / tasks =====
+  async getOffboardingChecklist(id: string): Promise<OffboardingChecklist | undefined> {
+    const [c] = await db.select().from(offboardingChecklists).where(eq(offboardingChecklists.id, id));
+    return c;
+  }
+
+  async getOffboardingChecklistByEmployee(employeeId: string): Promise<OffboardingChecklist | undefined> {
+    const [c] = await db.select().from(offboardingChecklists).where(eq(offboardingChecklists.employeeId, employeeId)).orderBy(desc(offboardingChecklists.startedAt)).limit(1);
+    return c;
+  }
+
+  async listOffboardingChecklists(filters: { status?: string; employeeIds?: string[] }): Promise<OffboardingChecklist[]> {
+    const conds: any[] = [];
+    if (filters.status) conds.push(eq(offboardingChecklists.status, filters.status));
+    if (filters.employeeIds) {
+      if (filters.employeeIds.length === 0) return [];
+      conds.push(inArray(offboardingChecklists.employeeId, filters.employeeIds));
+    }
+    return await db.select().from(offboardingChecklists).where(conds.length ? and(...conds) : sql`true`).orderBy(desc(offboardingChecklists.startedAt));
+  }
+
+  async createOffboardingChecklistRow(data: InsertOffboardingChecklist): Promise<OffboardingChecklist> {
+    const [created] = await db.insert(offboardingChecklists).values(data).returning();
+    return created;
+  }
+
+  async createOffboardingTaskRow(data: InsertOffboardingTask & { completedBy?: string | null; completedAt?: Date | null }): Promise<OffboardingTask> {
+    const { completedBy, completedAt, ...rest } = data;
+    const [created] = await db.insert(offboardingTasks).values({ ...rest, completedBy: completedBy ?? null, completedAt: completedAt ?? null }).returning();
+    return created;
+  }
+
+  async getOffboardingTasks(checklistId: string): Promise<OffboardingTask[]> {
+    return await db.select().from(offboardingTasks).where(eq(offboardingTasks.checklistId, checklistId)).orderBy(offboardingTasks.sortOrder, offboardingTasks.createdAt);
+  }
+
+  async getOffboardingTask(id: string): Promise<OffboardingTask | undefined> {
+    const [t] = await db.select().from(offboardingTasks).where(eq(offboardingTasks.id, id));
+    return t;
+  }
+
+  async updateOffboardingTask(id: string, data: { status?: string; skippedReason?: string | null; completedBy?: string | null; completedAt?: Date | null; notes?: string | null }): Promise<OffboardingTask | undefined> {
+    const [updated] = await db.update(offboardingTasks).set({ ...data, updatedAt: new Date() }).where(eq(offboardingTasks.id, id)).returning();
+    return updated;
+  }
+
+  async setOffboardingChecklistDeactivation(id: string, actorUserId: string): Promise<OffboardingChecklist | undefined> {
+    const now = new Date();
+    const [updated] = await db.update(offboardingChecklists).set({ status: "completed", completedAt: now, accountDeactivatedAt: now, accountDeactivatedBy: actorUserId }).where(eq(offboardingChecklists.id, id)).returning();
+    return updated;
+  }
+
+  async setUserDeactivated(userId: string, _actorUserId: string): Promise<User | undefined> {
+    const [updated] = await db.update(users).set({ deactivatedAt: new Date(), updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+    return updated;
+  }
+
+  async clearUserDeactivated(userId: string): Promise<User | undefined> {
+    const [updated] = await db.update(users).set({ deactivatedAt: null, updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+    return updated;
+  }
+
+  async computeOffboardingProgress(checklistId: string): Promise<{ progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }> {
+    const tasks = await this.getOffboardingTasks(checklistId);
+    const required = tasks.filter(t => t.isRequired);
+    const optional = tasks.filter(t => !t.isRequired);
+    const completedRequired = required.filter(t => t.status === "completed" || t.status === "skipped").length;
+    const optionalCompleted = optional.filter(t => t.status === "completed" || t.status === "skipped").length;
+    const totalRequired = required.length;
+    const progressPct = totalRequired === 0 ? 100 : Math.round((completedRequired / totalRequired) * 100);
+    return { progressPct, completedRequired, totalRequired, optionalCompleted, optionalTotal: optional.length };
   }
 }
 

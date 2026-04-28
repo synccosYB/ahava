@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
 import { formatHoursMinutes } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import {
   Card,
   CardContent,
@@ -11,8 +13,10 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/page-header";
-import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Timer, Sparkles } from "lucide-react";
+import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Timer, CheckCircle2, Circle, Sparkles } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -303,6 +307,139 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 
+interface MyOnboardingChecklist {
+  id: string;
+  status: string;
+  hireDate: string | null;
+  tasks: Array<{
+    id: string;
+    title: string;
+    description: string | null;
+    category: string;
+    ownerRole: string;
+    isRequired: boolean;
+    documentType: string | null;
+    dueDate: string | null;
+    status: string;
+    notes: string | null;
+    skippedReason: string | null;
+  }>;
+  progress: { progressPct: number; completedRequired: number; totalRequired: number };
+}
+
+type OnboardingSelfTaskPatch = Partial<{
+  status: "pending" | "in_progress" | "completed" | "skipped";
+  notes: string | null;
+  skippedReason: string | null;
+}>;
+
+function MyOnboardingCard() {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const { data: checklist } = useQuery<MyOnboardingChecklist | null>({
+    queryKey: ["/api/onboarding-checklists/my"],
+    enabled: !!user,
+  });
+  const [notesByTask, setNotesByTask] = useState<Record<string, string>>({});
+  const [skipReasonByTask, setSkipReasonByTask] = useState<Record<string, string>>({});
+
+  const updateMut = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: OnboardingSelfTaskPatch }) => apiRequest("PATCH", `/api/onboarding-tasks/${id}`, patch),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/onboarding-checklists/my"] }),
+    onError: (e: unknown) => toast({ title: "Failed to update task", description: e instanceof Error ? e.message : "Unknown error", variant: "destructive" }),
+  });
+
+  if (!checklist) return null;
+  if (checklist.status !== "in_progress") return null;
+
+  const employeeTasks = checklist.tasks.filter(t => t.ownerRole === "new_hire" || t.ownerRole === "system");
+  if (employeeTasks.length === 0) return null;
+
+  return (
+    <Card data-testid="card-my-onboarding" className="border-primary/40">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            Welcome — finish your onboarding
+          </CardTitle>
+          <Badge variant="secondary" data-testid="badge-my-onboarding-progress">{checklist.progress.progressPct}% complete</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-sm text-muted-foreground">{checklist.progress.completedRequired} of {checklist.progress.totalRequired} required tasks complete.</p>
+        <div className="space-y-2">
+          {employeeTasks.map(task => {
+            const done = task.status === "completed" || task.status === "skipped";
+            const systemTask = task.ownerRole === "system";
+            return (
+              <div
+                key={task.id}
+                className="flex items-start gap-3 border rounded-md p-3"
+                data-testid={`row-my-task-${task.id}`}
+              >
+                <button
+                  className="mt-0.5"
+                  disabled={systemTask || updateMut.isPending}
+                  onClick={() => updateMut.mutate({ id: task.id, patch: { status: done ? "pending" : "completed" } })}
+                  data-testid={`button-toggle-my-task-${task.id}`}
+                >
+                  {done ? <CheckCircle2 className="h-5 w-5 text-green-600" /> : <Circle className="h-5 w-5 text-muted-foreground" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`font-medium text-sm ${done ? "line-through text-muted-foreground" : ""}`}>{task.title}</span>
+                    {task.isRequired && <Badge variant="outline" className="text-xs">Required</Badge>}
+                    {systemTask && <Badge variant="outline" className="text-xs">Auto</Badge>}
+                  </div>
+                  {task.description && <p className="text-xs text-muted-foreground mt-1">{task.description}</p>}
+                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {task.dueDate}</p>}
+                  {task.skippedReason && <p className="text-xs italic text-muted-foreground mt-1">Reason: {task.skippedReason}</p>}
+                  {!systemTask && (
+                    <div className="mt-2 space-y-2">
+                      <Textarea
+                        placeholder="Notes (optional)"
+                        value={notesByTask[task.id] ?? task.notes ?? ""}
+                        onChange={e => setNotesByTask({ ...notesByTask, [task.id]: e.target.value })}
+                        onBlur={e => {
+                          const next = e.target.value;
+                          if ((task.notes ?? "") !== next) {
+                            updateMut.mutate({ id: task.id, patch: { notes: next || null } });
+                          }
+                        }}
+                        rows={2}
+                        className="text-xs"
+                        data-testid={`textarea-my-notes-${task.id}`}
+                      />
+                      {!done && !task.isRequired && (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            placeholder="Reason to skip"
+                            value={skipReasonByTask[task.id] || ""}
+                            onChange={e => setSkipReasonByTask({ ...skipReasonByTask, [task.id]: e.target.value })}
+                            className="h-8 text-xs flex-1 rounded-md border border-input bg-background px-3 py-1"
+                            data-testid={`input-my-skip-reason-${task.id}`}
+                          />
+                          <Button size="sm" variant="outline" onClick={() => {
+                            const reason = skipReasonByTask[task.id]?.trim();
+                            if (!reason) { toast({ title: "Provide a reason to skip", variant: "destructive" }); return; }
+                            updateMut.mutate({ id: task.id, patch: { status: "skipped", skippedReason: reason } });
+                          }} data-testid={`button-my-skip-task-${task.id}`}>Skip</Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ProfilePage() {
   const { user } = useAuth();
   const [location] = useLocation();
@@ -392,6 +529,8 @@ export default function ProfilePage() {
       </Card>
 
       <CurrentShiftCard />
+
+      <MyOnboardingCard />
 
       <Card data-testid="card-organization">
         <CardHeader className="pb-3">

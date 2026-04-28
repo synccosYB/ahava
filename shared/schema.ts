@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb, unique, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb, unique, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import {
@@ -792,6 +792,251 @@ export const insertRoleAssignmentRuleSchema = createInsertSchema(roleAssignmentR
 });
 export type InsertRoleAssignmentRule = z.infer<typeof insertRoleAssignmentRuleSchema>;
 export type RoleAssignmentRule = typeof roleAssignmentRules.$inferSelect;
+
+export const onboardingTemplates = pgTable("onboarding_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").references(() => companies.id),
+  name: varchar("name", { length: 200 }).notNull(),
+  description: text("description"),
+  isDefault: boolean("is_default").default(false).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export const insertOnboardingTemplateSchema = createInsertSchema(onboardingTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertOnboardingTemplate = z.infer<typeof insertOnboardingTemplateSchema>;
+export type OnboardingTemplate = typeof onboardingTemplates.$inferSelect;
+
+export const onboardingTemplateTasks = pgTable("onboarding_template_tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull().references(() => onboardingTemplates.id, { onDelete: "cascade" }),
+  title: varchar("title", { length: 200 }).notNull(),
+  description: text("description"),
+  category: varchar("category", { length: 30 }).default("paperwork").notNull(),
+  ownerRole: varchar("owner_role", { length: 30 }).default("hr").notNull(),
+  isRequired: boolean("is_required").default(true).notNull(),
+  documentType: varchar("document_type", { length: 50 }),
+  dueOffsetDays: integer("due_offset_days").default(0).notNull(),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertOnboardingTemplateTaskSchema = createInsertSchema(onboardingTemplateTasks).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertOnboardingTemplateTask = z.infer<typeof insertOnboardingTemplateTaskSchema>;
+export type OnboardingTemplateTask = typeof onboardingTemplateTasks.$inferSelect;
+
+export const onboardingChecklists = pgTable("onboarding_checklists", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  templateId: varchar("template_id").references(() => onboardingTemplates.id),
+  status: varchar("status", { length: 20 }).default("in_progress").notNull(),
+  hireDate: date("hire_date"),
+  startedAt: timestamp("started_at").defaultNow(),
+  startedBy: varchar("started_by").references(() => users.id),
+  completedAt: timestamp("completed_at"),
+  cancelledAt: timestamp("cancelled_at"),
+  cancelledBy: varchar("cancelled_by").references(() => users.id),
+  cancelReason: text("cancel_reason"),
+}, (t) => ({
+  employeeIdx: index("idx_onb_checklists_employee").on(t.employeeId),
+  statusIdx: index("idx_onb_checklists_status").on(t.status),
+  employeeStatusIdx: index("idx_onb_checklists_employee_status").on(t.employeeId, t.status),
+  uniqEmployeeInProgress: uniqueIndex("uniq_onb_checklist_employee_in_progress")
+    .on(t.employeeId)
+    .where(sql`status = 'in_progress'`),
+}));
+
+export const insertOnboardingChecklistSchema = createInsertSchema(onboardingChecklists).omit({
+  id: true,
+  startedAt: true,
+  completedAt: true,
+  cancelledAt: true,
+  cancelledBy: true,
+  cancelReason: true,
+});
+export type InsertOnboardingChecklist = z.infer<typeof insertOnboardingChecklistSchema>;
+export type OnboardingChecklist = typeof onboardingChecklists.$inferSelect;
+
+export const onboardingTasks = pgTable("onboarding_tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  checklistId: varchar("checklist_id").notNull().references(() => onboardingChecklists.id, { onDelete: "cascade" }),
+  templateTaskId: varchar("template_task_id").references(() => onboardingTemplateTasks.id),
+  title: varchar("title", { length: 200 }).notNull(),
+  description: text("description"),
+  category: varchar("category", { length: 30 }).default("paperwork").notNull(),
+  ownerRole: varchar("owner_role", { length: 30 }).default("hr").notNull(),
+  isRequired: boolean("is_required").default(true).notNull(),
+  documentType: varchar("document_type", { length: 50 }),
+  dueDate: date("due_date"),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
+  notes: text("notes"),
+  skippedReason: text("skipped_reason"),
+  documentId: varchar("document_id").references(() => documents.id),
+  completedBy: varchar("completed_by").references(() => users.id),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertOnboardingTaskSchema = createInsertSchema(onboardingTasks).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  completedAt: true,
+  completedBy: true,
+});
+export type InsertOnboardingTask = z.infer<typeof insertOnboardingTaskSchema>;
+export type OnboardingTask = typeof onboardingTasks.$inferSelect;
+
+export const onboardingTemplatesRelations = relations(onboardingTemplates, ({ many, one }) => ({
+  company: one(companies, { fields: [onboardingTemplates.companyId], references: [companies.id] }),
+  tasks: many(onboardingTemplateTasks),
+}));
+
+export const onboardingTemplateTasksRelations = relations(onboardingTemplateTasks, ({ one }) => ({
+  template: one(onboardingTemplates, { fields: [onboardingTemplateTasks.templateId], references: [onboardingTemplates.id] }),
+}));
+
+export const onboardingChecklistsRelations = relations(onboardingChecklists, ({ one, many }) => ({
+  employee: one(users, { fields: [onboardingChecklists.employeeId], references: [users.id] }),
+  template: one(onboardingTemplates, { fields: [onboardingChecklists.templateId], references: [onboardingTemplates.id] }),
+  tasks: many(onboardingTasks),
+}));
+
+export const onboardingTasksRelations = relations(onboardingTasks, ({ one }) => ({
+  checklist: one(onboardingChecklists, { fields: [onboardingTasks.checklistId], references: [onboardingChecklists.id] }),
+}));
+
+export const offboardingTemplates = pgTable("offboarding_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").references(() => companies.id),
+  name: varchar("name", { length: 200 }).notNull(),
+  description: text("description"),
+  isDefault: boolean("is_default").default(false).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export const insertOffboardingTemplateSchema = createInsertSchema(offboardingTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertOffboardingTemplate = z.infer<typeof insertOffboardingTemplateSchema>;
+export type OffboardingTemplate = typeof offboardingTemplates.$inferSelect;
+
+export const offboardingTemplateTasks = pgTable("offboarding_template_tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull().references(() => offboardingTemplates.id, { onDelete: "cascade" }),
+  title: varchar("title", { length: 200 }).notNull(),
+  description: text("description"),
+  category: varchar("category", { length: 30 }).default("access").notNull(),
+  ownerRole: varchar("owner_role", { length: 30 }).default("hr").notNull(),
+  isRequired: boolean("is_required").default(true).notNull(),
+  blocksDeactivation: boolean("blocks_deactivation").default(false).notNull(),
+  dueOffsetDays: integer("due_offset_days").default(0).notNull(),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertOffboardingTemplateTaskSchema = createInsertSchema(offboardingTemplateTasks).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertOffboardingTemplateTask = z.infer<typeof insertOffboardingTemplateTaskSchema>;
+export type OffboardingTemplateTask = typeof offboardingTemplateTasks.$inferSelect;
+
+export const offboardingChecklists = pgTable("offboarding_checklists", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  templateId: varchar("template_id").references(() => offboardingTemplates.id),
+  status: varchar("status", { length: 20 }).default("in_progress").notNull(),
+  terminationDate: date("termination_date").notNull(),
+  startedAt: timestamp("started_at").defaultNow(),
+  startedBy: varchar("started_by").references(() => users.id),
+  completedAt: timestamp("completed_at"),
+  accountDeactivatedAt: timestamp("account_deactivated_at"),
+  accountDeactivatedBy: varchar("account_deactivated_by").references(() => users.id),
+}, (t) => ({
+  employeeIdx: index("idx_off_checklists_employee").on(t.employeeId),
+  statusIdx: index("idx_off_checklists_status").on(t.status),
+  employeeStatusIdx: index("idx_off_checklists_employee_status").on(t.employeeId, t.status),
+  uniqEmployeeInProgress: uniqueIndex("uniq_off_checklist_employee_in_progress")
+    .on(t.employeeId)
+    .where(sql`status = 'in_progress'`),
+}));
+
+export const insertOffboardingChecklistSchema = createInsertSchema(offboardingChecklists).omit({
+  id: true,
+  startedAt: true,
+  completedAt: true,
+  accountDeactivatedAt: true,
+  accountDeactivatedBy: true,
+});
+export type InsertOffboardingChecklist = z.infer<typeof insertOffboardingChecklistSchema>;
+export type OffboardingChecklist = typeof offboardingChecklists.$inferSelect;
+
+export const offboardingTasks = pgTable("offboarding_tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  checklistId: varchar("checklist_id").notNull().references(() => offboardingChecklists.id, { onDelete: "cascade" }),
+  templateTaskId: varchar("template_task_id").references(() => offboardingTemplateTasks.id),
+  title: varchar("title", { length: 200 }).notNull(),
+  description: text("description"),
+  category: varchar("category", { length: 30 }).default("access").notNull(),
+  ownerRole: varchar("owner_role", { length: 30 }).default("hr").notNull(),
+  isRequired: boolean("is_required").default(true).notNull(),
+  blocksDeactivation: boolean("blocks_deactivation").default(false).notNull(),
+  dueDate: date("due_date"),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
+  notes: text("notes"),
+  skippedReason: text("skipped_reason"),
+  completedBy: varchar("completed_by").references(() => users.id),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertOffboardingTaskSchema = createInsertSchema(offboardingTasks).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  completedAt: true,
+  completedBy: true,
+});
+export type InsertOffboardingTask = z.infer<typeof insertOffboardingTaskSchema>;
+export type OffboardingTask = typeof offboardingTasks.$inferSelect;
+
+export const offboardingTemplatesRelations = relations(offboardingTemplates, ({ many, one }) => ({
+  company: one(companies, { fields: [offboardingTemplates.companyId], references: [companies.id] }),
+  tasks: many(offboardingTemplateTasks),
+}));
+
+export const offboardingTemplateTasksRelations = relations(offboardingTemplateTasks, ({ one }) => ({
+  template: one(offboardingTemplates, { fields: [offboardingTemplateTasks.templateId], references: [offboardingTemplates.id] }),
+}));
+
+export const offboardingChecklistsRelations = relations(offboardingChecklists, ({ one, many }) => ({
+  employee: one(users, { fields: [offboardingChecklists.employeeId], references: [users.id] }),
+  template: one(offboardingTemplates, { fields: [offboardingChecklists.templateId], references: [offboardingTemplates.id] }),
+  tasks: many(offboardingTasks),
+}));
+
+export const offboardingTasksRelations = relations(offboardingTasks, ({ one }) => ({
+  checklist: one(offboardingChecklists, { fields: [offboardingTasks.checklistId], references: [offboardingChecklists.id] }),
+}));
 
 export const jobs = pgTable("jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

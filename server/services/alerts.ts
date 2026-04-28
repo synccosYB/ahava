@@ -3,6 +3,7 @@ import { punchLogs, users, policies, policyRules, policyAssignments, policyTypes
 import { eq, and, lte, gte, isNull, ne, desc, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "../policyEngine";
+import { runLifecycleAlertDetection } from "./lifecycleAlerts";
 
 export type AlertType =
   | "missing_clock_out"
@@ -364,5 +365,20 @@ export async function runAlertDetection(): Promise<GeneratedAlert[]> {
     console.error("Alert detection - HR compliance error:", e);
   }
 
+  try {
+    const { runLifecycleAlertDetection } = await import("./lifecycleAlerts");
+    await runLifecycleAlertDetection();
+  } catch (e) {
+    console.error("Alert detection - lifecycle (onboarding/offboarding) error:", e);
+  }
+
   return allAlerts;
 }
+
+export {
+  detectOnboardingOverdue,
+  detectOnboardingStalled,
+  detectOffboardingOverdue,
+  detectOffboardingBlockingTermination,
+  runLifecycleAlertDetection,
+} from "./lifecycleAlerts";

@@ -6,13 +6,15 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { runAlertDetection } from "./services/alerts";
-import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
+import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
+import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./services/onboarding";
+import { materializeOffboardingChecklist, evaluateDeactivationGate } from "./services/offboarding";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
 import { runWorkflowsForTrigger } from "./workflowEngine";
 import { requestCache } from "./lib/requestCache";
@@ -48,6 +50,18 @@ function isSuperAdmin(req: any): boolean {
 function hideSuperAdmin<T extends { id: string }>(users: T[], requestIsSuperAdmin: boolean): T[] {
   if (requestIsSuperAdmin) return users;
   return users.filter(u => u.id !== SUPER_ADMIN_USER_ID);
+}
+
+// Lifecycle templates may be global (companyId === null) or scoped to a single company.
+// A non-super-admin actor may only access templates that are global or in their own company.
+function actorCanAccessLifecycleTemplate(
+  actor: { companyId: string | null },
+  template: { companyId: string | null },
+  requestIsSuperAdmin: boolean,
+): boolean {
+  if (requestIsSuperAdmin) return true;
+  if (template.companyId === null) return true;
+  return template.companyId === (actor.companyId ?? null);
 }
 
 const documentUpload = multer({
@@ -288,6 +302,8 @@ export async function registerRoutes(
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
     weeklySalary: z.number().optional(),
+    onboardingTemplateId: z.string().optional().nullable(),
+    skipOnboarding: z.boolean().optional(),
   });
 
   app.post("/api/users", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
@@ -357,6 +373,31 @@ export async function registerRoutes(
     }
 
     invalidateUserCache();
+
+    if (!parsed.data.skipOnboarding) {
+      try {
+        const actorId = (req as any).authUser?.id || SUPER_ADMIN_USER_ID;
+        const auditCtx = getAuditContext(req);
+        await materializeOnboardingChecklist(newUser, {
+          templateId: parsed.data.onboardingTemplateId ?? null,
+          hireDate: parsed.data.hireDate ?? null,
+          startedBy: actorId,
+          context: { ip: auditCtx.ipAddress ?? null, userAgent: auditCtx.userAgent ?? null },
+        });
+      } catch (err) {
+        console.error("Failed to materialize onboarding checklist:", err);
+        try {
+          await createPolicyAlert({
+            type: "onboarding_materialization_failed",
+            severity: "high",
+            employeeId: newUser.id,
+            message: `Failed to start onboarding for ${newUser.firstName ?? ""} ${newUser.lastName ?? ""}`.trim(),
+            details: { error: (err as Error).message },
+          });
+        } catch {}
+      }
+    }
+
     const refreshed = await storage.getUser(newUser.id);
     const { password: _, passwordHash: _ph, ...safeUser } = refreshed || newUser;
     res.status(201).json({ ...safeUser, temporaryPassword: tempPassword });
@@ -609,6 +650,11 @@ export async function registerRoutes(
         await resolveMissingDocumentAlertsFor(req.params.id, documentType, adminUser.id);
       } catch (err) {
         console.error("Failed to resolve missing-document alerts after upload:", err);
+      }
+      try {
+        await autoCompleteDocumentTask(req.params.id, documentType, doc.id, adminUser.id);
+      } catch (e) {
+        console.error("autoCompleteDocumentTask failed:", e);
       }
 
       res.status(201).json(doc);
@@ -1604,6 +1650,7 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
     }
+    const before = await storage.getEmploymentProfile(req.params.userId);
     const profile = await storage.updateEmploymentProfile(req.params.userId, parsed.data);
     if (!profile) return res.status(404).json({ message: "Employment profile not found" });
 
@@ -1618,6 +1665,25 @@ export async function registerRoutes(
     }
 
     invalidateUserCache();
+
+    if (parsed.data.terminationDate && (!before?.terminationDate || before.terminationDate !== parsed.data.terminationDate)) {
+      try {
+        const employee = await storage.getUser(req.params.userId);
+        if (employee) {
+          const actorId = (req as any).authUser?.id || SUPER_ADMIN_USER_ID;
+          const auditCtx = getAuditContext(req);
+          await materializeOffboardingChecklist(employee, {
+            terminationDate: parsed.data.terminationDate ?? null,
+            startedBy: actorId,
+            context: { ip: auditCtx.ipAddress ?? null, userAgent: auditCtx.userAgent ?? null },
+          });
+        }
+      } catch (e) {
+        console.error("Failed to materialize offboarding checklist:", e);
+      }
+    }
+
+
     res.json(profile);
   });
 
@@ -5585,6 +5651,595 @@ export async function registerRoutes(
     }
     const created = await enqueue(rawType as AllowedJobType, req.body?.payload);
     return res.json({ ok: true, job: created });
+  });
+
+  // ===================== Lifecycle Wizards: Onboarding =====================
+
+  app.get("/api/onboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    const actor = (req as any).authUser as User;
+    const requestedCompanyId = (req.query.companyId as string | undefined) ?? actor.companyId ?? null;
+    if (!isSuperAdmin(req) && requestedCompanyId !== null && requestedCompanyId !== (actor.companyId ?? null)) {
+      return res.status(403).json({ message: "Forbidden: cannot list templates for another company" });
+    }
+    const templates = await storage.getOnboardingTemplates({ companyId: requestedCompanyId });
+    res.json(templates);
+  });
+
+  app.get("/api/onboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    const t = await storage.getOnboardingTemplate(req.params.id);
+    if (!t) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const tasks = await storage.getOnboardingTemplateTasks(t.id);
+    res.json({ ...t, tasks });
+  });
+
+  app.post("/api/onboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertOnboardingTemplateSchema.safeParse({
+      ...req.body,
+      createdBy: (req as any).authUser?.id ?? null,
+    });
+    if (!parsed.success) return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
+    const actor = (req as any).authUser as User;
+    // Only super-admin may create global (companyId=null) or cross-company templates.
+    // Tenant admins are forced to their own company scope regardless of input.
+    if (!isSuperAdmin(req)) {
+      const cid = parsed.data.companyId ?? null;
+      if (cid !== null && cid !== (actor.companyId ?? null)) {
+        return res.status(403).json({ message: "Forbidden: cannot create template for another company" });
+      }
+      if (cid === null) {
+        if (!actor.companyId) {
+          return res.status(403).json({ message: "Forbidden: cannot create global template" });
+        }
+        parsed.data.companyId = actor.companyId;
+      }
+    }
+    const created = await storage.createOnboardingTemplate(parsed.data);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_template.create", actorUserId: (req as any).authUser.id, targetType: "onboarding_template", targetId: created.id, newValue: created, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(201).json(created);
+  });
+
+  app.patch("/api/onboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertOnboardingTemplateSchema.partial().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
+    const before = await storage.getOnboardingTemplate(req.params.id);
+    if (!before) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, before, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    if (!isSuperAdmin(req) && "companyId" in parsed.data) {
+      const cid = parsed.data.companyId ?? null;
+      // Tenant admins cannot reassign to another company AND cannot promote
+      // a template to global (companyId=null).
+      if (cid === null || cid !== (actor.companyId ?? null)) {
+        return res.status(403).json({ message: "Forbidden: cannot reassign template scope" });
+      }
+    }
+    const updated = await storage.updateOnboardingTemplate(req.params.id, parsed.data);
+    if (!updated) return res.status(404).json({ message: "Template not found" });
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_template.update", actorUserId: (req as any).authUser.id, targetType: "onboarding_template", targetId: updated.id, oldValue: before, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.json(updated);
+  });
+
+  const ALLOWED_ONBOARDING_DOCUMENT_TYPES = new Set(["w9", "i9", "direct_deposit", "emergency_contact", "handbook_ack"]);
+  function validateOnboardingDocumentType(documentType: unknown): { ok: boolean; message?: string } {
+    if (documentType === undefined || documentType === null || documentType === "") return { ok: true };
+    if (typeof documentType !== "string") return { ok: false, message: "documentType must be a string" };
+    if (!ALLOWED_ONBOARDING_DOCUMENT_TYPES.has(documentType)) {
+      return { ok: false, message: `documentType must be one of: ${Array.from(ALLOWED_ONBOARDING_DOCUMENT_TYPES).join(", ")}` };
+    }
+    return { ok: true };
+  }
+
+  app.post("/api/onboarding-templates/:templateId/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parent = await storage.getOnboardingTemplate(req.params.templateId);
+    if (!parent) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const parsed = insertOnboardingTemplateTaskSchema.safeParse({ ...req.body, templateId: req.params.templateId });
+    if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
+    const docCheck = validateOnboardingDocumentType(parsed.data.documentType);
+    if (!docCheck.ok) return res.status(400).json({ message: docCheck.message });
+    const created = await storage.createOnboardingTemplateTask(parsed.data);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_template_task.create", actorUserId: (req as any).authUser.id, targetType: "onboarding_template_task", targetId: created.id, newValue: created, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(201).json(created);
+  });
+
+  app.patch("/api/onboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertOnboardingTemplateTaskSchema.partial().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
+    const existingTask = await storage.getOnboardingTemplateTask(req.params.id);
+    if (!existingTask) return res.status(404).json({ message: "Task not found" });
+    const parent = await storage.getOnboardingTemplate(existingTask.templateId);
+    const actor = (req as any).authUser as User;
+    if (!parent || !actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    // Re-parenting a template task across templates is not supported via this
+    // endpoint. Disallow `templateId` mutation to prevent cross-scope IDOR.
+    if ("templateId" in parsed.data && parsed.data.templateId !== existingTask.templateId) {
+      return res.status(400).json({ message: "Cannot change templateId of a template task" });
+    }
+    delete (parsed.data as Record<string, unknown>).templateId;
+    if ("documentType" in parsed.data) {
+      const docCheck = validateOnboardingDocumentType(parsed.data.documentType);
+      if (!docCheck.ok) return res.status(400).json({ message: docCheck.message });
+    }
+    const updated = await storage.updateOnboardingTemplateTask(req.params.id, parsed.data);
+    if (!updated) return res.status(404).json({ message: "Task not found" });
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_template_task.update", actorUserId: (req as any).authUser.id, targetType: "onboarding_template_task", targetId: updated.id, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.json(updated);
+  });
+
+  app.delete("/api/onboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const existingTask = await storage.getOnboardingTemplateTask(req.params.id);
+    if (!existingTask) return res.status(204).end();
+    const parent = await storage.getOnboardingTemplate(existingTask.templateId);
+    const actor = (req as any).authUser as User;
+    if (!parent || !actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    await storage.deleteOnboardingTemplateTask(req.params.id);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_template_task.delete", actorUserId: (req as any).authUser.id, targetType: "onboarding_template_task", targetId: req.params.id, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(204).end();
+  });
+
+  app.get("/api/onboarding-checklists", requireAuth, async (req, res) => {
+    const actor = (req as any).authUser as User;
+    const params: { status?: string; employeeIds?: string[] } = {};
+    if (typeof req.query.status === "string") params.status = req.query.status;
+
+    if (actor.role === "admin") {
+      // unrestricted (super admins see all)
+    } else if (actor.role === "manager") {
+      const team = await getTeamUserIds(actor);
+      params.employeeIds = Array.from(team);
+    } else {
+      params.employeeIds = [actor.id];
+    }
+    const checklists = await storage.listOnboardingChecklists(params);
+    res.json(checklists);
+  });
+
+  app.get("/api/onboarding-checklists/my", requireAuth, async (req, res) => {
+    const actor = (req as any).authUser as User;
+    const cl = await storage.getOnboardingChecklistByEmployee(actor.id);
+    if (!cl) return res.json(null);
+    const tasks = await storage.getOnboardingTasks(cl.id);
+    // Self-view: only return new_hire-owned and system-owned tasks (data minimization).
+    const visibleTasks = tasks.filter(t => t.ownerRole === "new_hire" || t.ownerRole === "system");
+    const progress = await storage.computeOnboardingProgress(cl.id);
+    res.json({ ...cl, tasks: visibleTasks, progress });
+  });
+
+  app.get("/api/onboarding-checklists/by-employee/:employeeId", requireAuth, async (req, res) => {
+    const actor = (req as any).authUser as User;
+    let isManagerOnTeam = false;
+    if (actor.role !== "admin" && actor.id !== req.params.employeeId) {
+      if (actor.role === "manager") {
+        const team = await getTeamUserIds(actor);
+        if (!team.has(req.params.employeeId)) return res.status(403).json({ message: "Forbidden" });
+        isManagerOnTeam = true;
+      } else {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+    }
+    const cl = await storage.getOnboardingChecklistByEmployee(req.params.employeeId);
+    if (!cl) return res.json(null);
+    const tasks = await storage.getOnboardingTasks(cl.id);
+    // Self-only viewers (employee, not admin/manager-on-team) see only their own role's tasks.
+    const isSelfOnly = actor.id === req.params.employeeId && actor.role !== "admin" && !isManagerOnTeam;
+    const visibleTasks = isSelfOnly
+      ? tasks.filter(t => t.ownerRole === "new_hire" || t.ownerRole === "system")
+      : tasks;
+    const progress = await storage.computeOnboardingProgress(cl.id);
+    res.json({ ...cl, tasks: visibleTasks, progress });
+  });
+
+  app.get("/api/onboarding-checklists/:id", requireAuth, async (req, res) => {
+    const cl = await storage.getOnboardingChecklist(req.params.id);
+    if (!cl) return res.status(404).json({ message: "Checklist not found" });
+    const actor = (req as any).authUser as User;
+    let isManagerOnTeam = false;
+    if (actor.role !== "admin" && actor.id !== cl.employeeId) {
+      if (actor.role === "manager") {
+        const team = await getTeamUserIds(actor);
+        if (!team.has(cl.employeeId)) return res.status(403).json({ message: "Forbidden" });
+        isManagerOnTeam = true;
+      } else {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+    }
+    const tasks = await storage.getOnboardingTasks(cl.id);
+    const isSelfOnly = actor.id === cl.employeeId && actor.role !== "admin" && !isManagerOnTeam;
+    const visibleTasks = isSelfOnly
+      ? tasks.filter(t => t.ownerRole === "new_hire" || t.ownerRole === "system")
+      : tasks;
+    const progress = await storage.computeOnboardingProgress(cl.id);
+    res.json({ ...cl, tasks: visibleTasks, progress });
+  });
+
+  const startOnboardingSchema = z.object({
+    templateId: z.string().optional().nullable(),
+    hireDate: z.string().optional().nullable(),
+  });
+  app.post("/api/employees/:id/start-onboarding", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = startOnboardingSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+    const employee = await storage.getUser(req.params.id);
+    if (!employee) return res.status(404).json({ message: "Employee not found" });
+    const ctx = getAuditContext(req);
+    const cl = await materializeOnboardingChecklist(employee, {
+      templateId: parsed.data.templateId ?? null,
+      hireDate: parsed.data.hireDate ?? null,
+      startedBy: (req as any).authUser.id,
+      context: { ip: ctx.ipAddress ?? null, userAgent: ctx.userAgent ?? null },
+    });
+    if (!cl) return res.status(409).json({ message: "Could not start onboarding (no template available)" });
+    res.status(201).json(cl);
+  });
+
+  const updateOnboardingTaskSchema = z.object({
+    status: z.enum(["pending", "in_progress", "completed", "skipped"]).optional(),
+    notes: z.string().nullable().optional(),
+    skippedReason: z.string().nullable().optional(),
+  });
+  app.patch("/api/onboarding-tasks/:id", requireAuth, async (req, res) => {
+    const parsed = updateOnboardingTaskSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ message: "Invalid task update", errors: parsed.error.flatten() });
+    const task = await storage.getOnboardingTask(req.params.id);
+    if (!task) return res.status(404).json({ message: "Task not found" });
+    const checklist = await storage.getOnboardingChecklist(task.checklistId);
+    if (!checklist) return res.status(404).json({ message: "Checklist not found" });
+    const actor = (req as any).authUser as User;
+    const isOwner = actor.id === checklist.employeeId;
+    const isAdmin = actor.role === "admin";
+    const isManager = actor.role === "manager";
+    let isManagerOnTeam = false;
+    if (isManager) {
+      const team = await getTeamUserIds(actor);
+      isManagerOnTeam = team.has(checklist.employeeId);
+    }
+    if (!isOwner && !isAdmin && !isManagerOnTeam) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    // Owner-role alignment: only the role that owns the task can mutate it.
+    // Employees (new hires) may only mutate tasks with ownerRole='new_hire'.
+    // Managers may only mutate ownerRole 'manager' or 'it' for their team.
+    // Admins may mutate any task.
+    if (!isAdmin) {
+      if (isOwner && !isManagerOnTeam) {
+        if (task.ownerRole !== "new_hire") return res.status(403).json({ message: "Only the task owner role can update this task" });
+        // New hires may skip only optional tasks (with reason). Required tasks must be completed.
+        if (parsed.data.status === "skipped" && task.isRequired) {
+          return res.status(403).json({ message: "Required tasks cannot be skipped by the new hire" });
+        }
+      } else if (isManagerOnTeam) {
+        if (task.ownerRole !== "manager" && task.ownerRole !== "it") {
+          return res.status(403).json({ message: "Manager role cannot update this task type" });
+        }
+      }
+    }
+    if (parsed.data.status === "skipped" && !parsed.data.skippedReason) {
+      return res.status(400).json({ message: "skippedReason is required when skipping" });
+    }
+    const completing = parsed.data.status === "completed";
+    const updated = await storage.updateOnboardingTask(req.params.id, {
+      status: parsed.data.status,
+      notes: "notes" in parsed.data ? parsed.data.notes : undefined,
+      skippedReason: "skippedReason" in parsed.data ? parsed.data.skippedReason : undefined,
+      completedAt: completing ? new Date() : (parsed.data.status && parsed.data.status !== "completed" ? null : undefined),
+      completedBy: completing ? actor.id : (parsed.data.status && parsed.data.status !== "completed" ? null : undefined),
+    });
+    const completed = await storage.completeOnboardingChecklistIfFinished(task.checklistId);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_task.update", actorUserId: actor.id, targetType: "onboarding_task", targetId: req.params.id, oldValue: task, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    if (completed) {
+      await writeAuditLog({ action: "onboarding.complete", actorUserId: actor.id, targetType: "onboarding_checklist", targetId: task.checklistId, newValue: { trigger: "task_update" }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    }
+    res.json(updated);
+  });
+
+  app.post("/api/onboarding-checklists/:id/cancel", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : "Cancelled by admin";
+    const updated = await storage.cancelOnboardingChecklist(req.params.id, reason, (req as any).authUser.id);
+    if (!updated) return res.status(404).json({ message: "Checklist not found" });
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding.cancel", actorUserId: (req as any).authUser.id, targetType: "onboarding_checklist", targetId: req.params.id, newValue: { reason }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.json(updated);
+  });
+
+  // ===================== Lifecycle Wizards: Offboarding =====================
+
+  app.get("/api/offboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    const actor = (req as any).authUser as User;
+    const requestedCompanyId = (req.query.companyId as string | undefined) ?? actor.companyId ?? null;
+    if (!isSuperAdmin(req) && requestedCompanyId !== null && requestedCompanyId !== (actor.companyId ?? null)) {
+      return res.status(403).json({ message: "Forbidden: cannot list templates for another company" });
+    }
+    const templates = await storage.getOffboardingTemplates({ companyId: requestedCompanyId });
+    res.json(templates);
+  });
+
+  app.get("/api/offboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    const t = await storage.getOffboardingTemplate(req.params.id);
+    if (!t) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const tasks = await storage.getOffboardingTemplateTasks(t.id);
+    res.json({ ...t, tasks });
+  });
+
+  app.post("/api/offboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertOffboardingTemplateSchema.safeParse({
+      ...req.body,
+      createdBy: (req as any).authUser?.id ?? null,
+    });
+    if (!parsed.success) return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
+    const actor = (req as any).authUser as User;
+    // Only super-admin may create global (companyId=null) or cross-company templates.
+    // Tenant admins are forced to their own company scope regardless of input.
+    if (!isSuperAdmin(req)) {
+      const cid = parsed.data.companyId ?? null;
+      if (cid !== null && cid !== (actor.companyId ?? null)) {
+        return res.status(403).json({ message: "Forbidden: cannot create template for another company" });
+      }
+      if (cid === null) {
+        if (!actor.companyId) {
+          return res.status(403).json({ message: "Forbidden: cannot create global template" });
+        }
+        parsed.data.companyId = actor.companyId;
+      }
+    }
+    const created = await storage.createOffboardingTemplate(parsed.data);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_template.create", actorUserId: (req as any).authUser.id, targetType: "offboarding_template", targetId: created.id, newValue: created, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(201).json(created);
+  });
+
+  app.patch("/api/offboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertOffboardingTemplateSchema.partial().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
+    const before = await storage.getOffboardingTemplate(req.params.id);
+    if (!before) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, before, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    if (!isSuperAdmin(req) && "companyId" in parsed.data) {
+      const cid = parsed.data.companyId ?? null;
+      // Tenant admins cannot reassign to another company AND cannot promote
+      // a template to global (companyId=null).
+      if (cid === null || cid !== (actor.companyId ?? null)) {
+        return res.status(403).json({ message: "Forbidden: cannot reassign template scope" });
+      }
+    }
+    const updated = await storage.updateOffboardingTemplate(req.params.id, parsed.data);
+    if (!updated) return res.status(404).json({ message: "Template not found" });
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_template.update", actorUserId: (req as any).authUser.id, targetType: "offboarding_template", targetId: updated.id, oldValue: before, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.json(updated);
+  });
+
+  app.post("/api/offboarding-templates/:templateId/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parent = await storage.getOffboardingTemplate(req.params.templateId);
+    if (!parent) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const parsed = insertOffboardingTemplateTaskSchema.safeParse({ ...req.body, templateId: req.params.templateId });
+    if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
+    const created = await storage.createOffboardingTemplateTask(parsed.data);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_template_task.create", actorUserId: (req as any).authUser.id, targetType: "offboarding_template_task", targetId: created.id, newValue: created, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(201).json(created);
+  });
+
+  app.patch("/api/offboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertOffboardingTemplateTaskSchema.partial().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
+    const existingTask = await storage.getOffboardingTemplateTask(req.params.id);
+    if (!existingTask) return res.status(404).json({ message: "Task not found" });
+    const parent = await storage.getOffboardingTemplate(existingTask.templateId);
+    const actor = (req as any).authUser as User;
+    if (!parent || !actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    // Re-parenting a template task across templates is not supported via this
+    // endpoint. Disallow `templateId` mutation to prevent cross-scope IDOR.
+    if ("templateId" in parsed.data && parsed.data.templateId !== existingTask.templateId) {
+      return res.status(400).json({ message: "Cannot change templateId of a template task" });
+    }
+    delete (parsed.data as Record<string, unknown>).templateId;
+    const updated = await storage.updateOffboardingTemplateTask(req.params.id, parsed.data);
+    if (!updated) return res.status(404).json({ message: "Task not found" });
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_template_task.update", actorUserId: (req as any).authUser.id, targetType: "offboarding_template_task", targetId: updated.id, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.json(updated);
+  });
+
+  app.delete("/api/offboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const existingTask = await storage.getOffboardingTemplateTask(req.params.id);
+    if (!existingTask) return res.status(204).end();
+    const parent = await storage.getOffboardingTemplate(existingTask.templateId);
+    const actor = (req as any).authUser as User;
+    if (!parent || !actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    await storage.deleteOffboardingTemplateTask(req.params.id);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_template_task.delete", actorUserId: (req as any).authUser.id, targetType: "offboarding_template_task", targetId: req.params.id, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(204).end();
+  });
+
+  app.get("/api/offboarding-checklists", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+    const actor = (req as any).authUser as User;
+    const params: { status?: string; employeeIds?: string[] } = {};
+    if (typeof req.query.status === "string") params.status = req.query.status;
+    if (actor.role === "manager") {
+      const team = await getTeamUserIds(actor);
+      params.employeeIds = Array.from(team);
+    }
+    const checklists = await storage.listOffboardingChecklists(params);
+    res.json(checklists);
+  });
+
+  app.get("/api/offboarding-checklists/by-employee/:employeeId", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+    const actor = (req as any).authUser as User;
+    if (actor.role === "manager") {
+      const team = await getTeamUserIds(actor);
+      if (!team.has(req.params.employeeId)) return res.status(403).json({ message: "Forbidden" });
+    }
+    const cl = await storage.getOffboardingChecklistByEmployee(req.params.employeeId);
+    if (!cl) return res.json(null);
+    const tasks = await storage.getOffboardingTasks(cl.id);
+    const gate = await evaluateDeactivationGate(cl.id);
+    const progress = await storage.computeOffboardingProgress(cl.id);
+    res.json({ ...cl, tasks, gate, progress });
+  });
+
+  app.get("/api/offboarding-checklists/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+    const cl = await storage.getOffboardingChecklist(req.params.id);
+    if (!cl) return res.status(404).json({ message: "Checklist not found" });
+    const actor = (req as any).authUser as User;
+    if (actor.role === "manager") {
+      const team = await getTeamUserIds(actor);
+      if (!team.has(cl.employeeId)) return res.status(403).json({ message: "Forbidden" });
+    }
+    const tasks = await storage.getOffboardingTasks(cl.id);
+    const gate = await evaluateDeactivationGate(cl.id);
+    const progress = await storage.computeOffboardingProgress(cl.id);
+    res.json({ ...cl, tasks, gate, progress });
+  });
+
+  const startOffboardingSchema = z.object({
+    employeeId: z.string().min(1),
+    templateId: z.string().optional().nullable(),
+    terminationDate: z.string().optional().nullable(),
+  });
+  app.post("/api/offboarding/start", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = startOffboardingSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+    const employee = await storage.getUser(parsed.data.employeeId);
+    if (!employee) return res.status(404).json({ message: "Employee not found" });
+    const ctx = getAuditContext(req);
+    const cl = await materializeOffboardingChecklist(employee, {
+      templateId: parsed.data.templateId ?? null,
+      terminationDate: parsed.data.terminationDate ?? null,
+      startedBy: (req as any).authUser.id,
+      context: { ip: ctx.ipAddress ?? null, userAgent: ctx.userAgent ?? null },
+    });
+    if (!cl) return res.status(409).json({ message: "Could not start offboarding (no template available)" });
+    res.status(201).json(cl);
+  });
+
+  const updateOffboardingTaskSchema = z.object({
+    status: z.enum(["pending", "in_progress", "completed", "skipped"]).optional(),
+    notes: z.string().nullable().optional(),
+    skippedReason: z.string().nullable().optional(),
+  });
+  app.patch("/api/offboarding-tasks/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+    const parsed = updateOffboardingTaskSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ message: "Invalid task update", errors: parsed.error.flatten() });
+    const task = await storage.getOffboardingTask(req.params.id);
+    if (!task) return res.status(404).json({ message: "Task not found" });
+    const checklist = await storage.getOffboardingChecklist(task.checklistId);
+    if (!checklist) return res.status(404).json({ message: "Checklist not found" });
+    const actor = (req as any).authUser as User;
+    const isAdmin = actor.role === "admin";
+    if (!isAdmin) {
+      const team = await getTeamUserIds(actor);
+      if (!team.has(checklist.employeeId)) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+      // Owner-role alignment: managers may only mutate ownerRole 'manager' or 'it'.
+      if (task.ownerRole !== "manager" && task.ownerRole !== "it") {
+        return res.status(403).json({ message: "Manager role cannot update this task type" });
+      }
+    }
+    if (parsed.data.status === "skipped" && !parsed.data.skippedReason) {
+      return res.status(400).json({ message: "skippedReason is required when skipping" });
+    }
+    const completing = parsed.data.status === "completed";
+    const updated = await storage.updateOffboardingTask(req.params.id, {
+      status: parsed.data.status,
+      notes: "notes" in parsed.data ? parsed.data.notes : undefined,
+      skippedReason: "skippedReason" in parsed.data ? parsed.data.skippedReason : undefined,
+      completedAt: completing ? new Date() : (parsed.data.status && parsed.data.status !== "completed" ? null : undefined),
+      completedBy: completing ? actor.id : (parsed.data.status && parsed.data.status !== "completed" ? null : undefined),
+    });
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_task.update", actorUserId: actor.id, targetType: "offboarding_task", targetId: req.params.id, oldValue: task, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.json(updated);
+  });
+
+  app.post("/api/offboarding-checklists/:id/deactivate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const cl = await storage.getOffboardingChecklist(req.params.id);
+    if (!cl) return res.status(404).json({ message: "Checklist not found" });
+    if (cl.employeeId === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const gate = await evaluateDeactivationGate(req.params.id);
+    if (!gate.ok) {
+      return res.status(409).json({ message: "Cannot deactivate: blocking tasks remain", blocking: gate.blocking });
+    }
+    const actor = (req as any).authUser as User;
+    const ctx = getAuditContext(req);
+
+    const terminationDate = cl.terminationDate ?? new Date().toISOString().slice(0, 10);
+
+    // Termination must be written to the employment profile before we
+    // deactivate the user. Failure here aborts deactivation entirely.
+    const profile = await storage.getEmploymentProfile(cl.employeeId);
+    if (!profile) {
+      return res.status(409).json({ message: "Cannot deactivate: employment profile is missing" });
+    }
+    const updatedProfile = await storage.updateEmploymentProfile(cl.employeeId, { terminationDate });
+    if (!updatedProfile) {
+      return res.status(500).json({ message: "Failed to write termination date to employment profile" });
+    }
+
+    await storage.setUserDeactivated(cl.employeeId, actor.id);
+    const updated = await storage.setOffboardingChecklistDeactivation(req.params.id, actor.id);
+
+    await writeAuditLog({ action: "user.deactivate", actorUserId: actor.id, targetType: "user", targetId: cl.employeeId, newValue: { checklistId: cl.id, terminationDate }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    // Per arch §6: explicit checklist state-transition audit alongside the
+    // user-level event so the offboarding lifecycle has its own trail.
+    await writeAuditLog({
+      action: "offboarding_checklist.deactivate",
+      actorUserId: actor.id,
+      targetType: "offboarding_checklist",
+      targetId: cl.id,
+      oldValue: cl,
+      newValue: updated,
+      ipAddress: ctx.ipAddress,
+      userAgent: ctx.userAgent,
+    });
+    res.json(updated);
+  });
+
+  app.post("/api/users/:id/reactivate", requireAuth, async (req, res) => {
+    if (!isSuperAdmin(req)) return res.status(403).json({ message: "Only super admin can reactivate users" });
+    const u = await storage.getUser(req.params.id);
+    if (!u) return res.status(404).json({ message: "User not found" });
+    const updated = await storage.clearUserDeactivated(req.params.id);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "user.reactivate", actorUserId: (req as any).authUser.id, targetType: "user", targetId: req.params.id, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.json(updated);
   });
 
   return httpServer;
