@@ -159,8 +159,8 @@ export const DEFAULT_PTO_RULES = {
 };
 
 export const DEFAULT_PAYROLL_RULES = {
-  payPeriod: "biweekly",
-  payDay: "friday",
+  payPeriodType: "biweekly",
+  payDayOfWeek: null as string | null,
   overtimeMultiplier: 1.5,
   doubleTimeMultiplier: 2.0,
   doubleTimeThresholdDaily: 12,

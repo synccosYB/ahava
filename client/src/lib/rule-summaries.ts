@@ -112,7 +112,15 @@ export function summarizePayrollPolicy(rules: Record<string, any>): string[] {
     semimonthly: "Semi-monthly pay",
     monthly: "Monthly pay",
   };
-  if (periodLabel[period]) out.push(periodLabel[period] + ".");
+  if (periodLabel[period]) {
+    let line = periodLabel[period];
+    const payday = String(rules.payDayOfWeek || "").toLowerCase();
+    const dayIndex = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"].indexOf(payday);
+    if ((period === "weekly" || period === "biweekly") && dayIndex >= 0) {
+      line += `, paid on ${DAY_FULL[dayIndex]}`;
+    }
+    out.push(line + ".");
+  }
 
   const otThresh = Number(rules.overtimeThresholdHours);
   const otMult = Number(rules.overtimeMultiplier);

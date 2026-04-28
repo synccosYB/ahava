@@ -34,7 +34,21 @@ interface RuleFieldDef {
   options?: { value: string; label: string }[];
   min?: number;
   max?: number;
+  showWhen?: (rules: Record<string, any>) => boolean;
+  nullable?: boolean;
 }
+
+const PAYDAY_OPTIONS = [
+  { value: "sunday", label: "Sunday" },
+  { value: "monday", label: "Monday" },
+  { value: "tuesday", label: "Tuesday" },
+  { value: "wednesday", label: "Wednesday" },
+  { value: "thursday", label: "Thursday" },
+  { value: "friday", label: "Friday" },
+  { value: "saturday", label: "Saturday" },
+];
+
+const PAYDAY_UNSET_VALUE = "__unset__";
 
 function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
   switch (policyTypeKey) {
@@ -63,6 +77,16 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
     case "payroll":
       return [
         { key: "payPeriodType", label: "Pay Period", type: "select", description: "How often employees are paid", defaultValue: "biweekly", options: [{ value: "weekly", label: "Weekly" }, { value: "biweekly", label: "Biweekly" }, { value: "semimonthly", label: "Semi-Monthly" }, { value: "monthly", label: "Monthly" }] },
+        {
+          key: "payDayOfWeek",
+          label: "Payday",
+          type: "select",
+          description: "Day of the week payday lands on (e.g. Friday for a Biweekly policy paid every other Friday).",
+          defaultValue: null,
+          nullable: true,
+          options: PAYDAY_OPTIONS,
+          showWhen: (r) => r?.payPeriodType === "weekly" || r?.payPeriodType === "biweekly",
+        },
         { key: "overtimeThresholdHours", label: "OT Threshold (hours/week)", type: "number", description: "Weekly hours threshold before overtime kicks in", defaultValue: 40, min: 20, max: 60 },
         { key: "overtimeMultiplier", label: "OT Multiplier", type: "number", description: "Pay multiplier for overtime hours (e.g. 1.5 = time and a half)", defaultValue: 1.5, min: 1, max: 3 },
         { key: "doubleOtThreshold", label: "Double OT Threshold (hours/day)", type: "number", description: "Daily hours threshold for double-time pay", defaultValue: 12, min: 8, max: 24 },
@@ -146,6 +170,10 @@ export function PolicyWizard({
 
   const matchingType = policyTypes?.find((pt) => pt.key === selectedTypeKey);
   const ruleFields = useMemo(() => getRuleFieldsForType(selectedTypeKey), [selectedTypeKey]);
+  const visibleRuleFields = useMemo(
+    () => ruleFields.filter((f) => !f.showWhen || f.showWhen(rulesForm)),
+    [ruleFields, rulesForm],
+  );
 
   const prevOpenRef = useRef(false);
   const prevEditIdRef = useRef<string | null>(null);
@@ -241,7 +269,7 @@ export function PolicyWizard({
       if (!selectedTypeKey) newErrors.type = "Please select a policy type";
     }
     if (step === 1) {
-      ruleFields.forEach((field) => {
+      visibleRuleFields.forEach((field) => {
         if (field.type === "number") {
           const val = rulesForm[field.key];
           if (val === undefined || val === null || val === "") {
@@ -451,7 +479,7 @@ export function PolicyWizard({
           )}
           {currentStep === 1 && (
             <StepRules
-              ruleFields={ruleFields}
+              ruleFields={visibleRuleFields}
               rulesForm={rulesForm}
               setRulesForm={setRulesForm}
               errors={errors}
@@ -474,7 +502,7 @@ export function PolicyWizard({
               description={description}
               selectedTypeKey={selectedTypeKey}
               rulesForm={rulesForm}
-              ruleFields={ruleFields}
+              ruleFields={visibleRuleFields}
               assignments={assignments}
             />
           )}
@@ -1201,13 +1229,25 @@ function StepRules({
                 <Label className="font-medium">{field.label}</Label>
                 <p className="text-xs text-muted-foreground mt-0.5 mb-2">{field.description}</p>
                 <Select
-                  value={rulesForm[field.key] || field.defaultValue}
-                  onValueChange={(v) => setRulesForm({ ...rulesForm, [field.key]: v })}
+                  value={
+                    field.nullable
+                      ? (rulesForm[field.key] ? String(rulesForm[field.key]) : PAYDAY_UNSET_VALUE)
+                      : (rulesForm[field.key] || field.defaultValue)
+                  }
+                  onValueChange={(v) =>
+                    setRulesForm({
+                      ...rulesForm,
+                      [field.key]: field.nullable && v === PAYDAY_UNSET_VALUE ? null : v,
+                    })
+                  }
                 >
                   <SelectTrigger data-testid={`select-wizard-rule-${field.key}`}>
-                    <SelectValue />
+                    <SelectValue placeholder={field.nullable ? "Not set" : undefined} />
                   </SelectTrigger>
                   <SelectContent>
+                    {field.nullable && (
+                      <SelectItem value={PAYDAY_UNSET_VALUE}>Not set</SelectItem>
+                    )}
                     {field.options?.map((opt) => (
                       <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                     ))}
@@ -1408,16 +1448,28 @@ function StepReview({
         <div className="rounded-lg border p-4">
           <Label className="text-xs text-muted-foreground uppercase tracking-wider mb-3 block">Rules Configuration</Label>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {ruleFields.map((field) => (
-              <div key={field.key} className="text-sm" data-testid={`review-rule-${field.key}`}>
-                <span className="text-muted-foreground">{field.label}:</span>{" "}
-                <span className="font-medium">
-                  {field.type === "boolean"
-                    ? (rulesForm[field.key] ? "Yes" : "No")
-                    : (rulesForm[field.key] ?? "—")}
-                </span>
-              </div>
-            ))}
+            {ruleFields.map((field) => {
+              const raw = rulesForm[field.key];
+              let display: string;
+              if (field.type === "boolean") {
+                display = raw ? "Yes" : "No";
+              } else if (field.type === "select") {
+                if (raw === null || raw === undefined || raw === "") {
+                  display = field.nullable ? "Not set" : "—";
+                } else {
+                  const match = field.options?.find((o) => o.value === String(raw));
+                  display = match?.label ?? String(raw);
+                }
+              } else {
+                display = raw === undefined || raw === null || raw === "" ? "—" : String(raw);
+              }
+              return (
+                <div key={field.key} className="text-sm" data-testid={`review-rule-${field.key}`}>
+                  <span className="text-muted-foreground">{field.label}:</span>{" "}
+                  <span className="font-medium">{display}</span>
+                </div>
+              );
+            })}
           </div>
           {selectedTypeKey === "payroll" && Array.isArray(rulesForm.dayOfWeekBonuses) && rulesForm.dayOfWeekBonuses.length > 0 && (
             <div className="mt-4 pt-3 border-t">
