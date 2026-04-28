@@ -225,6 +225,8 @@ export const DEFAULT_PTO_RULES = {
   sickAccrualRatePerHours: 1,
   sickAccrualPerHoursWorked: 30,
   sickYearlyCapHours: 40,
+  vacationAccrualPerHoursWorked: 30,
+  vacationAccrualHoursPerThreshold: 1,
   personalHoursPerYear: 40,
   holidayPayEnabled: true,
   holidayPtoDeduction: false,

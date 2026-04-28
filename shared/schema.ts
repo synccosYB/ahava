@@ -438,6 +438,8 @@ export const ptoPolicies = pgTable("pto_policies", {
   sickAccrualRatePerHours: real("sick_accrual_rate_per_hours").default(1).notNull(),
   sickAccrualPerHoursWorked: real("sick_accrual_per_hours_worked").default(30).notNull(),
   sickYearlyCapHours: real("sick_yearly_cap_hours").default(40).notNull(),
+  vacationAccrualPerHoursWorked: real("vacation_accrual_per_hours_worked").default(30).notNull(),
+  vacationAccrualHoursPerThreshold: real("vacation_accrual_hours_per_threshold").default(1).notNull(),
   personalHoursPerYear: real("personal_hours_per_year").default(40).notNull(),
   holidayPayEnabled: boolean("holiday_pay_enabled").default(true).notNull(),
   holidayPtoDeduction: boolean("holiday_pto_deduction").default(false).notNull(),
@@ -449,11 +451,32 @@ export const ptoPolicies = pgTable("pto_policies", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-export const insertPtoPolicySchema = createInsertSchema(ptoPolicies).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-});
+export const insertPtoPolicySchema = createInsertSchema(ptoPolicies)
+  .omit({
+    id: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .superRefine((data, ctx) => {
+    if (data.accrualType === "per_hours_worked") {
+      const perHours = (data as { vacationAccrualPerHoursWorked?: number }).vacationAccrualPerHoursWorked;
+      const earned = (data as { vacationAccrualHoursPerThreshold?: number }).vacationAccrualHoursPerThreshold;
+      if (perHours === undefined || perHours === null || !Number.isFinite(perHours) || perHours <= 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["vacationAccrualPerHoursWorked"],
+          message: "Hours worked per accrual must be a number greater than 0 when accrual type is per_hours_worked",
+        });
+      }
+      if (earned === undefined || earned === null || !Number.isFinite(earned) || earned < 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["vacationAccrualHoursPerThreshold"],
+          message: "PTO hours earned per threshold must be a number greater than or equal to 0 when accrual type is per_hours_worked",
+        });
+      }
+    }
+  });
 export type InsertPtoPolicy = z.infer<typeof insertPtoPolicySchema>;
 export type PtoPolicy = typeof ptoPolicies.$inferSelect;
 

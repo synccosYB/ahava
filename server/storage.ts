@@ -301,7 +301,8 @@ export interface IStorage {
 
   getEmployeePtoPolicy(userId: string): Promise<PtoPolicy | undefined>;
   computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }>;
-  computeTotalHoursWorked(userId: string, year: number): Promise<number>;
+  computeTotalHoursWorked(userId: string, year: number, fromDate?: string): Promise<number>;
+  computeAnnualVacationEntitlement(userId: string): Promise<number>;
 
   createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
   getAuditLogs(module?: string, limit?: number): Promise<AuditLog[]>;
@@ -1596,9 +1597,54 @@ export class DatabaseStorage implements IStorage {
     return this.getDefaultPtoPolicy();
   }
 
-  async computeTotalHoursWorked(userId: string, year: number): Promise<number> {
-    const startDate = `${year}-01-01`;
+  async computeAnnualVacationEntitlement(userId: string): Promise<number> {
+    const policy = await this.getEmployeePtoPolicy(userId);
+    const empSettings = await this.getEmployeePtoSettings(userId);
+    const currentYear = new Date().getFullYear();
+
+    if (!policy) {
+      return empSettings?.vacationHoursOverride ?? 120;
+    }
+
+    let annualVacation: number;
+
+    if (policy.accrualType === "per_hours_worked") {
+      let waitingEndIso: string | undefined;
+      if (empSettings?.hireDate && policy.waitingPeriodDays > 0) {
+        const hireMs = new Date(empSettings.hireDate).getTime();
+        const waitingEnd = new Date(hireMs + policy.waitingPeriodDays * 24 * 60 * 60 * 1000);
+        waitingEndIso = `${waitingEnd.getUTCFullYear()}-${String(waitingEnd.getUTCMonth() + 1).padStart(2, "0")}-${String(waitingEnd.getUTCDate()).padStart(2, "0")}`;
+      }
+      const vacationHoursWorked = await this.computeTotalHoursWorked(userId, currentYear, waitingEndIso);
+      const threshold = policy.vacationAccrualPerHoursWorked > 0 ? policy.vacationAccrualPerHoursWorked : 30;
+      const earnedPerThreshold = policy.vacationAccrualHoursPerThreshold ?? 1;
+      const accruedVacationHours = Math.floor(vacationHoursWorked / threshold) * earnedPerThreshold;
+      annualVacation = policy.yearlyCapHours != null
+        ? Math.min(accruedVacationHours, policy.yearlyCapHours)
+        : accruedVacationHours;
+    } else {
+      annualVacation = policy.accrualHoursPerYear;
+    }
+
+    if (empSettings?.vacationHoursOverride !== null && empSettings?.vacationHoursOverride !== undefined) {
+      annualVacation = empSettings.vacationHoursOverride;
+    }
+
+    if (empSettings?.hireDate && policy.waitingPeriodDays > 0) {
+      const hireMs = new Date(empSettings.hireDate).getTime();
+      const waitingEnd = hireMs + policy.waitingPeriodDays * 24 * 60 * 60 * 1000;
+      if (Date.now() < waitingEnd) {
+        return 0;
+      }
+    }
+
+    return Math.round(annualVacation * 100) / 100;
+  }
+
+  async computeTotalHoursWorked(userId: string, year: number, fromDate?: string): Promise<number> {
+    const yearStart = `${year}-01-01`;
     const endDate = `${year}-12-31`;
+    const startDate = fromDate && fromDate > yearStart ? fromDate : yearStart;
     const records = await db.select().from(punchLogs)
       .where(and(
         eq(punchLogs.employeeId, userId),
@@ -1630,7 +1676,23 @@ export class DatabaseStorage implements IStorage {
     let annualPersonal: number;
 
     if (policy) {
-      annualVacation = policy.accrualHoursPerYear;
+      if (policy.accrualType === "per_hours_worked") {
+        let waitingEndIso: string | undefined;
+        if (empSettings?.hireDate && policy.waitingPeriodDays > 0) {
+          const hireMs = new Date(empSettings.hireDate).getTime();
+          const waitingEnd = new Date(hireMs + policy.waitingPeriodDays * 24 * 60 * 60 * 1000);
+          waitingEndIso = `${waitingEnd.getUTCFullYear()}-${String(waitingEnd.getUTCMonth() + 1).padStart(2, "0")}-${String(waitingEnd.getUTCDate()).padStart(2, "0")}`;
+        }
+        const vacationHoursWorked = await this.computeTotalHoursWorked(userId, currentYear, waitingEndIso);
+        const threshold = policy.vacationAccrualPerHoursWorked > 0 ? policy.vacationAccrualPerHoursWorked : 30;
+        const earnedPerThreshold = policy.vacationAccrualHoursPerThreshold ?? 1;
+        const accruedVacationHours = Math.floor(vacationHoursWorked / threshold) * earnedPerThreshold;
+        annualVacation = policy.yearlyCapHours != null
+          ? Math.min(accruedVacationHours, policy.yearlyCapHours)
+          : accruedVacationHours;
+      } else {
+        annualVacation = policy.accrualHoursPerYear;
+      }
 
       if (policy.sickAccrualEnabled) {
         const hoursWorked = await this.computeTotalHoursWorked(userId, currentYear);

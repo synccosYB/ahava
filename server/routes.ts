@@ -1443,7 +1443,9 @@ export async function registerRoutes(
       const balances = await Promise.all(allUsers.filter(u => u.id !== "admin-dev-001").map(async (user) => {
         const ptoSettings = await storage.getEmployeePtoSettings(user.id);
         const policy = ptoSettings?.ptoPolicyId ? await storage.getPtoPolicy(ptoSettings.ptoPolicyId) : await storage.getDefaultPtoPolicy();
-        const totalVacation = ptoSettings?.vacationHoursOverride ?? policy?.accrualHoursPerYear ?? 120;
+        const totalVacation = (policy?.accrualType === "per_hours_worked" && ptoSettings?.vacationHoursOverride == null)
+          ? await storage.computeAnnualVacationEntitlement(user.id)
+          : (ptoSettings?.vacationHoursOverride ?? policy?.accrualHoursPerYear ?? 120);
         const totalSick = ptoSettings?.sickHoursOverride ?? 80;
         const totalPersonal = ptoSettings?.personalHoursOverride ?? policy?.personalHoursPerYear ?? 40;
         const userRequests = await storage.getTimeOffRequestsByUser(user.id);
@@ -3842,6 +3844,23 @@ export async function registerRoutes(
 
   app.patch("/api/pto-policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
+      const accrualType = req.body?.accrualType;
+      if (accrualType === "per_hours_worked") {
+        const perHours = Number(req.body?.vacationAccrualPerHoursWorked);
+        const earned = Number(req.body?.vacationAccrualHoursPerThreshold);
+        if (!Number.isFinite(perHours) || perHours <= 0) {
+          return res.status(400).json({
+            message: "Invalid policy data",
+            errors: { vacationAccrualPerHoursWorked: "Hours worked per accrual must be a number greater than 0 when accrual type is per_hours_worked" },
+          });
+        }
+        if (!Number.isFinite(earned) || earned < 0) {
+          return res.status(400).json({
+            message: "Invalid policy data",
+            errors: { vacationAccrualHoursPerThreshold: "PTO hours earned per threshold must be a number greater than or equal to 0 when accrual type is per_hours_worked" },
+          });
+        }
+      }
       const policy = await storage.updatePtoPolicy(req.params.id, req.body);
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 

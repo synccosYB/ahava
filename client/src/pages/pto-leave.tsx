@@ -296,6 +296,7 @@ function PoliciesTab() {
     yearlyCapHours: "", carryoverCapHours: "0", waitingPeriodDays: "0",
     sickAccrualEnabled: true, personalHoursPerYear: "40",
     holidayPayEnabled: true, isDefault: false, expirationDate: "",
+    vacationAccrualPerHoursWorked: "30", vacationAccrualHoursPerThreshold: "1",
   });
 
   const { data: policies, isLoading } = useQuery<PtoPolicy[]>({ queryKey: ["/api/pto-policies"] });
@@ -303,7 +304,7 @@ function PoliciesTab() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const payload = {
+      const payload: Record<string, unknown> = {
         name: form.name,
         description: form.description || null,
         accrualType: form.accrualType,
@@ -318,6 +319,19 @@ function PoliciesTab() {
         expirationDate: form.expirationDate || null,
         companyId: divisions?.[0]?.id || null,
       };
+
+      if (form.accrualType === "per_hours_worked") {
+        const perHours = parseFloat(form.vacationAccrualPerHoursWorked);
+        const earned = parseFloat(form.vacationAccrualHoursPerThreshold);
+        if (!Number.isFinite(perHours) || perHours <= 0) {
+          throw new Error("\"Hours worked per accrual\" must be a number greater than 0.");
+        }
+        if (!Number.isFinite(earned) || earned < 0) {
+          throw new Error("\"PTO hours earned per threshold\" must be a number greater than or equal to 0.");
+        }
+        payload.vacationAccrualPerHoursWorked = perHours;
+        payload.vacationAccrualHoursPerThreshold = earned;
+      }
       if (editingId) {
         await apiRequest("PATCH", `/api/pto-policies/${editingId}`, payload);
       } else {
@@ -341,6 +355,7 @@ function PoliciesTab() {
       yearlyCapHours: "", carryoverCapHours: "0", waitingPeriodDays: "0",
       sickAccrualEnabled: true, personalHoursPerYear: "40",
       holidayPayEnabled: true, isDefault: false, expirationDate: "",
+      vacationAccrualPerHoursWorked: "30", vacationAccrualHoursPerThreshold: "1",
     });
     setEditingId(null);
   };
@@ -358,7 +373,9 @@ function PoliciesTab() {
       personalHoursPerYear: String(p.personalHoursPerYear),
       holidayPayEnabled: p.holidayPayEnabled,
       isDefault: p.isDefault,
-      expirationDate: (p as any).expirationDate || "",
+      expirationDate: p.expirationDate || "",
+      vacationAccrualPerHoursWorked: String(p.vacationAccrualPerHoursWorked ?? 30),
+      vacationAccrualHoursPerThreshold: String(p.vacationAccrualHoursPerThreshold ?? 1),
     });
     setEditingId(p.id);
     setDialogOpen(true);
@@ -388,11 +405,44 @@ function PoliciesTab() {
                     <SelectItem value="per_hours_worked">Per Hours Worked</SelectItem>
                   </SelectContent>
                 </Select>
+                {form.accrualType === "per_hours_worked" && (
+                  <p className="text-xs text-muted-foreground mt-1" data-testid="text-per-hours-worked-help">
+                    Vacation PTO is earned from clocked time:
+                    floor(hours worked / "Hours worked per accrual") × "PTO hours earned per threshold",
+                    capped by the Yearly Cap. Hours clocked before the waiting period ends do not count.
+                  </p>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Accrual Rate (hours/year)</Label><Input type="number" value={form.accrualHoursPerYear} onChange={(e) => setForm({ ...form, accrualHoursPerYear: e.target.value })} data-testid="input-accrual-rate" /></div>
                 <div><Label>Yearly Cap (hours)</Label><Input type="number" value={form.yearlyCapHours} onChange={(e) => setForm({ ...form, yearlyCapHours: e.target.value })} data-testid="input-yearly-cap" /></div>
               </div>
+              {form.accrualType === "per_hours_worked" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Hours worked per accrual</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={form.vacationAccrualPerHoursWorked}
+                      onChange={(e) => setForm({ ...form, vacationAccrualPerHoursWorked: e.target.value })}
+                      data-testid="input-vacation-hours-per-accrual"
+                    />
+                  </div>
+                  <div>
+                    <Label>PTO hours earned per threshold</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={form.vacationAccrualHoursPerThreshold}
+                      onChange={(e) => setForm({ ...form, vacationAccrualHoursPerThreshold: e.target.value })}
+                      data-testid="input-vacation-hours-earned"
+                    />
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Carryover Cap (hours)</Label><Input type="number" value={form.carryoverCapHours} onChange={(e) => setForm({ ...form, carryoverCapHours: e.target.value })} data-testid="input-carryover-cap" /></div>
                 <div><Label>Waiting Period (days)</Label><Input type="number" value={form.waitingPeriodDays} onChange={(e) => setForm({ ...form, waitingPeriodDays: e.target.value })} data-testid="input-waiting-period" /></div>
