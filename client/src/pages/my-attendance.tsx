@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
-import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench } from "lucide-react";
+import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench, MessageSquare, Lock, Unlock } from "lucide-react";
 import type { AttendanceRecord, AttendanceException } from "@shared/schema";
 import { parseExceptionTimeInfo } from "@/lib/exceptionTimeInfo";
 import {
@@ -141,12 +141,31 @@ export default function MyAttendance() {
     return map;
   }, [myExceptions]);
 
+  const latestResolvedByDate = useMemo(() => {
+    const map = new Map<string, AttendanceException>();
+    (myExceptions || []).forEach((ex) => {
+      if (ex.status === "pending") return;
+      const existing = map.get(ex.exceptionDate);
+      const exTime = ex.createdAt ? new Date(ex.createdAt).getTime() : 0;
+      const exTime2 = existing?.createdAt ? new Date(existing.createdAt).getTime() : 0;
+      if (!existing || exTime > exTime2) {
+        map.set(ex.exceptionDate, ex);
+      }
+    });
+    return map;
+  }, [myExceptions]);
+
   // Set of dates where this user has any pending unbound request — used by the
   // standalone "New Correction Request" form to block a duplicate same-date
   // standalone submission. Row-bound submissions are not blocked by this set.
   const pendingUnboundDates = useMemo(() => {
     return new Set(pendingUnboundByDate.keys());
   }, [pendingUnboundByDate]);
+
+  const [reopenDialog, setReopenDialog] = useState<{ open: boolean; exception: AttendanceException | null }>({
+    open: false,
+    exception: null,
+  });
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -506,29 +525,61 @@ export default function MyAttendance() {
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
-                        {hasPending && pendingException ? (
-                          <button
-                            type="button"
-                            onClick={() => openEditDialog(pendingException)}
-                            title="Edit your pending correction request"
-                            data-testid={`badge-pending-fix-${record.id}`}
-                            className="inline-flex items-center rounded-md bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800 hover:bg-amber-200 transition-colors"
-                          >
-                            Pending — Edit
-                          </button>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant={isInProgress ? "default" : "outline"}
-                            onClick={() => openFixDialog(record)}
-                            disabled={exceptionsLoading}
-                            title={exceptionsLoading ? "Loading correction requests..." : undefined}
-                            data-testid={`button-request-fix-${record.id}`}
-                          >
-                            <Wrench className="h-3 w-3 mr-1" />
-                            Request Fix
-                          </Button>
-                        )}
+                        {(() => {
+                          if (hasPending && pendingException) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => openEditDialog(pendingException)}
+                                title="Edit your pending correction request"
+                                data-testid={`badge-pending-fix-${record.id}`}
+                                className="inline-flex items-center rounded-md bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800 hover:bg-amber-200 transition-colors"
+                              >
+                                Pending — Edit
+                              </button>
+                            );
+                          }
+
+                          const resolvedEx = latestResolvedByDate.get(record.date);
+                          const reopenGrantedUnused =
+                            resolvedEx?.reopenStatus === "granted" && !resolvedEx?.reopenConsumedAt;
+
+                          if (resolvedEx && !reopenGrantedUnused) {
+                            return (
+                              <ResolvedActionCell
+                                record={record}
+                                exception={resolvedEx}
+                                onAskToReopen={(ex) => setReopenDialog({ open: true, exception: ex })}
+                              />
+                            );
+                          }
+
+                          return (
+                            <div className="flex flex-col items-end gap-1">
+                              {reopenGrantedUnused && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                  data-testid={`badge-reopen-granted-${record.id}`}
+                                >
+                                  <Unlock className="h-3 w-3 mr-1" />
+                                  Reopen granted
+                                </Badge>
+                              )}
+                              <Button
+                                size="sm"
+                                variant={isInProgress ? "default" : "outline"}
+                                onClick={() => openFixDialog(record)}
+                                disabled={exceptionsLoading}
+                                title={exceptionsLoading ? "Loading correction requests..." : undefined}
+                                data-testid={`button-request-fix-${record.id}`}
+                              >
+                                <Wrench className="h-3 w-3 mr-1" />
+                                Request Fix
+                              </Button>
+                            </div>
+                          );
+                        })()}
                       </TableCell>
                     </TableRow>
                   );
@@ -584,6 +635,12 @@ export default function MyAttendance() {
           />
         </DialogContent>
       </Dialog>
+
+      <ReopenRequestDialog
+        open={reopenDialog.open}
+        exception={reopenDialog.exception}
+        onClose={() => setReopenDialog({ open: false, exception: null })}
+      />
     </div>
   );
 }
@@ -837,6 +894,182 @@ function CorrectionFormBody({
           : (isEditing ? "Save Changes" : "Submit Correction")}
       </Button>
     </div>
+  );
+}
+
+function verdictBadge(status: string, testIdSuffix: string) {
+  if (status === "approved") {
+    return (
+      <Badge
+        className="bg-green-600 hover:bg-green-600"
+        data-testid={`badge-verdict-approved-${testIdSuffix}`}
+      >
+        Approved
+      </Badge>
+    );
+  }
+  if (status === "denied") {
+    return (
+      <Badge variant="destructive" data-testid={`badge-verdict-denied-${testIdSuffix}`}>
+        Denied
+      </Badge>
+    );
+  }
+  return (
+    <Badge
+      variant="outline"
+      className="text-muted-foreground"
+      data-testid={`badge-verdict-cancelled-${testIdSuffix}`}
+    >
+      Cancelled
+    </Badge>
+  );
+}
+
+type ResolvedActionCellProps = {
+  record: AttendanceRecord;
+  exception: AttendanceException;
+  onAskToReopen: (ex: AttendanceException) => void;
+};
+
+function ResolvedActionCell({ record, exception, onAskToReopen }: ResolvedActionCellProps) {
+  return (
+    <div className="flex flex-col items-end gap-1">
+      {verdictBadge(exception.status, record.id)}
+      {exception.reopenStatus === "pending" ? (
+        <span
+          className="inline-flex items-center text-[11px] text-muted-foreground"
+          data-testid={`text-reopen-pending-${record.id}`}
+        >
+          <MessageSquare className="h-3 w-3 mr-1" />
+          Reopen requested
+        </span>
+      ) : exception.reopenStatus === "declined" ? (
+        <span
+          className="inline-flex items-center text-[11px] text-muted-foreground"
+          data-testid={`text-reopen-declined-${record.id}`}
+        >
+          <Lock className="h-3 w-3 mr-1" />
+          Reopen declined
+        </span>
+      ) : (
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+          onClick={() => onAskToReopen(exception)}
+          data-testid={`button-ask-reopen-${record.id}`}
+        >
+          <MessageSquare className="h-3 w-3 mr-1" />
+          Ask to reopen
+        </Button>
+      )}
+    </div>
+  );
+}
+
+type ReopenRequestDialogProps = {
+  open: boolean;
+  exception: AttendanceException | null;
+  onClose: () => void;
+};
+
+function ReopenRequestDialog({ open, exception, onClose }: ReopenRequestDialogProps) {
+  const { toast } = useToast();
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (open) setMessage("");
+  }, [open, exception?.id]);
+
+  const reopenMutation = useMutation({
+    mutationFn: async (vars: { id: string; message: string }) => {
+      return apiRequest("POST", `/api/attendance/exceptions/${vars.id}/reopen-request`, {
+        message: vars.message,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/my"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      toast({
+        title: "Reopen request sent",
+        description: "Your manager will review and decide whether to reopen this correction.",
+      });
+      onClose();
+    },
+    onError: (error: unknown) => {
+      const description = error instanceof Error ? error.message : "Could not send your reopen request.";
+      toast({ title: "Reopen request failed", description, variant: "destructive" });
+    },
+  });
+
+  const trimmed = message.trim();
+  const tooLong = trimmed.length > 1000;
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-md" data-testid="dialog-reopen-request">
+        <DialogHeader>
+          <DialogTitle>Ask to reopen this correction</DialogTitle>
+          <DialogDescription>
+            {exception ? (
+              <>
+                Send your manager a short note explaining why the correction for{" "}
+                <span className="font-medium">{exception.exceptionDate}</span> should be revisited. You can only send one reopen request per resolved correction.
+              </>
+            ) : (
+              "Send your manager a short note explaining why this correction should be revisited."
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="reopen-message">Message to your manager</Label>
+          <Textarea
+            id="reopen-message"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="e.g. I forgot to mention that I worked through lunch — could we take another look?"
+            rows={4}
+            data-testid="textarea-reopen-message"
+          />
+          <p className={`text-xs ${tooLong ? "text-destructive" : "text-muted-foreground"}`}>
+            {trimmed.length}/1000 characters
+          </p>
+        </div>
+        <div className="flex justify-end gap-2 mt-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onClose}
+            disabled={reopenMutation.isPending}
+            data-testid="button-cancel-reopen"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              if (!exception) return;
+              if (!trimmed) {
+                toast({
+                  title: "Message required",
+                  description: "Please add a short explanation before sending.",
+                  variant: "destructive",
+                });
+                return;
+              }
+              if (tooLong) return;
+              reopenMutation.mutate({ id: exception.id, message: trimmed });
+            }}
+            disabled={!exception || !trimmed || tooLong || reopenMutation.isPending}
+            data-testid="button-submit-reopen"
+          >
+            <Send className="h-3 w-3 mr-1" />
+            Send request
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

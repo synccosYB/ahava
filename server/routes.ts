@@ -8,7 +8,7 @@ import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
-import { eq, desc, and, isNull, isNotNull } from "drizzle-orm";
+import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { buildEmployeeTimesheet, computeAttendanceTotals } from "./timesheetService";
@@ -2420,33 +2420,95 @@ export async function registerRoutes(
         resolvedPunchLogId = punchLogId;
       }
 
-      // Duplicate-prevention: a second pending request is blocked for the same
-      // punch (when punchLogId is provided) or for the same date when no punch
-      // is linked. Sibling rows on the same date may still submit their own
-      // request because each has its own punchLogId.
-      const existingExceptions = await storage.getAttendanceExceptionsByEmployee(userId);
-      const duplicate = existingExceptions.find(ex => {
-        if (ex.status !== "pending" || ex.exceptionDate !== exceptionDate) return false;
-        if (resolvedPunchLogId) return ex.punchLogId === resolvedPunchLogId;
-        return ex.punchLogId === null;
-      });
-      if (duplicate) {
-        return res.status(409).json({
-          message: resolvedPunchLogId
-            ? "A correction request for this punch is already pending review."
-            : "A correction request for this date is already pending review.",
+      const auditCtx = getAuditContext(req);
+
+      const result = await db.transaction(async (tx) => {
+        // Lock check: if the latest resolved exception on this date does not
+        // have a granted-but-unused reopen, block any new submission.
+        const [latestResolved] = await tx.select().from(attendanceExceptions)
+          .where(and(
+            eq(attendanceExceptions.employeeId, userId),
+            eq(attendanceExceptions.exceptionDate, exceptionDate),
+            inArray(attendanceExceptions.status, ["approved", "denied", "cancelled"]),
+          ))
+          .orderBy(desc(attendanceExceptions.createdAt))
+          .limit(1);
+
+        if (latestResolved) {
+          const hasUnusedReopen =
+            latestResolved.reopenStatus === "granted" && !latestResolved.reopenConsumedAt;
+          if (!hasUnusedReopen) {
+            const verdict = latestResolved.status.charAt(0).toUpperCase() + latestResolved.status.slice(1);
+            return {
+              error: {
+                status: 409,
+                message: `A previous correction request for this date was already ${verdict.toLowerCase()}. Ask an admin to reopen it before submitting a new one.`,
+              },
+            } as const;
+          }
+        }
+
+        // Duplicate-prevention: a second pending request is blocked for the same
+        // punch (when punchLogId is provided) or for the same date when no punch
+        // is linked. Sibling rows on the same date may still submit their own
+        // request because each has its own punchLogId.
+        const existingPending = await tx.select().from(attendanceExceptions)
+          .where(and(
+            eq(attendanceExceptions.employeeId, userId),
+            eq(attendanceExceptions.exceptionDate, exceptionDate),
+            eq(attendanceExceptions.status, "pending"),
+          ));
+        const duplicate = existingPending.find(ex => {
+          if (resolvedPunchLogId) return ex.punchLogId === resolvedPunchLogId;
+          return ex.punchLogId === null;
         });
+        if (duplicate) {
+          return {
+            error: {
+              status: 409,
+              message: resolvedPunchLogId
+                ? "A correction request for this punch is already pending review."
+                : "A correction request for this date is already pending review.",
+            },
+          } as const;
+        }
+
+        const [created] = await tx.insert(attendanceExceptions).values({
+          employeeId: userId,
+          exceptionDate,
+          exceptionTime: exceptionTime ? new Date(exceptionTime) : null,
+          type,
+          reason,
+          status: "pending",
+          punchLogId: resolvedPunchLogId,
+        }).returning();
+
+        if (latestResolved && latestResolved.reopenStatus === "granted" && !latestResolved.reopenConsumedAt) {
+          const consumedAt = new Date();
+          await tx.update(attendanceExceptions)
+            .set({ reopenConsumedAt: consumedAt })
+            .where(eq(attendanceExceptions.id, latestResolved.id));
+
+          await writeAuditLog({
+            actorUserId: userId,
+            targetType: "attendance_exception",
+            targetId: latestResolved.id,
+            action: "exception.reopen.consumed",
+            oldValue: { reopenConsumedAt: null },
+            newValue: { reopenConsumedAt: consumedAt, supersededByExceptionId: created.id },
+            context: { newExceptionId: created.id },
+            ...auditCtx,
+          }, tx);
+        }
+
+        return { exception: created } as const;
+      });
+
+      if ("error" in result && result.error) {
+        return res.status(result.error.status).json({ message: result.error.message });
       }
 
-      const exception = await storage.createAttendanceException({
-        employeeId: userId,
-        exceptionDate,
-        exceptionTime: exceptionTime ? new Date(exceptionTime) : null,
-        type,
-        reason,
-        status: "pending",
-        punchLogId: resolvedPunchLogId,
-      });
+      const exception = result.exception!;
 
       runWorkflowsForTrigger({
         userId,
@@ -2546,6 +2608,140 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error cancelling attendance exception:", error);
       res.status(500).json({ message: "Failed to cancel attendance exception" });
+    }
+  });
+
+  app.post("/api/attendance/exceptions/:id/reopen-request", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const exceptionId = req.params.id as string;
+      const messageRaw = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+
+      if (!messageRaw) {
+        return res.status(400).json({ message: "Please include a short message explaining why you'd like this reopened." });
+      }
+      if (messageRaw.length > 1000) {
+        return res.status(400).json({ message: "Reopen message must be 1000 characters or fewer." });
+      }
+
+      const existing = await storage.getAttendanceException(exceptionId);
+      if (!existing) {
+        return res.status(404).json({ message: "Correction request not found" });
+      }
+      if (existing.employeeId !== userId) {
+        return res.status(403).json({ message: "You can only request a reopen on your own correction requests" });
+      }
+      if (!["approved", "denied", "cancelled"].includes(existing.status)) {
+        return res.status(400).json({ message: "Only resolved correction requests can be reopened" });
+      }
+      if (existing.reopenStatus === "pending") {
+        return res.status(400).json({ message: "A reopen request is already pending review for this correction." });
+      }
+      if (existing.reopenStatus === "granted" && !existing.reopenConsumedAt) {
+        return res.status(400).json({ message: "A reopen has already been granted — submit a new correction request for this date instead." });
+      }
+      if (existing.reopenStatus === "declined") {
+        return res.status(400).json({ message: "An admin has already declined a reopen for this correction." });
+      }
+
+      const auditCtx = getAuditContext(req);
+      const requestedAt = new Date();
+
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx.update(attendanceExceptions).set({
+          reopenRequestedBy: userId,
+          reopenRequestedAt: requestedAt,
+          reopenMessage: messageRaw,
+          reopenStatus: "pending",
+          reopenDecidedBy: null,
+          reopenDecidedAt: null,
+          reopenDecisionNote: null,
+          reopenConsumedAt: null,
+        }).where(eq(attendanceExceptions.id, exceptionId)).returning();
+
+        await writeAuditLog({
+          actorUserId: userId,
+          targetType: "attendance_exception",
+          targetId: exceptionId,
+          action: "exception.reopen.requested",
+          oldValue: { reopenStatus: existing.reopenStatus ?? null },
+          newValue: { reopenStatus: "pending", reopenMessage: messageRaw },
+          context: { exceptionDate: existing.exceptionDate, originalStatus: existing.status },
+          ...auditCtx,
+        }, tx);
+
+        return row;
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error requesting reopen:", error);
+      res.status(500).json({ message: "Failed to submit reopen request" });
+    }
+  });
+
+  app.post("/api/attendance/exceptions/:id/reopen-decide", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+    try {
+      const reviewer = req.authUser as User;
+      const exceptionId = req.params.id as string;
+      const action = req.body?.action;
+      const decisionNoteRaw = typeof req.body?.decisionNote === "string" ? req.body.decisionNote.trim() : "";
+
+      if (action !== "grant" && action !== "decline") {
+        return res.status(400).json({ message: "action must be 'grant' or 'decline'" });
+      }
+      if (decisionNoteRaw.length > 1000) {
+        return res.status(400).json({ message: "Decision note must be 1000 characters or fewer." });
+      }
+
+      const existing = await storage.getAttendanceException(exceptionId);
+      if (!existing) {
+        return res.status(404).json({ message: "Correction request not found" });
+      }
+      if (existing.reopenStatus !== "pending") {
+        return res.status(400).json({ message: "There is no pending reopen request to decide on this correction." });
+      }
+
+      const teamIds = await getTeamUserIds(reviewer);
+      if (!teamIds.has(existing.employeeId)) {
+        return res.status(403).json({ message: "Not authorized to decide this reopen" });
+      }
+
+      const auditCtx = getAuditContext(req);
+      const decidedAt = new Date();
+      const newStatus = action === "grant" ? "granted" : "declined";
+
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx.update(attendanceExceptions).set({
+          reopenStatus: newStatus,
+          reopenDecidedBy: reviewer.id,
+          reopenDecidedAt: decidedAt,
+          reopenDecisionNote: decisionNoteRaw || null,
+          reopenConsumedAt: null,
+        }).where(eq(attendanceExceptions.id, exceptionId)).returning();
+
+        await writeAuditLog({
+          actorUserId: reviewer.id,
+          targetType: "attendance_exception",
+          targetId: exceptionId,
+          action: action === "grant" ? "exception.reopen.granted" : "exception.reopen.declined",
+          oldValue: { reopenStatus: "pending" },
+          newValue: { reopenStatus: newStatus, reopenDecisionNote: decisionNoteRaw || null },
+          context: {
+            exceptionDate: existing.exceptionDate,
+            originalStatus: existing.status,
+            employeeId: existing.employeeId,
+          },
+          ...auditCtx,
+        }, tx);
+
+        return row;
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error deciding reopen:", error);
+      res.status(500).json({ message: "Failed to decide reopen request" });
     }
   });
 
@@ -2686,6 +2882,30 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching pending exceptions:", error);
       res.status(500).json({ message: "Failed to fetch pending exceptions" });
+    }
+  });
+
+  app.get("/api/attendance/exceptions/reopen-pending", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+    try {
+      const user = req.authUser as User;
+      const teamIds = await getTeamUserIds(user);
+      const reopenPending = await storage.getReopenPendingAttendanceExceptions();
+      const scoped = reopenPending.filter(e => teamIds.has(e.employeeId));
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+      const enriched = scoped.map(e => {
+        const emp = userMap.get(e.employeeId);
+        const reviewer = e.reviewedBy ? userMap.get(e.reviewedBy) : null;
+        return {
+          ...e,
+          employeeName: emp ? `${emp.firstName || ""} ${emp.lastName || ""}`.trim() : "Unknown",
+          reviewerName: reviewer ? `${reviewer.firstName || ""} ${reviewer.lastName || ""}`.trim() : "System",
+        };
+      });
+      res.json(enriched);
+    } catch (error) {
+      console.error("Error fetching reopen-pending exceptions:", error);
+      res.status(500).json({ message: "Failed to fetch reopen requests" });
     }
   });
 

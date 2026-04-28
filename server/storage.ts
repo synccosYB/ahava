@@ -246,6 +246,8 @@ export interface IStorage {
   getAttendanceExceptionsByEmployee(employeeId: string): Promise<AttendanceException[]>;
   getPendingAttendanceExceptions(): Promise<AttendanceException[]>;
   getAllAttendanceExceptions(): Promise<AttendanceException[]>;
+  getReopenPendingAttendanceExceptions(): Promise<AttendanceException[]>;
+  getLatestResolvedAttendanceExceptionForDate(employeeId: string, date: string): Promise<AttendanceException | undefined>;
   createAttendanceException(exception: InsertAttendanceException): Promise<AttendanceException>;
   updateAttendanceException(id: string, data: Partial<AttendanceException>): Promise<AttendanceException | undefined>;
   getCorrectionRequestCounts(
@@ -984,6 +986,27 @@ export class DatabaseStorage implements IStorage {
 
   async getAllAttendanceExceptions(): Promise<AttendanceException[]> {
     return db.select().from(attendanceExceptions).orderBy(desc(attendanceExceptions.createdAt));
+  }
+
+  async getReopenPendingAttendanceExceptions(): Promise<AttendanceException[]> {
+    return db.select().from(attendanceExceptions)
+      .where(eq(attendanceExceptions.reopenStatus, "pending"))
+      .orderBy(desc(attendanceExceptions.reopenRequestedAt));
+  }
+
+  async getLatestResolvedAttendanceExceptionForDate(
+    employeeId: string,
+    date: string,
+  ): Promise<AttendanceException | undefined> {
+    const [row] = await db.select().from(attendanceExceptions)
+      .where(and(
+        eq(attendanceExceptions.employeeId, employeeId),
+        eq(attendanceExceptions.exceptionDate, date),
+        inArray(attendanceExceptions.status, ["approved", "denied", "cancelled"]),
+      ))
+      .orderBy(desc(attendanceExceptions.createdAt))
+      .limit(1);
+    return row;
   }
 
   async createAttendanceException(exception: InsertAttendanceException): Promise<AttendanceException> {

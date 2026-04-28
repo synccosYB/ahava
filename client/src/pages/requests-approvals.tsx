@@ -492,8 +492,13 @@ function AllPendingTab() {
     queryKey: ["/api/attendance/exceptions/pending"],
   });
 
-  const isLoading = ptoLoading || excLoading;
-  const totalPending = (ptoRequests?.length || 0) + (exceptions?.length || 0);
+  const { data: reopenPending, isLoading: reopenLoading } = useQuery<ReopenPendingException[]>({
+    queryKey: ["/api/attendance/exceptions/reopen-pending"],
+  });
+
+  const isLoading = ptoLoading || excLoading || reopenLoading;
+  const totalPending =
+    (ptoRequests?.length || 0) + (exceptions?.length || 0) + (reopenPending?.length || 0);
 
   return (
     <div className="space-y-4 mt-4">
@@ -518,6 +523,9 @@ function AllPendingTab() {
           ))}
           {(exceptions || []).map((ex) => (
             <ExceptionCard key={`exc-${ex.id}`} exception={ex} />
+          ))}
+          {(reopenPending || []).map((ex) => (
+            <ReopenRequestCard key={`reopen-${ex.id}`} exception={ex} />
           ))}
         </div>
       )}
@@ -558,9 +566,18 @@ type DecidedException = AttendanceException & {
   reviewerName: string;
 };
 
+type ReopenPendingException = AttendanceException & {
+  employeeName: string;
+  reviewerName: string;
+};
+
 function ExceptionsTab() {
   const { data: exceptions, isLoading } = useQuery<EnrichedException[]>({
     queryKey: ["/api/attendance/exceptions/pending"],
+  });
+
+  const { data: reopenPending, isLoading: reopenLoading } = useQuery<ReopenPendingException[]>({
+    queryKey: ["/api/attendance/exceptions/reopen-pending"],
   });
 
   const { data: recentDecided, isLoading: decidedLoading } = useQuery<DecidedException[]>({
@@ -569,6 +586,19 @@ function ExceptionsTab() {
 
   return (
     <div className="space-y-6 mt-4">
+      {reopenLoading ? null : reopenPending && reopenPending.length > 0 ? (
+        <div data-testid="section-reopen-requests">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground mb-3">
+            Reopen Requests
+          </h3>
+          <div className="space-y-3">
+            {reopenPending.map((ex) => (
+              <ReopenRequestCard key={`reopen-${ex.id}`} exception={ex} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full" />)}
@@ -986,6 +1016,123 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
               data-testid={`button-deny-exc-${exception.id}`}
             >
               <X className="h-4 w-4 mr-1" /> Deny
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ReopenRequestCard({ exception }: { exception: ReopenPendingException }) {
+  const { toast } = useToast();
+  const [decisionNote, setDecisionNote] = useState("");
+
+  const initials = (exception.employeeName || "E")
+    .split(" ")
+    .map((n: string) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
+  const verdictBadge = (() => {
+    if (exception.status === "approved") {
+      return <Badge className="bg-green-600 hover:bg-green-600">Originally approved</Badge>;
+    }
+    if (exception.status === "denied") {
+      return <Badge variant="destructive">Originally denied</Badge>;
+    }
+    return <Badge variant="outline" className="text-muted-foreground">Originally cancelled</Badge>;
+  })();
+
+  const requestedAt = exception.reopenRequestedAt
+    ? new Date(exception.reopenRequestedAt).toLocaleString()
+    : "";
+
+  const decideMutation = useMutation({
+    mutationFn: async (action: "grant" | "decline") => {
+      await apiRequest("POST", `/api/attendance/exceptions/${exception.id}/reopen-decide`, {
+        action,
+        decisionNote,
+      });
+    },
+    onSuccess: (_data, action) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/reopen-pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/recent-decided"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      toast({
+        title: action === "grant" ? "Reopen granted" : "Reopen declined",
+        description:
+          action === "grant"
+            ? `${exception.employeeName} can now submit a new correction request for ${exception.exceptionDate}.`
+            : `${exception.employeeName} has been notified that the correction will stay locked.`,
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Card data-testid={`card-reopen-request-${exception.id}`}>
+      <CardContent className="p-5">
+        <div className="flex gap-4 items-start flex-wrap">
+          <div className="h-10 w-10 rounded-full bg-primary/10 text-primary font-bold text-sm flex items-center justify-center shrink-0">
+            {initials}
+          </div>
+          <div className="flex-1 min-w-[200px] space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge variant="outline">Reopen request</Badge>
+              <Badge variant="outline" className="text-xs">
+                {exception.type.replace(/_/g, " ")}
+              </Badge>
+              {verdictBadge}
+            </div>
+            <p className="font-semibold" data-testid={`text-reopen-employee-${exception.id}`}>
+              {exception.employeeName || "Employee"}
+            </p>
+            <p className="text-xs text-muted-foreground" data-testid={`text-reopen-date-${exception.id}`}>
+              For {exception.exceptionDate}
+              {requestedAt ? ` — requested ${requestedAt}` : ""}
+            </p>
+            {exception.reviewNotes && (
+              <p className="text-xs text-muted-foreground" data-testid={`text-reopen-prior-review-${exception.id}`}>
+                Original decision note: "{exception.reviewNotes}"
+              </p>
+            )}
+            {exception.reopenMessage && (
+              <div
+                className="rounded-md border bg-muted/40 p-3 text-sm"
+                data-testid={`text-reopen-message-${exception.id}`}
+              >
+                "{exception.reopenMessage}"
+              </div>
+            )}
+            <Textarea
+              placeholder="Decision note (optional)..."
+              value={decisionNote}
+              onChange={(e) => setDecisionNote(e.target.value)}
+              className="mt-2"
+              data-testid={`input-reopen-decision-note-${exception.id}`}
+            />
+          </div>
+          <div className="flex md:flex-col gap-2 md:min-w-[120px]">
+            <Button
+              onClick={() => decideMutation.mutate("grant")}
+              disabled={decideMutation.isPending}
+              className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+              data-testid={`button-grant-reopen-${exception.id}`}
+            >
+              <Check className="h-4 w-4 mr-1" /> Grant
+            </Button>
+            <Button
+              onClick={() => decideMutation.mutate("decline")}
+              disabled={decideMutation.isPending}
+              variant="destructive"
+              className="flex-1"
+              data-testid={`button-decline-reopen-${exception.id}`}
+            >
+              <X className="h-4 w-4 mr-1" /> Decline
             </Button>
           </div>
         </div>

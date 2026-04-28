@@ -313,6 +313,14 @@ export const attendanceExceptions = pgTable("attendance_exceptions", {
   reviewedAt: timestamp("reviewed_at"),
   reviewNotes: text("review_notes"),
   punchLogId: varchar("punch_log_id").references(() => punchLogs.id),
+  reopenRequestedBy: varchar("reopen_requested_by").references(() => users.id),
+  reopenRequestedAt: timestamp("reopen_requested_at"),
+  reopenMessage: text("reopen_message"),
+  reopenStatus: varchar("reopen_status", { length: 20 }),
+  reopenDecidedBy: varchar("reopen_decided_by").references(() => users.id),
+  reopenDecidedAt: timestamp("reopen_decided_at"),
+  reopenDecisionNote: text("reopen_decision_note"),
+  reopenConsumedAt: timestamp("reopen_consumed_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -322,6 +330,15 @@ export const insertAttendanceExceptionSchema = createInsertSchema(attendanceExce
   reviewedBy: true,
   reviewedAt: true,
   reviewNotes: true,
+  punchLogId: true,
+  reopenRequestedBy: true,
+  reopenRequestedAt: true,
+  reopenMessage: true,
+  reopenStatus: true,
+  reopenDecidedBy: true,
+  reopenDecidedAt: true,
+  reopenDecisionNote: true,
+  reopenConsumedAt: true,
 });
 export type InsertAttendanceException = z.infer<typeof insertAttendanceExceptionSchema>;
 export type AttendanceException = typeof attendanceExceptions.$inferSelect;
