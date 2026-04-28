@@ -1,0 +1,312 @@
+This revised version is substantially stronger and should be treated as the finalized enterprise audit directive.
+Final Approval: READY FOR DEVELOPER EXECUTION
+Audit Mode
+Read-only operational audit
+
+
+No fixes
+
+
+No code changes
+
+
+No migrations
+
+
+No implementation work
+
+
+
+Why This Version Is Better
+Major improvements:
+
+
+Explicit policy hierarchy precedence added
+
+
+Payroll totals now specifically include OT + bonuses
+
+
+Mandatory audit trail validation clarified
+
+
+Dead routes/pages explicitly required
+
+
+Cross-system naming drift better defined
+
+
+Remediation order locked
+
+
+“No platform-wide regression” objective clarified
+
+
+Stronger kiosk operational requirements
+
+
+Explicit confirmation that source files remain untouched
+
+
+
+Recommended Developer Instruction
+Task #80 — Core Stabilization Audit
+Execution Classification:
+P0 Enterprise Stability Audit
+
+Primary Goal
+Produce one authoritative stabilization report:
+.local/audits/core-stabilization-audit.md
+
+Required Deliverable Structure
+Executive Summary
+
+
+Severity counts
+
+
+Top 5 risks
+
+
+Remediation sequence
+
+
+
+Section 1 — Backend / System Reliability
+Audit:
+
+
+Clock systems
+
+
+Attendance
+
+
+Exceptions
+
+
+PTO
+
+
+Payroll
+
+
+Policy engine
+
+
+WebSockets
+
+
+Jobs
+
+
+RBAC
+
+
+Audit trails
+
+
+Validation
+
+
+Date/time correctness
+
+
+Idempotency
+
+
+
+Section 2 — Frontend / Admin UI Consistency
+Audit:
+
+
+All workforce operational pages
+
+
+Workflow dead ends
+
+
+UI consistency
+
+
+Validation
+
+
+Layout quality
+
+
+Broken interactions
+
+
+Missing states
+
+
+
+Mandatory Review Standards
+Developer must verify:
+Backend:
+
+
+Request flow
+
+
+Validation
+
+
+Storage
+
+
+Side effects
+
+
+Policy precedence
+
+
+Payroll math
+
+
+PTO accruals
+
+
+Punch integrity
+
+
+Exception reconciliation
+
+
+Scheduled jobs
+
+
+WebSocket sync
+
+
+Permissions
+
+
+Audit logs
+
+
+Frontend:
+
+
+Layout consistency
+
+
+Route correctness
+
+
+Error states
+
+
+Empty states
+
+
+Admin usability
+
+
+Design system integrity
+
+
+
+Required Cross-System Findings
+
+
+Naming mismatches
+
+
+Dead routes
+
+
+Dead pages
+
+
+Contract drift
+
+
+Duplicate logic
+
+
+Partial implementations
+
+
+
+Locked Remediation Priority
+
+
+Payroll correctness
+
+
+Punch integrity
+
+
+PTO balances
+
+
+Policy enforcement
+
+
+Approval systems
+
+
+Kiosk reliability
+
+
+WebSocket consistency
+
+
+Admin workflow polish
+
+
+
+Strict Out-of-Scope
+Developer must NOT:
+
+
+Fix anything
+
+
+Refactor
+
+
+Redesign
+
+
+Write tests
+
+
+Run migrations
+
+
+Add features
+
+
+
+Management Guidance
+Once complete:
+Do NOT allow bundled fixes.
+Each finding becomes:
+One task → One approval → One deployment
+This prevents:
+
+
+Payroll regressions
+
+
+Attendance corruption
+
+
+PTO liabilities
+
+
+Hidden workflow failures
+
+
+
+Operational Strategy
+Your system is now large enough that:
+Audit → Stabilize → Harden → Expand
+is the correct enterprise path.
+Anything else risks scaling broken infrastructure.
+
+Verdict:
+Approved. Ship this task to the developer exactly as written. 

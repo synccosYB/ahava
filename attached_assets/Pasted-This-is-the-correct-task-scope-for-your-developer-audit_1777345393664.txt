@@ -1,0 +1,374 @@
+This is the correct task scope for your developer / auditor. It is appropriately structured as a true enterprise stabilization audit before expansion.
+Recommended execution directive:
+Audit only — produce written report listing issues, severities, and recommended fixes. No code changes.
+Screenshot directive:
+Proceed without screenshots — auditor should rely on codebase + live app for UI inconsistency detection.
+
+Final Developer Instruction
+Task #80 — Core Stabilization Audit (Execution Approved)
+Objective
+Conduct a full read-only operational audit of all mission-critical workforce management systems before further feature expansion.
+Deliverable
+Create:
+.local/audits/core-stabilization-audit.md
+Strict Rules
+
+
+No source code changes
+
+
+No refactors
+
+
+No bug fixes
+
+
+No migrations
+
+
+No UI redesign implementation
+
+
+No test writing
+
+
+No speculative feature additions
+
+
+
+Audit Scope
+Backend / System Reliability
+Audit all:
+
+
+Clock-in / Clock-out
+
+
+Kiosk punch workflows
+
+
+Punch logs / attendance storage
+
+
+Attendance exceptions
+
+
+Approval queues
+
+
+PTO requests
+
+
+PTO approvals
+
+
+PTO accrual calculations
+
+
+PTO balances
+
+
+Payroll prep
+
+
+Payroll exports
+
+
+Policy engine
+
+
+Policy hierarchy resolution
+
+
+WebSocket attendance broadcasting
+
+
+Background jobs / schedulers
+
+
+Audit logs
+
+
+RBAC / permissions
+
+
+Validation layers
+
+
+Timezone/date calculations
+
+
+Duplicate logic
+
+
+Route coverage gaps
+
+
+
+Frontend / Admin UI Consistency
+Audit all pages:
+
+
+Dashboard
+
+
+Admin Dashboard
+
+
+Manager Dashboard
+
+
+Kiosk
+
+
+Kiosk Management
+
+
+My Attendance
+
+
+Attendance Exceptions
+
+
+Approval Queue
+
+
+Requests & Approvals
+
+
+Time Off
+
+
+PTO Leave
+
+
+Payroll Prep
+
+
+Rules Controls
+
+
+Alerts
+
+
+Audit Log
+
+
+Employees
+
+
+Review for:
+
+
+Workflow dead ends
+
+
+Broken actions
+
+
+Missing loading states
+
+
+Missing validation feedback
+
+
+Empty states
+
+
+Design inconsistency
+
+
+Button misuse
+
+
+Layout inconsistency
+
+
+Confusing admin operations
+
+
+Route/API mismatches
+
+
+
+Required Report Structure
+Executive Summary
+Include:
+
+
+Total findings by severity:
+
+
+Critical
+
+
+High
+
+
+Medium
+
+
+Low
+
+
+
+
+Top 5 operational risks
+
+
+Recommended remediation order
+
+
+
+Section 1 — Backend / System Reliability
+Each finding must include:
+
+
+Title
+
+
+Severity
+
+
+Area
+
+
+Affected files/routes
+
+
+Symptom
+
+
+Risk
+
+
+Recommended fix
+
+
+Suggested follow-up task title
+
+
+
+Section 2 — Frontend / Admin UI Consistency
+Same structure.
+
+Mandatory Investigation Standards
+Validate:
+
+
+Zod schemas
+
+
+Auth middleware
+
+
+RBAC middleware
+
+
+Policy resolution precedence
+
+
+Exception state reconciliation
+
+
+PTO math
+
+
+Payroll totals
+
+
+WebSocket mutation events
+
+
+Scheduled jobs
+
+
+Failure handling
+
+
+Idempotency
+
+
+Audit trail completeness
+
+
+
+Cross-System Checks
+Identify:
+
+
+Drift between frontend/backend naming
+
+
+Duplicate business logic
+
+
+Dead routes
+
+
+Dead pages
+
+
+Inconsistent data contracts
+
+
+Misleading partial implementations
+
+
+
+Priority Order for Auditor
+Fix order recommendation:
+
+
+Payroll correctness
+
+
+Punch integrity
+
+
+PTO balance accuracy
+
+
+Policy enforcement
+
+
+Approval systems
+
+
+Kiosk reliability
+
+
+WebSocket consistency
+
+
+Admin UI workflows
+
+
+
+Relevant Files
+Use the provided file list as mandatory minimum coverage.
+
+Expected Outcome
+This audit becomes the single source of truth for phased stabilization, allowing each future repair to be approved individually without risking platform-wide regression.
+
+Operational Note
+This is the right move.
+Your system has reached the complexity threshold where uncontrolled expansion will multiply hidden liabilities. A full stabilization audit now will likely prevent:
+
+
+Payroll disputes
+
+
+PTO liability miscalculations
+
+
+Attendance legal exposure
+
+
+Broken workforce workflows
+
+
+Admin operational paralysis
+
+
+Proceed exactly with this scope. 
