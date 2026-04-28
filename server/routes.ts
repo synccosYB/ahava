@@ -3384,6 +3384,52 @@ export async function registerRoutes(
     res.json(activities);
   });
 
+  app.get(
+    "/api/reports/filter-options",
+    requireAuth,
+    requireRole("manager", "admin"),
+    requirePermission("reports.view"),
+    async (req, res) => {
+      const user = (req as any).authUser as User;
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const teamIds = await getTeamUserIds(user);
+      const scopedUsers = allUsers.filter(u => teamIds.has(u.id));
+
+      const employees = scopedUsers
+        .map(u => ({
+          id: u.id,
+          name: `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || "Unknown",
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      const allDepartments = await storage.getAllDepartments();
+      const allLocations = await storage.getAllLocations();
+
+      let departments = allDepartments;
+      let locations = allLocations;
+
+      if (user.role !== "admin") {
+        const deptIds = new Set(scopedUsers.map(u => u.departmentId).filter(Boolean) as string[]);
+        const locIds = new Set(scopedUsers.map(u => u.locationId).filter(Boolean) as string[]);
+        departments = allDepartments.filter(d => deptIds.has(d.id));
+        locations = allLocations.filter(l => locIds.has(l.id));
+      }
+
+      res.json({
+        employees,
+        departments: departments.map(d => ({ id: d.id, name: d.name }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+        locations: locations.map(l => ({ id: l.id, name: l.name }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      });
+    },
+  );
+
+  const idArrayField = z.preprocess(
+    (v) => (typeof v === "string" ? [v] : v),
+    z.array(z.string().min(1)).optional(),
+  );
+
   const reportSchema = z.object({
     reportType: z.enum(["employee", "team", "company"]),
     startDate: z.string(),
@@ -3391,6 +3437,9 @@ export async function registerRoutes(
     department: z.string().optional(),
     employeeId: z.string().optional(),
     status: z.string().optional(),
+    departmentIds: idArrayField,
+    employeeIds: idArrayField,
+    locationIds: idArrayField,
   });
 
   app.post("/api/reports/generate", requireAuth, requireRole("manager", "admin"), requirePermission("reports.view"), async (req, res) => {
@@ -3409,7 +3458,7 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid report parameters", errors: parsed.error.flatten() });
     }
 
-    const { reportType, startDate, endDate, department, employeeId, status } = parsed.data;
+    const { reportType, startDate, endDate, department, employeeId, status, departmentIds, employeeIds, locationIds } = parsed.data;
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const depts = await storage.getAllDepartments();
     const deptMap = new Map(depts.map(d => [d.id, d.name]));
@@ -3432,6 +3481,19 @@ export async function registerRoutes(
     }
     if (employeeId && reportType !== "employee") {
       filteredUsers = filteredUsers.filter(u => u.id === employeeId);
+    }
+
+    if (departmentIds && departmentIds.length > 0) {
+      const set = new Set(departmentIds);
+      filteredUsers = filteredUsers.filter(u => u.departmentId && set.has(u.departmentId));
+    }
+    if (employeeIds && employeeIds.length > 0) {
+      const set = new Set(employeeIds);
+      filteredUsers = filteredUsers.filter(u => set.has(u.id));
+    }
+    if (locationIds && locationIds.length > 0) {
+      const set = new Set(locationIds);
+      filteredUsers = filteredUsers.filter(u => u.locationId && set.has(u.locationId));
     }
 
     const userIds = new Set(filteredUsers.map(u => u.id));

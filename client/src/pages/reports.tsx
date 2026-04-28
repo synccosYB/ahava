@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { formatHoursMinutes } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
@@ -12,12 +12,13 @@ import { PageHeader } from "@/components/page-header";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { MultiSelect } from "@/components/ui/multi-select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import type { Department, AuditLog } from "@shared/schema";
+import type { AuditLog } from "@shared/schema";
 
 type ReportRow = {
   employeeId: string;
@@ -27,6 +28,12 @@ type ReportRow = {
   daysWorked: number;
   daysOff: number;
   overtime: number;
+};
+
+type FilterOptions = {
+  employees: { id: string; name: string }[];
+  departments: { id: string; name: string }[];
+  locations: { id: string; name: string }[];
 };
 
 const reportTypes = [
@@ -57,7 +64,7 @@ export default function ReportsPage() {
 
         <TabsContent value="attendance"><StandardReport reportType="company" title="Attendance Report" /></TabsContent>
         <TabsContent value="time"><StandardReport reportType="employee" title="Time Report" /></TabsContent>
-        <TabsContent value="pto"><StandardReport reportType="team" title="PTO Report" /></TabsContent>
+        <TabsContent value="pto"><StandardReport reportType="team" title="PTO Report" showStatusFilter /></TabsContent>
         <TabsContent value="missing-punches"><StandardReport reportType="company" title="Missing Punches Report" /></TabsContent>
         <TabsContent value="exceptions"><StandardReport reportType="company" title="Exceptions Report" /></TabsContent>
         <TabsContent value="audit"><AuditReport /></TabsContent>
@@ -66,7 +73,15 @@ export default function ReportsPage() {
   );
 }
 
-function StandardReport({ reportType, title }: { reportType: string; title: string }) {
+function StandardReport({
+  reportType,
+  title,
+  showStatusFilter,
+}: {
+  reportType: string;
+  title: string;
+  showStatusFilter?: boolean;
+}) {
   const { toast } = useToast();
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
@@ -74,12 +89,28 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
     return d.toISOString().split("T")[0];
   });
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
-  const [department, setDepartment] = useState("all");
+  const [departmentIds, setDepartmentIds] = useState<string[]>([]);
+  const [employeeIds, setEmployeeIds] = useState<string[]>([]);
+  const [locationIds, setLocationIds] = useState<string[]>([]);
+  const [status, setStatus] = useState("all");
   const [reportData, setReportData] = useState<ReportRow[] | null>(null);
 
-  const { data: departments } = useQuery<Department[]>({
-    queryKey: ["/api/departments"],
+  const { data: filterOptions } = useQuery<FilterOptions>({
+    queryKey: ["/api/reports/filter-options"],
   });
+
+  const departmentOptions = useMemo(
+    () => (filterOptions?.departments ?? []).map((d) => ({ label: d.name, value: d.id })),
+    [filterOptions],
+  );
+  const employeeOptions = useMemo(
+    () => (filterOptions?.employees ?? []).map((e) => ({ label: e.name, value: e.id })),
+    [filterOptions],
+  );
+  const locationOptions = useMemo(
+    () => (filterOptions?.locations ?? []).map((l) => ({ label: l.name, value: l.id })),
+    [filterOptions],
+  );
 
   const generateMutation = useMutation({
     mutationFn: async () => {
@@ -90,7 +121,10 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
         reportType,
         startDate,
         endDate,
-        department: department !== "all" ? department : undefined,
+        departmentIds: departmentIds.length > 0 ? departmentIds : undefined,
+        employeeIds: employeeIds.length > 0 ? employeeIds : undefined,
+        locationIds: locationIds.length > 0 ? locationIds : undefined,
+        status: showStatusFilter && status !== "all" ? status : undefined,
       });
       return res.json();
     },
@@ -121,7 +155,7 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
     <div className="space-y-4 mt-4">
       <Card data-testid="card-report-filters">
         <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label>Start Date</Label>
               <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} data-testid="input-start-date" />
@@ -132,23 +166,62 @@ function StandardReport({ reportType, title }: { reportType: string; title: stri
             </div>
             <div className="space-y-2">
               <Label>Department</Label>
-              <Select value={department} onValueChange={setDepartment}>
-                <SelectTrigger data-testid="select-trigger-department">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {departments?.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <MultiSelect
+                options={departmentOptions}
+                selected={departmentIds}
+                onChange={setDepartmentIds}
+                placeholder="All departments"
+                allLabel="All departments"
+                searchPlaceholder="Search departments..."
+                data-testid="multiselect-department"
+              />
             </div>
-            <div className="flex items-end">
+            <div className="space-y-2">
+              <Label>Employee</Label>
+              <MultiSelect
+                options={employeeOptions}
+                selected={employeeIds}
+                onChange={setEmployeeIds}
+                placeholder="All employees"
+                allLabel="All employees"
+                searchPlaceholder="Search employees..."
+                data-testid="multiselect-employee"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Location</Label>
+              <MultiSelect
+                options={locationOptions}
+                selected={locationIds}
+                onChange={setLocationIds}
+                placeholder="All locations"
+                allLabel="All locations"
+                searchPlaceholder="Search locations..."
+                data-testid="multiselect-location"
+              />
+            </div>
+            {showStatusFilter && (
+              <div className="space-y-2">
+                <Label>Status</Label>
+                <Select value={status} onValueChange={setStatus}>
+                  <SelectTrigger data-testid="select-trigger-status">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="approved">Approved</SelectItem>
+                    <SelectItem value="partially_approved">Partially Approved</SelectItem>
+                    <SelectItem value="denied">Denied</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <div className="flex items-end sm:col-span-2 lg:col-span-3">
               <Button
                 onClick={() => generateMutation.mutate()}
                 disabled={generateMutation.isPending}
-                className="w-full"
+                className="w-full sm:w-auto"
                 data-testid="button-generate-report"
               >
                 {generateMutation.isPending ? (
