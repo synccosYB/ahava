@@ -2518,14 +2518,20 @@ export async function registerRoutes(
         const counts = await storage.getCorrectionRequestCountsBulk(employeeIds, {
           payPeriodTypeByEmployee,
         });
+        const allDepartments = await storage.getAllDepartments();
+        const deptMap = new Map(allDepartments.map(d => [d.id, d]));
+        const allLocations = await storage.getAllLocations();
+        const locMap = new Map(allLocations.map(l => [l.id, l]));
         const enriched = all.map(e => {
           const summary = counts.get(e.employeeId) || emptyCorrectionCountSummary();
+          const u = userMap.get(e.employeeId);
+          const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;
+          const loc = u?.locationId ? locMap.get(u.locationId) : undefined;
           return {
             ...e,
-            employeeName: (() => {
-              const u = userMap.get(e.employeeId);
-              return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
-            })(),
+            employeeName: u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown",
+            departmentName: dept?.name || null,
+            locationName: loc?.name || null,
             correctionCounts: summary,
             correctionCount90d: summary,
           };

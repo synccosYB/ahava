@@ -45,6 +45,8 @@ type PtoBalanceEntry = {
 type EnrichedException = AttendanceException & {
   employeeName?: string;
   reviewerName?: string;
+  departmentName?: string | null;
+  locationName?: string | null;
 };
 
 type AlertsExceptionsFilters = {
@@ -1034,6 +1036,14 @@ function PtoAlertExceptionRow({
             <p className="font-semibold" data-testid={`text-exception-employee-${ex.id}`}>
               {ex.employeeName || "Employee"}
             </p>
+            {(ex.departmentName || ex.locationName) && (
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid={`text-exception-dept-loc-${ex.id}`}
+              >
+                {[ex.departmentName, ex.locationName].filter(Boolean).join(" · ")}
+              </p>
+            )}
             <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
               Date: {ex.exceptionDate}
               {ex.exceptionTime && ` at ${formatTime12(ex.exceptionTime)}`}
