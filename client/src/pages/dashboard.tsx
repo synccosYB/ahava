@@ -231,28 +231,37 @@ export default function Dashboard() {
                   return (
                   <TableRow key={record.id} data-testid={`row-activity-${record.id}`}>
                     <TableCell className="font-medium text-sm">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span>{record.date}</span>
                         {overnightInfo && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span
-                                tabIndex={0}
-                                data-testid={`badge-overnight-${record.id}`}
-                                className="inline-flex"
-                              >
-                                <Badge
-                                  variant="outline"
-                                  className="border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+                          <>
+                            <span className="text-muted-foreground" aria-hidden="true">→</span>
+                            <span data-testid={`text-shift-end-date-${record.id}`}>
+                              {overnightInfo.endDate}
+                            </span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  tabIndex={0}
+                                  data-testid={`badge-overnight-${record.id}`}
+                                  className="inline-flex"
                                 >
-                                  Overnight
-                                </Badge>
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              Ended {overnightInfo.endDate} at {overnightInfo.endTime}
-                            </TooltipContent>
-                          </Tooltip>
+                                  <Badge
+                                    variant="outline"
+                                    className="border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+                                  >
+                                    +{overnightInfo.daysSpan}d
+                                  </Badge>
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {overnightInfo.daysSpan === 1
+                                  ? "Overnight shift"
+                                  : `Spanned ${overnightInfo.daysSpan} days`}
+                                {" "}• Ended {overnightInfo.endDate} at {overnightInfo.endTime}
+                              </TooltipContent>
+                            </Tooltip>
+                          </>
                         )}
                       </div>
                     </TableCell>
@@ -260,9 +269,21 @@ export default function Dashboard() {
                       {record.clockIn
                         ? new Date(record.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                         : "—"}
-                      {record.clockOut
-                        ? ` – ${new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-                        : " – Present"}
+                      {record.clockOut ? (
+                        <>
+                          {` – ${new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                          {overnightInfo && (
+                            <span
+                              className="ml-1 text-xs text-muted-foreground"
+                              data-testid={`text-shift-end-time-date-${record.id}`}
+                            >
+                              ({overnightInfo.endDateLabel})
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        " – Present"
+                      )}
                     </TableCell>
                     <TableCell className="font-semibold text-sm tabular-nums">
                       {record.totalHours != null ? formatHoursMinutes(record.totalHours) : "In progress"}

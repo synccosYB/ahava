@@ -426,28 +426,37 @@ export default function MyAttendance() {
                   return (
                     <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
                       <TableCell className="text-sm font-medium">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span>{record.date}</span>
                           {overnightInfo && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span
-                                  tabIndex={0}
-                                  data-testid={`badge-overnight-${record.id}`}
-                                  className="inline-flex"
-                                >
-                                  <Badge
-                                    variant="outline"
-                                    className="border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+                            <>
+                              <span className="text-muted-foreground" aria-hidden="true">→</span>
+                              <span data-testid={`text-shift-end-date-${record.id}`}>
+                                {overnightInfo.endDate}
+                              </span>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span
+                                    tabIndex={0}
+                                    data-testid={`badge-overnight-${record.id}`}
+                                    className="inline-flex"
                                   >
-                                    Overnight
-                                  </Badge>
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                Ended {overnightInfo.endDate} at {overnightInfo.endTime}
-                              </TooltipContent>
-                            </Tooltip>
+                                    <Badge
+                                      variant="outline"
+                                      className="border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+                                    >
+                                      +{overnightInfo.daysSpan}d
+                                    </Badge>
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {overnightInfo.daysSpan === 1
+                                    ? "Overnight shift"
+                                    : `Spanned ${overnightInfo.daysSpan} days`}
+                                  {" "}• Ended {overnightInfo.endDate} at {overnightInfo.endTime}
+                                </TooltipContent>
+                              </Tooltip>
+                            </>
                           )}
                         </div>
                       </TableCell>
@@ -458,7 +467,19 @@ export default function MyAttendance() {
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">
                         {record.clockOut
-                          ? new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                          ? (
+                            <span className="inline-flex items-baseline gap-1">
+                              <span>{new Date(record.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              {overnightInfo && (
+                                <span
+                                  className="text-xs text-muted-foreground"
+                                  data-testid={`text-shift-end-time-date-${record.id}`}
+                                >
+                                  ({overnightInfo.endDateLabel})
+                                </span>
+                              )}
+                            </span>
+                          )
                           : (
                             <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400" data-testid={`hint-missing-clock-out-${record.id}`}>
                               <AlertCircle className="h-3 w-3" />

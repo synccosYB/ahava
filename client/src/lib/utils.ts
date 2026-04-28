@@ -41,13 +41,14 @@ export function liveElapsedSeconds(
  * Determine whether a shift's clock-out timestamp falls on a calendar day
  * later than the shift's work date (in the viewer's local timezone). Returns
  * `null` for in-progress shifts, missing input, or same-day shifts. When the
- * shift crosses midnight, returns the local end date (YYYY-MM-DD) and a
- * formatted end time suitable for display in a tooltip.
+ * shift crosses midnight, returns the local end date (YYYY-MM-DD), a
+ * formatted end time, a compact human end-date label (e.g. "Apr 28"), and
+ * the number of full calendar days between the work date and the end date.
  */
 export function getOvernightShiftInfo(
   workDate: string | null | undefined,
   clockOut: string | Date | null | undefined,
-): { endDate: string; endTime: string } | null {
+): { endDate: string; endTime: string; endDateLabel: string; daysSpan: number } | null {
   if (!workDate || !clockOut) return null;
   const out = clockOut instanceof Date ? clockOut : new Date(clockOut);
   if (isNaN(out.getTime())) return null;
@@ -57,7 +58,19 @@ export function getOvernightShiftInfo(
   const endDate = `${yyyy}-${mm}-${dd}`;
   if (endDate <= workDate) return null;
   const endTime = out.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return { endDate, endTime };
+  const [wy, wmo, wda] = workDate.split("-").map(Number);
+  let daysSpan = 1;
+  let endDateLabel = endDate;
+  if (Number.isFinite(wy) && Number.isFinite(wmo) && Number.isFinite(wda)) {
+    const startLocal = new Date(wy, wmo - 1, wda);
+    const endLocal = new Date(yyyy, out.getMonth(), out.getDate());
+    daysSpan = Math.max(
+      1,
+      Math.round((endLocal.getTime() - startLocal.getTime()) / 86_400_000),
+    );
+    endDateLabel = endLocal.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  return { endDate, endTime, endDateLabel, daysSpan };
 }
 
 /**
