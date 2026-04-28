@@ -95,7 +95,19 @@ export default function RoleManagementPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/roles"] });
       toast({ title: "Role deleted" });
     },
-    onError: () => toast({ title: "Cannot delete system roles", variant: "destructive" }),
+    onError: (e: unknown) => {
+      const raw = e instanceof Error ? e.message : "Failed to delete role";
+      let description = "Failed to delete role";
+      try {
+        const body = JSON.parse(raw.split(":").slice(1).join(":") || "{}");
+        if (typeof body?.message === "string" && body.message.trim()) {
+          description = body.message;
+        }
+      } catch {
+        // Non-JSON body — fall back to generic message.
+      }
+      toast({ title: "Failed to delete role", description, variant: "destructive" });
+    },
   });
 
   function openCreate() {
