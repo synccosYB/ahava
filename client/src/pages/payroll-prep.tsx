@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes, formatCurrency } from "@/lib/utils";
+import { formatHoursMinutes, formatCurrency, formatDate, formatDateRange } from "@/lib/utils";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -240,7 +240,7 @@ export default function PayrollPrepPage() {
                 {batches.map((batch) => (
                   <TableRow key={batch.id} data-testid={`row-batch-${batch.id}`}>
                     <TableCell className="font-medium" data-testid={`text-batch-period-${batch.id}`}>
-                      {batch.startDate} — {batch.endDate}
+                      {formatDateRange(batch.startDate, batch.endDate)}
                     </TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-batch-employees-${batch.id}`}>{batch.employeeCount}</TableCell>
                     <TableCell className="tabular-nums" data-testid={`text-batch-hours-${batch.id}`}>{formatHoursMinutes(batch.totalHours)}</TableCell>
@@ -289,7 +289,7 @@ export default function PayrollPrepPage() {
         <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto" data-testid="dialog-batch-detail">
           <DialogHeader>
             <DialogTitle>
-              Batch Detail{detailBatch ? `: ${detailBatch.startDate} — ${detailBatch.endDate}` : ""}
+              Batch Detail{detailBatch ? `: ${formatDateRange(detailBatch.startDate, detailBatch.endDate)}` : ""}
             </DialogTitle>
             <DialogDescription>
               Per-day pay breakdown including day-of-week and early-arrival bonuses.
@@ -327,7 +327,7 @@ export default function PayrollPrepPage() {
                   return (
                     <TableRow key={r.id} data-testid={`row-batch-record-${r.id}`}>
                       <TableCell data-testid={`text-record-employee-${r.id}`}>{r.employeeName}</TableCell>
-                      <TableCell className="tabular-nums" data-testid={`text-record-date-${r.id}`}>{r.workDate}</TableCell>
+                      <TableCell className="tabular-nums" data-testid={`text-record-date-${r.id}`}>{formatDate(r.workDate)}</TableCell>
                       <TableCell><Badge variant="outline">{formatRecordType(r.recordType)}</Badge></TableCell>
                       <TableCell className="tabular-nums text-right">{formatHoursMinutes(r.regularHours || 0)}</TableCell>
                       <TableCell className="tabular-nums text-right">

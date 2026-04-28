@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { formatDate } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -316,7 +317,7 @@ export default function AlertsPage() {
                       </span>
                     </TableCell>
                     <TableCell data-testid={`text-created-${alert.id}`}>
-                      {alert.createdAt ? new Date(alert.createdAt).toLocaleDateString() : "—"}
+                      {formatDate(alert.createdAt) || "—"}
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-1 flex-wrap">

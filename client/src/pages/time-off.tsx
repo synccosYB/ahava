@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { formatDate, formatDateRange } from "@/lib/utils";
 import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle, MessageSquare } from "lucide-react";
 import type { TimeOffRequest } from "@shared/schema";
 
@@ -317,7 +318,7 @@ export default function TimeOff() {
                     {request.status === "partially_approved" && (
                       <p className="text-sm text-amber-600 mt-1">
                         Partially Approved — {request.hoursApproved} of {request.hoursRequested} hrs
-                        {request.approvedEndDate ? ` (through ${new Date(request.approvedEndDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })})` : ""}
+                        {request.approvedEndDate ? ` (through ${formatDate(request.approvedEndDate)})` : ""}
                       </p>
                     )}
                     {request.reason && (
@@ -407,14 +408,6 @@ export default function TimeOff() {
       </Dialog>
     </div>
   );
-}
-
-function formatDateRange(start: string, end: string): string {
-  const startD = new Date(start + "T00:00:00");
-  const endD = new Date(end + "T00:00:00");
-  const options: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
-  if (start === end) return startD.toLocaleDateString("en-US", options);
-  return `${startD.toLocaleDateString("en-US", { month: "short", day: "numeric" })} - ${endD.toLocaleDateString("en-US", options)}`;
 }
 
 function TeamCalendar({

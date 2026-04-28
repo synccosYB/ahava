@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { formatDate } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -766,7 +767,7 @@ function ApprovalWorkflowsSection() {
                         <Badge variant={wf.status === "active" ? "default" : "secondary"}>{wf.status}</Badge>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {wf.updatedAt ? new Date(wf.updatedAt).toLocaleDateString() : "—"}
+                        {formatDate(wf.updatedAt) || "—"}
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1">

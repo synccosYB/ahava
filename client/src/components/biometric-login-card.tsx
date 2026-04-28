@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { formatDate } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -161,7 +162,7 @@ export function BiometricLoginCard() {
           <p className="text-sm text-muted-foreground" data-testid="text-biometric-enrolled-info">
             {data.sampleCount} face sample{data.sampleCount === 1 ? "" : "s"} on file
             {data.lastMatchedAt
-              ? ` · last used ${new Date(data.lastMatchedAt).toLocaleDateString()}`
+              ? ` · last used ${formatDate(data.lastMatchedAt)}`
               : ""}
             .
           </p>

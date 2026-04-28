@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -339,7 +340,7 @@ export default function AdminPayrollDocsPage() {
                       {doc.uploaderName}
                     </TableCell>
                     <TableCell className="text-muted-foreground" data-testid={`text-doc-date-${doc.id}`}>
-                      {doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString() : "—"}
+                      {formatDate(doc.uploadedAt) || "—"}
                     </TableCell>
                     <TableCell>
                       <Button

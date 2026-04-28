@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { formatHoursMinutes, getOvernightShiftInfo, formatTime12, formatTime12FromHHmm } from "@/lib/utils";
+import { formatHoursMinutes, getOvernightShiftInfo, formatTime12, formatTime12FromHHmm, formatDate } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -324,7 +324,7 @@ export default function MyAttendance() {
             </div>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Filter className="h-4 w-4" />
-              <span>Showing {startDate} to {endDate}</span>
+              <span>Showing {formatDate(startDate)} to {formatDate(endDate)}</span>
             </div>
           </div>
         </CardContent>
@@ -427,12 +427,12 @@ export default function MyAttendance() {
                     <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
                       <TableCell className="text-sm font-medium">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span>{record.date}</span>
+                          <span>{formatDate(record.date)}</span>
                           {overnightInfo && (
                             <>
                               <span className="text-muted-foreground" aria-hidden="true">→</span>
                               <span data-testid={`text-shift-end-date-${record.id}`}>
-                                {overnightInfo.endDate}
+                                {formatDate(overnightInfo.endDate)}
                               </span>
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -453,7 +453,7 @@ export default function MyAttendance() {
                                   {overnightInfo.daysSpan === 1
                                     ? "Overnight shift"
                                     : `Spanned ${overnightInfo.daysSpan} days`}
-                                  {" "}• Ended {overnightInfo.endDate} at {overnightInfo.endTime}
+                                  {" "}• Ended {formatDate(overnightInfo.endDate)} at {overnightInfo.endTime}
                                 </TooltipContent>
                               </Tooltip>
                             </>
@@ -904,7 +904,7 @@ function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, on
                     <div className="flex items-center justify-between gap-2 mb-1">
                       {getStatusBadgeForException(ex.status)}
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">{ex.exceptionDate}</span>
+                        <span className="text-xs text-muted-foreground">{formatDate(ex.exceptionDate)}</span>
                         {ex.status === "pending" && onEdit && (
                           <Button
                             size="sm"

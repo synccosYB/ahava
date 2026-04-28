@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { formatHoursMinutes } from "@/lib/utils";
+import { formatHoursMinutes, formatDate } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -58,15 +58,6 @@ function initials(first: string, last: string) {
 
 function formatLabel(raw: string) {
   return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function formatDate(iso: string | null) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
 }
 
 interface AttendanceStatus {
@@ -274,7 +265,7 @@ function PtoAnniversaryHistoryCard({ userId }: { userId: string | null }) {
             <TableBody>
               {data.map((row) => (
                 <TableRow key={row.id} data-testid={`row-pto-anniversary-${row.id}`}>
-                  <TableCell data-testid={`text-pto-anniversary-date-${row.id}`}>{formatDate(row.effectiveDate)}</TableCell>
+                  <TableCell data-testid={`text-pto-anniversary-date-${row.id}`}>{formatDate(row.effectiveDate) || "—"}</TableCell>
                   <TableCell>{row.yearsOfService}</TableCell>
                   <TableCell className="text-sm">
                     {row.oldTierLabel || "—"} → {row.newTierLabel || "—"}
@@ -394,7 +385,7 @@ function MyOnboardingCard() {
                     {systemTask && <Badge variant="outline" className="text-xs">Auto</Badge>}
                   </div>
                   {task.description && <p className="text-xs text-muted-foreground mt-1">{task.description}</p>}
-                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {task.dueDate}</p>}
+                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {formatDate(task.dueDate)}</p>}
                   {task.skippedReason && <p className="text-xs italic text-muted-foreground mt-1">Reason: {task.skippedReason}</p>}
                   {!systemTask && (
                     <div className="mt-2 space-y-2">
@@ -606,7 +597,7 @@ export default function ProfilePage() {
                 value={
                   <span className="flex items-center gap-1.5">
                     <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
-                    {formatDate(profile!.hireDate)}
+                    {formatDate(profile!.hireDate) || "—"}
                   </span>
                 }
               />

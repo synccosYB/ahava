@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { formatDate } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -183,7 +184,7 @@ export default function MyPayrollDocsPage() {
                       {doc.uploaderName}
                     </TableCell>
                     <TableCell className="text-muted-foreground" data-testid={`text-doc-date-${doc.id}`}>
-                      {doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString() : "—"}
+                      {formatDate(doc.uploadedAt) || "—"}
                     </TableCell>
                   </TableRow>
                 ))}

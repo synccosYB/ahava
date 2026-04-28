@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours, getOvernightShiftInfo, formatTime12 } from "@/lib/utils";
+import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours, getOvernightShiftInfo, formatTime12, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -232,12 +232,12 @@ export default function Dashboard() {
                   <TableRow key={record.id} data-testid={`row-activity-${record.id}`}>
                     <TableCell className="font-medium text-sm">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span>{record.date}</span>
+                        <span>{formatDate(record.date)}</span>
                         {overnightInfo && (
                           <>
                             <span className="text-muted-foreground" aria-hidden="true">→</span>
                             <span data-testid={`text-shift-end-date-${record.id}`}>
-                              {overnightInfo.endDate}
+                              {formatDate(overnightInfo.endDate)}
                             </span>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -258,7 +258,7 @@ export default function Dashboard() {
                                 {overnightInfo.daysSpan === 1
                                   ? "Overnight shift"
                                   : `Spanned ${overnightInfo.daysSpan} days`}
-                                {" "}• Ended {overnightInfo.endDate} at {overnightInfo.endTime}
+                                {" "}• Ended {formatDate(overnightInfo.endDate)} at {overnightInfo.endTime}
                               </TooltipContent>
                             </Tooltip>
                           </>

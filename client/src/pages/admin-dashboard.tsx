@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { formatDate, formatDateRange } from "@/lib/utils";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -206,7 +207,7 @@ export default function AdminDashboardPage() {
                     <div key={ex.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-md" data-testid={`row-exception-${ex.id}`}>
                       <div>
                         <p className="text-sm font-medium">{ex.employeeName || "Employee"}</p>
-                        <p className="text-xs text-muted-foreground">{ex.type.replace(/_/g, " ")} — {ex.exceptionDate}</p>
+                        <p className="text-xs text-muted-foreground">{ex.type.replace(/_/g, " ")} — {formatDate(ex.exceptionDate)}</p>
                       </div>
                       <Link href="/alerts-exceptions">
                         <Badge variant="outline" className="cursor-pointer">Review</Badge>
@@ -248,7 +249,7 @@ export default function AdminDashboardPage() {
                     <div key={req.id} className="p-3 bg-muted/50 rounded-md" data-testid={`row-approval-${req.id}`}>
                       <p className="text-sm font-medium">{req.employeeName}</p>
                       <p className="text-xs text-muted-foreground">
-                        {req.type} — {req.startDate} to {req.endDate}
+                        {req.type} — {formatDateRange(req.startDate, req.endDate)}
                       </p>
                     </div>
                   ))}

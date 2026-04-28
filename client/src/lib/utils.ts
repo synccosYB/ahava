@@ -57,6 +57,70 @@ export function formatTime12FromHHmm(hhmm: string | null | undefined): string {
   return `${hour12}:${String(minutes).padStart(2, "0")} ${period}`;
 }
 
+/**
+ * Format a date value as a zero-padded MM/DD/YYYY string for user-facing
+ * display.
+ *
+ * Plain `YYYY-MM-DD` strings are treated as local calendar dates (no timezone
+ * shift) so a value like "2026-04-21" always renders as "04/21/2026"
+ * regardless of the viewer's timezone. ISO timestamps and `Date` instances are
+ * formatted in the local timezone. Returns "" for null, undefined, empty, or
+ * unparseable input — callers that want a placeholder can do
+ * `formatDate(value) || "—"`.
+ */
+export function formatDate(value: string | Date | null | undefined): string {
+  if (value == null || value === "") return "";
+
+  let year: number;
+  let month: number;
+  let day: number;
+
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return "";
+    year = value.getFullYear();
+    month = value.getMonth() + 1;
+    day = value.getDate();
+  } else if (typeof value === "string") {
+    const plain = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (plain) {
+      year = Number(plain[1]);
+      month = Number(plain[2]);
+      day = Number(plain[3]);
+    } else {
+      const d = new Date(value);
+      if (isNaN(d.getTime())) return "";
+      year = d.getFullYear();
+      month = d.getMonth() + 1;
+      day = d.getDate();
+    }
+  } else {
+    return "";
+  }
+
+  const mm = String(month).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  return `${mm}/${dd}/${year}`;
+}
+
+/**
+ * Format an inclusive date range using {@link formatDate}. When start and end
+ * resolve to the same day a single date is returned. When only one side is
+ * present, that single date is returned. Returns "" when both sides are
+ * empty/invalid.
+ */
+export function formatDateRange(
+  start: string | Date | null | undefined,
+  end: string | Date | null | undefined,
+): string {
+  const s = formatDate(start);
+  const e = formatDate(end);
+  if (s && e) {
+    if (s === e) return s;
+    return `${s} – ${e}`;
+  }
+  return s || e;
+}
+
 export function formatHoursMinutes(decimalHours: number | null | undefined): string {
   if (decimalHours == null || decimalHours === 0) return "0h 0m";
   const totalMinutes = Math.round(decimalHours * 60);

@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { formatDate, formatDateRange } from "@/lib/utils";
 import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
@@ -328,7 +329,7 @@ function ProcessedRequestCard({ request, showDeptLocation, onClick }: { request:
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-processed-dates-${request.id}`}>
-              {`${request.startDate} to ${request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate} (${request.status === "partially_approved" && request.hoursApproved ? `${request.hoursApproved} of ${request.hoursRequested}` : request.hoursRequested} hrs)`}
+              {`${formatDateRange(request.startDate, request.status === "partially_approved" && request.approvedEndDate ? request.approvedEndDate : request.endDate)} (${request.status === "partially_approved" && request.hoursApproved ? `${request.hoursApproved} of ${request.hoursRequested}` : request.hoursRequested} hrs)`}
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-processed-reason-${request.id}`}>
@@ -339,7 +340,7 @@ function ProcessedRequestCard({ request, showDeptLocation, onClick }: { request:
               <span data-testid={`text-processed-reviewer-${request.id}`}>Reviewed by: {request.reviewerName}</span>
               {request.reviewedAt && (
                 <span data-testid={`text-processed-reviewed-at-${request.id}`}>
-                  on {new Date(request.reviewedAt).toLocaleDateString()}
+                  on {formatDate(request.reviewedAt)}
                 </span>
               )}
               {showDeptLocation && (
@@ -418,18 +419,18 @@ function ProcessedRequestDetailDialog({ request, open, onClose }: { request: Pro
 
             <div>
               <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />Start Date</p>
-              <p className="font-medium" data-testid="detail-start-date">{request.startDate}</p>
+              <p className="font-medium" data-testid="detail-start-date">{formatDate(request.startDate)}</p>
             </div>
 
             <div>
               <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />End Date</p>
-              <p className="font-medium" data-testid="detail-end-date">{request.endDate}</p>
+              <p className="font-medium" data-testid="detail-end-date">{formatDate(request.endDate)}</p>
             </div>
 
             {isPartial && request.approvedEndDate && (
               <div>
                 <p className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />Approved End Date</p>
-                <p className="font-medium text-amber-700" data-testid="detail-approved-end-date">{request.approvedEndDate}</p>
+                <p className="font-medium text-amber-700" data-testid="detail-approved-end-date">{formatDate(request.approvedEndDate)}</p>
               </div>
             )}
 
@@ -453,14 +454,14 @@ function ProcessedRequestDetailDialog({ request, open, onClose }: { request: Pro
             {request.reviewedAt && (
               <div>
                 <p className="text-muted-foreground">Review Date</p>
-                <p className="font-medium" data-testid="detail-review-date">{new Date(request.reviewedAt).toLocaleDateString()}</p>
+                <p className="font-medium" data-testid="detail-review-date">{formatDate(request.reviewedAt)}</p>
               </div>
             )}
 
             {request.createdAt && (
               <div>
                 <p className="text-muted-foreground">Submitted</p>
-                <p className="font-medium" data-testid="detail-submitted-date">{new Date(request.createdAt).toLocaleDateString()}</p>
+                <p className="font-medium" data-testid="detail-submitted-date">{formatDate(request.createdAt)}</p>
               </div>
             )}
           </div>
@@ -607,7 +608,7 @@ function ExceptionsTab() {
                       <TableCell>
                         <Badge variant="outline" className="text-xs">{ex.type.replace(/_/g, " ")}</Badge>
                       </TableCell>
-                      <TableCell className="text-sm">{ex.exceptionDate}</TableCell>
+                      <TableCell className="text-sm">{formatDate(ex.exceptionDate)}</TableCell>
                       <TableCell>
                         <Badge variant={ex.status === "approved" ? "default" : "destructive"} className={ex.status === "approved" ? "bg-green-600" : ""}>
                           {ex.status.charAt(0).toUpperCase() + ex.status.slice(1)}
@@ -673,7 +674,7 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
               {request.employeeName}
             </p>
             <p className="text-sm" data-testid={`text-pto-type-${request.id}`}>
-              {`${formatTimeOffTypeLabel(request.type)} — ${request.startDate} to ${request.endDate} (${request.hoursRequested} hrs)`}
+              {`${formatTimeOffTypeLabel(request.type)} — ${formatDateRange(request.startDate, request.endDate)} (${request.hoursRequested} hrs)`}
             </p>
             {request.reason && (
               <p className="text-sm text-muted-foreground" data-testid={`text-pto-reason-${request.id}`}>
@@ -823,7 +824,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
               exceptionId={exception.id}
             />
             <p className="text-xs text-muted-foreground" data-testid={`text-exc-date-${exception.id}`}>
-              {exception.exceptionDate}
+              {formatDate(exception.exceptionDate)}
             </p>
             {isHighCorrectionCount(
               (exception.correctionCounts ?? exception.correctionCount90d)?.all.total ?? 0,
@@ -840,14 +841,14 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
               <div className="grid grid-cols-2 gap-3 max-w-[400px] mt-2">
                 <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3" data-testid={`box-recorded-${exception.id}`}>
                   <div className="text-[10px] font-bold uppercase text-red-600 mb-1">Recorded</div>
-                  <div className="text-xs text-muted-foreground">{exception.exceptionDate}</div>
+                  <div className="text-xs text-muted-foreground">{formatDate(exception.exceptionDate)}</div>
                   <div className="text-sm font-mono font-bold text-red-700 dark:text-red-400">
                     {timeInfo.origIn ? formatTime12FromHHmm(timeInfo.origIn) : "—"} – {timeInfo.origOut ? formatTime12FromHHmm(timeInfo.origOut) : "—"}
                   </div>
                 </div>
                 <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3" data-testid={`box-requested-${exception.id}`}>
                   <div className="text-[10px] font-bold uppercase text-green-600 mb-1">Requested</div>
-                  <div className="text-xs text-muted-foreground">{exception.exceptionDate}</div>
+                  <div className="text-xs text-muted-foreground">{formatDate(exception.exceptionDate)}</div>
                   <div className="text-sm font-mono font-bold text-green-700 dark:text-green-400">
                     {timeInfo.reqIn ? formatTime12FromHHmm(timeInfo.reqIn) : "—"} – {timeInfo.reqOut ? formatTime12FromHHmm(timeInfo.reqOut) : "—"}
                   </div>

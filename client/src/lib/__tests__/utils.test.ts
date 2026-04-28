@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { liveElapsedSeconds, addLiveElapsedHours, formatHoursMinutes, formatTime12, formatTime12FromHHmm } from "../utils";
+import {
+  liveElapsedSeconds,
+  addLiveElapsedHours,
+  formatHoursMinutes,
+  formatTime12,
+  formatTime12FromHHmm,
+  formatDate,
+  formatDateRange,
+} from "../utils";
 
 test("liveElapsedSeconds returns 0 for null clock-in", () => {
   assert.equal(liveElapsedSeconds(null, 1_000_000), 0);
@@ -73,4 +81,43 @@ test("formatTime12FromHHmm handles missing/invalid input", () => {
   assert.equal(formatTime12FromHHmm(""), "");
   assert.equal(formatTime12FromHHmm("garbage"), "garbage");
   assert.equal(formatTime12FromHHmm("25:00"), "25:00");
+});
+
+test("formatDate returns empty string for null/undefined/empty/invalid input", () => {
+  assert.equal(formatDate(null), "");
+  assert.equal(formatDate(undefined), "");
+  assert.equal(formatDate(""), "");
+  assert.equal(formatDate("not a date"), "");
+});
+
+test("formatDate parses plain YYYY-MM-DD as a local calendar date", () => {
+  // Should always render as 04/21/2026 regardless of TZ (no UTC shift).
+  assert.equal(formatDate("2026-04-21"), "04/21/2026");
+  assert.equal(formatDate("2026-01-05"), "01/05/2026");
+});
+
+test("formatDate zero-pads month and day from Date instances", () => {
+  assert.equal(formatDate(new Date(2026, 0, 5)), "01/05/2026");
+  assert.equal(formatDate(new Date(2026, 11, 9)), "12/09/2026");
+});
+
+test("formatDate formats Date instances and ISO timestamps", () => {
+  assert.equal(formatDate(new Date(2026, 3, 21)), "04/21/2026");
+  // ISO timestamp at noon local — same calendar day everywhere reasonable.
+  const noonLocal = new Date(2026, 3, 21, 12, 0, 0);
+  assert.equal(formatDate(noonLocal.toISOString()), "04/21/2026");
+});
+
+test("formatDateRange collapses identical dates and joins distinct ones", () => {
+  assert.equal(formatDateRange("2026-04-21", "2026-04-21"), "04/21/2026");
+  assert.equal(
+    formatDateRange("2026-04-21", "2026-04-23"),
+    "04/21/2026 – 04/23/2026",
+  );
+});
+
+test("formatDateRange handles single-sided and empty input", () => {
+  assert.equal(formatDateRange("2026-04-21", null), "04/21/2026");
+  assert.equal(formatDateRange(null, "2026-04-21"), "04/21/2026");
+  assert.equal(formatDateRange(null, null), "");
 });

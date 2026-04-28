@@ -22,6 +22,7 @@ import {
 import { CalendarDays, Plus, Pencil, Settings, Search, AlertTriangle, Check, X, Filter, RotateCcw } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { formatDate } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
 import type { PtoPolicy, User, Division, Department, Location, AttendanceException, PtoAnniversaryAdjustment } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
@@ -1045,7 +1046,7 @@ function PtoAlertExceptionRow({
               </p>
             )}
             <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
-              Date: {ex.exceptionDate}
+              Date: {formatDate(ex.exceptionDate)}
               {ex.exceptionTime && ` at ${formatTime12(ex.exceptionTime)}`}
             </p>
             <p className="text-sm" data-testid={`text-exception-reason-${ex.id}`}>
@@ -1183,7 +1184,7 @@ function AnniversaryHistoryTab() {
               {history.map((row) => (
                 <TableRow key={row.id} data-testid={`row-anniversary-${row.id}`}>
                   <TableCell data-testid={`text-anniversary-effective-${row.id}`}>
-                    {new Date(row.effectiveDate).toLocaleDateString()}
+                    {formatDate(row.effectiveDate)}
                   </TableCell>
                   <TableCell>{row.yearsOfService}</TableCell>
                   <TableCell className="text-sm">

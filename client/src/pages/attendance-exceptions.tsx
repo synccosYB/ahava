@@ -22,7 +22,7 @@ import {
   emptyCorrectionCountSummary,
   type CorrectionCountSummary,
 } from "@shared/correctionCounts";
-import { formatTime12 } from "@/lib/utils";
+import { formatDate, formatTime12 } from "@/lib/utils";
 
 type EnrichedException = AttendanceException & {
   employeeName?: string;
@@ -275,7 +275,7 @@ function ExceptionRow({
               exceptionId={ex.id}
             />
             <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
-              Date: {ex.exceptionDate}
+              Date: {formatDate(ex.exceptionDate)}
               {ex.exceptionTime && ` at ${formatTime12(ex.exceptionTime)}`}
             </p>
             {isHighCorrectionCount(

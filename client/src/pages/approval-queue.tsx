@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { formatDate, formatDateRange } from "@/lib/utils";
 import { Check, X, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest } from "@shared/schema";
@@ -90,14 +91,6 @@ export default function ApprovalQueuePage() {
     },
   });
 
-  const formatDateRange = (start: string, end: string) => {
-    const s = new Date(start + "T00:00:00");
-    const e = new Date(end + "T00:00:00");
-    const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
-    if (start === end) return s.toLocaleDateString("en-US", opts);
-    return `${s.toLocaleDateString("en-US", opts)} - ${e.toLocaleDateString("en-US", opts)}`;
-  };
-
   const getDayCount = (start: string, end: string) => {
     const s = new Date(start + "T00:00:00");
     const e = new Date(end + "T00:00:00");
@@ -157,7 +150,7 @@ export default function ApprovalQueuePage() {
                       {formatDateRange(request.startDate, request.endDate)} ({request.hoursRequested} hrs)
                     </p>
                     <p className="text-sm text-muted-foreground" data-testid={`text-request-submitted-${request.id}`}>
-                      Submitted: {request.createdAt ? new Date(request.createdAt).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "N/A"}
+                      Submitted: {formatDate(request.createdAt) || "N/A"}
                       {request.editedAt && (
                         <Badge variant="outline" className="ml-2 text-xs bg-blue-50 text-blue-700 border-blue-300 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-700" data-testid={`badge-edited-${request.id}`}>
                           Edited
@@ -303,7 +296,7 @@ export default function ApprovalQueuePage() {
                         {request.reviewerName}
                       </TableCell>
                       <TableCell data-testid={`text-processed-date-${request.id}`}>
-                        {request.reviewedAt ? new Date(request.reviewedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "N/A"}
+                        {formatDate(request.reviewedAt) || "N/A"}
                       </TableCell>
                     </TableRow>
                   ))}

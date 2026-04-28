@@ -24,7 +24,7 @@ import {
 import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
-import { formatCurrency, formatHoursMinutes } from "@/lib/utils";
+import { formatCurrency, formatHoursMinutes, formatDate } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
@@ -1095,7 +1095,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Hire Date</Label>
-                <p className="font-medium" data-testid="text-profile-hire-date">{profile?.hireDate || "—"}</p>
+                <p className="font-medium" data-testid="text-profile-hire-date">{formatDate(profile?.hireDate) || "—"}</p>
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Overtime Eligible</Label>
@@ -1225,7 +1225,7 @@ function NextReviewIndicator({ userId }: { userId: string }) {
         : days > 0
           ? `in ${days} day${days === 1 ? "" : "s"}`
           : `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} overdue`;
-    text = `${next.dueDate} (${dayLabel})${cycleName ? ` — ${cycleName}` : ""}`;
+    text = `${formatDate(next.dueDate)} (${dayLabel})${cycleName ? ` — ${cycleName}` : ""}`;
     testidSuffix = next.id;
   }
 
@@ -1815,7 +1815,7 @@ function DocumentsTab({ userId, focusDocType }: { userId: string; focusDocType?:
                         {latestDoc ? (
                           <p className="text-xs text-muted-foreground" data-testid={`text-doc-file-${docType.key}`}>
                             {latestDoc.fileName}
-                            {latestDoc.uploadedAt && ` — ${new Date(latestDoc.uploadedAt).toLocaleDateString()}`}
+                            {latestDoc.uploadedAt && ` — ${formatDate(latestDoc.uploadedAt)}`}
                           </p>
                         ) : (
                           <p className="text-xs text-muted-foreground">Not yet uploaded</p>
@@ -2076,7 +2076,7 @@ function OnboardingTab({ userId }: { userId: string }) {
                     {task.status === "skipped" && <Badge variant="secondary" className="text-xs">Skipped</Badge>}
                   </div>
                   {task.description && <p className="text-xs text-muted-foreground mt-1">{task.description}</p>}
-                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {task.dueDate}</p>}
+                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {formatDate(task.dueDate)}</p>}
                   {task.skippedReason && <p className="text-xs italic text-muted-foreground mt-1">Reason: {task.skippedReason}</p>}
                   <div className="mt-2">
                     <Textarea
@@ -2239,7 +2239,7 @@ function OffboardingTab({ userId }: { userId: string }) {
           <CardTitle>Offboarding {isCompleted ? "(Completed)" : ""}</CardTitle>
           <div className="flex items-center gap-2">
             <Badge variant="secondary" data-testid="text-offboarding-progress">{checklist.progress.progressPct}% — {checklist.progress.completedRequired}/{checklist.progress.totalRequired} required</Badge>
-            {checklist.terminationDate && <Badge variant="outline">Termination: {checklist.terminationDate}</Badge>}
+            {checklist.terminationDate && <Badge variant="outline">Termination: {formatDate(checklist.terminationDate)}</Badge>}
             {!isCompleted && (
               <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
                 <DialogTrigger asChild>
@@ -2290,7 +2290,7 @@ function OffboardingTab({ userId }: { userId: string }) {
                     {task.status === "skipped" && <Badge variant="secondary" className="text-xs">Skipped</Badge>}
                   </div>
                   {task.description && <p className="text-xs text-muted-foreground mt-1">{task.description}</p>}
-                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {task.dueDate}</p>}
+                  {task.dueDate && <p className="text-xs text-muted-foreground">Due {formatDate(task.dueDate)}</p>}
                   {task.skippedReason && <p className="text-xs italic text-muted-foreground mt-1">Reason: {task.skippedReason}</p>}
                   <div className="mt-2">
                     <Textarea
