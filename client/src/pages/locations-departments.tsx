@@ -22,28 +22,76 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { useAuth } from "@/hooks/use-auth";
 import type { Location, Department, Division, User, LocationAddress } from "@shared/schema";
 
 const NO_COMPANY_MESSAGE =
-  "No company is set up yet — please create your company first in Rules & Controls → General.";
+  "No company is set up yet — please set one up in Rules & Controls → General.";
+
+const GENERIC_LOCATION_INVALID =
+  "Couldn't save location — please check the highlighted fields and try again.";
+const GENERIC_ADDRESS_INVALID =
+  "Couldn't save address — please check the highlighted fields and try again.";
+const GENERIC_DEPARTMENT_INVALID =
+  "Couldn't save department — please check the highlighted fields and try again.";
+
+interface ServerErrorBody {
+  message?: string;
+  errors?: {
+    fieldErrors?: Record<string, string[]>;
+  };
+}
+
+function isServerErrorBody(value: unknown): value is ServerErrorBody {
+  return typeof value === "object" && value !== null;
+}
 
 function friendlyMutationError(err: Error, fallback: string): string {
   const msg = err?.message || "";
-  if (/companyId/i.test(msg) && /required|invalid/i.test(msg)) {
+
+  let body = msg;
+  const match = msg.match(/^\d+:\s*([\s\S]*)$/);
+  if (match) {
+    body = match[1].trim();
+  }
+
+  let parsed: ServerErrorBody | null = null;
+  try {
+    const raw: unknown = JSON.parse(body);
+    if (isServerErrorBody(raw)) {
+      parsed = raw;
+    }
+  } catch {
+    parsed = null;
+  }
+
+  const fieldErrors = parsed?.errors?.fieldErrors ?? {};
+  const serverMessage = parsed?.message;
+
+  const companyIdErrors = fieldErrors.companyId;
+  if (Array.isArray(companyIdErrors) && /required/i.test(companyIdErrors.join(" "))) {
     return NO_COMPANY_MESSAGE;
   }
-  const match = msg.match(/^\d+:\s*(.*)$/);
-  if (match) {
-    const body = match[1].trim();
-    try {
-      const parsed = JSON.parse(body);
-      if (parsed?.message) return parsed.message;
-    } catch {
-      // not JSON, use raw body
-    }
-    if (body) return body;
+  if (/companyId/i.test(body) && /required/i.test(body)) {
+    return NO_COMPANY_MESSAGE;
   }
-  return msg || fallback;
+
+  if (serverMessage) {
+    if (/invalid location data/i.test(serverMessage)) return fallback || GENERIC_LOCATION_INVALID;
+    if (/invalid address data/i.test(serverMessage)) return GENERIC_ADDRESS_INVALID;
+    if (/invalid department data/i.test(serverMessage)) return fallback || GENERIC_DEPARTMENT_INVALID;
+    return serverMessage;
+  }
+
+  if (parsed) {
+    return fallback;
+  }
+
+  if (body && !/^\s*[{\[]/.test(body)) {
+    return body;
+  }
+
+  return fallback;
 }
 
 function NoCompanyEmptyState({ entity }: { entity: string }) {
@@ -81,6 +129,22 @@ const emptyAddress = (): AddressEntry => ({ label: "", address: "", city: "", st
 
 type DepartmentWithManagers = Department & { managerIds: string[] };
 
+function resolveActiveCompanyId(
+  user: { companyId?: string | null } | null | undefined,
+  divisions: Division[] | undefined,
+): string | undefined {
+  const userCompanyId = user?.companyId || undefined;
+  if (userCompanyId) {
+    const match = divisions?.find((d) => d.id === userCompanyId);
+    if (match) return match.id;
+    return userCompanyId;
+  }
+  if (divisions && divisions.length === 1) {
+    return divisions[0].id;
+  }
+  return undefined;
+}
+
 export default function LocationsDepartmentsPage() {
   return (
     <div className="max-w-6xl space-y-6" data-testid="locations-departments-page">
@@ -103,6 +167,7 @@ export default function LocationsDepartmentsPage() {
 
 function LocationsTab() {
   const { toast } = useToast();
+  const { user, isLoading: authLoading } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", code: "", timezone: "" });
@@ -112,10 +177,11 @@ function LocationsTab() {
 
   const { data: locations, isLoading } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: divisions, isLoading: divisionsLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
-  const divisionId = divisions?.[0]?.id;
+  const divisionId = resolveActiveCompanyId(user, divisions);
   const hasCompany = !!divisionId;
-  const addDisabled = divisionsLoading || !hasCompany;
-  const addDisabledReason = divisionsLoading
+  const companyContextLoading = authLoading || divisionsLoading;
+  const addDisabled = companyContextLoading || !hasCompany;
+  const addDisabledReason = companyContextLoading
     ? "Loading company info…"
     : "Set up your company first in Rules & Controls → General.";
 
@@ -146,7 +212,10 @@ function LocationsTab() {
         if (!divisionId) {
           throw new Error(NO_COMPANY_MESSAGE);
         }
-        const res = await apiRequest("POST", "/api/locations", { ...form, companyId: divisionId });
+        const res = await apiRequest("POST", "/api/locations", {
+          ...form,
+          companyId: divisionId,
+        });
         const created = await res.json();
         locationId = created.id;
       }
@@ -184,7 +253,7 @@ function LocationsTab() {
     onError: (err: Error) => {
       toast({
         title: "Could not save location",
-        description: friendlyMutationError(err, "Something went wrong saving the location."),
+        description: friendlyMutationError(err, GENERIC_LOCATION_INVALID),
         variant: "destructive",
       });
     },
@@ -201,7 +270,7 @@ function LocationsTab() {
     onError: (err: Error) => {
       toast({
         title: "Could not delete location",
-        description: friendlyMutationError(err, "Something went wrong deleting the location."),
+        description: friendlyMutationError(err, "Couldn't delete location — please try again."),
         variant: "destructive",
       });
     },
@@ -383,7 +452,11 @@ function LocationsTab() {
             <DialogFooter>
               <Button
                 onClick={() => createMutation.mutate()}
-                disabled={!form.name || createMutation.isPending || (!editingId && !divisionId)}
+                disabled={
+                  !form.name ||
+                  createMutation.isPending ||
+                  (!editingId && (companyContextLoading || !divisionId))
+                }
                 data-testid="button-save-location"
               >
                 {createMutation.isPending ? "Saving..." : "Save"}
@@ -393,7 +466,7 @@ function LocationsTab() {
         </Dialog>
       </div>
 
-      {divisionsLoading || isLoading ? (
+      {companyContextLoading || isLoading ? (
         <Card data-testid="card-locations-list">
           <CardContent className="p-0">
             <div className="p-6 space-y-3">
@@ -456,6 +529,7 @@ function LocationsTab() {
 
 function DepartmentsTab() {
   const { toast } = useToast();
+  const { user, isLoading: authLoading } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", description: "", managerIds: [] as string[], locationId: "" });
@@ -465,10 +539,11 @@ function DepartmentsTab() {
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
   const { data: divisions, isLoading: divisionsLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
-  const divisionId = divisions?.[0]?.id;
+  const divisionId = resolveActiveCompanyId(user, divisions);
   const hasCompany = !!divisionId;
-  const addDisabled = divisionsLoading || !hasCompany;
-  const addDisabledReason = divisionsLoading
+  const companyContextLoading = authLoading || divisionsLoading;
+  const addDisabled = companyContextLoading || !hasCompany;
+  const addDisabledReason = companyContextLoading
     ? "Loading company info…"
     : "Set up your company first in Rules & Controls → General.";
 
@@ -499,7 +574,7 @@ function DepartmentsTab() {
     onError: (err: Error) => {
       toast({
         title: "Could not save department",
-        description: friendlyMutationError(err, "Something went wrong saving the department."),
+        description: friendlyMutationError(err, GENERIC_DEPARTMENT_INVALID),
         variant: "destructive",
       });
     },
@@ -516,7 +591,7 @@ function DepartmentsTab() {
     onError: (err: Error) => {
       toast({
         title: "Could not delete department",
-        description: friendlyMutationError(err, "Something went wrong deleting the department."),
+        description: friendlyMutationError(err, "Couldn't delete department — please try again."),
         variant: "destructive",
       });
     },
@@ -657,7 +732,11 @@ function DepartmentsTab() {
             <DialogFooter>
               <Button
                 onClick={() => createMutation.mutate()}
-                disabled={!form.name || createMutation.isPending || (!editingId && !divisionId)}
+                disabled={
+                  !form.name ||
+                  createMutation.isPending ||
+                  (!editingId && (companyContextLoading || !divisionId))
+                }
                 data-testid="button-save-department"
               >
                 {createMutation.isPending ? "Saving..." : "Save"}
@@ -667,7 +746,7 @@ function DepartmentsTab() {
         </Dialog>
       </div>
 
-      {divisionsLoading || isLoading ? (
+      {companyContextLoading || isLoading ? (
         <Card data-testid="card-departments-list">
           <CardContent className="p-0">
             <div className="p-6 space-y-3">
