@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -14,6 +15,7 @@ import {
 import { AlertTriangle, Check, X, Filter } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { AttendanceException } from "@shared/schema";
+import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
 
 type EnrichedException = AttendanceException & {
   employeeName?: string;
@@ -21,10 +23,8 @@ type EnrichedException = AttendanceException & {
 };
 
 export default function AttendanceExceptionsPage() {
-  const { toast } = useToast();
   const [statusFilter, setStatusFilter] = useState("pending");
   const [typeFilter, setTypeFilter] = useState("all");
-  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
 
   const { data: exceptions, isLoading, isError } = useQuery<EnrichedException[]>({
     queryKey: ["/api/attendance/exceptions"],
@@ -32,34 +32,6 @@ export default function AttendanceExceptionsPage() {
 
   const { data: pendingExceptions } = useQuery<EnrichedException[]>({
     queryKey: ["/api/attendance/exceptions/pending"],
-  });
-
-  const approveMutation = useMutation({
-    mutationFn: async ({ id, notes }: { id: string; notes?: string }) => {
-      await apiRequest("POST", `/api/attendance/exceptions/${id}/resolve`, { action: "approve", reviewNotes: notes });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
-      toast({ title: "Exception approved" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const denyMutation = useMutation({
-    mutationFn: async ({ id, notes }: { id: string; notes?: string }) => {
-      await apiRequest("POST", `/api/attendance/exceptions/${id}/resolve`, { action: "deny", reviewNotes: notes });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
-      toast({ title: "Exception denied" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
   });
 
   const allExceptions = exceptions || [];
@@ -153,66 +125,164 @@ export default function AttendanceExceptionsPage() {
       ) : (
         <div className="space-y-3">
           {filtered.map((ex) => (
-            <Card key={ex.id} data-testid={`card-exception-${ex.id}`}>
-              <CardContent className="p-5">
-                <div className="flex flex-col md:flex-row md:justify-between gap-4">
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {getTypeBadge(ex.type)}
-                      {getStatusBadge(ex.status)}
-                    </div>
-                    <p className="font-semibold" data-testid={`text-exception-employee-${ex.id}`}>
-                      {ex.employeeName || "Employee"}
-                    </p>
-                    <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
-                      Date: {ex.exceptionDate}
-                      {ex.exceptionTime && ` at ${new Date(ex.exceptionTime).toLocaleTimeString()}`}
-                    </p>
-                    <p className="text-sm" data-testid={`text-exception-reason-${ex.id}`}>
-                      {ex.reason}
-                    </p>
-                    {ex.reviewNotes && (
-                      <p className="text-sm text-muted-foreground italic" data-testid={`text-exception-review-notes-${ex.id}`}>
-                        Review: {ex.reviewNotes}
-                      </p>
-                    )}
-                    {ex.status === "pending" && (
-                      <Textarea
-                        placeholder="Review notes (optional)..."
-                        value={reviewNotes[ex.id] || ""}
-                        onChange={(e) => setReviewNotes((prev) => ({ ...prev, [ex.id]: e.target.value }))}
-                        className="mt-2"
-                        data-testid={`input-review-notes-${ex.id}`}
-                      />
-                    )}
-                  </div>
-                  {ex.status === "pending" && (
-                    <div className="flex md:flex-col gap-2 md:min-w-[140px]">
-                      <Button
-                        onClick={() => approveMutation.mutate({ id: ex.id, notes: reviewNotes[ex.id] })}
-                        disabled={approveMutation.isPending || denyMutation.isPending}
-                        className="flex-1 bg-green-600 hover:bg-green-700 text-white"
-                        data-testid={`button-approve-exception-${ex.id}`}
-                      >
-                        <Check className="h-4 w-4 mr-1" /> Approve
-                      </Button>
-                      <Button
-                        onClick={() => denyMutation.mutate({ id: ex.id, notes: reviewNotes[ex.id] })}
-                        disabled={approveMutation.isPending || denyMutation.isPending}
-                        variant="destructive"
-                        className="flex-1"
-                        data-testid={`button-deny-exception-${ex.id}`}
-                      >
-                        <X className="h-4 w-4 mr-1" /> Deny
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+            <ExceptionRow
+              key={ex.id}
+              ex={ex}
+              getTypeBadge={getTypeBadge}
+              getStatusBadge={getStatusBadge}
+            />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+function ExceptionRow({
+  ex,
+  getTypeBadge,
+  getStatusBadge,
+}: {
+  ex: EnrichedException;
+  getTypeBadge: (type: string) => JSX.Element;
+  getStatusBadge: (status: string) => JSX.Element;
+}) {
+  const { toast } = useToast();
+  const [notes, setNotes] = useState("");
+  const parsed = parseExceptionTimeInfo(ex.reason);
+  const isTimeCorrection = ex.type === "time_correction";
+  const needsManualTimes = isTimeCorrection && !parsed.reqIn && !parsed.reqOut;
+  const [manualReqIn, setManualReqIn] = useState("");
+  const [manualReqOut, setManualReqOut] = useState("");
+
+  const approveMutation = useMutation({
+    mutationFn: async () => {
+      const body: Record<string, unknown> = { action: "approve", reviewNotes: notes };
+      if (isTimeCorrection) {
+        const reqIn = needsManualTimes ? manualReqIn : parsed.reqIn;
+        const reqOut = needsManualTimes ? manualReqOut : parsed.reqOut;
+        const payload = buildTimeCorrectionPayload(ex.exceptionDate, reqIn, reqOut);
+        if (!payload.correctedClockIn && !payload.correctedClockOut) {
+          throw new Error("Enter at least one corrected time before approving.");
+        }
+        Object.assign(body, payload);
+      }
+      await apiRequest("POST", `/api/attendance/exceptions/${ex.id}/resolve`, body);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
+      toast({ title: "Exception approved" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const denyMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/attendance/exceptions/${ex.id}/resolve`, { action: "deny", reviewNotes: notes });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
+      toast({ title: "Exception denied" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const approveDisabled =
+    approveMutation.isPending ||
+    denyMutation.isPending ||
+    (needsManualTimes && !manualReqIn && !manualReqOut);
+
+  return (
+    <Card data-testid={`card-exception-${ex.id}`}>
+      <CardContent className="p-5">
+        <div className="flex flex-col md:flex-row md:justify-between gap-4">
+          <div className="flex-1 space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              {getTypeBadge(ex.type)}
+              {getStatusBadge(ex.status)}
+            </div>
+            <p className="font-semibold" data-testid={`text-exception-employee-${ex.id}`}>
+              {ex.employeeName || "Employee"}
+            </p>
+            <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
+              Date: {ex.exceptionDate}
+              {ex.exceptionTime && ` at ${new Date(ex.exceptionTime).toLocaleTimeString()}`}
+            </p>
+            <p className="text-sm" data-testid={`text-exception-reason-${ex.id}`}>
+              {ex.reason}
+            </p>
+            {ex.reviewNotes && (
+              <p className="text-sm text-muted-foreground italic" data-testid={`text-exception-review-notes-${ex.id}`}>
+                Review: {ex.reviewNotes}
+              </p>
+            )}
+            {ex.status === "pending" && needsManualTimes && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30 p-3 mt-2 space-y-2" data-testid={`box-manual-times-${ex.id}`}>
+                <div className="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-200">
+                  <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                  <span>This request didn't include corrected times. Enter at least one before approving.</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-muted-foreground">Corrected In</label>
+                    <Input
+                      type="time"
+                      value={manualReqIn}
+                      onChange={(e) => setManualReqIn(e.target.value)}
+                      data-testid={`input-manual-corrected-in-${ex.id}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-muted-foreground">Corrected Out</label>
+                    <Input
+                      type="time"
+                      value={manualReqOut}
+                      onChange={(e) => setManualReqOut(e.target.value)}
+                      data-testid={`input-manual-corrected-out-${ex.id}`}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+            {ex.status === "pending" && (
+              <Textarea
+                placeholder="Review notes (optional)..."
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                className="mt-2"
+                data-testid={`input-review-notes-${ex.id}`}
+              />
+            )}
+          </div>
+          {ex.status === "pending" && (
+            <div className="flex md:flex-col gap-2 md:min-w-[140px]">
+              <Button
+                onClick={() => approveMutation.mutate()}
+                disabled={approveDisabled}
+                className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                data-testid={`button-approve-exception-${ex.id}`}
+              >
+                <Check className="h-4 w-4 mr-1" /> Approve
+              </Button>
+              <Button
+                onClick={() => denyMutation.mutate()}
+                disabled={approveMutation.isPending || denyMutation.isPending}
+                variant="destructive"
+                className="flex-1"
+                data-testid={`button-deny-exception-${ex.id}`}
+              >
+                <X className="h-4 w-4 mr-1" /> Deny
+              </Button>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location } from "@shared/schema";
+import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
   vacation: "Vacation",
@@ -670,36 +671,24 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
   );
 }
 
-interface TimeInfoResult {
-  origIn?: string;
-  origOut?: string;
-  reqIn?: string;
-  reqOut?: string;
-  cleanReason: string;
-}
-
-function parseTimeInfo(reason: string): TimeInfoResult {
-  const match = reason.match(/\[([^\]]+)\]$/);
-  if (!match) return { cleanReason: reason };
-  const cleanReason = reason.replace(/\s*\[[^\]]+\]$/, "").trim();
-  const parts = match[1].split(", ");
-  const result: TimeInfoResult = { cleanReason };
-  for (const part of parts) {
-    if (part.startsWith("Original In: ")) result.origIn = part.replace("Original In: ", "");
-    if (part.startsWith("Original Out: ")) result.origOut = part.replace("Original Out: ", "");
-    if (part.startsWith("Corrected In: ")) result.reqIn = part.replace("Corrected In: ", "");
-    if (part.startsWith("Corrected Out: ")) result.reqOut = part.replace("Corrected Out: ", "");
-  }
-  return result;
-}
-
 function ExceptionCard({ exception }: { exception: EnrichedException }) {
   const { toast } = useToast();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [notes, setNotes] = useState("");
-  const timeInfo = parseTimeInfo(exception.reason);
-  const hasTimeInfo = timeInfo.origIn || timeInfo.origOut || timeInfo.reqIn || timeInfo.reqOut;
+  const parsedReason = parseExceptionTimeInfo(exception.reason);
+  const timeInfo = {
+    origIn: parsedReason.origIn,
+    origOut: parsedReason.origOut,
+    reqIn: parsedReason.reqIn,
+    reqOut: parsedReason.reqOut,
+    cleanReason: parsedReason.cleanReason,
+  };
+  const hasTimeInfo = !!(timeInfo.origIn || timeInfo.origOut || timeInfo.reqIn || timeInfo.reqOut);
+  const isTimeCorrection = exception.type === "time_correction";
+  const needsManualTimes = isTimeCorrection && !timeInfo.reqIn && !timeInfo.reqOut;
+  const [manualReqIn, setManualReqIn] = useState("");
+  const [manualReqOut, setManualReqOut] = useState("");
 
   const initials = (exception.employeeName || "E")
     .split(" ")
@@ -710,7 +699,17 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
 
   const approveMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", `/api/attendance/exceptions/${exception.id}/approve`, { reviewNotes: notes });
+      const body: Record<string, unknown> = { action: "approve", reviewNotes: notes };
+      if (isTimeCorrection) {
+        const reqIn = needsManualTimes ? manualReqIn : timeInfo.reqIn;
+        const reqOut = needsManualTimes ? manualReqOut : timeInfo.reqOut;
+        const payload = buildTimeCorrectionPayload(exception.exceptionDate, reqIn, reqOut);
+        if (!payload.correctedClockIn && !payload.correctedClockOut) {
+          throw new Error("Enter at least one corrected time before approving.");
+        }
+        Object.assign(body, payload);
+      }
+      await apiRequest("POST", `/api/attendance/exceptions/${exception.id}/resolve`, body);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
@@ -724,7 +723,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
 
   const denyMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", `/api/attendance/exceptions/${exception.id}/deny`, { reviewNotes: notes });
+      await apiRequest("POST", `/api/attendance/exceptions/${exception.id}/resolve`, { action: "deny", reviewNotes: notes });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
@@ -735,6 +734,11 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
+
+  const approveDisabled =
+    approveMutation.isPending ||
+    denyMutation.isPending ||
+    (needsManualTimes && !manualReqIn && !manualReqOut);
 
   return (
     <Card data-testid={`card-exception-request-${exception.id}`}>
@@ -793,6 +797,34 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
                 </span>
               </div>
             )}
+            {needsManualTimes && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30 p-3 mt-2 space-y-2" data-testid={`box-manual-times-${exception.id}`}>
+                <div className="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-200">
+                  <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                  <span>This request didn't include corrected times. Enter at least one before approving.</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-muted-foreground">Corrected In</label>
+                    <Input
+                      type="time"
+                      value={manualReqIn}
+                      onChange={(e) => setManualReqIn(e.target.value)}
+                      data-testid={`input-manual-corrected-in-${exception.id}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-muted-foreground">Corrected Out</label>
+                    <Input
+                      type="time"
+                      value={manualReqOut}
+                      onChange={(e) => setManualReqOut(e.target.value)}
+                      data-testid={`input-manual-corrected-out-${exception.id}`}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
             <Textarea
               placeholder="Comment (optional)..."
               value={notes}
@@ -804,7 +836,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
           <div className="flex md:flex-col gap-2 md:min-w-[120px]">
             <Button
               onClick={() => approveMutation.mutate()}
-              disabled={approveMutation.isPending || denyMutation.isPending}
+              disabled={approveDisabled}
               className="flex-1 bg-green-600 hover:bg-green-700 text-white"
               data-testid={`button-approve-exc-${exception.id}`}
             >

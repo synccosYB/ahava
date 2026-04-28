@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
 import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench } from "lucide-react";
 import type { AttendanceRecord, AttendanceException } from "@shared/schema";
+import { parseExceptionTimeInfo } from "@/lib/exceptionTimeInfo";
 
 type SortKey = "date" | "clockIn" | "totalHours" | "status";
 type SortDir = "asc" | "desc";
@@ -32,8 +33,6 @@ type FixDialogState = {
   initialReason?: string;
 };
 
-const TIME_INFO_RE = /\s*\[(?:Original In: ([^,\]]+))?(?:, )?(?:Original Out: ([^,\]]+))?(?:, )?(?:Corrected In: ([^,\]]+))?(?:, )?(?:Corrected Out: ([^,\]]+))?\]\s*$/;
-
 function parseExceptionReason(fullReason: string): {
   reason: string;
   origIn: string;
@@ -41,16 +40,13 @@ function parseExceptionReason(fullReason: string): {
   reqIn: string;
   reqOut: string;
 } {
-  const m = fullReason.match(TIME_INFO_RE);
-  if (!m) {
-    return { reason: fullReason, origIn: "", origOut: "", reqIn: "", reqOut: "" };
-  }
+  const parsed = parseExceptionTimeInfo(fullReason);
   return {
-    reason: fullReason.slice(0, m.index ?? 0).trim(),
-    origIn: (m[1] || "").trim(),
-    origOut: (m[2] || "").trim(),
-    reqIn: (m[3] || "").trim(),
-    reqOut: (m[4] || "").trim(),
+    reason: parsed.cleanReason,
+    origIn: parsed.origIn,
+    origOut: parsed.origOut,
+    reqIn: parsed.reqIn,
+    reqOut: parsed.reqOut,
   };
 }
 

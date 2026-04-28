@@ -12,7 +12,7 @@ import { eq, desc, and, isNull, isNotNull } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { runAlertDetection } from "./services/alerts";
-import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses } from "./services/policyEnforcement";
+import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
 import { runWorkflowsForTrigger } from "./workflowEngine";
 import { requestCache } from "./lib/requestCache";
@@ -2250,6 +2250,8 @@ export async function registerRoutes(
     action: z.enum(["approve", "deny"]),
     reviewNotes: z.string().optional(),
     correctedTime: z.string().optional(),
+    correctedClockIn: z.string().optional(),
+    correctedClockOut: z.string().optional(),
   });
 
   app.post("/api/attendance/exceptions/:id/resolve", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
@@ -2274,7 +2276,7 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Not authorized to resolve this exception" });
       }
 
-      const { action, reviewNotes, correctedTime } = parsed.data;
+      const { action, reviewNotes, correctedTime, correctedClockIn, correctedClockOut } = parsed.data;
       const auditCtx = getAuditContext(req);
 
       if (action === "deny") {
@@ -2303,8 +2305,11 @@ export async function registerRoutes(
         return res.json(updated);
       }
 
-      if (exception.type === "time_correction" && !correctedTime) {
-        return res.status(400).json({ message: "correctedTime is required for time_correction exceptions" });
+      if (exception.type === "time_correction" && !correctedClockIn && !correctedClockOut && !correctedTime) {
+        return res.status(400).json({
+          message: "At least one of correctedClockIn or correctedClockOut is required for time_correction exceptions",
+          fields: ["correctedClockIn", "correctedClockOut"],
+        });
       }
 
       const correctedTimestamp = correctedTime ? new Date(correctedTime) : exception.exceptionTime;
@@ -2397,25 +2402,78 @@ export async function registerRoutes(
             };
 
             const updateData: Partial<InsertPunchLog> = {};
-            if (!latestRecord.clockOut) {
-              updateData.clockIn = correctedTimestamp!;
-            } else {
-              updateData.clockOut = correctedTimestamp!;
-              const roundedClockInTime = new Date(latestRecord.roundedClockIn ?? latestRecord.clockIn!);
-              const breakMinutes = latestRecord.breakMinutes || 0;
+            const newClockIn = correctedClockIn ? new Date(correctedClockIn) : null;
+            const newClockOut = correctedClockOut ? new Date(correctedClockOut) : null;
 
-              const enforcement = enforceClockOut(
-                roundedClockInTime,
-                correctedTimestamp!,
-                breakMinutes,
-                exceptionAttRules,
-                exceptionPayrollRules,
-                employeeUser,
-                exceptionAttendancePolicy?.policyName,
-              );
-              updateData.roundedClockOut = enforcement.roundedTime;
-              updateData.hoursWorked = enforcement.hoursWorked;
-              updateData.status = enforcement.status;
+            // Backward-compat: if a caller still sends only the legacy
+            // `correctedTime` for a time_correction (pre-task-105 clients),
+            // map it to whichever side is missing — clock-in for an open
+            // shift, clock-out otherwise.
+            if (!newClockIn && !newClockOut && correctedTimestamp) {
+              if (!latestRecord.clockOut) {
+                updateData.clockIn = correctedTimestamp;
+              } else {
+                updateData.clockOut = correctedTimestamp;
+                const roundedClockInTime = new Date(latestRecord.roundedClockIn ?? latestRecord.clockIn!);
+                const enforcement = enforceClockOut(
+                  roundedClockInTime,
+                  correctedTimestamp,
+                  latestRecord.breakMinutes || 0,
+                  exceptionAttRules,
+                  exceptionPayrollRules,
+                  employeeUser,
+                  exceptionAttendancePolicy?.policyName,
+                );
+                updateData.roundedClockOut = enforcement.roundedTime;
+                updateData.hoursWorked = enforcement.hoursWorked;
+                updateData.status = enforcement.status;
+              }
+            } else {
+              const roundingRule = exceptionAttRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+              const roundingInterval = exceptionAttRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+
+              if (newClockIn) {
+                updateData.clockIn = newClockIn;
+                updateData.roundedClockIn = roundTime(newClockIn, roundingRule, roundingInterval);
+              }
+
+              const effectiveRoundedClockIn = updateData.roundedClockIn
+                ?? (latestRecord.roundedClockIn ? new Date(latestRecord.roundedClockIn)
+                  : (latestRecord.clockIn ? new Date(latestRecord.clockIn) : null));
+
+              if (newClockOut) {
+                if (!effectiveRoundedClockIn) {
+                  throw new Error("Cannot apply corrected clock-out without a clock-in time");
+                }
+                const enforcement = enforceClockOut(
+                  effectiveRoundedClockIn,
+                  newClockOut,
+                  latestRecord.breakMinutes || 0,
+                  exceptionAttRules,
+                  exceptionPayrollRules,
+                  employeeUser,
+                  exceptionAttendancePolicy?.policyName,
+                );
+                updateData.clockOut = newClockOut;
+                updateData.roundedClockOut = enforcement.roundedTime;
+                updateData.hoursWorked = enforcement.hoursWorked;
+                updateData.status = enforcement.status;
+              } else if (newClockIn && latestRecord.clockOut && effectiveRoundedClockIn) {
+                // Clock-in changed but clock-out unchanged — recompute hours
+                // against the existing clock-out so the punch stays consistent.
+                const enforcement = enforceClockOut(
+                  effectiveRoundedClockIn,
+                  new Date(latestRecord.clockOut),
+                  latestRecord.breakMinutes || 0,
+                  exceptionAttRules,
+                  exceptionPayrollRules,
+                  employeeUser,
+                  exceptionAttendancePolicy?.policyName,
+                );
+                updateData.roundedClockOut = enforcement.roundedTime;
+                updateData.hoursWorked = enforcement.hoursWorked;
+                updateData.status = enforcement.status;
+              }
             }
 
             const [corrected] = await tx.update(punchLogs).set(updateData).where(eq(punchLogs.id, latestRecord.id)).returning();

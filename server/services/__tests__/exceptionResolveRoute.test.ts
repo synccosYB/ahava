@@ -306,3 +306,192 @@ test("POST /attendance/exceptions/:id/resolve splits OT/double-time using policy
     "status must be 'overtime' for a 14h shift past the 10h OT threshold",
   );
 });
+
+test("POST /attendance/exceptions/:id/resolve applies both correctedClockIn and correctedClockOut for a time_correction approval", async (t) => {
+  const fx = await setupFixture("time-correction-both");
+  t.after(fx.cleanup);
+
+  // Existing closed punch: 9:00–17:00 (8h). Reviewer is correcting the
+  // employee's punch to 8:30–17:30 (9h) so both sides shift.
+  const workDate = "2026-04-23";
+  const originalClockIn = new Date("2026-04-23T09:00:00Z");
+  const originalClockOut = new Date("2026-04-23T17:00:00Z");
+  const correctedClockIn = new Date("2026-04-23T08:30:00Z");
+  const correctedClockOut = new Date("2026-04-23T17:30:00Z");
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn: originalClockIn,
+      roundedClockIn: originalClockIn,
+      clockOut: originalClockOut,
+      roundedClockOut: originalClockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: correctedClockIn,
+      type: "time_correction",
+      reason:
+        "I forgot to log my real start/end. [Original In: 09:00, Original Out: 17:00, Corrected In: 08:30, Corrected Out: 17:30]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({
+      action: "approve",
+      reviewNotes: "approving full time correction",
+      correctedClockIn: correctedClockIn.toISOString(),
+      correctedClockOut: correctedClockOut.toISOString(),
+    }),
+  });
+  assert.equal(
+    res.status,
+    200,
+    `expected 200 from resolve route, got ${res.status} (${await res.text().catch(() => "")})`,
+  );
+
+  const [updatedPunch] = await db
+    .select()
+    .from(punchLogs)
+    .where(eq(punchLogs.id, punch.id));
+  assert.ok(updatedPunch, "punch row should still exist after correction");
+  assert.equal(
+    new Date(updatedPunch.clockIn!).getTime(),
+    correctedClockIn.getTime(),
+    "clockIn should reflect the corrected timestamp",
+  );
+  assert.equal(
+    new Date(updatedPunch.clockOut!).getTime(),
+    correctedClockOut.getTime(),
+    "clockOut should reflect the corrected timestamp",
+  );
+  assert.equal(
+    updatedPunch.hoursWorked,
+    9,
+    "hoursWorked should be recomputed from the corrected in/out (8:30–17:30 = 9h)",
+  );
+  assert.equal(updatedPunch.status, "complete", "status should still be complete under the 10h OT policy");
+  assert.ok(updatedPunch.roundedClockIn, "roundedClockIn should be populated after correcting both sides");
+  assert.ok(updatedPunch.roundedClockOut, "roundedClockOut should be populated after correcting both sides");
+
+  const [resolvedException] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(resolvedException.status, "approved");
+  assert.equal(resolvedException.punchLogId, punch.id);
+});
+
+test("POST /attendance/exceptions/:id/resolve rejects a time_correction approval with no corrected times", async (t) => {
+  const fx = await setupFixture("time-correction-missing-times");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-04-24";
+  const clockIn = new Date("2026-04-24T09:00:00Z");
+  const clockOut = new Date("2026-04-24T17:00:00Z");
+  await db.insert(punchLogs).values({
+    employeeId: fx.employeeId,
+    workDate,
+    clockIn,
+    roundedClockIn: clockIn,
+    clockOut,
+    roundedClockOut: clockOut,
+    hoursWorked: 8,
+    status: "complete",
+    source: "test",
+    approved: true,
+  });
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: clockOut,
+      type: "time_correction",
+      reason: "legacy request without bracketed time info",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "approve" }),
+  });
+  assert.equal(res.status, 400, "approval without any corrected times must 400");
+  const body = await res.json();
+  assert.match(
+    String(body.message || ""),
+    /correctedClockIn.*correctedClockOut|correctedClockOut.*correctedClockIn/,
+    "error message should name both correctedClockIn and correctedClockOut",
+  );
+});
+
+test("POST /attendance/exceptions/:id/resolve still denies a time_correction without any corrected times", async (t) => {
+  const fx = await setupFixture("time-correction-deny-no-times");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-04-25";
+  const clockIn = new Date("2026-04-25T09:00:00Z");
+  const clockOut = new Date("2026-04-25T17:00:00Z");
+  await db.insert(punchLogs).values({
+    employeeId: fx.employeeId,
+    workDate,
+    clockIn,
+    roundedClockIn: clockIn,
+    clockOut,
+    roundedClockOut: clockOut,
+    hoursWorked: 8,
+    status: "complete",
+    source: "test",
+    approved: true,
+  });
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: clockOut,
+      type: "time_correction",
+      reason: "asking to deny this",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "deny", reviewNotes: "not legitimate" }),
+  });
+  assert.equal(res.status, 200, "denying a time_correction must succeed without corrected times");
+
+  const [resolved] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(resolved.status, "denied");
+});
