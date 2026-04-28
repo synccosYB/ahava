@@ -39,6 +39,7 @@ type FixDialogState = {
   origIn: string;
   origOut: string;
   missingPunch: boolean;
+  punchLogId?: string | null;
   editingExceptionId?: string;
   initialReqIn?: string;
   initialReqOut?: string;
@@ -115,13 +116,37 @@ export default function MyAttendance() {
     enabled: isAuthenticated,
   });
 
-  const pendingDates = useMemo(() => {
-    const set = new Set<string>();
+  const pendingByPunchId = useMemo(() => {
+    const map = new Map<string, AttendanceException>();
     (myExceptions || []).forEach((ex) => {
-      if (ex.status === "pending") set.add(ex.exceptionDate);
+      if (ex.status === "pending" && ex.punchLogId) {
+        map.set(ex.punchLogId, ex);
+      }
     });
-    return set;
+    return map;
   }, [myExceptions]);
+
+  // Pending exceptions without a specific punch reference, grouped by date.
+  // These attach to the day's missing/in-progress row when one exists; if not,
+  // they stay only in the "My Correction Requests" list.
+  const pendingUnboundByDate = useMemo(() => {
+    const map = new Map<string, AttendanceException>();
+    (myExceptions || []).forEach((ex) => {
+      if (ex.status === "pending" && !ex.punchLogId) {
+        if (!map.has(ex.exceptionDate)) {
+          map.set(ex.exceptionDate, ex);
+        }
+      }
+    });
+    return map;
+  }, [myExceptions]);
+
+  // Set of dates where this user has any pending unbound request — used by the
+  // standalone "New Correction Request" form to block a duplicate same-date
+  // standalone submission. Row-bound submissions are not blocked by this set.
+  const pendingUnboundDates = useMemo(() => {
+    return new Set(pendingUnboundByDate.keys());
+  }, [pendingUnboundByDate]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -131,6 +156,31 @@ export default function MyAttendance() {
       setSortDir("desc");
     }
   };
+
+  // For each record, decide which (if any) pending exception should drive its
+  // "Pending — Edit" badge. Strict per-punch first; then fall back to a single
+  // missing/in-progress row per date for legacy unbound pending requests.
+  const pendingForRow = useMemo(() => {
+    const map = new Map<string, AttendanceException>();
+    if (!records) return map;
+    records.forEach((r) => {
+      const direct = pendingByPunchId.get(r.id);
+      if (direct) map.set(r.id, direct);
+    });
+    const claimedUnboundDates = new Set<string>();
+    records.forEach((r) => {
+      if (map.has(r.id)) return;
+      const isInProgressRow = r.status === "in-progress" || !r.clockOut;
+      if (!isInProgressRow) return;
+      if (claimedUnboundDates.has(r.date)) return;
+      const unbound = pendingUnboundByDate.get(r.date);
+      if (unbound) {
+        map.set(r.id, unbound);
+        claimedUnboundDates.add(r.date);
+      }
+    });
+    return map;
+  }, [records, pendingByPunchId, pendingUnboundByDate]);
 
   const sortedRecords = useMemo(() => {
     if (!records) return [];
@@ -216,6 +266,7 @@ export default function MyAttendance() {
       origIn: toTimeInputValue(record.clockIn),
       origOut: toTimeInputValue(record.clockOut),
       missingPunch,
+      punchLogId: record.id,
     });
   };
 
@@ -227,16 +278,12 @@ export default function MyAttendance() {
       origIn: parsed.origIn,
       origOut: parsed.origOut,
       missingPunch: ex.type === "missing_punch",
+      punchLogId: ex.punchLogId ?? null,
       editingExceptionId: ex.id,
       initialReqIn: parsed.reqIn,
       initialReqOut: parsed.reqOut,
       initialReason: parsed.reason,
     });
-  };
-
-  const openEditDialogForDate = (date: string) => {
-    const ex = (myExceptions || []).find((e) => e.status === "pending" && e.exceptionDate === date);
-    if (ex) openEditDialog(ex);
   };
 
   return (
@@ -373,7 +420,8 @@ export default function MyAttendance() {
               <TableBody>
                 {sortedRecords.map((record) => {
                   const isInProgress = record.status === "in-progress" || !record.clockOut;
-                  const hasPending = pendingDates.has(record.date);
+                  const pendingException = pendingForRow.get(record.id);
+                  const hasPending = !!pendingException;
                   const overnightInfo = getOvernightShiftInfo(record.date, record.clockOut);
                   return (
                     <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
@@ -433,10 +481,10 @@ export default function MyAttendance() {
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
-                        {hasPending ? (
+                        {hasPending && pendingException ? (
                           <button
                             type="button"
-                            onClick={() => openEditDialogForDate(record.date)}
+                            onClick={() => openEditDialog(pendingException)}
                             title="Edit your pending correction request"
                             data-testid={`badge-pending-fix-${record.id}`}
                             className="inline-flex items-center rounded-md bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800 hover:bg-amber-200 transition-colors"
@@ -469,7 +517,7 @@ export default function MyAttendance() {
       <PunchCorrectionForm
         myExceptions={myExceptions}
         exceptionsLoading={exceptionsLoading}
-        pendingDates={pendingDates}
+        pendingDates={pendingUnboundDates}
         onEdit={openEditDialog}
       />
 
@@ -495,7 +543,7 @@ export default function MyAttendance() {
             </DialogDescription>
           </DialogHeader>
           <CorrectionFormBody
-            key={fixDialog.editingExceptionId || fixDialog.date || "new"}
+            key={fixDialog.editingExceptionId || fixDialog.punchLogId || fixDialog.date || "new"}
             initialDate={fixDialog.date}
             initialOrigIn={fixDialog.origIn}
             initialOrigOut={fixDialog.origOut}
@@ -504,6 +552,8 @@ export default function MyAttendance() {
             initialReason={fixDialog.initialReason}
             missingPunch={fixDialog.missingPunch}
             editingExceptionId={fixDialog.editingExceptionId}
+            punchLogId={fixDialog.punchLogId ?? null}
+            pendingPunchIds={pendingByPunchId}
             lockDate
             onSuccess={() => setFixDialog((prev) => ({ ...prev, open: false }))}
           />
@@ -523,6 +573,8 @@ type CorrectionFormBodyProps = {
   missingPunch?: boolean;
   lockDate?: boolean;
   pendingDates?: Set<string>;
+  pendingPunchIds?: Map<string, AttendanceException>;
+  punchLogId?: string | null;
   editingExceptionId?: string;
   onSuccess?: () => void;
 };
@@ -537,6 +589,8 @@ function CorrectionFormBody({
   missingPunch = false,
   lockDate = false,
   pendingDates,
+  pendingPunchIds,
+  punchLogId,
   editingExceptionId,
   onSuccess,
 }: CorrectionFormBodyProps) {
@@ -550,8 +604,19 @@ function CorrectionFormBody({
   const [reqOut, setReqOut] = useState(initialReqOut);
   const [reason, setReason] = useState(defaultReason);
 
+  // Block duplicates on a per-punch basis when a punch is linked, otherwise
+  // fall back to the legacy per-date check (which now only counts pending
+  // requests with no punch reference — see `pendingUnboundDates`).
+  const hasPendingForPunch =
+    !isEditing && !!punchLogId && !!pendingPunchIds && pendingPunchIds.has(punchLogId);
   const hasPendingForDate =
-    !isEditing && !!(date && pendingDates && pendingDates.has(date));
+    !isEditing &&
+    !punchLogId &&
+    !!(date && pendingDates && pendingDates.has(date));
+  const blockDuplicate = hasPendingForPunch || hasPendingForDate;
+  const duplicateMessage = hasPendingForPunch
+    ? "A correction request for this punch is already pending review."
+    : "A correction request for this date is already pending review.";
 
   const correctionCountKey = isEditing
     ? ["/api/attendance/exceptions/correction-counts/me", { excludeId: editingExceptionId }]
@@ -588,13 +653,16 @@ function CorrectionFormBody({
       if (reqIn) timeInfo.push(`Corrected In: ${reqIn}`);
       if (reqOut) timeInfo.push(`Corrected Out: ${reqOut}`);
       const fullReason = `${reason}${timeInfo.length > 0 ? ` [${timeInfo.join(", ")}]` : ""}`;
-      const payload = {
+      const payload: Record<string, unknown> = {
         exceptionDate: date,
         type: missingPunch ? "missing_punch" : "time_correction",
         reason: fullReason,
       };
       if (isEditing) {
         return apiRequest("PATCH", `/api/attendance/exceptions/${editingExceptionId}`, payload);
+      }
+      if (punchLogId) {
+        payload.punchLogId = punchLogId;
       }
       return apiRequest("POST", "/api/attendance/exceptions", payload);
     },
@@ -722,14 +790,14 @@ function CorrectionFormBody({
           )}
         </div>
       )}
-      {hasPendingForDate && !lockDate && (
+      {blockDuplicate && (
         <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="text-duplicate-warning">
-          A correction request for this date is already pending review.
+          {duplicateMessage}
         </p>
       )}
       <Button
         onClick={() => submitMutation.mutate()}
-        disabled={!date || !reason || submitMutation.isPending || (missingPunch && !reqOut) || hasPendingForDate}
+        disabled={!date || !reason || submitMutation.isPending || (missingPunch && !reqOut) || blockDuplicate}
         className="w-full"
         data-testid="button-submit-correction"
       >

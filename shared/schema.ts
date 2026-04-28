@@ -322,7 +322,6 @@ export const insertAttendanceExceptionSchema = createInsertSchema(attendanceExce
   reviewedBy: true,
   reviewedAt: true,
   reviewNotes: true,
-  punchLogId: true,
 });
 export type InsertAttendanceException = z.infer<typeof insertAttendanceExceptionSchema>;
 export type AttendanceException = typeof attendanceExceptions.$inferSelect;

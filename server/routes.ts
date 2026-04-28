@@ -2337,7 +2337,7 @@ export async function registerRoutes(
   app.post("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
-      const { exceptionDate, exceptionTime, type, reason } = req.body;
+      const { exceptionDate, exceptionTime, type, reason, punchLogId } = req.body;
 
       if (!exceptionDate || !type || !reason) {
         return res.status(400).json({ message: "Date, type, and reason are required" });
@@ -2348,6 +2348,36 @@ export async function registerRoutes(
         return res.status(400).json({ message: `Invalid type. Must be one of: ${validTypes.join(", ")}` });
       }
 
+      let resolvedPunchLogId: string | null = null;
+      if (typeof punchLogId === "string" && punchLogId.length > 0) {
+        const punchLog = await storage.getPunchLog(punchLogId);
+        if (!punchLog || punchLog.employeeId !== userId) {
+          return res.status(400).json({ message: "Invalid punch reference" });
+        }
+        if (punchLog.workDate !== exceptionDate) {
+          return res.status(400).json({ message: "Punch reference does not match the request date" });
+        }
+        resolvedPunchLogId = punchLogId;
+      }
+
+      // Duplicate-prevention: a second pending request is blocked for the same
+      // punch (when punchLogId is provided) or for the same date when no punch
+      // is linked. Sibling rows on the same date may still submit their own
+      // request because each has its own punchLogId.
+      const existingExceptions = await storage.getAttendanceExceptionsByEmployee(userId);
+      const duplicate = existingExceptions.find(ex => {
+        if (ex.status !== "pending" || ex.exceptionDate !== exceptionDate) return false;
+        if (resolvedPunchLogId) return ex.punchLogId === resolvedPunchLogId;
+        return ex.punchLogId === null;
+      });
+      if (duplicate) {
+        return res.status(409).json({
+          message: resolvedPunchLogId
+            ? "A correction request for this punch is already pending review."
+            : "A correction request for this date is already pending review.",
+        });
+      }
+
       const exception = await storage.createAttendanceException({
         employeeId: userId,
         exceptionDate,
@@ -2355,6 +2385,7 @@ export async function registerRoutes(
         type,
         reason,
         status: "pending",
+        punchLogId: resolvedPunchLogId,
       });
 
       runWorkflowsForTrigger({
