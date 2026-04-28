@@ -315,16 +315,22 @@ export function enforceClockOut(
   const overtimeMultiplier = payrollRules.overtimeMultiplier ?? DEFAULT_PAYROLL_RULES.overtimeMultiplier;
   const doubleTimeMultiplier = payrollRules.doubleTimeMultiplier ?? DEFAULT_PAYROLL_RULES.doubleTimeMultiplier;
   const doubleTimeThresholdDaily = payrollRules.doubleTimeThresholdDaily ?? DEFAULT_PAYROLL_RULES.doubleTimeThresholdDaily;
+  // Per-rule on/off toggles. Treat missing flags as `true` so existing
+  // payroll policies (which were saved before these toggles existed) keep
+  // computing overtime / double-time exactly as they used to.
+  const autoCalculateOT = payrollRules.autoCalculateOT !== false;
+  const overtimeEnabled = payrollRules.overtimeEnabled !== false;
+  const doubleTimeEnabled = payrollRules.doubleTimeEnabled !== false;
 
   let overtimeHours = 0;
   let doubleTimeHours = 0;
   let status = "complete";
 
-  if (hoursWorked > otThresholdDaily) {
+  if (autoCalculateOT && overtimeEnabled && hoursWorked > otThresholdDaily) {
     status = "overtime";
     const totalOtHours = hoursWorked - otThresholdDaily;
 
-    if (doubleTimeThresholdDaily && hoursWorked > doubleTimeThresholdDaily) {
+    if (doubleTimeEnabled && doubleTimeThresholdDaily && hoursWorked > doubleTimeThresholdDaily) {
       doubleTimeHours = Math.round((hoursWorked - doubleTimeThresholdDaily) * 100) / 100;
       overtimeHours = Math.round((doubleTimeThresholdDaily - otThresholdDaily) * 100) / 100;
     } else {

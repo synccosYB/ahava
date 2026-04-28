@@ -127,6 +127,137 @@ test("exception approval honors a non-default daily overtime threshold (regressi
   assert.equal(enforcement.doubleTimeHours, 0);
 });
 
+test("legacy payroll rules with no enabled flags still compute OT and double-time exactly as before", () => {
+  // Regression for task #146: payroll policies saved before per-rule on/off
+  // toggles existed have no `overtimeEnabled` / `doubleTimeEnabled` fields.
+  // The engine must treat missing flags as `true` so existing customers see
+  // identical results.
+  const roundedClockIn = new Date(2026, 3, 21, 6, 0, 0, 0);
+  const correctedClockOut = new Date(2026, 3, 21, 22, 0, 0, 0); // 16h shift
+
+  const attendanceRules = {
+    roundingRule: "none",
+    roundingIntervalMinutes: 15,
+    otThresholdDaily: 8,
+  };
+  // Intentionally no `overtimeEnabled` / `doubleTimeEnabled` keys here.
+  const legacyPayrollRules = {
+    overtimeMultiplier: 1.5,
+    doubleTimeMultiplier: 2.0,
+    doubleTimeThresholdDaily: 12,
+  };
+
+  const enforcement = enforceClockOut(
+    roundedClockIn,
+    correctedClockOut,
+    0,
+    attendanceRules,
+    legacyPayrollRules,
+    fakeUser,
+  );
+
+  assert.equal(enforcement.hoursWorked, 16);
+  assert.equal(enforcement.status, "overtime");
+  // 8h -> 12h = 4h OT, 12h -> 16h = 4h double-time (legacy default behavior).
+  assert.equal(enforcement.overtimeHours, 4);
+  assert.equal(enforcement.doubleTimeHours, 4);
+});
+
+test("payroll Overtime turned off pays everything at straight time", () => {
+  // 16h shift, attendance OT threshold 8h, but Overtime rule explicitly off.
+  // Expectation: status stays 'complete' and no OT/DT hours accrue, even
+  // though the worker went well past the daily threshold.
+  const roundedClockIn = new Date(2026, 3, 21, 6, 0, 0, 0);
+  const correctedClockOut = new Date(2026, 3, 21, 22, 0, 0, 0);
+
+  const attendanceRules = {
+    roundingRule: "none",
+    roundingIntervalMinutes: 15,
+    otThresholdDaily: 8,
+  };
+  const payrollRules = {
+    ...DEFAULT_PAYROLL_RULES,
+    overtimeEnabled: false,
+  };
+
+  const enforcement = enforceClockOut(
+    roundedClockIn,
+    correctedClockOut,
+    0,
+    attendanceRules,
+    payrollRules,
+    fakeUser,
+  );
+
+  assert.equal(enforcement.hoursWorked, 16);
+  assert.equal(enforcement.status, "complete");
+  assert.equal(enforcement.overtimeHours, 0);
+  assert.equal(enforcement.doubleTimeHours, 0);
+});
+
+test("payroll Double-time turned off keeps OT but skips the double-time tier", () => {
+  // 16h shift, OT after 8h, double-time tier explicitly off. Expect all 8
+  // overtime hours to accrue at the OT multiplier with zero double-time
+  // hours, instead of splitting 4h OT + 4h DT.
+  const roundedClockIn = new Date(2026, 3, 21, 6, 0, 0, 0);
+  const correctedClockOut = new Date(2026, 3, 21, 22, 0, 0, 0);
+
+  const attendanceRules = {
+    roundingRule: "none",
+    roundingIntervalMinutes: 15,
+    otThresholdDaily: 8,
+  };
+  const payrollRules = {
+    ...DEFAULT_PAYROLL_RULES,
+    doubleTimeEnabled: false,
+  };
+
+  const enforcement = enforceClockOut(
+    roundedClockIn,
+    correctedClockOut,
+    0,
+    attendanceRules,
+    payrollRules,
+    fakeUser,
+  );
+
+  assert.equal(enforcement.hoursWorked, 16);
+  assert.equal(enforcement.status, "overtime");
+  assert.equal(enforcement.overtimeHours, 8);
+  assert.equal(enforcement.doubleTimeHours, 0);
+});
+
+test("payroll Auto-Calculate Overtime turned off skips OT/DT auto-computation entirely", () => {
+  // 16h shift well past every threshold, but autoCalculateOT explicitly off.
+  // Expectation: no OT/DT auto-calculated; status remains 'complete'.
+  const roundedClockIn = new Date(2026, 3, 21, 6, 0, 0, 0);
+  const correctedClockOut = new Date(2026, 3, 21, 22, 0, 0, 0);
+
+  const attendanceRules = {
+    roundingRule: "none",
+    roundingIntervalMinutes: 15,
+    otThresholdDaily: 8,
+  };
+  const payrollRules = {
+    ...DEFAULT_PAYROLL_RULES,
+    autoCalculateOT: false,
+  };
+
+  const enforcement = enforceClockOut(
+    roundedClockIn,
+    correctedClockOut,
+    0,
+    attendanceRules,
+    payrollRules,
+    fakeUser,
+  );
+
+  assert.equal(enforcement.hoursWorked, 16);
+  assert.equal(enforcement.status, "complete");
+  assert.equal(enforcement.overtimeHours, 0);
+  assert.equal(enforcement.doubleTimeHours, 0);
+});
+
 test("exception approval splits overtime/double-time using the configured policy thresholds", () => {
   // Custom policy: OT after 10h, double-time after 13h. A corrected 14h shift
   // should yield 3h OT (10h -> 13h) and 1h double-time (13h -> 14h).

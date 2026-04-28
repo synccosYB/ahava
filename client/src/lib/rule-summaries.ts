@@ -122,23 +122,31 @@ export function summarizePayrollPolicy(rules: Record<string, any>): string[] {
     out.push(line + ".");
   }
 
+  // Treat missing on/off flags as `true` so legacy policies keep summarizing
+  // exactly as they did before per-rule toggles existed.
+  const overtimeEnabled = rules.overtimeEnabled !== false;
+  const doubleTimeEnabled = rules.doubleTimeEnabled !== false;
   const otThresh = Number(rules.overtimeThresholdHours);
   const otMult = Number(rules.overtimeMultiplier);
-  if (Number.isFinite(otThresh) && Number.isFinite(otMult)) {
+  if (!overtimeEnabled) {
+    out.push("Overtime: off.");
+  } else if (Number.isFinite(otThresh) && Number.isFinite(otMult)) {
     out.push(`Overtime over ${otThresh} hrs/week at ${otMult}×.`);
   }
   const dotThresh = Number(rules.doubleOtThreshold);
   const dotMult = Number(rules.doubleTimeMultiplier);
-  if (Number.isFinite(dotThresh) && Number.isFinite(dotMult)) {
+  if (!doubleTimeEnabled) {
+    out.push("Double-time: off.");
+  } else if (Number.isFinite(dotThresh) && Number.isFinite(dotMult)) {
     out.push(`Double-time over ${dotThresh} hrs/day at ${dotMult}×.`);
   }
-  if (rules.includeHolidayPay === true) {
+  if (rules.includeHolidayPay === false) {
+    out.push("Holiday pay: off.");
+  } else if (rules.includeHolidayPay === true) {
     out.push("Holiday pay included.");
-  } else if (rules.includeHolidayPay === false) {
-    out.push("Holiday pay not included.");
   }
   if (rules.autoCalculateOT === false) {
-    out.push("Overtime calculated manually.");
+    out.push("Auto-calculate overtime: off.");
   }
 
   if (Array.isArray(rules.dayOfWeekBonuses)) {

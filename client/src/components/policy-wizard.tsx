@@ -87,8 +87,10 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
           options: PAYDAY_OPTIONS,
           showWhen: (r) => r?.payPeriodType === "weekly" || r?.payPeriodType === "biweekly",
         },
+        { key: "overtimeEnabled", label: "Overtime Enabled", type: "boolean", description: "Whether overtime hours are tracked and paid at the OT multiplier", defaultValue: true },
         { key: "overtimeThresholdHours", label: "OT Threshold (hours/week)", type: "number", description: "Weekly hours threshold before overtime kicks in", defaultValue: 40, min: 20, max: 60 },
         { key: "overtimeMultiplier", label: "OT Multiplier", type: "number", description: "Pay multiplier for overtime hours (e.g. 1.5 = time and a half)", defaultValue: 1.5, min: 1, max: 3 },
+        { key: "doubleTimeEnabled", label: "Double-Time Enabled", type: "boolean", description: "Whether double-time pay applies past the daily threshold", defaultValue: true },
         { key: "doubleOtThreshold", label: "Double OT Threshold (hours/day)", type: "number", description: "Daily hours threshold for double-time pay", defaultValue: 12, min: 8, max: 24 },
         { key: "doubleTimeMultiplier", label: "Double OT Multiplier", type: "number", description: "Pay multiplier for double overtime hours", defaultValue: 2.0, min: 1.5, max: 4 },
         { key: "includeHolidayPay", label: "Include Holiday Pay", type: "boolean", description: "Automatically calculate holiday pay for eligible employees", defaultValue: true },
@@ -107,6 +109,84 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
       return [];
   }
 }
+
+// Payroll rules are organized into "groups" so admins can flip individual
+// rules on/off (e.g. turn off Double-time without faking the threshold).
+// The pay period selector is intentionally not toggleable — a policy must
+// always have a pay period.
+type PayrollRuleGroup =
+  | { kind: "static"; title: string; description?: string; field: RuleFieldDef }
+  | {
+      kind: "toggle";
+      title: string;
+      description?: string;
+      enabledKey: string;
+      offSummary: string;
+      fields: RuleFieldDef[];
+    };
+
+function getPayrollRuleGroups(ruleFields: RuleFieldDef[]): PayrollRuleGroup[] {
+  const byKey: Record<string, RuleFieldDef> = {};
+  for (const f of ruleFields) byKey[f.key] = f;
+  const groups: PayrollRuleGroup[] = [];
+  if (byKey.payPeriodType) {
+    groups.push({
+      kind: "static",
+      title: "Pay Period",
+      description: "Required — every payroll policy must have a pay period.",
+      field: byKey.payPeriodType,
+    });
+  }
+  groups.push({
+    kind: "toggle",
+    title: "Overtime",
+    description: "Pay extra for hours over the weekly OT threshold.",
+    enabledKey: "overtimeEnabled",
+    offSummary: "Overtime: off",
+    fields: [byKey.overtimeThresholdHours, byKey.overtimeMultiplier].filter(Boolean) as RuleFieldDef[],
+  });
+  groups.push({
+    kind: "toggle",
+    title: "Double-Time",
+    description: "Pay an even higher multiplier for hours past the daily double-time threshold.",
+    enabledKey: "doubleTimeEnabled",
+    offSummary: "Double-time: off",
+    fields: [byKey.doubleOtThreshold, byKey.doubleTimeMultiplier].filter(Boolean) as RuleFieldDef[],
+  });
+  groups.push({
+    kind: "toggle",
+    title: "Holiday Pay",
+    description: "Automatically calculate holiday pay for eligible employees.",
+    enabledKey: "includeHolidayPay",
+    offSummary: "Holiday pay: off",
+    fields: [],
+  });
+  groups.push({
+    kind: "toggle",
+    title: "Auto-Calculate Overtime",
+    description: "Automatically calculate overtime based on time records.",
+    enabledKey: "autoCalculateOT",
+    offSummary: "Auto-calculate overtime: off",
+    fields: [],
+  });
+  return groups;
+}
+
+// Treat missing on/off flags as `true` so legacy payroll policies keep
+// behaving exactly as they did before per-rule toggles existed.
+function isPayrollRuleEnabled(rulesForm: Record<string, any>, enabledKey: string): boolean {
+  return rulesForm[enabledKey] !== false;
+}
+
+// Field keys whose value is gated by a payroll on/off toggle. Used by
+// validation so a disabled Double-time rule, for example, can't fail the
+// wizard for a missing/zero threshold.
+const PAYROLL_FIELD_TO_ENABLE_KEY: Record<string, string> = {
+  overtimeThresholdHours: "overtimeEnabled",
+  overtimeMultiplier: "overtimeEnabled",
+  doubleOtThreshold: "doubleTimeEnabled",
+  doubleTimeMultiplier: "doubleTimeEnabled",
+};
 
 function getPolicyTypeIcon(key: string) {
   switch (key) {
@@ -271,6 +351,15 @@ export function PolicyWizard({
     if (step === 1) {
       visibleRuleFields.forEach((field) => {
         if (field.type === "number") {
+          // Skip validation when this field belongs to a payroll rule whose
+          // on/off toggle is currently off — admins shouldn't be blocked by
+          // a stale value sitting inside a disabled rule.
+          if (selectedTypeKey === "payroll") {
+            const enableKey = PAYROLL_FIELD_TO_ENABLE_KEY[field.key];
+            if (enableKey && !isPayrollRuleEnabled(rulesForm, enableKey)) {
+              return;
+            }
+          }
           const val = rulesForm[field.key];
           if (val === undefined || val === null || val === "") {
             newErrors[field.key] = `${field.label} is required`;
@@ -1170,6 +1259,116 @@ function EarlyArrivalBonusEditor({
   );
 }
 
+function PayrollRuleGroupCard({
+  group, rulesForm, setRulesForm, errors,
+}: {
+  group: PayrollRuleGroup;
+  rulesForm: Record<string, any>;
+  setRulesForm: (v: Record<string, any>) => void;
+  errors: Record<string, string>;
+}) {
+  if (group.kind === "static") {
+    const field = group.field;
+    return (
+      <div className="p-3 rounded-lg border bg-card" data-testid={`payroll-rule-group-${field.key}`}>
+        <div className="flex items-start justify-between gap-4 mb-2">
+          <div>
+            <Label className="font-medium">{group.title}</Label>
+            {group.description && (
+              <p className="text-xs text-muted-foreground mt-0.5">{group.description}</p>
+            )}
+          </div>
+        </div>
+        {field.type === "select" ? (
+          <Select
+            value={rulesForm[field.key] || field.defaultValue}
+            onValueChange={(v) => setRulesForm({ ...rulesForm, [field.key]: v })}
+          >
+            <SelectTrigger data-testid={`select-wizard-rule-${field.key}`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {field.options?.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Input
+            type={field.type}
+            value={rulesForm[field.key] ?? ""}
+            onChange={(e) => setRulesForm({
+              ...rulesForm,
+              [field.key]: field.type === "number"
+                ? (e.target.value === "" ? "" : parseFloat(e.target.value))
+                : e.target.value,
+            })}
+            min={field.min}
+            max={field.max}
+            data-testid={`input-wizard-rule-${field.key}`}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // toggle group
+  const enabled = isPayrollRuleEnabled(rulesForm, group.enabledKey);
+  return (
+    <div
+      className="p-3 rounded-lg border bg-card"
+      data-testid={`payroll-rule-group-${group.enabledKey}`}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1">
+          <Label className="font-medium">{group.title}</Label>
+          {group.description && (
+            <p className="text-xs text-muted-foreground mt-0.5">{group.description}</p>
+          )}
+        </div>
+        <Switch
+          checked={enabled}
+          onCheckedChange={(v) => setRulesForm({ ...rulesForm, [group.enabledKey]: v })}
+          data-testid={`switch-wizard-rule-${group.enabledKey}`}
+        />
+      </div>
+      {group.fields.length > 0 && (
+        <div
+          className={`mt-3 space-y-3 ${enabled ? "" : "opacity-50 pointer-events-none"}`}
+          aria-disabled={!enabled}
+          data-testid={`payroll-rule-group-fields-${group.enabledKey}`}
+        >
+          {group.fields.map((field) => (
+            <div key={field.key}>
+              <Label className="text-sm">{field.label}</Label>
+              <p className="text-xs text-muted-foreground mt-0.5 mb-1">{field.description}</p>
+              <Input
+                type={field.type}
+                value={rulesForm[field.key] ?? ""}
+                onChange={(e) => setRulesForm({
+                  ...rulesForm,
+                  [field.key]: field.type === "number"
+                    ? (e.target.value === "" ? "" : parseFloat(e.target.value))
+                    : e.target.value,
+                })}
+                min={field.min}
+                max={field.max}
+                disabled={!enabled}
+                data-testid={`input-wizard-rule-${field.key}`}
+              />
+              {enabled && errors[field.key] && (
+                <p className="text-sm text-destructive mt-1 flex items-center gap-1" data-testid={`error-rule-${field.key}`}>
+                  <AlertCircle className="h-3 w-3" /> {errors[field.key]}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StepRules({
   ruleFields, rulesForm, setRulesForm, errors, policyTypeKey,
 }: {
@@ -1210,7 +1409,17 @@ function StepRules({
             errors={errors}
           />
         )}
-        {ruleFields.map((field) => (
+        {policyTypeKey === "payroll"
+          ? getPayrollRuleGroups(ruleFields).map((group) => (
+              <PayrollRuleGroupCard
+                key={group.kind === "static" ? `static-${group.field.key}` : `toggle-${group.enabledKey}`}
+                group={group}
+                rulesForm={rulesForm}
+                setRulesForm={setRulesForm}
+                errors={errors}
+              />
+            ))
+          : ruleFields.map((field) => (
           <div key={field.key} className="p-3 rounded-lg border bg-card">
             {field.type === "boolean" ? (
               <div className="flex items-start justify-between gap-4">
@@ -1447,30 +1656,88 @@ function StepReview({
       {ruleFields.length > 0 && (
         <div className="rounded-lg border p-4">
           <Label className="text-xs text-muted-foreground uppercase tracking-wider mb-3 block">Rules Configuration</Label>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {ruleFields.map((field) => {
+          {(() => {
+            const formatFieldDisplay = (field: RuleFieldDef): string => {
               const raw = rulesForm[field.key];
-              let display: string;
               if (field.type === "boolean") {
-                display = raw ? "Yes" : "No";
-              } else if (field.type === "select") {
-                if (raw === null || raw === undefined || raw === "") {
-                  display = field.nullable ? "Not set" : "—";
-                } else {
-                  const match = field.options?.find((o) => o.value === String(raw));
-                  display = match?.label ?? String(raw);
-                }
-              } else {
-                display = raw === undefined || raw === null || raw === "" ? "—" : String(raw);
+                return raw ? "Yes" : "No";
               }
+              if (field.type === "select") {
+                if (raw === null || raw === undefined || raw === "") {
+                  return field.nullable ? "Not set" : "—";
+                }
+                const match = field.options?.find((o) => o.value === String(raw));
+                return match?.label ?? String(raw);
+              }
+              return raw === undefined || raw === null || raw === "" ? "—" : String(raw);
+            };
+
+            if (selectedTypeKey === "payroll") {
               return (
-                <div key={field.key} className="text-sm" data-testid={`review-rule-${field.key}`}>
-                  <span className="text-muted-foreground">{field.label}:</span>{" "}
-                  <span className="font-medium">{display}</span>
+                <div className="space-y-1">
+                  {getPayrollRuleGroups(ruleFields).map((group) => {
+                    if (group.kind === "static") {
+                      const field = group.field;
+                      return (
+                        <div
+                          key={`static-${field.key}`}
+                          className="text-sm"
+                          data-testid={`review-rule-${field.key}`}
+                        >
+                          <span className="text-muted-foreground">{group.title}:</span>{" "}
+                          <span className="font-medium">{formatFieldDisplay(field)}</span>
+                        </div>
+                      );
+                    }
+                    const enabled = isPayrollRuleEnabled(rulesForm, group.enabledKey);
+                    return (
+                      <div
+                        key={`toggle-${group.enabledKey}`}
+                        className="text-sm"
+                        data-testid={`review-rule-${group.enabledKey}`}
+                      >
+                        {enabled ? (
+                          group.fields.length === 0 ? (
+                            <>
+                              <span className="text-muted-foreground">{group.title}:</span>{" "}
+                              <span className="font-medium">On</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-muted-foreground">{group.title}:</span>{" "}
+                              <span className="font-medium">
+                                {group.fields
+                                  .map((f) => `${f.label} = ${formatFieldDisplay(f)}`)
+                                  .join(", ")}
+                              </span>
+                            </>
+                          )
+                        ) : (
+                          <span
+                            className="font-medium text-muted-foreground"
+                            data-testid={`review-rule-off-${group.enabledKey}`}
+                          >
+                            {group.offSummary}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
-            })}
-          </div>
+            }
+
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {ruleFields.map((field) => (
+                  <div key={field.key} className="text-sm" data-testid={`review-rule-${field.key}`}>
+                    <span className="text-muted-foreground">{field.label}:</span>{" "}
+                    <span className="font-medium">{formatFieldDisplay(field)}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
           {selectedTypeKey === "payroll" && Array.isArray(rulesForm.dayOfWeekBonuses) && rulesForm.dayOfWeekBonuses.length > 0 && (
             <div className="mt-4 pt-3 border-t">
               <Label className="text-xs text-muted-foreground uppercase tracking-wider mb-2 block">Day-of-Week Bonuses</Label>
