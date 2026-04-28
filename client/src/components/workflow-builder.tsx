@@ -71,7 +71,7 @@ const CONDITION_FIELDS: ConditionField[] = [
   { value: "employee_department", label: "Employee department", description: "The department the employee belongs to", unit: "", placeholder: "e.g. Engineering", quickPicks: [], numeric: false },
   { value: "employee_location", label: "Employee location", description: "The location the employee works from", unit: "", placeholder: "e.g. Remote", quickPicks: [], numeric: false },
   { value: "late_count_month", label: "Late arrivals this month", description: "How many times the employee was late this month", unit: "times", placeholder: "e.g. 3", quickPicks: [1, 3, 5], numeric: true },
-  { value: "pto_balance", label: "PTO balance", description: "Remaining PTO days the employee has", unit: "days", placeholder: "e.g. 10", quickPicks: [0, 5, 10], numeric: true },
+  { value: "pto_balance", label: "PTO balance", description: "Remaining PTO hours the employee has", unit: "hours", placeholder: "e.g. 80", quickPicks: [0, 40, 80], numeric: true },
   { value: "overtime_hours", label: "Overtime hours", description: "Number of overtime hours worked", unit: "hours", placeholder: "e.g. 8", quickPicks: [1, 4, 8], numeric: true },
 ];
 
@@ -117,7 +117,7 @@ const ACTION_TYPES: ActionType[] = [
   { value: "deny_request", label: "Deny the request", description: "Mark the request as denied", icon: XCircle },
   { value: "generate_alert", label: "Create an alert", description: "Show an alert to the right people", icon: AlertCircle },
   { value: "generate_warning", label: "Issue a written warning", description: "Add a written warning to the employee record", icon: FileWarning },
-  { value: "update_balance", label: "Update PTO balance", description: "Adjust the employee's remaining PTO days", icon: RefreshCw },
+  { value: "update_balance", label: "Update PTO balance", description: "Adjust the employee's remaining PTO hours", icon: RefreshCw },
 ];
 
 interface NotificationType {

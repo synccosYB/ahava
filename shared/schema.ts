@@ -398,8 +398,8 @@ export const timeOffBalances = pgTable("time_off_balances", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id),
   type: varchar("type", { length: 30 }).notNull(),
-  totalDays: integer("total_days").default(0).notNull(),
-  usedDays: integer("used_days").default(0).notNull(),
+  totalHours: integer("total_hours").default(0).notNull(),
+  usedHours: integer("used_hours").default(0).notNull(),
   year: integer("year").notNull(),
 });
 

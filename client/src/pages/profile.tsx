@@ -46,10 +46,6 @@ interface ProfileDetails {
   payType: string;
   hireDate: string | null;
   overtimeEligible: boolean;
-
-  vacationBalance: number;
-  sickBalance: number;
-  personalBalance: number;
 }
 
 function initials(first: string, last: string) {

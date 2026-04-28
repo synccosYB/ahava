@@ -125,10 +125,10 @@ export async function applyPtoAnniversaryAdjustments(): Promise<{
       let oldTotal: number | null = null;
       let newTotal: number | null = null;
       if (balance) {
-        oldTotal = balance.totalDays ?? 0;
+        oldTotal = balance.totalHours ?? 0;
         newTotal = oldTotal + hoursAdded;
         await storage.updateTimeOffBalance(balance.id, {
-          totalDays: newTotal,
+          totalHours: newTotal,
         });
       } else if (hoursAdded !== 0) {
         oldTotal = 0;
@@ -137,8 +137,8 @@ export async function applyPtoAnniversaryAdjustments(): Promise<{
           userId: employee.id,
           type: "vacation",
           year: today.year,
-          totalDays: hoursAdded,
-          usedDays: 0,
+          totalHours: hoursAdded,
+          usedHours: 0,
         });
       }
 

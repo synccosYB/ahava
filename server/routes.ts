@@ -1790,9 +1790,9 @@ export async function registerRoutes(
         hireDate: emp?.hireDate ?? null,
         overtimeEligible: emp?.overtimeEligible ?? false,
 
-        vacationBalance: vacationBalance ? vacationBalance.totalDays - vacationBalance.usedDays : 0,
-        sickBalance: sickBalance ? sickBalance.totalDays - sickBalance.usedDays : 0,
-        personalBalance: personalBalance ? personalBalance.totalDays - personalBalance.usedDays : 0,
+        vacationBalance: vacationBalance ? vacationBalance.totalHours - vacationBalance.usedHours : 0,
+        sickBalance: sickBalance ? sickBalance.totalHours - sickBalance.usedHours : 0,
+        personalBalance: personalBalance ? personalBalance.totalHours - personalBalance.usedHours : 0,
       });
     } catch (err) {
       console.error("[GET /api/profile/details]", err);

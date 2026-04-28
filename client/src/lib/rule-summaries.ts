@@ -204,7 +204,7 @@ export function summarizeApprovalsPolicy(rules: Record<string, any>): string[] {
   }
   const autoT = Number(rules.autoApproveThreshold);
   if (Number.isFinite(autoT) && autoT > 0) {
-    out.push(`Auto-approves PTO requests of ${autoT} day${autoT === 1 ? "" : "s"} or shorter.`);
+    out.push(`Auto-approves PTO requests of ${autoT} hour${autoT === 1 ? "" : "s"} or shorter.`);
   }
   const esc = Number(rules.escalationHours);
   if (Number.isFinite(esc)) {

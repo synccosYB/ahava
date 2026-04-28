@@ -1311,7 +1311,7 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
                   >
                     {formatDays(projectedRemaining)}
                   </span>{" "}
-                  <span className="text-muted-foreground">day{projectedRemaining === 1 ? "" : "s"} remaining</span>
+                  <span className="text-muted-foreground">hr{projectedRemaining === 1 ? "" : "s"} remaining</span>
                 </p>
                 {projectedExceeds && (
                   <p

@@ -239,7 +239,7 @@ export default function TimeOff() {
                       >
                         {formatDays(bucket.remaining)}
                       </span>
-                      <span className="text-sm text-muted-foreground"> day{bucket.remaining === 1 ? "" : "s"} remaining</span>
+                      <span className="text-sm text-muted-foreground"> hr{bucket.remaining === 1 ? "" : "s"} remaining</span>
                     </p>
                     <p className="text-xs text-muted-foreground mt-1">
                       <span data-testid={`text-balance-used-${bucketKey}`}>{formatDays(bucket.used)}</span> used of{" "}

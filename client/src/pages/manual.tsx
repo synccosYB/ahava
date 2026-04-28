@@ -433,7 +433,7 @@ export default function ManualPage() {
                 "In the \"New Request\" form, select the request type (Vacation, Sick Leave, or Personal).",
                 "Choose your start and end dates. The system automatically calculates business days.",
                 "Optionally, add a reason for your request.",
-                "Review the \"Days Requested\" summary shown below.",
+                "Review the \"Hours Requested\" summary shown below.",
                 "Click \"Submit Request\" to send it to your manager for approval.",
               ]} />
               <p className="text-sm text-foreground/80 leading-relaxed">
@@ -654,8 +654,8 @@ export default function ManualPage() {
                 against a value you set:
               </p>
               <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
-                <li><strong>days_requested</strong> — number of days an employee asked for.</li>
-                <li><strong>pto_balance</strong> — remaining PTO days the employee has.</li>
+                <li><strong>hours_requested</strong> — number of hours an employee asked for.</li>
+                <li><strong>pto_balance</strong> — remaining PTO hours the employee has.</li>
                 <li><strong>late_count_month</strong> — late arrivals so far this month.</li>
                 <li><strong>overtime_hours</strong> — overtime hours worked.</li>
                 <li><strong>employee_department</strong> — the employee's department.</li>
@@ -691,7 +691,7 @@ export default function ManualPage() {
                 <li><strong>Deny</strong> — mark the request as denied.</li>
                 <li><strong>Generate Alert</strong> — raise a system alert for admins/managers.</li>
                 <li><strong>Generate Written Warning</strong> — add a written warning to the employee's record.</li>
-                <li><strong>Update PTO Balance</strong> — adjust the employee's remaining PTO days.</li>
+                <li><strong>Update PTO Balance</strong> — adjust the employee's remaining PTO hours.</li>
               </ul>
 
               <p className="text-sm text-foreground/80 leading-relaxed mt-3">

@@ -159,7 +159,7 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
     case "approvals":
       return [
         { key: "requireManagerApproval", label: "Require Manager Approval", type: "boolean", description: "All requests must be approved by the employee's direct manager", defaultValue: true },
-        { key: "autoApproveThreshold", label: "Auto-Approve Threshold (days)", type: "number", description: "Automatically approve PTO requests of this length or shorter (0 = disabled)", defaultValue: 0, min: 0, max: 30 },
+        { key: "autoApproveThreshold", label: "Auto-Approve Threshold (hours)", type: "number", description: "Automatically approve PTO requests of this many hours or shorter (0 = disabled)", defaultValue: 8, min: 0, max: 240 },
         { key: "escalationHours", label: "Escalation After (hours)", type: "number", description: "Hours before an unanswered request is escalated to the next level", defaultValue: 48, min: 1, max: 168 },
         { key: "requireCommentOnDenial", label: "Require Comment on Denial", type: "boolean", description: "Managers must provide a reason when denying a request", defaultValue: true },
         { key: "notifyOnSubmission", label: "Notify on Submission", type: "boolean", description: "Send a notification when a new request is submitted", defaultValue: true },
