@@ -211,6 +211,20 @@
       "when": 1778000000000,
       "tag": "0029_workflow_days_to_hours",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1778100000000,
+      "tag": "0030_password_reset_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1778200000000,
+      "tag": "0031_audit_logs_actor_nullable",
+      "breakpoints": true
     }
   ]
 }

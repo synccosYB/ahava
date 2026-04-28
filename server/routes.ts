@@ -607,6 +607,91 @@ export async function registerRoutes(
     const user = await storage.getUser(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
+    const mode = req.body?.mode === "emailLink" ? "emailLink" : "tempPassword";
+    const actor = (req as any).authUser as User | undefined;
+    const auditCtx = getAuditContext(req);
+
+    if (mode === "emailLink") {
+      const { getEmailServiceStatus, buildResetUrl, sendPasswordResetEmail } =
+        await import("./services/email");
+      const { createResetTokenForUser, isUserEligibleForReset } =
+        await import("./services/passwordReset");
+
+      if (!user.email) {
+        return res.status(400).json({
+          message: "This user has no email address on file.",
+          code: "NO_EMAIL",
+        });
+      }
+      if (!isUserEligibleForReset(user)) {
+        return res.status(400).json({
+          message: "This user is deactivated and cannot receive a reset link.",
+          code: "USER_INELIGIBLE",
+        });
+      }
+      const status = getEmailServiceStatus();
+      if (!status.configured) {
+        return res.status(503).json({
+          message: "Email service not configured",
+          code: "EMAIL_NOT_CONFIGURED",
+        });
+      }
+
+      const ip = (auditCtx.ipAddress as string | undefined) ?? null;
+      const { token, record } = await createResetTokenForUser(user.id, ip);
+      // Reset URLs come from the configured trusted origin only — never
+      // request headers — to avoid host-header poisoning attacks against
+      // password recovery.
+      const resetUrl = buildResetUrl(token);
+
+      await writeAuditLog({
+        actorUserId: actor?.id || user.id,
+        targetType: "user",
+        targetId: user.id,
+        action: "password_reset.requested",
+        newValue: { tokenId: record.id, expiresAt: record.expiresAt, source: "admin_email" },
+        ...auditCtx,
+      });
+
+      if (!resetUrl) {
+        await writeAuditLog({
+          actorUserId: actor?.id || user.id,
+          targetType: "user",
+          targetId: user.id,
+          action: "password_reset.email_failed",
+          newValue: { tokenId: record.id, source: "admin_email", error: "APP_URL not configured" },
+          ...auditCtx,
+        });
+        return res.status(503).json({
+          message: "APP_URL is not configured — cannot send a safe reset link.",
+          code: "APP_URL_NOT_CONFIGURED",
+        });
+      }
+
+      const result = await sendPasswordResetEmail(user, resetUrl);
+      await writeAuditLog({
+        actorUserId: actor?.id || user.id,
+        targetType: "user",
+        targetId: user.id,
+        action: result.ok ? "password_reset.email_sent" : "password_reset.email_failed",
+        newValue: {
+          tokenId: record.id,
+          provider: result.provider,
+          source: "admin_email",
+          error: result.ok ? undefined : result.error,
+        },
+        ...auditCtx,
+      });
+
+      if (!result.ok) {
+        return res.status(502).json({
+          message: `Could not send reset email: ${result.error || "unknown error"}`,
+          code: "EMAIL_SEND_FAILED",
+        });
+      }
+      return res.json({ mode, sentTo: user.email });
+    }
+
     const tempPassword = generateTempPassword();
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
@@ -616,7 +701,16 @@ export async function registerRoutes(
       forcePasswordChange: true,
     });
 
-    res.json({ temporaryPassword: tempPassword });
+    await writeAuditLog({
+      actorUserId: actor?.id || user.id,
+      targetType: "user",
+      targetId: user.id,
+      action: "password_reset.temp_password_issued",
+      newValue: { source: "admin_temp" },
+      ...auditCtx,
+    });
+
+    res.json({ mode, temporaryPassword: tempPassword });
   });
 
   app.post("/api/users/change-password", requireAuth, async (req, res) => {

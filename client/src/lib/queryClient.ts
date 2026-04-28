@@ -1,9 +1,50 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+/**
+ * Error thrown by `apiRequest` / query fetcher when the response is not OK.
+ * Carries the HTTP status and, when the server returned a JSON error body,
+ * the optional machine-readable `code` field and the parsed payload. This
+ * lets callers branch on stable codes (e.g. `EMAIL_NOT_CONFIGURED`) without
+ * resorting to `(err as any).code` casts.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly payload?: unknown;
+  constructor(message: string, status: number, code?: string, payload?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.payload = payload;
+  }
+}
+
+export function isApiError(err: unknown): err is ApiError {
+  return err instanceof ApiError;
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    let code: string | undefined;
+    let payload: unknown;
+    let message = `${res.status}: ${text}`;
+    try {
+      const parsed = JSON.parse(text);
+      payload = parsed;
+      if (parsed && typeof parsed === "object") {
+        if (typeof (parsed as { code?: unknown }).code === "string") {
+          code = (parsed as { code: string }).code;
+        }
+        if (typeof (parsed as { message?: unknown }).message === "string") {
+          message = `${res.status}: ${(parsed as { message: string }).message}`;
+        }
+      }
+    } catch {
+      // Body was not JSON; keep the raw-text message.
+    }
+    throw new ApiError(message, res.status, code, payload);
   }
 }
 

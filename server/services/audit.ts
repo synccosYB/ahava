@@ -10,7 +10,7 @@ export interface AuditContext {
 type DbOrTx = Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db;
 
 export async function writeAuditLog(entry: {
-  actorUserId: string;
+  actorUserId: string | null;
   targetType: string;
   targetId: string;
   action: string;

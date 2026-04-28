@@ -34,6 +34,8 @@ import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
 import ManualPage from "@/pages/manual";
 import BiometricsPage from "@/pages/biometrics";
+import ForgotPasswordPage from "@/pages/forgot-password";
+import ResetPasswordPage from "@/pages/reset-password";
 
 function AuthenticatedRouter() {
   return (
@@ -170,6 +172,8 @@ function App() {
         <Toaster />
         <Switch>
           <Route path="/kiosk" component={KioskPage} />
+          <Route path="/forgot-password" component={ForgotPasswordPage} />
+          <Route path="/reset-password" component={ResetPasswordPage} />
           <Route>
             {() => <AppContent />}
           </Route>

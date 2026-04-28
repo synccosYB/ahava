@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -237,6 +238,16 @@ export default function LoginPage() {
                   </>
                 )}
               </Button>
+
+              <div className="text-center">
+                <Link
+                  href="/forgot-password"
+                  className="text-xs font-medium text-[#123047]/70 hover:text-[#123047] hover:underline"
+                  data-testid="link-forgot-password"
+                >
+                  Forgot password?
+                </Link>
+              </div>
             </form>
           </div>
 

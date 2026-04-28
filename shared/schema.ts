@@ -34,6 +34,7 @@ export {
   userPermissionOverrides,
   userAccessScopes,
   policyTypes,
+  passwordResetTokens,
 } from "./models/auth";
 export type {
   User,
@@ -60,6 +61,8 @@ export type {
   UserAccessScope,
   PolicyType,
   InsertPolicyType,
+  PasswordResetToken,
+  InsertPasswordResetToken,
 } from "./models/auth";
 export {
   insertCompanySchema,
@@ -71,6 +74,7 @@ export {
   insertRoleSchema,
   insertPermissionSchema,
   insertPolicyTypeSchema,
+  insertPasswordResetTokenSchema,
 } from "./models/auth";
 
 export const documents = pgTable("documents", {
@@ -271,7 +275,7 @@ export type AttendanceException = typeof attendanceExceptions.$inferSelect;
 
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  actorUserId: varchar("actor_user_id").notNull().references(() => users.id),
+  actorUserId: varchar("actor_user_id").references(() => users.id),
   targetType: varchar("target_type", { length: 50 }).notNull(),
   targetId: varchar("target_id", { length: 255 }).notNull(),
   action: varchar("action", { length: 100 }).notNull(),

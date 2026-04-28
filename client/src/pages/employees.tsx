@@ -12,6 +12,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -1298,15 +1300,27 @@ function ResetPasswordButton({ userId }: { userId: string }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const [emailSentTo, setEmailSentTo] = useState<string | null>(null);
+  const [mode, setMode] = useState<"tempPassword" | "emailLink">("tempPassword");
+
+  const { data: emailStatus } = useQuery<{ configured: boolean; provider: string | null; reason?: string }>({
+    queryKey: ["/api/auth/email-status"],
+    enabled: open,
+  });
 
   const resetMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/users/${userId}/reset-password`);
+      const res = await apiRequest("POST", `/api/users/${userId}/reset-password`, { mode });
       return res.json();
     },
     onSuccess: (data) => {
-      setTempPassword(data.temporaryPassword);
-      toast({ title: "Password reset successfully" });
+      if (data.mode === "emailLink") {
+        setEmailSentTo(data.sentTo || null);
+        toast({ title: "Reset link sent", description: data.sentTo ? `Sent to ${data.sentTo}` : undefined });
+      } else {
+        setTempPassword(data.temporaryPassword);
+        toast({ title: "Password reset successfully" });
+      }
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -1320,8 +1334,16 @@ function ResetPasswordButton({ userId }: { userId: string }) {
     }
   };
 
+  const reset = () => {
+    setTempPassword(null);
+    setEmailSentTo(null);
+    setMode("tempPassword");
+  };
+
+  const emailDisabled = emailStatus && !emailStatus.configured;
+
   return (
-    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setTempPassword(null); }}>
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset(); }}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm" data-testid="button-reset-password">
           <KeyRound className="h-4 w-4 mr-2" />
@@ -1334,7 +1356,9 @@ function ResetPasswordButton({ userId }: { userId: string }) {
           <DialogDescription>
             {tempPassword
               ? "A new temporary password has been generated. Share it securely with the employee."
-              : "Generate a new temporary password for this employee. They will be required to change it on next login."}
+              : emailSentTo
+              ? "A password reset link has been emailed to the employee. The link expires in 1 hour."
+              : "Choose how you'd like to reset this employee's password."}
           </DialogDescription>
         </DialogHeader>
 
@@ -1347,17 +1371,82 @@ function ResetPasswordButton({ userId }: { userId: string }) {
               </Button>
             </div>
           </div>
+        ) : emailSentTo ? (
+          <div className="bg-green-50 border border-green-100 rounded p-3 text-sm text-green-800" data-testid="text-reset-email-sent">
+            Reset link sent to <span className="font-medium">{emailSentTo}</span>.
+          </div>
         ) : (
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button
-              onClick={() => resetMutation.mutate()}
-              disabled={resetMutation.isPending}
-              data-testid="button-confirm-reset"
+          <>
+            <RadioGroup
+              value={mode}
+              onValueChange={(v) => setMode(v as "tempPassword" | "emailLink")}
+              className="gap-3 py-2"
             >
-              {resetMutation.isPending ? "Resetting..." : "Reset Password"}
-            </Button>
-          </DialogFooter>
+              <label
+                htmlFor="reset-mode-temp"
+                className="flex items-start gap-3 rounded-md border p-3 cursor-pointer hover:bg-muted/40"
+                data-testid="label-mode-temp"
+              >
+                <RadioGroupItem value="tempPassword" id="reset-mode-temp" data-testid="radio-mode-temp" />
+                <div className="space-y-0.5">
+                  <div className="text-sm font-medium">Show temporary password</div>
+                  <div className="text-xs text-muted-foreground">
+                    Generate a one-time password to share with the employee. They'll change it on next login.
+                  </div>
+                </div>
+              </label>
+
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label
+                      htmlFor="reset-mode-email"
+                      className={`flex items-start gap-3 rounded-md border p-3 ${
+                        emailDisabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-muted/40"
+                      }`}
+                      data-testid="label-mode-email"
+                    >
+                      <RadioGroupItem
+                        value="emailLink"
+                        id="reset-mode-email"
+                        disabled={!!emailDisabled}
+                        data-testid="radio-mode-email"
+                      />
+                      <div className="space-y-0.5">
+                        <div className="text-sm font-medium">Email reset link</div>
+                        <div className="text-xs text-muted-foreground">
+                          Send a one-time link to the employee's email so they can set their own password.
+                        </div>
+                      </div>
+                    </label>
+                  </TooltipTrigger>
+                  {emailDisabled && (
+                    <TooltipContent>
+                      Email service is not configured.{" "}
+                      {emailStatus?.reason || "Ask an administrator to set up RESEND_API_KEY, the from-address, and APP_URL."}
+                    </TooltipContent>
+                  )}
+                </Tooltip>
+              </TooltipProvider>
+            </RadioGroup>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button
+                onClick={() => resetMutation.mutate()}
+                disabled={resetMutation.isPending}
+                data-testid="button-confirm-reset"
+              >
+                {resetMutation.isPending
+                  ? mode === "emailLink"
+                    ? "Sending..."
+                    : "Resetting..."
+                  : mode === "emailLink"
+                  ? "Send reset link"
+                  : "Reset Password"}
+              </Button>
+            </DialogFooter>
+          </>
         )}
       </DialogContent>
     </Dialog>
