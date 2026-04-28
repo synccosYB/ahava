@@ -53,6 +53,7 @@ const TRIGGER_OPTIONS: TriggerOption[] = [
   { value: "attendance_exception", label: "Attendance exception filed", description: "A correction is requested on an attendance record", icon: AlertTriangle },
   { value: "clock_out_missed", label: "Missed clock-out", description: "An employee forgot to clock out", icon: LogOut },
   { value: "overtime_threshold", label: "Overtime threshold reached", description: "An employee crosses the overtime limit", icon: Timer },
+  { value: "bonus", label: "Bonus", description: "A bonus event needs to be handled", icon: Sparkles },
 ];
 
 interface ConditionField {
