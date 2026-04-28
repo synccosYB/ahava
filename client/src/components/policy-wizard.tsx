@@ -370,6 +370,9 @@ export function PolicyWizard({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/policies"] });
       queryClient.invalidateQueries({ queryKey: ["/api/policy-assignments"] });
+      if (editingPolicy?.id) {
+        queryClient.invalidateQueries({ queryKey: ["/api/policies", editingPolicy.id, "rules"] });
+      }
       onOpenChange(false);
       toast({ title: editingPolicy ? "Policy updated" : "Policy created" });
     },

@@ -26,6 +26,15 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
 import { PolicyWizard } from "@/components/policy-wizard";
 import { WorkflowBuilder } from "@/components/workflow-builder";
+import { RuleSummary } from "@/components/rule-summary";
+import {
+  summarizePolicy,
+  summarizeWorkflow,
+  summarizeRoleRule,
+  summarizeScheduleTemplate,
+  summarizeRequiredDoc,
+  summarizeLifecycleTemplate,
+} from "@/lib/rule-summaries";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger
@@ -449,6 +458,33 @@ function PolicyAssignmentBadges({ policyId }: { policyId: string }) {
   );
 }
 
+function PolicyRuleSummary({
+  policyId,
+  typeKey,
+  userDescription,
+}: {
+  policyId: string;
+  typeKey: string;
+  userDescription?: string | null;
+}) {
+  const { data, isLoading } = useQuery<{ rules?: Record<string, any> } | Record<string, any>>({
+    queryKey: ["/api/policies", policyId, "rules"],
+  });
+  const rules = (data && typeof data === "object" && "rules" in data && data.rules)
+    ? (data.rules as Record<string, any>)
+    : (data as Record<string, any>) || {};
+  const sentences = summarizePolicy(typeKey, rules);
+  return (
+    <RuleSummary
+      sentences={sentences}
+      userDescription={userDescription}
+      isLoading={isLoading}
+      testIdPrefix={`summary-policy-${policyId}`}
+      emptyText="No rules configured."
+    />
+  );
+}
+
 function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title: string }) {
   const { toast } = useToast();
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -546,7 +582,7 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
               <TableHeader>
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Summary</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Assignments</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Version</TableHead>
@@ -555,9 +591,11 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
               </TableHeader>
               <TableBody>
                 {filteredPolicies.map((p) => (
-                  <TableRow key={p.id} data-testid={`row-policy-${p.id}`}>
+                  <TableRow key={p.id} data-testid={`row-policy-${p.id}`} className="align-top">
                     <TableCell className="font-medium">{p.name}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{p.description || "—"}</TableCell>
+                    <TableCell>
+                      <PolicyRuleSummary policyId={p.id} typeKey={policyTypeKey} userDescription={p.description} />
+                    </TableCell>
                     <TableCell>
                       <PolicyAssignmentBadges policyId={p.id} />
                     </TableCell>
@@ -683,6 +721,7 @@ function ApprovalWorkflowsSection() {
                   <TableRow>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Trigger</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Summary</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Updated</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
@@ -690,10 +729,17 @@ function ApprovalWorkflowsSection() {
                 </TableHeader>
                 <TableBody>
                   {wfList.map((wf) => (
-                    <TableRow key={wf.id} data-testid={`row-workflow-${wf.id}`}>
+                    <TableRow key={wf.id} data-testid={`row-workflow-${wf.id}`} className="align-top">
                       <TableCell className="font-medium">{wf.name}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-xs">{wf.triggerType.replace(/_/g, " ")}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <RuleSummary
+                          sentences={summarizeWorkflow(wf.nodeGraph, wf.triggerType)}
+                          testIdPrefix={`summary-workflow-${wf.id}`}
+                          emptyText="No steps configured yet."
+                        />
                       </TableCell>
                       <TableCell>
                         <Badge variant={wf.status === "active" ? "default" : "secondary"}>{wf.status}</Badge>
@@ -894,8 +940,19 @@ function buildConditions(conds: SimpleCondition[], combinator: "all" | "any") {
 function RoleAssignmentRulesSection() {
   const { toast } = useToast();
   const { data: rules, isLoading } = useQuery<RoleAssignmentRule[]>({ queryKey: ["/api/role-rules"] });
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
   const [editingRule, setEditingRule] = useState<RoleAssignmentRule | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+
+  const ruleIdLookup = (field: string, id: string): string => {
+    if (!id) return "—";
+    if (field === "companyId") return divisions?.find(d => d.id === id)?.name || id;
+    if (field === "locationId") return locations?.find(l => l.id === id)?.name || id;
+    if (field === "departmentId") return departments?.find(d => d.id === id)?.name || id;
+    return id;
+  };
 
   const reevalMutation = useMutation({
     mutationFn: async () => {
@@ -947,16 +1004,25 @@ function RoleAssignmentRulesSection() {
                 <TableHead>Priority</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Target Role</TableHead>
+                <TableHead>Summary</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rules.map(r => (
-                <TableRow key={r.id} data-testid={`row-role-rule-${r.id}`}>
+                <TableRow key={r.id} data-testid={`row-role-rule-${r.id}`} className="align-top">
                   <TableCell data-testid={`text-rule-priority-${r.id}`}>{r.priority}</TableCell>
                   <TableCell className="font-medium" data-testid={`text-rule-name-${r.id}`}>{r.name}</TableCell>
                   <TableCell><Badge variant="outline" data-testid={`badge-rule-role-${r.id}`}>{r.targetRole}</Badge></TableCell>
+                  <TableCell>
+                    <RuleSummary
+                      sentences={summarizeRoleRule(r, ruleIdLookup)}
+                      userDescription={r.description}
+                      testIdPrefix={`summary-role-rule-${r.id}`}
+                      emptyText="No conditions configured."
+                    />
+                  </TableCell>
                   <TableCell>
                     <Badge variant={r.isActive ? "default" : "secondary"} data-testid={`badge-rule-status-${r.id}`}>
                       {r.isActive ? "Active" : "Inactive"}
@@ -1349,6 +1415,28 @@ function RoleRuleDialog({ rule, onClose }: { rule: RoleAssignmentRule | null; on
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+function ScheduleTemplateSummary({
+  templateId,
+  userDescription,
+}: {
+  templateId: string;
+  userDescription?: string | null;
+}) {
+  const { data, isLoading } = useQuery<ScheduleTemplate & { days?: ScheduleTemplateDay[] }>({
+    queryKey: ["/api/schedule-templates", templateId],
+  });
+  const sentences = summarizeScheduleTemplate(data?.days);
+  return (
+    <RuleSummary
+      sentences={sentences}
+      userDescription={userDescription}
+      isLoading={isLoading}
+      testIdPrefix={`summary-schedule-template-${templateId}`}
+      emptyText="No work days configured yet."
+    />
+  );
+}
+
 function ScheduleTemplatesSection() {
   const { toast } = useToast();
   const { data: templates, isLoading } = useQuery<ScheduleTemplate[]>({ queryKey: ["/api/schedule-templates"] });
@@ -1384,16 +1472,19 @@ function ScheduleTemplatesSection() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                <TableHead>Summary</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {templates.map(t => (
-                <TableRow key={t.id} data-testid={`row-template-${t.id}`}>
+                <TableRow key={t.id} data-testid={`row-template-${t.id}`} className="align-top">
                   <TableCell className="font-medium" data-testid={`text-template-name-${t.id}`}>
                     {t.name}
-                    {t.description && <p className="text-xs text-muted-foreground">{t.description}</p>}
+                  </TableCell>
+                  <TableCell>
+                    <ScheduleTemplateSummary templateId={t.id} userDescription={t.description} />
                   </TableCell>
                   <TableCell>
                     <Badge variant={t.isActive ? "default" : "secondary"} data-testid={`badge-template-status-${t.id}`}>
@@ -1514,6 +1605,30 @@ const ONBOARDING_DOCUMENT_TYPES = [
   { value: "handbook_ack", label: "Handbook Acknowledgement" },
 ];
 
+function LifecycleTemplateSummary({
+  templateId,
+  kind,
+  userDescription,
+}: {
+  templateId: string;
+  kind: "onboarding" | "offboarding";
+  userDescription?: string | null;
+}) {
+  const { data, isLoading } = useQuery<LifecycleTemplate & { tasks?: LifecycleTask[] }>({
+    queryKey: [`/api/${kind}-templates/${templateId}`],
+  });
+  const sentences = summarizeLifecycleTemplate(data?.tasks, kind);
+  return (
+    <RuleSummary
+      sentences={sentences}
+      userDescription={userDescription}
+      isLoading={isLoading}
+      testIdPrefix={`summary-${kind}-template-${templateId}`}
+      emptyText="No tasks added yet."
+    />
+  );
+}
+
 function LifecycleTemplatesSection({ kind }: { kind: "onboarding" | "offboarding" }) {
   const { toast } = useToast();
   const baseUrl = `/api/${kind}-templates`;
@@ -1574,21 +1689,26 @@ function LifecycleTemplatesSection({ kind }: { kind: "onboarding" | "offboarding
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-2 md:col-span-1">
               {templates.map(t => (
-                <button
+                <div
                   key={t.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedId(t.id)}
-                  className={`w-full text-left p-3 rounded-md border ${selectedId === t.id ? "border-primary bg-primary/5" : "hover-elevate"}`}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedId(t.id); } }}
+                  className={`w-full text-left p-3 rounded-md border cursor-pointer ${selectedId === t.id ? "border-primary bg-primary/5" : "hover-elevate"}`}
                   data-testid={`row-${kind}-template-${t.id}`}
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{t.name}</span>
                     {t.isDefault && <Badge variant="secondary">Default</Badge>}
                   </div>
-                  {t.description && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{t.description}</p>}
+                  <div className="mt-2">
+                    <LifecycleTemplateSummary templateId={t.id} kind={kind} userDescription={t.description} />
+                  </div>
                   <div className="flex gap-2 mt-2">
                     <Badge variant={t.isActive ? "default" : "outline"}>{t.isActive ? "Active" : "Inactive"}</Badge>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
             <div className="md:col-span-2">
@@ -1947,18 +2067,26 @@ function RequiredDocumentsSection() {
                 <TableHead className="text-xs uppercase tracking-wider">Document</TableHead>
                 <TableHead className="text-xs uppercase tracking-wider">Scope</TableHead>
                 <TableHead className="text-xs uppercase tracking-wider">Due (days from hire)</TableHead>
+                <TableHead className="text-xs uppercase tracking-wider">Summary</TableHead>
                 <TableHead className="text-xs uppercase tracking-wider">Status</TableHead>
                 <TableHead className="text-xs uppercase tracking-wider">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {visibleRules.map((r) => (
-                <TableRow key={r.id} data-testid={`row-required-doc-${r.id}`}>
+                <TableRow key={r.id} data-testid={`row-required-doc-${r.id}`} className="align-top">
                   <TableCell className="font-medium" data-testid={`text-doctype-${r.id}`}>
                     {REQUIRED_DOC_LABELS[r.documentType] || r.documentType}
                   </TableCell>
                   <TableCell data-testid={`text-scope-${r.id}`}>{scopeLabel(r)}</TableCell>
                   <TableCell data-testid={`text-due-${r.id}`}>{r.dueOffsetDays}d</TableCell>
+                  <TableCell>
+                    <RuleSummary
+                      sentences={summarizeRequiredDoc(r, scopeLabel(r))}
+                      testIdPrefix={`summary-required-doc-${r.id}`}
+                      emptyText="No rule details."
+                    />
+                  </TableCell>
                   <TableCell>
                     <Badge variant={r.isActive ? "default" : "outline"} data-testid={`badge-active-${r.id}`}>
                       {r.isActive ? "Active" : "Inactive"}
