@@ -20,6 +20,7 @@ import {
   Shield,
   Monitor,
   BookOpen,
+  ScanFace,
 } from "lucide-react";
 import {
   Sidebar,
@@ -74,6 +75,7 @@ const adminItems: NavItem[] = [
   { title: "Permissions", href: "/permissions", icon: ShieldCheck, roles: ["admin"] },
   { title: "Roles", href: "/role-management", icon: Shield, roles: ["admin"] },
   { title: "Kiosks", href: "/kiosk-management", icon: Monitor, roles: ["admin"] },
+  { title: "Biometrics", href: "/biometrics", icon: ScanFace, roles: ["admin"] },
   { title: "Audit Log", href: "/audit-log", icon: FileText, roles: ["admin"] },
 ];
 

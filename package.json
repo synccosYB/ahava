@@ -51,6 +51,7 @@
     "@uppy/core": "^5.2.0",
     "@uppy/dashboard": "^5.1.1",
     "@uppy/react": "^5.2.0",
+    "@vladmandic/face-api": "^1.7.15",
     "@xyflow/react": "^12.10.2",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",

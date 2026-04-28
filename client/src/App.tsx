@@ -33,6 +33,7 @@ import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
 import ManualPage from "@/pages/manual";
+import BiometricsPage from "@/pages/biometrics";
 
 function AuthenticatedRouter() {
   return (
@@ -127,6 +128,11 @@ function AuthenticatedRouter() {
         <Route path="/kiosk-management">{() => (
           <ProtectedRoute roles={["admin"]}>
             <KioskManagementPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/biometrics">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <BiometricsPage />
           </ProtectedRoute>
         )}</Route>
         <Route component={NotFound} />

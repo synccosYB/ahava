@@ -157,17 +157,17 @@
       "breakpoints": true
     },
     {
-      "idx": 19,
+      "idx": 22,
       "version": "7",
-      "when": 1777200000000,
-      "tag": "0019_required_doc_rule_user_to_employee",
+      "when": 1777400000000,
+      "tag": "0022_biometrics",
       "breakpoints": true
     },
     {
-      "idx": 20,
+      "idx": 23,
       "version": "7",
-      "when": 1777300000000,
-      "tag": "0020_required_doc_rules_strict_spec",
+      "when": 1777500000000,
+      "tag": "0023_biometric_settings_extras",
       "breakpoints": true
     }
   ]

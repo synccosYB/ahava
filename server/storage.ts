@@ -141,6 +141,27 @@ import {
   offboardingTasks,
   type OffboardingTask,
   type InsertOffboardingTask,
+  biometricSettings,
+  type BiometricSettings,
+  type InsertBiometricSettings,
+  biometricLegalProfiles,
+  type BiometricLegalProfile,
+  type InsertBiometricLegalProfile,
+  biometricLegalProfileScopes,
+  type BiometricLegalProfileScope,
+  type InsertBiometricLegalProfileScope,
+  biometricConsents,
+  type BiometricConsent,
+  type InsertBiometricConsent,
+  biometricTemplates,
+  type BiometricTemplate,
+  type InsertBiometricTemplate,
+  biometricAttempts,
+  type BiometricAttempt,
+  type InsertBiometricAttempt,
+  biometricSupervisorOverrides,
+  type BiometricSupervisorOverride,
+  type InsertBiometricSupervisorOverride,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, type SQL } from "drizzle-orm";
@@ -486,6 +507,66 @@ export interface IStorage {
 
   setUserDeactivated(userId: string, actorUserId: string): Promise<User | undefined>;
   clearUserDeactivated(userId: string): Promise<User | undefined>;
+
+  // ===== Biometric kiosk =====
+  getBiometricSettings(): Promise<BiometricSettings>;
+  updateBiometricSettings(patch: Partial<InsertBiometricSettings>, actorUserId: string): Promise<BiometricSettings>;
+
+  getBiometricLegalProfiles(): Promise<BiometricLegalProfile[]>;
+  getBiometricLegalProfile(id: string): Promise<BiometricLegalProfile | undefined>;
+  createBiometricLegalProfile(profile: InsertBiometricLegalProfile): Promise<BiometricLegalProfile>;
+  updateBiometricLegalProfile(id: string, patch: Partial<InsertBiometricLegalProfile>): Promise<BiometricLegalProfile | undefined>;
+  deleteBiometricLegalProfile(id: string): Promise<void>;
+  getBiometricLegalProfileScopes(profileId?: string): Promise<BiometricLegalProfileScope[]>;
+  setBiometricLegalProfileScopes(profileId: string, scopes: { companyId?: string | null; locationId?: string | null }[]): Promise<BiometricLegalProfileScope[]>;
+
+  getBiometricConsent(userId: string): Promise<BiometricConsent | undefined>;
+  getActiveBiometricConsent(userId: string): Promise<BiometricConsent | undefined>;
+  createBiometricConsent(consent: InsertBiometricConsent): Promise<BiometricConsent>;
+  revokeBiometricConsent(userId: string, revokedBy: string, reason: string): Promise<void>;
+  setBiometricLegalHold(userId: string, hold: boolean): Promise<void>;
+
+  getBiometricTemplate(userId: string, type: string): Promise<BiometricTemplate | undefined>;
+  upsertBiometricTemplate(template: InsertBiometricTemplate): Promise<BiometricTemplate>;
+  deleteBiometricTemplate(userId: string, type: string): Promise<void>;
+  getBiometricTemplatesByCompanyAndType(companyId: string | null, type: string): Promise<BiometricTemplate[]>;
+  touchBiometricTemplateMatched(id: string): Promise<void>;
+
+  recordBiometricAttempt(attempt: InsertBiometricAttempt): Promise<BiometricAttempt>;
+  listBiometricAttempts(filters: {
+    candidateUserId?: string;
+    kioskDeviceId?: string;
+    outcome?: string;
+    since?: Date;
+    until?: Date;
+    limit?: number;
+  }): Promise<BiometricAttempt[]>;
+  countConsecutiveFailures(candidateUserId: string, kioskDeviceId: string | null, since: Date): Promise<number>;
+  getBiometricMetrics(since: Date): Promise<{
+    total: number;
+    byOutcome: Record<string, number>;
+    byKiosk: Record<string, { total: number; success: number; rejected: number }>;
+    byDay: { day: string; success: number; lowConfidence: number; rejected: number; livenessFail: number; cameraError: number; total: number }[];
+    enrollmentsTotal: number;
+    overrideCount: number;
+  }>;
+
+  recordBiometricSupervisorOverride(row: InsertBiometricSupervisorOverride): Promise<BiometricSupervisorOverride>;
+  listBiometricSupervisorOverrides(limit?: number): Promise<BiometricSupervisorOverride[]>;
+
+  getBiometricEnrollmentSummary(): Promise<{
+    userId: string;
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+    enrolled: boolean;
+    consentAcceptedAt: Date | null;
+    consentRevokedAt: Date | null;
+    legalProfileName: string | null;
+    legalHold: boolean;
+    lastMatchedAt: Date | null;
+    sampleCount: number | null;
+  }[]>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -2593,6 +2674,375 @@ export class DatabaseStorage implements IStorage {
     const totalRequired = required.length;
     const progressPct = totalRequired === 0 ? 100 : Math.round((completedRequired / totalRequired) * 100);
     return { progressPct, completedRequired, totalRequired, optionalCompleted, optionalTotal: optional.length };
+  }
+
+  // ===== Biometric kiosk =====
+
+  async getBiometricSettings(): Promise<BiometricSettings> {
+    const [row] = await db
+      .select()
+      .from(biometricSettings)
+      .where(eq(biometricSettings.key, "global"));
+    if (row) return row;
+    const [created] = await db.insert(biometricSettings).values({ key: "global" }).returning();
+    return created;
+  }
+
+  async updateBiometricSettings(
+    patch: Partial<InsertBiometricSettings>,
+    actorUserId: string,
+  ): Promise<BiometricSettings> {
+    const current = await this.getBiometricSettings();
+    const [updated] = await db
+      .update(biometricSettings)
+      .set({ ...patch, updatedAt: new Date(), updatedBy: actorUserId })
+      .where(eq(biometricSettings.id, current.id))
+      .returning();
+    return updated;
+  }
+
+  async getBiometricLegalProfiles(): Promise<BiometricLegalProfile[]> {
+    return db.select().from(biometricLegalProfiles).orderBy(desc(biometricLegalProfiles.isDefault), biometricLegalProfiles.name);
+  }
+
+  async getBiometricLegalProfile(id: string): Promise<BiometricLegalProfile | undefined> {
+    const [row] = await db.select().from(biometricLegalProfiles).where(eq(biometricLegalProfiles.id, id));
+    return row;
+  }
+
+  async createBiometricLegalProfile(profile: InsertBiometricLegalProfile): Promise<BiometricLegalProfile> {
+    const [created] = await db
+      .insert(biometricLegalProfiles)
+      .values({ ...profile, isEnabled: profile.isEnabled ?? false })
+      .returning();
+    return created;
+  }
+
+  async updateBiometricLegalProfile(
+    id: string,
+    patch: Partial<InsertBiometricLegalProfile>,
+  ): Promise<BiometricLegalProfile | undefined> {
+    const [updated] = await db
+      .update(biometricLegalProfiles)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(biometricLegalProfiles.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteBiometricLegalProfile(id: string): Promise<void> {
+    await db.delete(biometricLegalProfiles).where(eq(biometricLegalProfiles.id, id));
+  }
+
+  async getBiometricLegalProfileScopes(profileId?: string): Promise<BiometricLegalProfileScope[]> {
+    if (profileId) {
+      return db.select().from(biometricLegalProfileScopes).where(eq(biometricLegalProfileScopes.profileId, profileId));
+    }
+    return db.select().from(biometricLegalProfileScopes);
+  }
+
+  async setBiometricLegalProfileScopes(
+    profileId: string,
+    scopes: { companyId?: string | null; locationId?: string | null }[],
+  ): Promise<BiometricLegalProfileScope[]> {
+    await db.delete(biometricLegalProfileScopes).where(eq(biometricLegalProfileScopes.profileId, profileId));
+    if (scopes.length === 0) return [];
+    const rows = scopes.map((s) => ({
+      profileId,
+      companyId: s.companyId ?? null,
+      locationId: s.locationId ?? null,
+    }));
+    return db.insert(biometricLegalProfileScopes).values(rows).returning();
+  }
+
+  async getBiometricConsent(userId: string): Promise<BiometricConsent | undefined> {
+    const [row] = await db
+      .select()
+      .from(biometricConsents)
+      .where(eq(biometricConsents.userId, userId))
+      .orderBy(desc(biometricConsents.acceptedAt))
+      .limit(1);
+    return row;
+  }
+
+  async getActiveBiometricConsent(userId: string): Promise<BiometricConsent | undefined> {
+    const [row] = await db
+      .select()
+      .from(biometricConsents)
+      .where(and(eq(biometricConsents.userId, userId), isNull(biometricConsents.revokedAt)))
+      .orderBy(desc(biometricConsents.acceptedAt))
+      .limit(1);
+    return row;
+  }
+
+  async createBiometricConsent(consent: InsertBiometricConsent): Promise<BiometricConsent> {
+    const [created] = await db.insert(biometricConsents).values(consent).returning();
+    return created;
+  }
+
+  async revokeBiometricConsent(userId: string, revokedBy: string, reason: string): Promise<void> {
+    await db
+      .update(biometricConsents)
+      .set({ revokedAt: new Date(), revokedBy, revokedReason: reason })
+      .where(and(eq(biometricConsents.userId, userId), isNull(biometricConsents.revokedAt)));
+  }
+
+  async setBiometricLegalHold(userId: string, hold: boolean): Promise<void> {
+    // Apply to all consents for the user (active + historical) so the flag survives revoke/re-enroll cycles.
+    const existing = await db
+      .select()
+      .from(biometricConsents)
+      .where(eq(biometricConsents.userId, userId));
+    if (existing.length === 0) {
+      // No consent yet — record an empty placeholder (with no profile) so legal hold can be honoured prior to enrollment.
+      const [defaultProfile] = await db
+        .select()
+        .from(biometricLegalProfiles)
+        .where(eq(biometricLegalProfiles.isDefault, true))
+        .limit(1);
+      if (defaultProfile) {
+        await db.insert(biometricConsents).values({
+          userId,
+          legalProfileId: defaultProfile.id,
+          consentVersion: defaultProfile.consentVersion,
+          consentTextSnapshot: "[legal-hold placeholder; no consent yet]",
+          revokedAt: new Date(),
+          revokedBy: "system",
+          revokedReason: "legal_hold_placeholder",
+          legalHold: hold,
+        });
+        return;
+      }
+    }
+    await db.update(biometricConsents).set({ legalHold: hold }).where(eq(biometricConsents.userId, userId));
+  }
+
+  async getBiometricTemplate(userId: string, type: string): Promise<BiometricTemplate | undefined> {
+    const [row] = await db
+      .select()
+      .from(biometricTemplates)
+      .where(and(eq(biometricTemplates.userId, userId), eq(biometricTemplates.type, type)));
+    return row;
+  }
+
+  async upsertBiometricTemplate(template: InsertBiometricTemplate): Promise<BiometricTemplate> {
+    const existing = await this.getBiometricTemplate(template.userId, template.type);
+    if (existing) {
+      const [updated] = await db
+        .update(biometricTemplates)
+        .set({
+          encryptedTemplate: template.encryptedTemplate,
+          encryptionKeyVersion: template.encryptionKeyVersion ?? existing.encryptionKeyVersion,
+          sampleCount: template.sampleCount ?? existing.sampleCount,
+          companyId: template.companyId ?? existing.companyId,
+          enrolledKioskId: template.enrolledKioskId ?? existing.enrolledKioskId,
+          enrolledByUserId: template.enrolledByUserId ?? existing.enrolledByUserId,
+          updatedAt: new Date(),
+        })
+        .where(eq(biometricTemplates.id, existing.id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(biometricTemplates).values(template).returning();
+    return created;
+  }
+
+  async deleteBiometricTemplate(userId: string, type: string): Promise<void> {
+    await db
+      .delete(biometricTemplates)
+      .where(and(eq(biometricTemplates.userId, userId), eq(biometricTemplates.type, type)));
+  }
+
+  async getBiometricTemplatesByCompanyAndType(
+    companyId: string | null,
+    type: string,
+  ): Promise<BiometricTemplate[]> {
+    if (companyId === null) {
+      return db
+        .select()
+        .from(biometricTemplates)
+        .where(and(isNull(biometricTemplates.companyId), eq(biometricTemplates.type, type)));
+    }
+    return db
+      .select()
+      .from(biometricTemplates)
+      .where(and(eq(biometricTemplates.companyId, companyId), eq(biometricTemplates.type, type)));
+  }
+
+  async touchBiometricTemplateMatched(id: string): Promise<void> {
+    await db
+      .update(biometricTemplates)
+      .set({ lastMatchedAt: new Date() })
+      .where(eq(biometricTemplates.id, id));
+  }
+
+  async recordBiometricAttempt(attempt: InsertBiometricAttempt): Promise<BiometricAttempt> {
+    const [created] = await db.insert(biometricAttempts).values(attempt).returning();
+    return created;
+  }
+
+  async listBiometricAttempts(filters: {
+    candidateUserId?: string;
+    kioskDeviceId?: string;
+    outcome?: string;
+    since?: Date;
+    until?: Date;
+    limit?: number;
+  }): Promise<BiometricAttempt[]> {
+    const conds: any[] = [];
+    if (filters.candidateUserId) conds.push(eq(biometricAttempts.candidateUserId, filters.candidateUserId));
+    if (filters.kioskDeviceId) conds.push(eq(biometricAttempts.kioskDeviceId, filters.kioskDeviceId));
+    if (filters.outcome) conds.push(eq(biometricAttempts.outcome, filters.outcome));
+    if (filters.since) conds.push(gte(biometricAttempts.createdAt, filters.since));
+    if (filters.until) conds.push(lte(biometricAttempts.createdAt, filters.until));
+    let q = db.select().from(biometricAttempts).$dynamic();
+    if (conds.length > 0) q = q.where(and(...conds));
+    return q.orderBy(desc(biometricAttempts.createdAt)).limit(filters.limit ?? 200);
+  }
+
+  async countConsecutiveFailures(
+    candidateUserId: string,
+    kioskDeviceId: string | null,
+    since: Date,
+  ): Promise<number> {
+    // Walk most-recent-first for this candidate at this kiosk; stop when we hit a success.
+    const conds: any[] = [
+      eq(biometricAttempts.candidateUserId, candidateUserId),
+      gte(biometricAttempts.createdAt, since),
+    ];
+    if (kioskDeviceId) conds.push(eq(biometricAttempts.kioskDeviceId, kioskDeviceId));
+    const rows = await db
+      .select({ outcome: biometricAttempts.outcome })
+      .from(biometricAttempts)
+      .where(and(...conds))
+      .orderBy(desc(biometricAttempts.createdAt))
+      .limit(50);
+    let n = 0;
+    for (const r of rows) {
+      if (r.outcome === "auto_approved" || r.outcome === "low_confidence") break;
+      n += 1;
+    }
+    return n;
+  }
+
+  async getBiometricMetrics(since: Date) {
+    const attempts = await db
+      .select()
+      .from(biometricAttempts)
+      .where(gte(biometricAttempts.createdAt, since));
+    const byOutcome: Record<string, number> = {};
+    const byKiosk: Record<string, { total: number; success: number; rejected: number }> = {};
+    const byDayMap = new Map<string, { success: number; lowConfidence: number; rejected: number; livenessFail: number; cameraError: number; total: number }>();
+    for (const a of attempts) {
+      byOutcome[a.outcome] = (byOutcome[a.outcome] || 0) + 1;
+      const k = a.kioskDeviceId || "unknown";
+      const ks = byKiosk[k] || { total: 0, success: 0, rejected: 0 };
+      ks.total += 1;
+      if (a.outcome === "auto_approved" || a.outcome === "low_confidence") ks.success += 1;
+      else ks.rejected += 1;
+      byKiosk[k] = ks;
+
+      const day = (a.createdAt instanceof Date ? a.createdAt : new Date(a.createdAt as any))
+        .toISOString()
+        .split("T")[0];
+      const dayBucket = byDayMap.get(day) || {
+        success: 0, lowConfidence: 0, rejected: 0, livenessFail: 0, cameraError: 0, total: 0,
+      };
+      dayBucket.total += 1;
+      if (a.outcome === "auto_approved") dayBucket.success += 1;
+      else if (a.outcome === "low_confidence") dayBucket.lowConfidence += 1;
+      else if (a.outcome === "rejected" || a.outcome === "not_enrolled") dayBucket.rejected += 1;
+      else if (a.outcome === "liveness_failed") dayBucket.livenessFail += 1;
+      else if (a.outcome === "camera_error") dayBucket.cameraError += 1;
+      byDayMap.set(day, dayBucket);
+    }
+    const byDay = Array.from(byDayMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([day, bucket]) => ({ day, ...bucket }));
+
+    const [{ count: enrollmentsTotal }] = await db
+      .select({ count: count() })
+      .from(biometricTemplates);
+    const [{ count: overrideCount }] = await db
+      .select({ count: count() })
+      .from(biometricSupervisorOverrides)
+      .where(gte(biometricSupervisorOverrides.createdAt, since));
+
+    return {
+      total: attempts.length,
+      byOutcome,
+      byKiosk,
+      byDay,
+      enrollmentsTotal: Number(enrollmentsTotal) || 0,
+      overrideCount: Number(overrideCount) || 0,
+    };
+  }
+
+  async recordBiometricSupervisorOverride(
+    row: InsertBiometricSupervisorOverride,
+  ): Promise<BiometricSupervisorOverride> {
+    const [created] = await db.insert(biometricSupervisorOverrides).values(row).returning();
+    return created;
+  }
+
+  async listBiometricSupervisorOverrides(limit = 100): Promise<BiometricSupervisorOverride[]> {
+    return db
+      .select()
+      .from(biometricSupervisorOverrides)
+      .orderBy(desc(biometricSupervisorOverrides.createdAt))
+      .limit(limit);
+  }
+
+  async getBiometricEnrollmentSummary() {
+    // Pull users that are not terminated. Users without an employment profile row are
+    // considered active for the purposes of the enrollment dashboard so that admins/
+    // dev users still appear in the list.
+    const usersListRaw = await db
+      .select({
+        userId: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        email: users.email,
+        terminationDate: userEmploymentProfiles.terminationDate,
+      })
+      .from(users)
+      .leftJoin(userEmploymentProfiles, eq(userEmploymentProfiles.userId, users.id));
+    const usersList = usersListRaw.filter((u) => !u.terminationDate);
+    const allConsents = await db.select().from(biometricConsents);
+    const allTemplates = await db.select().from(biometricTemplates);
+    const allProfiles = await db.select().from(biometricLegalProfiles);
+    const profileNameById = new Map(allProfiles.map((p) => [p.id, p.name]));
+    const tplByUser = new Map<string, BiometricTemplate>();
+    for (const t of allTemplates) {
+      if (t.type === "face") tplByUser.set(t.userId, t);
+    }
+    const consentByUser = new Map<string, BiometricConsent[]>();
+    for (const c of allConsents) {
+      const arr = consentByUser.get(c.userId) || [];
+      arr.push(c);
+      consentByUser.set(c.userId, arr);
+    }
+    return usersList.map((u) => {
+      const consents = (consentByUser.get(u.userId) || []).sort(
+        (a, b) => (b.acceptedAt?.getTime() ?? 0) - (a.acceptedAt?.getTime() ?? 0),
+      );
+      const latest = consents[0];
+      const tpl = tplByUser.get(u.userId);
+      const legalHold = consents.some((c) => c.legalHold);
+      return {
+        userId: u.userId,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        email: u.email,
+        enrolled: !!tpl,
+        consentAcceptedAt: latest?.acceptedAt ?? null,
+        consentRevokedAt: latest?.revokedAt ?? null,
+        legalProfileName: latest ? profileNameById.get(latest.legalProfileId) ?? null : null,
+        legalHold,
+        lastMatchedAt: tpl?.lastMatchedAt ?? null,
+        sampleCount: tpl?.sampleCount ?? null,
+      };
+    });
   }
 }
 

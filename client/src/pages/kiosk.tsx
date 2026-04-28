@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiRequest } from "@/lib/queryClient";
+import { FaceCapture } from "@/components/face-capture";
 
 interface KioskEmployee {
   id: string;
@@ -15,7 +16,30 @@ interface KioskLastRecord {
   timestamp: string | null;
 }
 
-type KioskScreen = "home" | "identify" | "confirm" | "success";
+type KioskScreen = "home" | "identify" | "face" | "supervisor-override" | "confirm" | "success";
+
+// Kiosks identify themselves with a stable per-device id pulled from localStorage. The
+// admin pairing flow seeds this; if absent, the face flow is unavailable and the kiosk
+// transparently falls back to PIN.
+function getKioskDeviceId(): string | null {
+  try {
+    return localStorage.getItem("kioskDeviceId");
+  } catch {
+    return null;
+  }
+}
+
+async function postFaceJson(path: string, body: unknown): Promise<Response> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const deviceId = getKioskDeviceId();
+  if (deviceId) headers["X-Kiosk-Device-Id"] = deviceId;
+  return fetch(path, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    credentials: "include",
+  });
+}
 
 const INACTIVITY_TIMEOUT = 30000;
 const SUCCESS_TIMEOUT = 5000;
@@ -68,7 +92,12 @@ export default function KioskPage() {
   const [punchTime, setPunchTime] = useState<Date | null>(null);
   const [scheduleWarning, setScheduleWarning] = useState<string | null>(null);
   const [lastActivity, setLastActivity] = useState(Date.now());
+  // Track failed face-recognition attempts so we can surface supervisor-override after
+  // a small streak instead of looping silently.
+  const [faceFailureCount, setFaceFailureCount] = useState(0);
+  const [lastFaceAttemptId, setLastFaceAttemptId] = useState<string | null>(null);
   const now = useCurrentTime();
+  const faceAvailable = !!getKioskDeviceId();
 
   const resetToHome = useCallback(() => {
     setScreen("home");
@@ -77,6 +106,8 @@ export default function KioskPage() {
     setPunchType("clock_in");
     setPunchTime(null);
     setScheduleWarning(null);
+    setFaceFailureCount(0);
+    setLastFaceAttemptId(null);
     setLastActivity(Date.now());
   }, []);
 
@@ -133,12 +164,46 @@ export default function KioskPage() {
       data-testid="kiosk-container"
     >
       {screen === "home" && (
-        <HomeScreen now={now} onStart={() => { setScreen("identify"); handleActivity(); }} />
+        <HomeScreen
+          now={now}
+          onStart={() => { setScreen("identify"); handleActivity(); }}
+          onFaceStart={
+            faceAvailable
+              ? () => { setScreen("face"); handleActivity(); }
+              : undefined
+          }
+        />
       )}
       {screen === "identify" && (
         <IdentifyScreen
           onEmployeeFound={handleEmployeeFound}
           onCancel={resetToHome}
+          onActivity={handleActivity}
+          onUseFace={faceAvailable ? () => { setScreen("face"); handleActivity(); } : undefined}
+        />
+      )}
+      {screen === "face" && (
+        <FaceScreen
+          onEmployeeFound={(emp, rec, attemptId) => {
+            setLastFaceAttemptId(attemptId);
+            handleEmployeeFound(emp, rec);
+          }}
+          onFailure={(attemptId) => {
+            setFaceFailureCount((n) => n + 1);
+            setLastFaceAttemptId(attemptId);
+            handleActivity();
+          }}
+          onSupervisorOverride={() => { setScreen("supervisor-override"); handleActivity(); }}
+          onUsePin={() => { setScreen("identify"); handleActivity(); }}
+          onCancel={resetToHome}
+          failureCount={faceFailureCount}
+        />
+      )}
+      {screen === "supervisor-override" && (
+        <SupervisorOverrideScreen
+          attemptId={lastFaceAttemptId}
+          onEmployeeFound={handleEmployeeFound}
+          onCancel={() => { setScreen("identify"); handleActivity(); }}
           onActivity={handleActivity}
         />
       )}
@@ -164,7 +229,15 @@ export default function KioskPage() {
   );
 }
 
-function HomeScreen({ now, onStart }: { now: Date; onStart: () => void }) {
+function HomeScreen({
+  now,
+  onStart,
+  onFaceStart,
+}: {
+  now: Date;
+  onStart: () => void;
+  onFaceStart?: () => void;
+}) {
   return (
     <div className="kiosk-screen kiosk-home" data-testid="kiosk-home-screen">
       <h1 className="kiosk-brand" data-testid="text-brand">Ahava Medical Center</h1>
@@ -178,7 +251,284 @@ function HomeScreen({ now, onStart }: { now: Date; onStart: () => void }) {
       >
         Tap to Clock In / Out
       </button>
+      {onFaceStart && (
+        <button
+          className="kiosk-btn kiosk-btn-secondary"
+          onClick={onFaceStart}
+          data-testid="button-start-face"
+        >
+          Use Face
+        </button>
+      )}
       <p className="kiosk-hint">Touch anywhere to begin</p>
+    </div>
+  );
+}
+
+function FaceScreen({
+  onEmployeeFound,
+  onFailure,
+  onSupervisorOverride,
+  onUsePin,
+  onCancel,
+  failureCount,
+}: {
+  onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null, attemptId: string) => void;
+  onFailure: (attemptId: string | null) => void;
+  onSupervisorOverride: () => void;
+  onUsePin: () => void;
+  onCancel: () => void;
+  failureCount: number;
+}) {
+  const [statusMsg, setStatusMsg] = useState<string>("Look at the camera");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [captureKey, setCaptureKey] = useState(0);
+
+  const handleComplete = useCallback(
+    async (descriptors: number[][], livenessPassed: boolean) => {
+      if (busy) return;
+      setBusy(true);
+      setError(null);
+      setStatusMsg("Looking up your face...");
+      try {
+        const res = await postFaceJson("/api/kiosk/face/identify", {
+          descriptor: descriptors[0],
+          livenessPassed,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "Face login failed");
+          onFailure(data.attemptId || null);
+          setBusy(false);
+          return;
+        }
+        if (data.outcome === "auto_approved" && data.employee) {
+          onEmployeeFound(data.employee, data.lastRecord || null, data.attemptId);
+          return;
+        }
+        const friendly: Record<string, string> = {
+          not_enrolled: "No face is enrolled here yet. Please use your PIN.",
+          rejected: "We couldn't recognize you. Try again or use your PIN.",
+          no_match: "We couldn't recognize you. Try again or use your PIN.",
+          low_confidence: "Face match was uncertain. Please use your PIN.",
+          review_required: "Face match was uncertain. Please use your PIN.",
+          liveness_failed: "Liveness check failed. Please try again with a real face.",
+          camera_error: "Could not read your face — try better lighting.",
+        };
+        setError(friendly[data.outcome] || "Face login failed");
+        onFailure(data.attemptId || null);
+        setBusy(false);
+      } catch (err: any) {
+        setError(err?.message || "Face login failed");
+        onFailure(null);
+        setBusy(false);
+      }
+    },
+    [busy, onEmployeeFound, onFailure],
+  );
+
+  return (
+    <div className="kiosk-screen kiosk-identify" data-testid="kiosk-face-screen">
+      <h2 className="kiosk-brand-sm">Face Recognition</h2>
+      <p className="kiosk-subtitle-sm" data-testid="text-face-status">{statusMsg}</p>
+
+      <div style={{ width: "100%", maxWidth: 480, margin: "0 auto" }}>
+        <FaceCapture
+          key={captureKey}
+          mode="identify"
+          autoStart
+          livenessRequired
+          onComplete={handleComplete}
+          hint="Stand in front of the camera and look ahead"
+        />
+      </div>
+
+      {error && (
+        <p className="kiosk-error" data-testid="text-face-error">{error}</p>
+      )}
+
+      <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+        {error && (
+          <button
+            className="kiosk-btn kiosk-btn-secondary"
+            onClick={() => { setError(null); setBusy(false); setCaptureKey((k) => k + 1); }}
+            data-testid="button-face-try-again"
+          >
+            Try again
+          </button>
+        )}
+        {failureCount >= 2 && (
+          <button
+            className="kiosk-btn kiosk-btn-secondary"
+            onClick={onSupervisorOverride}
+            data-testid="button-supervisor-override"
+          >
+            Supervisor override
+          </button>
+        )}
+        <button
+          className="kiosk-btn kiosk-btn-secondary"
+          onClick={onUsePin}
+          data-testid="button-use-pin"
+        >
+          Use PIN instead
+        </button>
+        <button
+          className="kiosk-btn kiosk-btn-cancel"
+          onClick={onCancel}
+          data-testid="button-cancel"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SupervisorOverrideScreen({
+  attemptId,
+  onEmployeeFound,
+  onCancel,
+  onActivity,
+}: {
+  attemptId: string | null;
+  onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null) => void;
+  onCancel: () => void;
+  onActivity: () => void;
+}) {
+  const [supervisorPin, setSupervisorPin] = useState("");
+  const [employeeQuery, setEmployeeQuery] = useState("");
+  const [results, setResults] = useState<KioskEmployee[]>([]);
+  const [target, setTarget] = useState<KioskEmployee | null>(null);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (employeeQuery.length < 1) {
+      setResults([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/kiosk/search?q=${encodeURIComponent(employeeQuery)}`);
+        const data = await res.json();
+        setResults(Array.isArray(data) ? data : []);
+      } catch {
+        setResults([]);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [employeeQuery]);
+
+  async function submit() {
+    if (!target || supervisorPin.length < 4) {
+      setError("Choose an employee and enter the supervisor's PIN");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await postFaceJson("/api/kiosk/face/supervisor-override", {
+        supervisorPin,
+        targetEmployeeId: target.id,
+        reason: reason || "supervisor_override",
+        attemptId,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Override failed");
+        setBusy(false);
+        return;
+      }
+      onEmployeeFound(data.employee, data.lastRecord || null);
+    } catch (err: any) {
+      setError(err?.message || "Override failed");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="kiosk-screen kiosk-identify" data-testid="kiosk-supervisor-override-screen">
+      <h2 className="kiosk-brand-sm">Supervisor override</h2>
+      <p className="kiosk-subtitle-sm">
+        A manager or admin can authorize a punch when face recognition fails.
+      </p>
+
+      <div style={{ width: "100%", maxWidth: 480, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600 }}>Employee</label>
+          <input
+            type="text"
+            className="kiosk-search-input"
+            placeholder="Search employee name..."
+            value={target ? `${target.firstName} ${target.lastName}` : employeeQuery}
+            onChange={(e) => { setTarget(null); setEmployeeQuery(e.target.value); onActivity(); }}
+            data-testid="input-override-employee"
+          />
+          {!target && results.length > 0 && (
+            <div className="kiosk-search-results" style={{ maxHeight: 200, overflowY: "auto" }}>
+              {results.map((emp) => (
+                <button
+                  key={emp.id}
+                  className="kiosk-search-result"
+                  onClick={() => { setTarget(emp); setResults([]); setEmployeeQuery(""); onActivity(); }}
+                  data-testid={`button-override-employee-${emp.id}`}
+                >
+                  <div className="kiosk-result-avatar">{getInitials(emp.firstName, emp.lastName)}</div>
+                  <div className="kiosk-result-info">
+                    <span className="kiosk-result-name">{emp.firstName} {emp.lastName}</span>
+                    <span className="kiosk-result-detail">{emp.department} - ID #{emp.employeeId}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600 }}>Supervisor PIN</label>
+          <input
+            type="password"
+            inputMode="numeric"
+            maxLength={6}
+            className="kiosk-search-input"
+            placeholder="••••"
+            value={supervisorPin}
+            onChange={(e) => { setSupervisorPin(e.target.value.replace(/[^0-9]/g, "")); onActivity(); }}
+            data-testid="input-supervisor-pin"
+          />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600 }}>Reason (optional)</label>
+          <input
+            type="text"
+            className="kiosk-search-input"
+            placeholder="e.g. camera not detecting face"
+            value={reason}
+            onChange={(e) => { setReason(e.target.value); onActivity(); }}
+            data-testid="input-override-reason"
+          />
+        </div>
+        {error && <p className="kiosk-error" data-testid="text-override-error">{error}</p>}
+        <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+          <button
+            className="kiosk-btn kiosk-btn-primary"
+            disabled={busy}
+            onClick={submit}
+            data-testid="button-override-submit"
+          >
+            {busy ? "Authorizing..." : "Authorize punch"}
+          </button>
+          <button
+            className="kiosk-btn kiosk-btn-cancel"
+            onClick={onCancel}
+            data-testid="button-override-cancel"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -187,10 +537,12 @@ function IdentifyScreen({
   onEmployeeFound,
   onCancel,
   onActivity,
+  onUseFace,
 }: {
   onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null) => void;
   onCancel: () => void;
   onActivity: () => void;
+  onUseFace?: () => void;
 }) {
   const [mode, setMode] = useState<"pin" | "search">("pin");
   const [pin, setPin] = useState("");
@@ -344,13 +696,24 @@ function IdentifyScreen({
         </div>
       )}
 
-      <button
-        className="kiosk-btn kiosk-btn-cancel"
-        onClick={onCancel}
-        data-testid="button-cancel"
-      >
-        Cancel
-      </button>
+      <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+        {onUseFace && (
+          <button
+            className="kiosk-btn kiosk-btn-secondary"
+            onClick={() => { onUseFace(); onActivity(); }}
+            data-testid="button-switch-to-face"
+          >
+            Use Face
+          </button>
+        )}
+        <button
+          className="kiosk-btn kiosk-btn-cancel"
+          onClick={onCancel}
+          data-testid="button-cancel"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }

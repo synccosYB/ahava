@@ -1214,7 +1214,64 @@ export const certifications = pgTable("certifications", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// ============================================================================
+// Biometric Kiosk (Phase 1) — Face Recognition + Consent + Governance
+// All face descriptors are stored ENCRYPTED. No raw images are ever stored.
+// ============================================================================
+
+export const biometricSettings = pgTable("biometric_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // Singleton row identified by `key = 'global'` to allow future multi-tenant rows.
+  key: varchar("key", { length: 32 }).notNull().unique().default("global"),
+  featureEnabled: boolean("feature_enabled").default(false).notNull(),
+  faceEnabled: boolean("face_enabled").default(false).notNull(),
+  // Tiered confidence thresholds (1.0 - euclidean distance, where 1.0 = identical).
+  thresholdAutoApprove: real("threshold_auto_approve").default(0.90).notNull(),
+  thresholdReview: real("threshold_review").default(0.75).notNull(),
+  thresholdReject: real("threshold_reject").default(0.60).notNull(),
+  requiredSampleCount: integer("required_sample_count").default(3).notNull(),
+  minSamplesPerEnrollment: integer("min_samples_per_enrollment").default(3).notNull(),
+  maxSamplesPerEnrollment: integer("max_samples_per_enrollment").default(5).notNull(),
+  livenessRequired: boolean("liveness_required").default(true).notNull(),
+  maxAttemptsBeforeLockout: integer("max_attempts_before_lockout").default(5).notNull(),
+  lockoutDurationMinutes: integer("lockout_duration_minutes").default(10).notNull(),
+  supervisorOverrideRequiresPin: boolean("supervisor_override_requires_pin").default(true).notNull(),
+  matchTimeoutMs: integer("match_timeout_ms").default(3000).notNull(),
+  defaultRetentionDays: integer("default_retention_days").default(180).notNull(),
+  supervisorOverrideThreshold: integer("supervisor_override_threshold").default(3).notNull(),
+  allowNonKioskEnrollment: boolean("allow_non_kiosk_enrollment").default(false).notNull(),
+  encryptionKeyVersion: integer("encryption_key_version").default(1).notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  updatedBy: varchar("updated_by").references(() => users.id),
+});
+
+export const insertBiometricSettingsSchema = createInsertSchema(biometricSettings).omit({
+  id: true,
+  updatedAt: true,
+});
+export type BiometricSettings = typeof biometricSettings.$inferSelect;
+export type InsertBiometricSettings = z.infer<typeof insertBiometricSettingsSchema>;
+
+export const biometricLegalProfiles = pgTable("biometric_legal_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 100 }).notNull().unique(),
+  description: text("description"),
+  consentText: text("consent_text").notNull(),
+  consentVersion: integer("consent_version").default(1).notNull(),
+  retentionDays: integer("retention_days").default(180).notNull(),
+  // Profile-level enable: even if global flag is on, a disabled profile blocks face for its scope.
+  isEnabled: boolean("is_enabled").default(false).notNull(),
+  isDefault: boolean("is_default").default(false).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const insertCertificationSchema = createInsertSchema(certifications).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export const insertBiometricLegalProfileSchema = createInsertSchema(biometricLegalProfiles).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
@@ -1253,4 +1310,191 @@ export const requiredDocumentRulesRelations = relations(requiredDocumentRules, (
   location: one(locations, { fields: [requiredDocumentRules.locationId], references: [locations.id] }),
   department: one(departments, { fields: [requiredDocumentRules.departmentId], references: [departments.id] }),
   employee: one(users, { fields: [requiredDocumentRules.employeeId], references: [users.id] }),
+}));
+
+export type BiometricLegalProfile = typeof biometricLegalProfiles.$inferSelect;
+export type InsertBiometricLegalProfile = z.infer<typeof insertBiometricLegalProfileSchema>;
+
+export const biometricLegalProfileScopes = pgTable("biometric_legal_profile_scopes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  profileId: varchar("profile_id").notNull().references(() => biometricLegalProfiles.id, { onDelete: "cascade" }),
+  // Either companyId or locationId may be set; null/null means "fallback (Default profile)".
+  companyId: varchar("company_id").references(() => companies.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertBiometricLegalProfileScopeSchema = createInsertSchema(biometricLegalProfileScopes).omit({
+  id: true,
+  createdAt: true,
+});
+export type BiometricLegalProfileScope = typeof biometricLegalProfileScopes.$inferSelect;
+export type InsertBiometricLegalProfileScope = z.infer<typeof insertBiometricLegalProfileScopeSchema>;
+
+export const biometricConsents = pgTable("biometric_consents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  legalProfileId: varchar("legal_profile_id").notNull().references(() => biometricLegalProfiles.id),
+  consentVersion: integer("consent_version").notNull(),
+  consentTextSnapshot: text("consent_text_snapshot").notNull(),
+  acceptedAt: timestamp("accepted_at").defaultNow().notNull(),
+  acceptedIp: varchar("accepted_ip", { length: 64 }),
+  acceptedUserAgent: text("accepted_user_agent"),
+  revokedAt: timestamp("revoked_at"),
+  revokedBy: varchar("revoked_by").references(() => users.id),
+  revokedReason: text("revoked_reason"),
+  legalHold: boolean("legal_hold").default(false).notNull(),
+}, (table) => ({
+  userIdx: index("biometric_consents_user_idx").on(table.userId),
+}));
+
+export const insertBiometricConsentSchema = createInsertSchema(biometricConsents).omit({
+  id: true,
+  acceptedAt: true,
+  revokedAt: true,
+});
+export type BiometricConsent = typeof biometricConsents.$inferSelect;
+export type InsertBiometricConsent = z.infer<typeof insertBiometricConsentSchema>;
+
+export const biometricTemplates = pgTable("biometric_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Extensible: 'face' for Phase 1, 'fingerprint' future. Per-user-per-type uniqueness enforced below.
+  type: varchar("type", { length: 20 }).notNull(),
+  // Strict company isolation — matching ALWAYS scopes by this column.
+  companyId: varchar("company_id").references(() => companies.id),
+  // Encrypted payload (AES-256-GCM): base64(iv || authTag || ciphertext) of the JSON-encoded
+  // descriptor array (or array of arrays for multi-sample). NEVER stored in cleartext.
+  encryptedTemplate: text("encrypted_template").notNull(),
+  encryptionKeyVersion: integer("encryption_key_version").default(1).notNull(),
+  sampleCount: integer("sample_count").default(1).notNull(),
+  enrolledKioskId: varchar("enrolled_kiosk_id").references(() => kioskDevices.id),
+  enrolledByUserId: varchar("enrolled_by_user_id").references(() => users.id),
+  lastMatchedAt: timestamp("last_matched_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  userTypeIdx: unique("biometric_templates_user_type_unique").on(table.userId, table.type),
+  companyTypeIdx: index("biometric_templates_company_type_idx").on(table.companyId, table.type),
+}));
+
+export const insertBiometricTemplateSchema = createInsertSchema(biometricTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastMatchedAt: true,
+});
+export type BiometricTemplate = typeof biometricTemplates.$inferSelect;
+export type InsertBiometricTemplate = z.infer<typeof insertBiometricTemplateSchema>;
+
+export const biometricAttempts = pgTable("biometric_attempts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: varchar("type", { length: 20 }).default("face").notNull(),
+  // Attempt may not match a candidate; candidateUserId is nullable.
+  candidateUserId: varchar("candidate_user_id").references(() => users.id),
+  kioskDeviceId: varchar("kiosk_device_id").references(() => kioskDevices.id),
+  companyId: varchar("company_id").references(() => companies.id),
+  outcome: varchar("outcome", { length: 32 }).notNull(),
+  // Score in [0,1]. Null when no candidate / camera failed / liveness failed before match.
+  confidence: real("confidence"),
+  livenessPassed: boolean("liveness_passed"),
+  fallbackUsed: varchar("fallback_used", { length: 32 }),
+  consecutiveFailureCount: integer("consecutive_failure_count").default(0).notNull(),
+  // Optional context: detection error code, light-level, user-agent — NEVER includes any descriptor or image.
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  createdAtIdx: index("biometric_attempts_created_at_idx").on(table.createdAt),
+  kioskIdx: index("biometric_attempts_kiosk_idx").on(table.kioskDeviceId),
+  candidateIdx: index("biometric_attempts_candidate_idx").on(table.candidateUserId),
+  outcomeIdx: index("biometric_attempts_outcome_idx").on(table.outcome),
+}));
+
+export const insertBiometricAttemptSchema = createInsertSchema(biometricAttempts).omit({
+  id: true,
+  createdAt: true,
+});
+export type BiometricAttempt = typeof biometricAttempts.$inferSelect;
+export type InsertBiometricAttempt = z.infer<typeof insertBiometricAttemptSchema>;
+
+export const biometricSupervisorOverrides = pgTable("biometric_supervisor_overrides", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  supervisorUserId: varchar("supervisor_user_id").notNull().references(() => users.id),
+  employeeUserId: varchar("employee_user_id").notNull().references(() => users.id),
+  kioskDeviceId: varchar("kiosk_device_id").references(() => kioskDevices.id),
+  punchType: varchar("punch_type", { length: 16 }).notNull(),
+  reason: text("reason"),
+  priorFailedAttempts: integer("prior_failed_attempts").default(0).notNull(),
+  punchLogId: varchar("punch_log_id").references(() => punchLogs.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  createdAtIdx: index("biometric_overrides_created_at_idx").on(table.createdAt),
+}));
+
+export const insertBiometricSupervisorOverrideSchema = createInsertSchema(biometricSupervisorOverrides).omit({
+  id: true,
+  createdAt: true,
+});
+export type BiometricSupervisorOverride = typeof biometricSupervisorOverrides.$inferSelect;
+export type InsertBiometricSupervisorOverride = z.infer<typeof insertBiometricSupervisorOverrideSchema>;
+
+export const biometricLegalProfilesRelations = relations(biometricLegalProfiles, ({ many }) => ({
+  scopes: many(biometricLegalProfileScopes),
+  consents: many(biometricConsents),
+}));
+
+export const biometricLegalProfileScopesRelations = relations(biometricLegalProfileScopes, ({ one }) => ({
+  profile: one(biometricLegalProfiles, {
+    fields: [biometricLegalProfileScopes.profileId],
+    references: [biometricLegalProfiles.id],
+  }),
+  company: one(companies, {
+    fields: [biometricLegalProfileScopes.companyId],
+    references: [companies.id],
+  }),
+  location: one(locations, {
+    fields: [biometricLegalProfileScopes.locationId],
+    references: [locations.id],
+  }),
+}));
+
+export const biometricTemplatesRelations = relations(biometricTemplates, ({ one }) => ({
+  user: one(users, { fields: [biometricTemplates.userId], references: [users.id] }),
+  company: one(companies, { fields: [biometricTemplates.companyId], references: [companies.id] }),
+  enrolledKiosk: one(kioskDevices, {
+    fields: [biometricTemplates.enrolledKioskId],
+    references: [kioskDevices.id],
+  }),
+}));
+
+export const biometricConsentsRelations = relations(biometricConsents, ({ one }) => ({
+  user: one(users, { fields: [biometricConsents.userId], references: [users.id] }),
+  legalProfile: one(biometricLegalProfiles, {
+    fields: [biometricConsents.legalProfileId],
+    references: [biometricLegalProfiles.id],
+  }),
+}));
+
+export const biometricAttemptsRelations = relations(biometricAttempts, ({ one }) => ({
+  candidate: one(users, { fields: [biometricAttempts.candidateUserId], references: [users.id] }),
+  kiosk: one(kioskDevices, { fields: [biometricAttempts.kioskDeviceId], references: [kioskDevices.id] }),
+}));
+
+export const biometricSupervisorOverridesRelations = relations(biometricSupervisorOverrides, ({ one }) => ({
+  supervisor: one(users, {
+    fields: [biometricSupervisorOverrides.supervisorUserId],
+    references: [users.id],
+  }),
+  employee: one(users, {
+    fields: [biometricSupervisorOverrides.employeeUserId],
+    references: [users.id],
+  }),
+  kiosk: one(kioskDevices, {
+    fields: [biometricSupervisorOverrides.kioskDeviceId],
+    references: [kioskDevices.id],
+  }),
+  punchLog: one(punchLogs, {
+    fields: [biometricSupervisorOverrides.punchLogId],
+    references: [punchLogs.id],
+  }),
 }));

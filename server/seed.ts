@@ -1,6 +1,15 @@
 import { db } from "./db";
-import { users, permissions, roles, rolePermissions, policyTypes, userRoles } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import {
+  users,
+  permissions,
+  roles,
+  rolePermissions,
+  policyTypes,
+  userRoles,
+  biometricSettings,
+  biometricLegalProfiles,
+} from "@shared/schema";
+import { eq, and, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
 const PERMISSION_KEYS = [
@@ -47,6 +56,7 @@ const PERMISSION_KEYS = [
   { key: "alerts.manage", name: "Manage Alerts", description: "Manage alert configurations", module: "alerts" },
   { key: "settings.manage", name: "Manage Settings", description: "Manage system settings", module: "settings" },
   { key: "audit.view", name: "View Audit Logs", description: "View audit logs", module: "audit" },
+  { key: "biometrics.manage", name: "Manage Biometrics", description: "Manage biometric kiosk settings, legal profiles, enrollments, and review attempts", module: "biometrics" },
 ];
 
 const SYSTEM_ROLES = [
@@ -73,6 +83,7 @@ const SYSTEM_ROLES = [
       "alerts.view", "alerts.manage",
       "settings.manage",
       "audit.view",
+      "biometrics.manage",
     ],
   },
   {
@@ -89,6 +100,7 @@ const SYSTEM_ROLES = [
       "approvals.view",
       "alerts.view",
       "audit.view",
+      "biometrics.manage",
     ],
   },
   {
@@ -211,7 +223,17 @@ export async function seed() {
     await db.insert(permissions).values(PERMISSION_KEYS);
     console.log(`Inserted ${PERMISSION_KEYS.length} permissions.`);
   } else {
-    console.log("Permissions already seeded, skipping.");
+    // Idempotently insert any newly added permissions (e.g. when a release adds permission keys).
+    const existingKeys = new Set(
+      (await db.select({ key: permissions.key }).from(permissions)).map((p) => p.key),
+    );
+    const missing = PERMISSION_KEYS.filter((p) => !existingKeys.has(p.key));
+    if (missing.length > 0) {
+      await db.insert(permissions).values(missing);
+      console.log(`Inserted ${missing.length} new permissions: ${missing.map((p) => p.key).join(", ")}`);
+    } else {
+      console.log("Permissions already seeded, skipping.");
+    }
   }
 
   const allPerms = await db.select().from(permissions);
@@ -251,7 +273,25 @@ export async function seed() {
       console.log(`  Created role "${roleDef.name}" with ${rpValues.length} permissions.`);
     }
   } else {
-    console.log("Roles already seeded, skipping.");
+    // Idempotently grant any newly added permissions to system roles. (Run after every
+    // seed so post-deploy permission additions reach the canned roles automatically.)
+    for (const roleDef of SYSTEM_ROLES) {
+      const [role] = await db.select().from(roles).where(eq(roles.name, roleDef.name));
+      if (!role) continue;
+      const existingForRole = await db
+        .select({ permissionId: rolePermissions.permissionId })
+        .from(rolePermissions)
+        .where(eq(rolePermissions.roleId, role.id));
+      const existingPermIds = new Set(existingForRole.map((r) => r.permissionId));
+      const toAdd = roleDef.permissions
+        .map((permKey) => permMap.get(permKey))
+        .filter((id): id is string => !!id && !existingPermIds.has(id))
+        .map((permId) => ({ roleId: role.id, permissionId: permId }));
+      if (toAdd.length > 0) {
+        await db.insert(rolePermissions).values(toAdd);
+        console.log(`  Topped up role "${roleDef.name}" with ${toAdd.length} new permissions.`);
+      }
+    }
   }
 
   const allRoles = await db.select().from(roles);
@@ -294,8 +334,59 @@ export async function seed() {
     }
   }
 
+  // Biometric singleton settings — feature flag defaults OFF.
+  const [existingSettings] = await db
+    .select()
+    .from(biometricSettings)
+    .where(eq(biometricSettings.key, "global"));
+  if (!existingSettings) {
+    await db.insert(biometricSettings).values({ key: "global" });
+    console.log("Seeded default biometric settings (feature flag OFF).");
+  }
+
+  // Default legal profile — disabled, ships with placeholder consent text that legal
+  // must review before enabling. Per spec: new profiles default disabled.
+  const [existingDefaultProfile] = await db
+    .select()
+    .from(biometricLegalProfiles)
+    .where(eq(biometricLegalProfiles.isDefault, true));
+  if (!existingDefaultProfile) {
+    await db.insert(biometricLegalProfiles).values({
+      name: "Default",
+      description:
+        "Fallback consent profile applied to any user/location without a more specific assignment. Disabled by default — review wording with legal counsel before enabling.",
+      consentText: DEFAULT_CONSENT_TEXT,
+      consentVersion: 1,
+      retentionDays: 180,
+      isEnabled: false,
+      isDefault: true,
+    });
+    console.log("Seeded Default biometric legal profile (disabled).");
+  }
+
   console.log("Seed complete.");
 }
+
+const DEFAULT_CONSENT_TEXT = `Ahava Medical Center — Biometric Information Consent
+
+I voluntarily authorize Ahava Medical Center ("Ahava") to collect, store, and use a
+mathematical representation (a "biometric template") of my face for the sole purpose of
+verifying my identity when I clock in and out at a workplace time-and-attendance kiosk.
+
+What is collected: A numeric face template only. Ahava will NOT store or transmit any
+photograph or video of my face. Templates are stored encrypted on Ahava's systems and
+are scoped to my employer entity.
+
+How long it is kept: Templates are retained for as long as I am actively employed and
+using face login, and for no more than 180 days after my last successful match (or as
+required by applicable law). Templates are deleted automatically when I revoke this
+consent, when my employment ends, or after the inactivity window above.
+
+My rights: I may revoke this consent at any time from my profile, which immediately
+deletes all of my stored face templates and disables face login for me. I may continue
+to use my PIN to clock in/out at any time — face login is optional.
+
+By accepting below I confirm I have read and understood this notice.`;
 
 if (process.argv[1]?.endsWith("seed.ts")) {
   seed()

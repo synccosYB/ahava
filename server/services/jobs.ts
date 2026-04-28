@@ -12,6 +12,7 @@ import {
   syncCertificationStatuses,
 } from "./lifecycleAlerts";
 import type { GeneratedAlert } from "./alerts";
+import { runBiometricRetention } from "./biometricRetention";
 
 export type JobType =
   | "auto-clock-out"
@@ -21,7 +22,8 @@ export type JobType =
   | "re-evaluate-role-assignments"
   | "apply-schedule-template"
   | "evaluate-missing-documents"
-  | "evaluate-expiring-certifications";
+  | "evaluate-expiring-certifications"
+  | "biometric-retention";
 
 const DAILY_RECURRING_HOURS = 24;
 
@@ -65,6 +67,10 @@ async function processJob(job: Job): Promise<void> {
       const actorUserId = payload.actorUserId || "system";
       const reason = payload.reason || "scheduled re-evaluation";
       await reevaluateAllUsers(actorUserId, reason);
+      return;
+    }
+    case "biometric-retention": {
+      await runBiometricRetention();
       return;
     }
     case "apply-schedule-template": {
@@ -169,6 +175,7 @@ export async function ensureRecurringEnqueued(): Promise<void> {
     "auto-clock-out",
     "apply-pto-anniversary-adjustments",
     "evaluate-performance-reviews",
+    "biometric-retention",
   ];
   for (const type of recurring) {
     const existing = await db

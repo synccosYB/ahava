@@ -29,6 +29,7 @@ import type { PtoAnniversaryAdjustment } from "@shared/schema";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CertificationsCard } from "@/components/certifications-card";
 import { useLocation } from "wouter";
+import { BiometricLoginCard } from "@/components/biometric-login-card";
 
 interface ProfileDetails {
   id: string;
@@ -575,6 +576,8 @@ export default function ProfilePage() {
           )}
         </CardContent>
       </Card>
+
+      <BiometricLoginCard />
 
       <PtoAnniversaryHistoryCard userId={user?.id ?? null} />
 

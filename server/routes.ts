@@ -6242,5 +6242,630 @@ export async function registerRoutes(
     res.json(updated);
   });
 
+  // ====================================================================
+  // ===== Biometric kiosk (Task 106 — Phase 1: face recognition) =======
+  // ====================================================================
+
+  // Lazy-import service helpers to keep startup lean and to avoid a circular
+  // dependency between routes and services that import storage.
+  const {
+    encryptTemplate,
+    decryptTemplate,
+    getCurrentKeyVersion,
+    isUsingEphemeralKey,
+  } = await import("./services/biometricEncryption");
+  const { identify } = await import("./services/biometricMatcher");
+  const { resolveLegalProfileForUser } = await import("./services/biometricLegalProfile");
+  const { runBiometricRetention } = await import("./services/biometricRetention");
+
+  // Validate a kiosk identifies itself with a known active device. The header is the
+  // contract: kiosks set X-Kiosk-Device-Id from the device profile they were paired
+  // with. This is "kiosk-only device trust" — face-identify cannot be invoked from a
+  // browser session that isn't asserting an active kiosk device.
+  async function getKioskDeviceFromReq(req: any) {
+    const headerVal = req.headers?.["x-kiosk-device-id"];
+    const deviceId = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+    if (!deviceId || typeof deviceId !== "string") return null;
+    const device = await storage.getKioskDevice(deviceId);
+    if (!device || !device.isActive) return null;
+    // Kiosk devices link to a department; the department gives us the companyId we
+    // need to scope candidate face templates. Devices with no department fall back to
+    // null which means no candidates will match (safe-by-default).
+    let companyId: string | null = null;
+    if (device.departmentId) {
+      const dept = await storage.getDepartment(device.departmentId);
+      companyId = dept?.companyId ?? null;
+    }
+    return { ...device, companyId };
+  }
+
+  function isFeatureEnabled(settings: { featureEnabled: boolean; faceEnabled: boolean }) {
+    return settings.featureEnabled && settings.faceEnabled;
+  }
+
+  // ---- Settings (admin) ----
+  app.get(
+    "/api/biometrics/settings",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (_req, res) => {
+      const settings = await storage.getBiometricSettings();
+      res.json({ settings, encryptionKeyEphemeral: isUsingEphemeralKey() });
+    },
+  );
+
+  app.patch(
+    "/api/biometrics/settings",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const before = await storage.getBiometricSettings();
+      const allowed = [
+        "featureEnabled",
+        "faceEnabled",
+        "thresholdAutoApprove",
+        "thresholdReview",
+        "thresholdReject",
+        "livenessRequired",
+        "maxAttemptsBeforeLockout",
+        "lockoutDurationMinutes",
+        "supervisorOverrideRequiresPin",
+        "minSamplesPerEnrollment",
+        "maxSamplesPerEnrollment",
+        "matchTimeoutMs",
+      ] as const;
+      const patch: Record<string, unknown> = {};
+      for (const k of allowed) {
+        if (req.body && k in req.body) patch[k] = req.body[k];
+      }
+      const updated = await storage.updateBiometricSettings(patch as any, (req as any).authUser.id);
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "biometric_settings",
+        targetId: updated.id,
+        action: "biometric.settings.updated",
+        oldValue: before,
+        newValue: updated,
+        context: getAuditContext(req),
+      });
+      res.json({ settings: updated });
+    },
+  );
+
+  // ---- Legal profiles (admin) ----
+  app.get(
+    "/api/biometrics/legal-profiles",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (_req, res) => {
+      const profiles = await storage.getBiometricLegalProfiles();
+      const scopes = await storage.getBiometricLegalProfileScopes();
+      res.json({ profiles, scopes });
+    },
+  );
+
+  app.post(
+    "/api/biometrics/legal-profiles",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const body = req.body || {};
+      if (!body.name || !body.consentText) {
+        return res.status(400).json({ error: "name and consentText are required" });
+      }
+      const created = await storage.createBiometricLegalProfile({
+        name: body.name,
+        description: body.description ?? null,
+        consentText: body.consentText,
+        consentVersion: body.consentVersion ?? 1,
+        retentionDays: body.retentionDays ?? 180,
+        isEnabled: false,
+        isDefault: false,
+      });
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "biometric_legal_profile",
+        targetId: created.id,
+        action: "biometric.legal_profile.created",
+        newValue: created,
+        context: getAuditContext(req),
+      });
+      res.json(created);
+    },
+  );
+
+  app.patch(
+    "/api/biometrics/legal-profiles/:id",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const id = req.params.id;
+      const before = await storage.getBiometricLegalProfile(id);
+      if (!before) return res.status(404).json({ error: "Not found" });
+      const allowed = ["name", "description", "consentText", "consentVersion", "retentionDays", "isEnabled"] as const;
+      const patch: Record<string, unknown> = {};
+      for (const k of allowed) {
+        if (req.body && k in req.body) patch[k] = req.body[k];
+      }
+      // If the consent text changed, force version bump so existing consents become "stale".
+      if (typeof patch.consentText === "string" && patch.consentText !== before.consentText) {
+        patch.consentVersion = (before.consentVersion || 1) + 1;
+      }
+      const updated = await storage.updateBiometricLegalProfile(id, patch as any);
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "biometric_legal_profile",
+        targetId: id,
+        action: "biometric.legal_profile.updated",
+        oldValue: before,
+        newValue: updated,
+        context: getAuditContext(req),
+      });
+      res.json(updated);
+    },
+  );
+
+  app.delete(
+    "/api/biometrics/legal-profiles/:id",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const id = req.params.id;
+      const before = await storage.getBiometricLegalProfile(id);
+      if (!before) return res.status(404).json({ error: "Not found" });
+      if (before.isDefault) {
+        return res.status(400).json({ error: "Cannot delete the default profile" });
+      }
+      await storage.deleteBiometricLegalProfile(id);
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "biometric_legal_profile",
+        targetId: id,
+        action: "biometric.legal_profile.deleted",
+        oldValue: before,
+        context: getAuditContext(req),
+      });
+      res.json({ ok: true });
+    },
+  );
+
+  app.post(
+    "/api/biometrics/legal-profiles/:id/scopes",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const id = req.params.id;
+      const profile = await storage.getBiometricLegalProfile(id);
+      if (!profile) return res.status(404).json({ error: "Not found" });
+      const scopes = Array.isArray(req.body?.scopes) ? req.body.scopes : [];
+      const cleaned = scopes
+        .filter((s: any) => s && (s.companyId || s.locationId))
+        .map((s: any) => ({ companyId: s.companyId ?? null, locationId: s.locationId ?? null }));
+      const result = await storage.setBiometricLegalProfileScopes(id, cleaned);
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "biometric_legal_profile",
+        targetId: id,
+        action: "biometric.legal_profile.scopes_set",
+        newValue: { scopes: cleaned },
+        context: getAuditContext(req),
+      });
+      res.json({ scopes: result });
+    },
+  );
+
+  // ---- Employee self-service ----
+  app.get("/api/biometrics/me", requireAuth, async (req: any, res) => {
+    const userId = (req as any).authUser.id;
+    const settings = await storage.getBiometricSettings();
+    const profile = await resolveLegalProfileForUser(userId);
+    const consent = await storage.getActiveBiometricConsent(userId);
+    const template = await storage.getBiometricTemplate(userId, "face");
+    res.json({
+      featureEnabled: isFeatureEnabled(settings),
+      profile: profile
+        ? {
+            id: profile.id,
+            name: profile.name,
+            consentText: profile.consentText,
+            consentVersion: profile.consentVersion,
+            isEnabled: profile.isEnabled,
+            retentionDays: profile.retentionDays,
+          }
+        : null,
+      hasConsent: !!consent && (consent.consentVersion === profile?.consentVersion),
+      consentAcceptedAt: consent?.acceptedAt ?? null,
+      enrolled: !!template,
+      sampleCount: template?.sampleCount ?? 0,
+      lastMatchedAt: template?.lastMatchedAt ?? null,
+      legalHold: !!consent?.legalHold,
+      requiredSamples: settings.minSamplesPerEnrollment,
+      maxSamples: settings.maxSamplesPerEnrollment,
+      livenessRequired: settings.livenessRequired,
+    });
+  });
+
+  app.post("/api/biometrics/consent", requireAuth, async (req: any, res) => {
+    const userId = (req as any).authUser.id;
+    const settings = await storage.getBiometricSettings();
+    if (!isFeatureEnabled(settings)) {
+      return res.status(403).json({ error: "Biometric feature is not enabled" });
+    }
+    const profile = await resolveLegalProfileForUser(userId);
+    if (!profile || !profile.isEnabled) {
+      return res.status(403).json({ error: "No enabled legal profile applies to your account" });
+    }
+    if (req.body?.consentVersion !== profile.consentVersion) {
+      return res
+        .status(409)
+        .json({ error: "Consent version mismatch — please re-read the latest consent" });
+    }
+    const ctx = getAuditContext(req);
+    const created = await storage.createBiometricConsent({
+      userId,
+      legalProfileId: profile.id,
+      consentVersion: profile.consentVersion,
+      consentTextSnapshot: profile.consentText,
+      ipAddress: ctx.ipAddress ?? null,
+      userAgent: ctx.userAgent ?? null,
+    });
+    await writeAuditLog({
+      actorUserId: userId,
+      targetType: "biometric_consent",
+      targetId: created.id,
+      action: "biometric.consent.accepted",
+      newValue: { legalProfileId: profile.id, consentVersion: profile.consentVersion },
+      context: ctx,
+    });
+    res.json({ consent: created });
+  });
+
+  app.delete("/api/biometrics/consent", requireAuth, async (req: any, res) => {
+    const userId = (req as any).authUser.id;
+    await storage.revokeBiometricConsent(userId, userId, "self_revoke");
+    await storage.deleteBiometricTemplate(userId, "face");
+    await writeAuditLog({
+      actorUserId: userId,
+      targetType: "biometric_consent",
+      targetId: userId,
+      action: "biometric.consent.revoked",
+      newValue: { reason: "self_revoke" },
+      context: getAuditContext(req),
+    });
+    res.json({ ok: true });
+  });
+
+  app.post("/api/biometrics/face/enroll", requireAuth, async (req: any, res) => {
+    const userId = (req as any).authUser.id;
+    const settings = await storage.getBiometricSettings();
+    if (!isFeatureEnabled(settings)) {
+      return res.status(403).json({ error: "Biometric feature is not enabled" });
+    }
+    const profile = await resolveLegalProfileForUser(userId);
+    if (!profile || !profile.isEnabled) {
+      return res.status(403).json({ error: "No enabled legal profile applies to your account" });
+    }
+    const consent = await storage.getActiveBiometricConsent(userId);
+    if (!consent || consent.consentVersion !== profile.consentVersion) {
+      return res.status(412).json({ error: "Active consent required before enrollment" });
+    }
+    const descriptors = req.body?.descriptors;
+    if (!Array.isArray(descriptors) || descriptors.length < settings.minSamplesPerEnrollment) {
+      return res.status(400).json({
+        error: `At least ${settings.minSamplesPerEnrollment} face samples are required`,
+      });
+    }
+    if (descriptors.length > settings.maxSamplesPerEnrollment) {
+      return res
+        .status(400)
+        .json({ error: `Too many samples (max ${settings.maxSamplesPerEnrollment})` });
+    }
+    for (const d of descriptors) {
+      if (!Array.isArray(d) || d.length !== 128 || d.some((x: any) => typeof x !== "number")) {
+        return res.status(400).json({ error: "Each descriptor must be 128 numeric values" });
+      }
+    }
+    const user = await storage.getUser(userId);
+    const encrypted = encryptTemplate(descriptors);
+    const template = await storage.upsertBiometricTemplate({
+      userId,
+      type: "face",
+      encryptedTemplate: encrypted,
+      encryptionKeyVersion: getCurrentKeyVersion(),
+      sampleCount: descriptors.length,
+      companyId: user?.companyId ?? null,
+      enrolledByUserId: userId,
+    });
+    await writeAuditLog({
+      actorUserId: userId,
+      targetType: "biometric_template",
+      targetId: template.id,
+      action: "biometric.template.enrolled",
+      newValue: { type: "face", sampleCount: descriptors.length },
+      context: getAuditContext(req),
+    });
+    res.json({ ok: true, template: { id: template.id, sampleCount: template.sampleCount } });
+  });
+
+  app.delete("/api/biometrics/face/enroll", requireAuth, async (req: any, res) => {
+    const userId = (req as any).authUser.id;
+    await storage.deleteBiometricTemplate(userId, "face");
+    await writeAuditLog({
+      actorUserId: userId,
+      targetType: "biometric_template",
+      targetId: userId,
+      action: "biometric.template.deleted",
+      newValue: { reason: "self_delete", type: "face" },
+      context: getAuditContext(req),
+    });
+    res.json({ ok: true });
+  });
+
+  // ---- Admin governance ----
+  app.get(
+    "/api/biometrics/enrollments",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (_req, res) => {
+      const rows = await storage.getBiometricEnrollmentSummary();
+      res.json(rows);
+    },
+  );
+
+  app.get(
+    "/api/biometrics/attempts",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req, res) => {
+      const sinceParam = req.query.since as string | undefined;
+      const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const limit = Math.min(parseInt((req.query.limit as string) || "200", 10) || 200, 500);
+      const attempts = await storage.listBiometricAttempts({
+        outcome: (req.query.outcome as string) || undefined,
+        candidateUserId: (req.query.userId as string) || undefined,
+        since,
+        limit,
+      });
+      res.json(attempts);
+    },
+  );
+
+  app.get(
+    "/api/biometrics/overrides",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req, res) => {
+      const limit = Math.min(parseInt((req.query.limit as string) || "100", 10) || 100, 500);
+      const rows = await storage.listBiometricSupervisorOverrides(limit);
+      res.json(rows);
+    },
+  );
+
+  app.get(
+    "/api/biometrics/metrics",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req, res) => {
+      const days = Math.max(1, Math.min(parseInt((req.query.days as string) || "30", 10) || 30, 365));
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      const metrics = await storage.getBiometricMetrics(since);
+      res.json({ since, days, ...metrics });
+    },
+  );
+
+  app.post(
+    "/api/biometrics/users/:id/revoke",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const userId = req.params.id;
+      const reason = (req.body?.reason as string) || "admin_revoke";
+      await storage.revokeBiometricConsent(userId, (req as any).authUser.id, reason);
+      await storage.deleteBiometricTemplate(userId, "face");
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "biometric_consent",
+        targetId: userId,
+        action: "biometric.admin.revoked",
+        newValue: { reason },
+        context: getAuditContext(req),
+      });
+      res.json({ ok: true });
+    },
+  );
+
+  app.post(
+    "/api/biometrics/users/:id/legal-hold",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const userId = req.params.id;
+      const hold = !!req.body?.hold;
+      await storage.setBiometricLegalHold(userId, hold);
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "biometric_consent",
+        targetId: userId,
+        action: hold ? "biometric.legal_hold.placed" : "biometric.legal_hold.released",
+        context: getAuditContext(req),
+      });
+      res.json({ ok: true });
+    },
+  );
+
+  app.post(
+    "/api/biometrics/retention/run",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const result = await runBiometricRetention();
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "biometric_settings",
+        targetId: "global",
+        action: "biometric.retention.manual_run",
+        newValue: result,
+        context: getAuditContext(req),
+      });
+      res.json(result);
+    },
+  );
+
+  // ---- Kiosk public face flow ----
+  app.post("/api/kiosk/face/identify", async (req, res) => {
+    const device = await getKioskDeviceFromReq(req);
+    if (!device) {
+      return res.status(403).json({ error: "Unknown or inactive kiosk device" });
+    }
+    const settings = await storage.getBiometricSettings();
+    if (!isFeatureEnabled(settings)) {
+      return res.status(503).json({ error: "Face login is disabled" });
+    }
+    const probe = req.body?.descriptor;
+    if (!Array.isArray(probe) || probe.length !== 128 || probe.some((x: any) => typeof x !== "number")) {
+      // Record camera/probe error so dashboard reflects bad-frames.
+      await storage.recordBiometricAttempt({
+        kioskDeviceId: device.id,
+        outcome: "camera_error",
+        confidence: null,
+        livenessPassed: null,
+      });
+      return res.status(400).json({ error: "Invalid face descriptor" });
+    }
+    if (settings.livenessRequired && req.body?.livenessPassed !== true) {
+      await storage.recordBiometricAttempt({
+        kioskDeviceId: device.id,
+        outcome: "liveness_failed",
+        confidence: null,
+        livenessPassed: false,
+      });
+      return res.status(400).json({ error: "Liveness check failed", outcome: "liveness_failed" });
+    }
+
+    const candidatesRaw = await storage.getBiometricTemplatesByCompanyAndType(
+      device.companyId ?? null,
+      "face",
+    );
+    // Decrypt and project to matcher candidate shape. Skip rows that fail to decrypt
+    // (could mean key rotation pending) so the flow degrades to PIN cleanly.
+    const candidates = [] as { userId: string; descriptors: number[][]; templateId: string }[];
+    for (const row of candidatesRaw) {
+      try {
+        const descriptors = decryptTemplate<number[][]>(row.encryptedTemplate);
+        if (Array.isArray(descriptors) && descriptors.length > 0) {
+          candidates.push({ userId: row.userId, descriptors, templateId: row.id });
+        }
+      } catch (err) {
+        console.warn(`[biometric] could not decrypt template ${row.id}:`, (err as Error).message);
+      }
+    }
+
+    const match = identify(probe, candidates, settings);
+
+    // Record attempt + check consecutive failures for lockout signalling.
+    let consecutiveFailures = 0;
+    if (match.outcome !== "auto_approved" && match.userId) {
+      consecutiveFailures = await storage.countConsecutiveFailures(
+        match.userId,
+        device.id,
+        new Date(Date.now() - settings.lockoutDurationMinutes * 60 * 1000),
+      );
+    }
+
+    const attempt = await storage.recordBiometricAttempt({
+      kioskDeviceId: device.id,
+      candidateUserId: match.userId,
+      outcome: match.outcome,
+      confidence: match.confidence,
+      livenessPassed: settings.livenessRequired ? true : null,
+    });
+    if (match.outcome === "auto_approved" && match.userId) {
+      const tplRow = candidatesRaw.find((r) => r.userId === match.userId);
+      if (tplRow) await storage.touchBiometricTemplateMatched(tplRow.id);
+      const user = await storage.getUser(match.userId);
+      if (!user) {
+        return res.status(404).json({ error: "Matched user not found" });
+      }
+      const deptName = await getDepartmentName(user.departmentId);
+      const lastRecord = await storage.getLatestAttendanceForUser(user.id);
+      const kioskLastRecord = lastRecord
+        ? {
+            id: lastRecord.id,
+            type: lastRecord.clockOut ? "clock_out" : lastRecord.clockIn ? "clock_in" : null,
+            timestamp: lastRecord.clockOut || lastRecord.clockIn,
+          }
+        : null;
+      return res.json({
+        outcome: "auto_approved",
+        confidence: match.confidence,
+        attemptId: attempt.id,
+        employee: sanitizeUserForKiosk(user, deptName),
+        lastRecord: kioskLastRecord,
+      });
+    }
+    return res.json({
+      outcome: match.outcome,
+      confidence: match.confidence,
+      attemptId: attempt.id,
+      consecutiveFailures,
+      lockoutThreshold: settings.maxAttemptsBeforeLockout,
+    });
+  });
+
+  app.post("/api/kiosk/face/supervisor-override", async (req, res) => {
+    const device = await getKioskDeviceFromReq(req);
+    if (!device) {
+      return res.status(403).json({ error: "Unknown or inactive kiosk device" });
+    }
+    const supervisorPin = req.body?.supervisorPin as string | undefined;
+    const targetEmployeeId = req.body?.targetEmployeeId as string | undefined;
+    const reason = (req.body?.reason as string | undefined) ?? "kiosk_override";
+    const attemptId = req.body?.attemptId as string | undefined;
+    if (!supervisorPin || !targetEmployeeId) {
+      return res.status(400).json({ error: "supervisorPin and targetEmployeeId are required" });
+    }
+    const supervisor = await storage.getUserByPin(supervisorPin);
+    if (!supervisor) {
+      return res.status(403).json({ error: "Invalid supervisor PIN" });
+    }
+    if (supervisor.role !== "admin" && supervisor.role !== "manager") {
+      return res.status(403).json({ error: "Only managers or admins can override" });
+    }
+    const target = await storage.getUser(targetEmployeeId);
+    if (!target) return res.status(404).json({ error: "Target employee not found" });
+
+    const override = await storage.recordBiometricSupervisorOverride({
+      supervisorUserId: supervisor.id,
+      targetUserId: target.id,
+      kioskDeviceId: device.id,
+      attemptId: attemptId ?? null,
+      reason,
+    });
+    await writeAuditLog({
+      actorUserId: supervisor.id,
+      targetType: "biometric_attempt",
+      targetId: override.id,
+      action: "biometric.supervisor_override",
+      newValue: { targetUserId: target.id, kioskDeviceId: device.id, reason },
+      context: getAuditContext(req),
+    });
+
+    const deptName = await getDepartmentName(target.departmentId);
+    const lastRecord = await storage.getLatestAttendanceForUser(target.id);
+    const kioskLastRecord = lastRecord
+      ? {
+          id: lastRecord.id,
+          type: lastRecord.clockOut ? "clock_out" : lastRecord.clockIn ? "clock_in" : null,
+          timestamp: lastRecord.clockOut || lastRecord.clockIn,
+        }
+      : null;
+    res.json({
+      ok: true,
+      overrideId: override.id,
+      employee: sanitizeUserForKiosk(target, deptName),
+      lastRecord: kioskLastRecord,
+    });
+  });
+
   return httpServer;
 }
