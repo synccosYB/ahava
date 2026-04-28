@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb, unique, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import {
@@ -706,6 +706,50 @@ export const insertWorkflowSchema = createInsertSchema(workflows).omit({
 export type InsertWorkflow = z.infer<typeof insertWorkflowSchema>;
 export type Workflow = typeof workflows.$inferSelect;
 
+export const scheduleTemplates = pgTable("schedule_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 200 }).notNull(),
+  description: text("description"),
+  companyId: varchar("company_id").references(() => companies.id),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertScheduleTemplateSchema = createInsertSchema(scheduleTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertScheduleTemplate = z.infer<typeof insertScheduleTemplateSchema>;
+export type ScheduleTemplate = typeof scheduleTemplates.$inferSelect;
+
+export const scheduleTemplateDays = pgTable("schedule_template_days", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull().references(() => scheduleTemplates.id, { onDelete: "cascade" }),
+  dayOfWeek: integer("day_of_week").notNull(),
+  startTime: varchar("start_time", { length: 5 }).notNull().default("09:00"),
+  endTime: varchar("end_time", { length: 5 }).notNull().default("17:00"),
+  isWorkDay: boolean("is_work_day").default(true).notNull(),
+}, (table) => [
+  unique("schedule_template_day_unique").on(table.templateId, table.dayOfWeek),
+]);
+
+export const insertScheduleTemplateDaySchema = createInsertSchema(scheduleTemplateDays).omit({
+  id: true,
+});
+export type InsertScheduleTemplateDay = z.infer<typeof insertScheduleTemplateDaySchema>;
+export type ScheduleTemplateDay = typeof scheduleTemplateDays.$inferSelect;
+
+export const scheduleTemplatesRelations = relations(scheduleTemplates, ({ many }) => ({
+  days: many(scheduleTemplateDays),
+}));
+
+export const scheduleTemplateDaysRelations = relations(scheduleTemplateDays, ({ one }) => ({
+  template: one(scheduleTemplates, { fields: [scheduleTemplateDays.templateId], references: [scheduleTemplates.id] }),
+}));
+
 export const employeeSchedules = pgTable("employee_schedules", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   employeeId: varchar("employee_id").notNull().references(() => users.id),
@@ -713,6 +757,7 @@ export const employeeSchedules = pgTable("employee_schedules", {
   startTime: varchar("start_time", { length: 5 }).notNull(),
   endTime: varchar("end_time", { length: 5 }).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
+  scheduleTemplateId: varchar("schedule_template_id").references(() => scheduleTemplates.id, { onDelete: "set null" }),
 });
 
 export const insertEmployeeScheduleSchema = createInsertSchema(employeeSchedules).omit({
@@ -724,6 +769,29 @@ export type EmployeeSchedule = typeof employeeSchedules.$inferSelect;
 export const employeeSchedulesRelations = relations(employeeSchedules, ({ one }) => ({
   employee: one(users, { fields: [employeeSchedules.employeeId], references: [users.id] }),
 }));
+
+export const roleAssignmentRules = pgTable("role_assignment_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 200 }).notNull(),
+  description: text("description"),
+  conditions: jsonb("conditions").notNull(),
+  targetRole: varchar("target_role", { length: 20 }).notNull(),
+  priority: integer("priority").default(100).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("role_assignment_rules_active_priority_idx").on(table.isActive, table.priority),
+]);
+
+export const insertRoleAssignmentRuleSchema = createInsertSchema(roleAssignmentRules).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertRoleAssignmentRule = z.infer<typeof insertRoleAssignmentRuleSchema>;
+export type RoleAssignmentRule = typeof roleAssignmentRules.$inferSelect;
 
 export const jobs = pgTable("jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

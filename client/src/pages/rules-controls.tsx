@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,13 +18,22 @@ import {
 } from "@/components/ui/dialog";
 import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
-  GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2, ClipboardCheck
+  GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2, ClipboardCheck,
+  UserCog, CalendarRange, RefreshCw, Send,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PolicyWizard } from "@/components/policy-wizard";
 import { WorkflowBuilder } from "@/components/workflow-builder";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger
+} from "@/components/ui/alert-dialog";
 import { ReviewCyclesSection } from "@/components/review-cycles/review-cycles-section";
-import type { Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User, Workflow as WorkflowType } from "@shared/schema";
+import type {
+  Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User,
+  Workflow as WorkflowType, RoleAssignmentRule, ScheduleTemplate, ScheduleTemplateDay,
+} from "@shared/schema";
 
 const sections = [
   { key: "general", label: "General", icon: Settings2 },
@@ -34,6 +43,8 @@ const sections = [
   { key: "payroll", label: "Payroll Rules", icon: DollarSign },
   { key: "approval", label: "Approval Workflows", icon: GitBranch },
   { key: "roles", label: "Roles & Permissions", icon: Shield },
+  { key: "role-rules", label: "Auto Role Assignment", icon: UserCog },
+  { key: "schedule-templates", label: "Schedule Templates", icon: CalendarRange },
   { key: "alerts", label: "Alerts & Notifications", icon: Bell },
   { key: "review-cycles", label: "Review Cycles", icon: ClipboardCheck },
   { key: "kiosk", label: "Kiosk & Devices", icon: Tablet },
@@ -74,6 +85,8 @@ export default function RulesControlsPage() {
           {activeSection === "payroll" && <PolicySection policyTypeKey="payroll" title="Payroll Rules" />}
           {activeSection === "approval" && <ApprovalWorkflowsSection />}
           {activeSection === "roles" && <RolesSection />}
+          {activeSection === "role-rules" && <RoleAssignmentRulesSection />}
+          {activeSection === "schedule-templates" && <ScheduleTemplatesSection />}
           {activeSection === "alerts" && <AlertsSection />}
           {activeSection === "review-cycles" && <ReviewCyclesSection />}
           {activeSection === "kiosk" && <KioskSection />}
@@ -814,5 +827,830 @@ function AuditSection() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ========= Auto Role Assignment Rules =========
+
+const RULE_FIELDS = [
+  { value: "companyId", label: "Division" },
+  { value: "locationId", label: "Location" },
+  { value: "departmentId", label: "Department" },
+  { value: "employmentType", label: "Employment Type" },
+  { value: "payType", label: "Pay Type" },
+  { value: "overtimeEligible", label: "Overtime Eligible" },
+  { value: "holidayPayEnabled", label: "Holiday Pay Enabled" },
+];
+const RULE_OPS = [
+  { value: "eq", label: "equals" },
+  { value: "neq", label: "not equals" },
+  { value: "in", label: "is one of" },
+  { value: "nin", label: "is not one of" },
+  { value: "exists", label: "is set" },
+  { value: "not_exists", label: "is not set" },
+];
+
+type SimpleCondition = { field: string; op: string; value: string };
+
+function parseConditions(conditions: any): SimpleCondition[] {
+  if (!conditions) return [];
+  const list = conditions.all || conditions.any;
+  if (!Array.isArray(list)) {
+    if (conditions.field) return [{ field: conditions.field, op: conditions.op, value: Array.isArray(conditions.value) ? conditions.value.join(",") : (conditions.value ?? "") }];
+    return [];
+  }
+  return list.filter((c: any) => c && c.field).map((c: any) => ({
+    field: c.field,
+    op: c.op,
+    value: Array.isArray(c.value) ? c.value.join(",") : (c.value ?? ""),
+  }));
+}
+
+function buildConditions(conds: SimpleCondition[], combinator: "all" | "any") {
+  const leaves = conds.filter(c => c.field && c.op).map(c => {
+    const leaf: any = { field: c.field, op: c.op };
+    if (c.op === "in" || c.op === "nin") {
+      leaf.value = c.value.split(",").map(v => v.trim()).filter(Boolean);
+    } else if (c.op === "eq" || c.op === "neq") {
+      const v = c.value.trim();
+      if (v === "true") leaf.value = true;
+      else if (v === "false") leaf.value = false;
+      else leaf.value = v;
+    }
+    return leaf;
+  });
+  if (leaves.length === 1) return leaves[0];
+  return { [combinator]: leaves };
+}
+
+function RoleAssignmentRulesSection() {
+  const { toast } = useToast();
+  const { data: rules, isLoading } = useQuery<RoleAssignmentRule[]>({ queryKey: ["/api/role-rules"] });
+  const [editingRule, setEditingRule] = useState<RoleAssignmentRule | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const reevalMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/role-rules/reevaluate-all");
+      return res.json() as Promise<{ jobId: string; employeeCount: number }>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({
+        title: "Re-evaluation queued",
+        description: `Background job started for ${data.employeeCount} employee(s)`,
+      });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/role-rules/${id}`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/role-rules"] });
+      toast({ title: "Rule deleted" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card data-testid="card-role-rules">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>Auto Role Assignment</CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">Rules that automatically assign roles based on employment attributes. Lower priority numbers run first.</p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => reevalMutation.mutate()} disabled={reevalMutation.isPending} data-testid="button-reevaluate-rules">
+            <RefreshCw className="h-4 w-4 mr-1" /> {reevalMutation.isPending ? "Running..." : "Re-evaluate All"}
+          </Button>
+          <Button size="sm" onClick={() => setShowCreate(true)} data-testid="button-add-role-rule">
+            <Plus className="h-4 w-4 mr-1" /> New Rule
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? <Skeleton className="h-40" /> : !rules || rules.length === 0 ? (
+          <div className="p-8 text-center text-muted-foreground" data-testid="text-no-role-rules">No automation rules defined yet.</div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Priority</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Target Role</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rules.map(r => (
+                <TableRow key={r.id} data-testid={`row-role-rule-${r.id}`}>
+                  <TableCell data-testid={`text-rule-priority-${r.id}`}>{r.priority}</TableCell>
+                  <TableCell className="font-medium" data-testid={`text-rule-name-${r.id}`}>{r.name}</TableCell>
+                  <TableCell><Badge variant="outline" data-testid={`badge-rule-role-${r.id}`}>{r.targetRole}</Badge></TableCell>
+                  <TableCell>
+                    <Badge variant={r.isActive ? "default" : "secondary"} data-testid={`badge-rule-status-${r.id}`}>
+                      {r.isActive ? "Active" : "Inactive"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="icon" onClick={() => setEditingRule(r)} data-testid={`button-edit-rule-${r.id}`}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="ghost" size="icon" data-testid={`button-delete-rule-${r.id}`}>
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete rule?</AlertDialogTitle>
+                          <AlertDialogDescription>This will remove the rule "{r.name}". Existing role assignments will not be reverted.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel data-testid={`button-cancel-delete-rule-${r.id}`}>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => deleteMutation.mutate(r.id)} data-testid={`button-confirm-delete-rule-${r.id}`}>Delete</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+      {(showCreate || editingRule) && (
+        <RoleRuleDialog rule={editingRule} onClose={() => { setShowCreate(false); setEditingRule(null); }} />
+      )}
+      <RoleRuleTestPanel />
+    </Card>
+  );
+}
+
+function RoleRuleTestPanel() {
+  const { toast } = useToast();
+  const [combinator, setCombinator] = useState<"all" | "any">("all");
+  const [conditions, setConditions] = useState<SimpleCondition[]>([{ field: "departmentId", op: "eq", value: "" }]);
+  const [targetRole, setTargetRole] = useState("employee");
+  const [scope, setScope] = useState<"all" | "single">("all");
+  const [pickedEmployeeId, setPickedEmployeeId] = useState<string>("");
+  const [result, setResult] = useState<{ evaluated: number; matched: number; sample: Array<{ userId: string; name: string; email: string; currentRole: string; wouldBecomeRole?: string }> } | null>(null);
+  const [singleResult, setSingleResult] = useState<{ userId: string; name: string; email: string; currentRole: string; matched: boolean; wouldBecomeRole?: string } | null>(null);
+
+  const { data: usersList } = useQuery<User[]>({ queryKey: ["/api/users"], enabled: scope === "single" });
+
+  const validConds = conditions.filter(c => c.field && c.op);
+
+  const testMutation = useMutation({
+    mutationFn: async () => {
+      const body: { conditions: unknown; targetRole: string; limit?: number; userIds?: string[] } = {
+        conditions: buildConditions(conditions, combinator),
+        targetRole,
+      };
+      if (scope === "single") {
+        if (!pickedEmployeeId) throw new Error("Pick an employee to test against");
+        body.userIds = [pickedEmployeeId];
+      } else {
+        body.limit = 50;
+      }
+      const res = await apiRequest("POST", "/api/role-rules/test", body);
+      return res.json() as Promise<{ evaluated: number; matched: number; sample: Array<{ userId: string; name: string; email: string; currentRole: string; wouldBecomeRole?: string }> }>;
+    },
+    onSuccess: (data) => {
+      if (scope === "single" && pickedEmployeeId) {
+        const picked = usersList?.find(u => u.id === pickedEmployeeId);
+        const matched = data.sample.find(s => s.userId === pickedEmployeeId);
+        setSingleResult({
+          userId: pickedEmployeeId,
+          name: `${picked?.firstName ?? ""} ${picked?.lastName ?? ""}`.trim() || picked?.email || pickedEmployeeId,
+          email: picked?.email ?? "",
+          currentRole: picked?.role ?? "—",
+          matched: !!matched,
+          wouldBecomeRole: matched?.wouldBecomeRole,
+        });
+        setResult(null);
+        toast({
+          title: matched ? "Employee matches" : "Employee does not match",
+          description: matched
+            ? `Would become ${matched.wouldBecomeRole ?? targetRole}.`
+            : "Conditions did not match this employee.",
+        });
+      } else {
+        setResult(data);
+        setSingleResult(null);
+        toast({ title: "Test complete", description: `Matched ${data.matched} of ${data.evaluated} employees.` });
+      }
+    },
+    onError: (err: Error) => toast({ title: "Test failed", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <CardContent className="border-t pt-6 mt-2" data-testid="card-role-rule-test">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h4 className="font-semibold">Test Conditions</h4>
+          <p className="text-sm text-muted-foreground">Preview which employees would match — broadly across the cohort or against a single picked employee.</p>
+        </div>
+      </div>
+      <div className="space-y-3">
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <Label>Target Role</Label>
+            <Select value={targetRole} onValueChange={setTargetRole}>
+              <SelectTrigger data-testid="select-test-target-role"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="employee">Employee</SelectItem>
+                <SelectItem value="manager">Manager</SelectItem>
+                <SelectItem value="admin">Admin</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Combinator</Label>
+            <Select value={combinator} onValueChange={(v) => setCombinator(v === "any" ? "any" : "all")}>
+              <SelectTrigger data-testid="select-test-combinator"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Match all</SelectItem>
+                <SelectItem value="any">Match any</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Scope</Label>
+            <Select value={scope} onValueChange={(v) => { setScope(v === "single" ? "single" : "all"); setResult(null); setSingleResult(null); }}>
+              <SelectTrigger data-testid="select-test-scope"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All employees</SelectItem>
+                <SelectItem value="single">Specific employee</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        {scope === "single" && (
+          <div>
+            <Label>Employee</Label>
+            <Select value={pickedEmployeeId} onValueChange={setPickedEmployeeId}>
+              <SelectTrigger data-testid="select-test-employee"><SelectValue placeholder="Pick an employee to test" /></SelectTrigger>
+              <SelectContent>
+                {(usersList ?? []).map(u => (
+                  <SelectItem key={u.id} value={u.id}>
+                    {(`${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() || u.email) + ` · ${u.role}`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <Label>Conditions</Label>
+            <Button variant="outline" size="sm" onClick={() => setConditions([...conditions, { field: "companyId", op: "eq", value: "" }])} data-testid="button-add-test-condition">
+              <Plus className="h-4 w-4 mr-1" /> Add
+            </Button>
+          </div>
+          {conditions.map((c, idx) => (
+            <div key={idx} className="flex gap-2 mb-2" data-testid={`test-condition-row-${idx}`}>
+              <Select value={c.field} onValueChange={(v) => setConditions(conditions.map((cc, i) => i === idx ? { ...cc, field: v } : cc))}>
+                <SelectTrigger className="w-44" data-testid={`select-test-cond-field-${idx}`}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {RULE_FIELDS.map(f => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={c.op} onValueChange={(v) => setConditions(conditions.map((cc, i) => i === idx ? { ...cc, op: v } : cc))}>
+                <SelectTrigger className="w-32" data-testid={`select-test-cond-op-${idx}`}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {RULE_OPS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {c.op !== "exists" && c.op !== "not_exists" && (
+                <Input
+                  className="flex-1"
+                  value={Array.isArray(c.value) ? c.value.join(",") : c.value == null ? "" : String(c.value)}
+                  onChange={(e) => setConditions(conditions.map((cc, i) => i === idx ? { ...cc, value: e.target.value } : cc))}
+                  placeholder={c.op === "in" || c.op === "nin" ? "comma-separated" : "value"}
+                  data-testid={`input-test-cond-value-${idx}`}
+                />
+              )}
+              <Button variant="ghost" size="icon" onClick={() => setConditions(conditions.filter((_, i) => i !== idx))} data-testid={`button-remove-test-cond-${idx}`}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-end">
+          <Button
+            onClick={() => testMutation.mutate()}
+            disabled={validConds.length === 0 || testMutation.isPending || (scope === "single" && !pickedEmployeeId)}
+            data-testid="button-run-test"
+          >
+            {testMutation.isPending ? "Testing..." : "Run Test"}
+          </Button>
+        </div>
+        {singleResult && (
+          <div className="border rounded-lg p-3 bg-muted/30" data-testid="text-test-single-result">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <p className="font-medium" data-testid="text-test-single-name">{singleResult.name}</p>
+                <p className="text-xs text-muted-foreground">{singleResult.email}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" data-testid="badge-test-single-current">{singleResult.currentRole}</Badge>
+                {singleResult.matched ? (
+                  <Badge variant="default" data-testid="badge-test-single-result">
+                    Matches → {singleResult.wouldBecomeRole ?? targetRole}
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" data-testid="badge-test-single-result">No match</Badge>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+        {result && (
+          <div className="border rounded-lg p-3 bg-muted/30" data-testid="text-test-result">
+            <p className="text-sm font-medium mb-2">
+              Matched <span data-testid="text-test-matched">{result.matched}</span> of <span data-testid="text-test-evaluated">{result.evaluated}</span> employees
+            </p>
+            {result.sample.length > 0 && (
+              <div className="max-h-60 overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Current Role</TableHead>
+                      <TableHead>Would Become</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {result.sample.map(u => (
+                      <TableRow key={u.userId} data-testid={`row-test-match-${u.userId}`}>
+                        <TableCell>{u.name || "—"}</TableCell>
+                        <TableCell className="text-xs">{u.email}</TableCell>
+                        <TableCell><Badge variant="outline">{u.currentRole}</Badge></TableCell>
+                        <TableCell>
+                          {u.wouldBecomeRole && u.wouldBecomeRole !== u.currentRole ? (
+                            <Badge variant="default">{u.wouldBecomeRole}</Badge>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">no change</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </CardContent>
+  );
+}
+
+function RoleRuleDialog({ rule, onClose }: { rule: RoleAssignmentRule | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEdit = !!rule;
+  const initialConds = rule ? parseConditions(rule.conditions) : [];
+  const initialCombinator: "all" | "any" =
+    rule && typeof rule.conditions === "object" && rule.conditions !== null && "any" in rule.conditions
+      ? "any"
+      : "all";
+  const [name, setName] = useState(rule?.name || "");
+  const [description, setDescription] = useState(rule?.description || "");
+  const [targetRole, setTargetRole] = useState(rule?.targetRole || "employee");
+  const [priority, setPriority] = useState(rule?.priority || 100);
+  const [isActive, setIsActive] = useState(rule?.isActive ?? true);
+  const [combinator, setCombinator] = useState<"all" | "any">(initialCombinator);
+  const [conditions, setConditions] = useState<SimpleCondition[]>(initialConds.length ? initialConds : [{ field: "departmentId", op: "eq", value: "" }]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const body = {
+        name, description: description || null, targetRole, priority, isActive,
+        conditions: buildConditions(conditions, combinator),
+      };
+      if (isEdit) {
+        await apiRequest("PATCH", `/api/role-rules/${rule!.id}`, body);
+      } else {
+        await apiRequest("POST", "/api/role-rules", body);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/role-rules"] });
+      toast({ title: isEdit ? "Rule updated" : "Rule created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const validConds = conditions.filter(c => c.field && c.op);
+
+  return (
+    <Dialog open={true} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl" data-testid="dialog-role-rule">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? "Edit Rule" : "New Auto Role Assignment Rule"}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Name *</Label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} data-testid="input-rule-name" />
+            </div>
+            <div>
+              <Label>Priority</Label>
+              <Input type="number" value={priority} onChange={(e) => setPriority(parseInt(e.target.value, 10) || 100)} data-testid="input-rule-priority" />
+            </div>
+          </div>
+          <div>
+            <Label>Description</Label>
+            <Textarea value={description || ""} onChange={(e) => setDescription(e.target.value)} rows={2} data-testid="input-rule-description" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Target Role *</Label>
+              <Select value={targetRole} onValueChange={setTargetRole}>
+                <SelectTrigger data-testid="select-rule-role"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="employee">Employee</SelectItem>
+                  <SelectItem value="manager">Manager</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-end gap-3">
+              <div className="flex items-center gap-2">
+                <Switch checked={isActive} onCheckedChange={setIsActive} data-testid="switch-rule-active" />
+                <Label>Active</Label>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Conditions (match {validConds.length > 1 ? <Select value={combinator} onValueChange={(v) => setCombinator(v === "any" ? "any" : "all")}><SelectTrigger className="inline-flex w-24 h-7 mx-1" data-testid="select-rule-combinator"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">all</SelectItem><SelectItem value="any">any</SelectItem></SelectContent></Select> : "all"})</Label>
+              <Button variant="outline" size="sm" onClick={() => setConditions([...conditions, { field: "companyId", op: "eq", value: "" }])} data-testid="button-add-condition">
+                <Plus className="h-3 w-3 mr-1" /> Add
+              </Button>
+            </div>
+            {conditions.map((c, idx) => (
+              <div key={idx} className="flex items-center gap-2" data-testid={`row-condition-${idx}`}>
+                <Select value={c.field} onValueChange={(v) => setConditions(conditions.map((cc, i) => i === idx ? { ...cc, field: v } : cc))}>
+                  <SelectTrigger className="flex-1" data-testid={`select-condition-field-${idx}`}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {RULE_FIELDS.map(f => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Select value={c.op} onValueChange={(v) => setConditions(conditions.map((cc, i) => i === idx ? { ...cc, op: v } : cc))}>
+                  <SelectTrigger className="w-32" data-testid={`select-condition-op-${idx}`}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {RULE_OPS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {(c.op !== "exists" && c.op !== "not_exists") && (
+                  <Input
+                    placeholder={c.op === "in" || c.op === "nin" ? "comma,separated,values" : "value or ID"}
+                    value={c.value}
+                    onChange={(e) => setConditions(conditions.map((cc, i) => i === idx ? { ...cc, value: e.target.value } : cc))}
+                    className="flex-1"
+                    data-testid={`input-condition-value-${idx}`}
+                  />
+                )}
+                <Button variant="ghost" size="icon" onClick={() => setConditions(conditions.filter((_, i) => i !== idx))} data-testid={`button-remove-condition-${idx}`}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-rule">Cancel</Button>
+          <Button onClick={() => saveMutation.mutate()} disabled={!name || validConds.length === 0 || saveMutation.isPending} data-testid="button-save-rule">
+            {saveMutation.isPending ? "Saving..." : (isEdit ? "Save" : "Create")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ========= Schedule Templates =========
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function ScheduleTemplatesSection() {
+  const { toast } = useToast();
+  const { data: templates, isLoading } = useQuery<ScheduleTemplate[]>({ queryKey: ["/api/schedule-templates"] });
+  const [editingTemplate, setEditingTemplate] = useState<ScheduleTemplate | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [applyingTemplate, setApplyingTemplate] = useState<ScheduleTemplate | null>(null);
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/schedule-templates/${id}`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/schedule-templates"] });
+      toast({ title: "Template deleted" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card data-testid="card-schedule-templates">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>Schedule Templates</CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">Reusable weekly schedule patterns that can be applied to employees in bulk.</p>
+        </div>
+        <Button size="sm" onClick={() => setShowCreate(true)} data-testid="button-add-template">
+          <Plus className="h-4 w-4 mr-1" /> New Template
+        </Button>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? <Skeleton className="h-40" /> : !templates || templates.length === 0 ? (
+          <div className="p-8 text-center text-muted-foreground" data-testid="text-no-templates">No schedule templates defined yet.</div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {templates.map(t => (
+                <TableRow key={t.id} data-testid={`row-template-${t.id}`}>
+                  <TableCell className="font-medium" data-testid={`text-template-name-${t.id}`}>
+                    {t.name}
+                    {t.description && <p className="text-xs text-muted-foreground">{t.description}</p>}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={t.isActive ? "default" : "secondary"} data-testid={`badge-template-status-${t.id}`}>
+                      {t.isActive ? "Active" : "Inactive"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="sm" onClick={() => setApplyingTemplate(t)} data-testid={`button-apply-template-${t.id}`}>
+                      <Send className="h-4 w-4 mr-1" /> Apply
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => setEditingTemplate(t)} data-testid={`button-edit-template-${t.id}`}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="ghost" size="icon" data-testid={`button-delete-template-${t.id}`}>
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete template?</AlertDialogTitle>
+                          <AlertDialogDescription>This will delete "{t.name}". Employee schedules linked to it will be unlinked but kept.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel data-testid={`button-cancel-delete-template-${t.id}`}>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => deleteMutation.mutate(t.id)} data-testid={`button-confirm-delete-template-${t.id}`}>Delete</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+      {(showCreate || editingTemplate) && (
+        <ScheduleTemplateDialog template={editingTemplate} onClose={() => { setShowCreate(false); setEditingTemplate(null); }} />
+      )}
+      {applyingTemplate && (
+        <ApplyTemplateDialog template={applyingTemplate} onClose={() => setApplyingTemplate(null)} />
+      )}
+    </Card>
+  );
+}
+
+function ScheduleTemplateDialog({ template, onClose }: { template: ScheduleTemplate | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEdit = !!template;
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const { data: existing } = useQuery<ScheduleTemplate & { days: ScheduleTemplateDay[] }>({
+    queryKey: ["/api/schedule-templates", template?.id],
+    enabled: !!template?.id,
+  });
+  const [name, setName] = useState(template?.name || "");
+  const [description, setDescription] = useState(template?.description || "");
+  const [companyId, setCompanyId] = useState<string>(template?.companyId || "");
+  const [isActive, setIsActive] = useState(template?.isActive ?? true);
+  const [days, setDays] = useState<{ dayOfWeek: number; isWorkDay: boolean; startTime: string; endTime: string }[]>(
+    Array.from({ length: 7 }, (_, i) => ({ dayOfWeek: i, isWorkDay: i >= 1 && i <= 5, startTime: "09:00", endTime: "17:00" }))
+  );
+
+  useEffect(() => {
+    if (existing && existing.days) {
+      setDays(Array.from({ length: 7 }, (_, i) => {
+        const found = existing.days.find(d => d.dayOfWeek === i);
+        if (found) return { dayOfWeek: i, isWorkDay: found.isWorkDay, startTime: found.startTime || "09:00", endTime: found.endTime || "17:00" };
+        return { dayOfWeek: i, isWorkDay: false, startTime: "09:00", endTime: "17:00" };
+      }));
+    }
+  }, [existing]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const body = {
+        name, description: description || null, companyId: companyId || null, isActive,
+        days: days.map(d => ({
+          dayOfWeek: d.dayOfWeek,
+          isWorkDay: d.isWorkDay,
+          startTime: d.startTime,
+          endTime: d.endTime,
+        })),
+      };
+      if (isEdit) {
+        await apiRequest("PATCH", `/api/schedule-templates/${template!.id}`, body);
+      } else {
+        await apiRequest("POST", "/api/schedule-templates", body);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/schedule-templates"] });
+      toast({ title: isEdit ? "Template updated" : "Template created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open={true} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl" data-testid="dialog-schedule-template">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? "Edit Template" : "New Schedule Template"}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label>Name *</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} data-testid="input-template-name" />
+          </div>
+          <div>
+            <Label>Description</Label>
+            <Textarea value={description || ""} onChange={(e) => setDescription(e.target.value)} rows={2} data-testid="input-template-description" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Division (optional)</Label>
+              <Select value={companyId || "all"} onValueChange={(v) => setCompanyId(v === "all" ? "" : v)}>
+                <SelectTrigger data-testid="select-template-division"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All divisions</SelectItem>
+                  {divisions?.map(d => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-end gap-3">
+              <div className="flex items-center gap-2">
+                <Switch checked={isActive} onCheckedChange={setIsActive} data-testid="switch-template-active" />
+                <Label>Active</Label>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Weekly Schedule</Label>
+            {days.map((d, idx) => (
+              <div key={d.dayOfWeek} className="flex items-center gap-3 border rounded-md px-3 py-2" data-testid={`row-template-day-${d.dayOfWeek}`}>
+                <span className="w-12 text-sm font-medium">{DAY_NAMES[d.dayOfWeek]}</span>
+                <Switch
+                  checked={d.isWorkDay}
+                  onCheckedChange={(v) => setDays(days.map((dd, i) => i === idx ? { ...dd, isWorkDay: v } : dd))}
+                  data-testid={`switch-template-day-${d.dayOfWeek}`}
+                />
+                {d.isWorkDay ? (
+                  <>
+                    <Input type="time" value={d.startTime} onChange={(e) => setDays(days.map((dd, i) => i === idx ? { ...dd, startTime: e.target.value } : dd))} className="w-32" data-testid={`input-template-start-${d.dayOfWeek}`} />
+                    <span>→</span>
+                    <Input type="time" value={d.endTime} onChange={(e) => setDays(days.map((dd, i) => i === idx ? { ...dd, endTime: e.target.value } : dd))} className="w-32" data-testid={`input-template-end-${d.dayOfWeek}`} />
+                  </>
+                ) : (
+                  <span className="text-sm text-muted-foreground">Off</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-template">Cancel</Button>
+          <Button onClick={() => saveMutation.mutate()} disabled={!name || saveMutation.isPending} data-testid="button-save-template">
+            {saveMutation.isPending ? "Saving..." : (isEdit ? "Save" : "Create")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ApplyTemplateDialog({ template, onClose }: { template: ScheduleTemplate; onClose: () => void }) {
+  const { toast } = useToast();
+  const { data: usersList } = useQuery<User[]>({ queryKey: ["/api/users"] });
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<"replace" | "merge">("replace");
+  const [filterDiv, setFilterDiv] = useState<string>("all");
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+
+  const filteredUsers = (usersList || []).filter(u => filterDiv === "all" || u.companyId === filterDiv);
+
+  const applyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/schedule-templates/${template.id}/apply`, {
+        employeeIds: Array.from(selectedIds),
+        mode,
+      });
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/schedule-templates"] });
+      toast({
+        title: data.async ? "Application queued" : "Template applied",
+        description: data.async
+          ? `Background job started for ${data.employeeCount} employees`
+          : `Applied to ${data.applied} employees${data.skipped?.length ? `, skipped ${data.skipped.length}` : ""}`,
+      });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open={true} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col" data-testid="dialog-apply-template">
+        <DialogHeader>
+          <DialogTitle>Apply Template: {template.name}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 flex-1 overflow-hidden flex flex-col">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Mode</Label>
+              <Select value={mode} onValueChange={(v) => setMode(v === "merge" ? "merge" : "replace")}>
+                <SelectTrigger data-testid="select-apply-mode"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="replace">Replace (clear existing schedules)</SelectItem>
+                  <SelectItem value="merge">Merge (overwrite by day)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Filter Division</Label>
+              <Select value={filterDiv} onValueChange={setFilterDiv}>
+                <SelectTrigger data-testid="select-apply-filter-division"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  {divisions?.map(d => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto border rounded-md">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10"></TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Email</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredUsers.map(u => (
+                  <TableRow key={u.id} data-testid={`row-apply-employee-${u.id}`}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(u.id)}
+                        onChange={(e) => {
+                          const next = new Set(selectedIds);
+                          if (e.target.checked) next.add(u.id); else next.delete(u.id);
+                          setSelectedIds(next);
+                        }}
+                        data-testid={`checkbox-apply-${u.id}`}
+                      />
+                    </TableCell>
+                    <TableCell>{u.firstName} {u.lastName}</TableCell>
+                    <TableCell>{u.email}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <p className="text-sm text-muted-foreground" data-testid="text-apply-count">{selectedIds.size} selected</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-apply">Cancel</Button>
+          <Button onClick={() => applyMutation.mutate()} disabled={selectedIds.size === 0 || applyMutation.isPending} data-testid="button-confirm-apply">
+            {applyMutation.isPending ? "Applying..." : `Apply to ${selectedIds.size}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

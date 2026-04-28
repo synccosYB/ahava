@@ -102,6 +102,15 @@ import {
   performanceReviewReminders,
   type PerformanceReviewReminder,
   type InsertPerformanceReviewReminder,
+  roleAssignmentRules,
+  type RoleAssignmentRule,
+  type InsertRoleAssignmentRule,
+  scheduleTemplates,
+  type ScheduleTemplate,
+  type InsertScheduleTemplate,
+  scheduleTemplateDays,
+  type ScheduleTemplateDay,
+  type InsertScheduleTemplateDay,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull } from "drizzle-orm";
@@ -144,6 +153,7 @@ export interface IStorage {
   deleteDepartment(id: string): Promise<void>;
 
   getEmploymentProfile(userId: string): Promise<EmploymentProfile | undefined>;
+  getAllEmploymentProfiles(): Promise<EmploymentProfile[]>;
   createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile>;
   updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined>;
 
@@ -365,6 +375,24 @@ export interface IStorage {
   upsertReviewReminder(data: InsertPerformanceReviewReminder): Promise<PerformanceReviewReminder>;
   updateReviewReminder(id: string, data: { status: string; completedBy?: string; notes?: string }): Promise<PerformanceReviewReminder | undefined>;
   resolveReviewDueAlertsFor(reminderId: string, resolverUserId: string): Promise<number>;
+
+  getRoleAssignmentRule(id: string): Promise<RoleAssignmentRule | undefined>;
+  getAllRoleAssignmentRules(): Promise<RoleAssignmentRule[]>;
+  getActiveRoleAssignmentRules(): Promise<RoleAssignmentRule[]>;
+  createRoleAssignmentRule(rule: InsertRoleAssignmentRule): Promise<RoleAssignmentRule>;
+  updateRoleAssignmentRule(id: string, rule: Partial<InsertRoleAssignmentRule>): Promise<RoleAssignmentRule | undefined>;
+  deleteRoleAssignmentRule(id: string): Promise<void>;
+
+  getScheduleTemplate(id: string): Promise<ScheduleTemplate | undefined>;
+  getAllScheduleTemplates(): Promise<ScheduleTemplate[]>;
+  getScheduleTemplatesByCompany(companyId: string | null): Promise<ScheduleTemplate[]>;
+  createScheduleTemplate(template: InsertScheduleTemplate): Promise<ScheduleTemplate>;
+  updateScheduleTemplate(id: string, template: Partial<InsertScheduleTemplate>): Promise<ScheduleTemplate | undefined>;
+  deleteScheduleTemplate(id: string): Promise<void>;
+
+  getScheduleTemplateDays(templateId: string): Promise<ScheduleTemplateDay[]>;
+  replaceScheduleTemplateDays(templateId: string, days: Omit<InsertScheduleTemplateDay, "templateId">[]): Promise<ScheduleTemplateDay[]>;
+  getAllEmploymentProfiles(): Promise<EmploymentProfile[]>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -529,6 +557,10 @@ export class DatabaseStorage implements IStorage {
   async getEmploymentProfile(userId: string): Promise<EmploymentProfile | undefined> {
     const [profile] = await db.select().from(userEmploymentProfiles).where(eq(userEmploymentProfiles.userId, userId));
     return profile;
+  }
+
+  async getAllEmploymentProfiles(): Promise<EmploymentProfile[]> {
+    return db.select().from(userEmploymentProfiles);
   }
 
   async createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile> {
@@ -1769,14 +1801,20 @@ export class DatabaseStorage implements IStorage {
     const existing = await db.select().from(employeeSchedules).where(
       and(eq(employeeSchedules.employeeId, schedule.employeeId), eq(employeeSchedules.dayOfWeek, schedule.dayOfWeek))
     );
+    const templateId = schedule.scheduleTemplateId !== undefined ? schedule.scheduleTemplateId : null;
     if (existing.length > 0) {
       const [updated] = await db.update(employeeSchedules)
-        .set({ startTime: schedule.startTime, endTime: schedule.endTime, isActive: schedule.isActive ?? true })
+        .set({
+          startTime: schedule.startTime,
+          endTime: schedule.endTime,
+          isActive: schedule.isActive ?? true,
+          scheduleTemplateId: templateId,
+        })
         .where(eq(employeeSchedules.id, existing[0].id))
         .returning();
       return updated;
     }
-    const [created] = await db.insert(employeeSchedules).values(schedule).returning();
+    const [created] = await db.insert(employeeSchedules).values({ ...schedule, scheduleTemplateId: templateId }).returning();
     return created;
   }
 
@@ -1904,6 +1942,35 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  async getRoleAssignmentRule(id: string): Promise<RoleAssignmentRule | undefined> {
+    const [rule] = await db.select().from(roleAssignmentRules).where(eq(roleAssignmentRules.id, id));
+    return rule;
+  }
+
+  async getAllRoleAssignmentRules(): Promise<RoleAssignmentRule[]> {
+    return db.select().from(roleAssignmentRules)
+      .orderBy(roleAssignmentRules.priority, roleAssignmentRules.createdAt);
+  }
+
+  async getActiveRoleAssignmentRules(): Promise<RoleAssignmentRule[]> {
+    return db.select().from(roleAssignmentRules)
+      .where(eq(roleAssignmentRules.isActive, true))
+      .orderBy(roleAssignmentRules.priority, roleAssignmentRules.createdAt);
+  }
+
+  async createRoleAssignmentRule(rule: InsertRoleAssignmentRule): Promise<RoleAssignmentRule> {
+    const [created] = await db.insert(roleAssignmentRules).values(rule).returning();
+    return created;
+  }
+
+  async updateRoleAssignmentRule(id: string, rule: Partial<InsertRoleAssignmentRule>): Promise<RoleAssignmentRule | undefined> {
+    const [updated] = await db.update(roleAssignmentRules)
+      .set({ ...rule, updatedAt: new Date() })
+      .where(eq(roleAssignmentRules.id, id))
+      .returning();
+    return updated;
+  }
+
   async getReviewReminder(id: string): Promise<PerformanceReviewReminder | undefined> {
     const [r] = await db
       .select()
@@ -1973,6 +2040,51 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  async deleteRoleAssignmentRule(id: string): Promise<void> {
+    // Soft delete: mark inactive so it stops evaluating but historical
+    // references (e.g. audit logs that cite this rule by id/name) still
+    // resolve. Use updateRoleAssignmentRule semantics for consistency.
+    await db.update(roleAssignmentRules)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(roleAssignmentRules.id, id));
+  }
+
+  async getScheduleTemplate(id: string): Promise<ScheduleTemplate | undefined> {
+    const [template] = await db.select().from(scheduleTemplates).where(eq(scheduleTemplates.id, id));
+    return template;
+  }
+
+  async getAllScheduleTemplates(): Promise<ScheduleTemplate[]> {
+    // Returns all templates (active + inactive) so admin UI can manage and
+    // potentially reactivate soft-deleted templates. The /apply endpoint
+    // independently rejects inactive templates.
+    return db.select().from(scheduleTemplates).orderBy(desc(scheduleTemplates.createdAt));
+  }
+
+  async getScheduleTemplatesByCompany(companyId: string | null): Promise<ScheduleTemplate[]> {
+    if (companyId === null) {
+      return db.select().from(scheduleTemplates)
+        .where(isNull(scheduleTemplates.companyId))
+        .orderBy(desc(scheduleTemplates.createdAt));
+    }
+    return db.select().from(scheduleTemplates)
+      .where(or(eq(scheduleTemplates.companyId, companyId), isNull(scheduleTemplates.companyId)))
+      .orderBy(desc(scheduleTemplates.createdAt));
+  }
+
+  async createScheduleTemplate(template: InsertScheduleTemplate): Promise<ScheduleTemplate> {
+    const [created] = await db.insert(scheduleTemplates).values(template).returning();
+    return created;
+  }
+
+  async updateScheduleTemplate(id: string, template: Partial<InsertScheduleTemplate>): Promise<ScheduleTemplate | undefined> {
+    const [updated] = await db.update(scheduleTemplates)
+      .set({ ...template, updatedAt: new Date() })
+      .where(eq(scheduleTemplates.id, id))
+      .returning();
+    return updated;
+  }
+
   async resolveReviewDueAlertsFor(
     reminderId: string,
     resolverUserId: string,
@@ -1998,6 +2110,33 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return count;
+  }
+
+  async deleteScheduleTemplate(id: string): Promise<void> {
+    // Soft delete: mark inactive so that linked employee_schedules rows
+    // keep their scheduleTemplateId reference (linkage history is
+    // preserved). Inactive templates are filtered out in the UI list and
+    // rejected by /apply.
+    await db.update(scheduleTemplates)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(scheduleTemplates.id, id));
+  }
+
+  async getScheduleTemplateDays(templateId: string): Promise<ScheduleTemplateDay[]> {
+    return db.select().from(scheduleTemplateDays)
+      .where(eq(scheduleTemplateDays.templateId, templateId))
+      .orderBy(scheduleTemplateDays.dayOfWeek);
+  }
+
+  async replaceScheduleTemplateDays(templateId: string, days: Omit<InsertScheduleTemplateDay, "templateId">[]): Promise<ScheduleTemplateDay[]> {
+    await db.delete(scheduleTemplateDays).where(eq(scheduleTemplateDays.templateId, templateId));
+    if (days.length === 0) return [];
+    const rows = days.map(d => ({ ...d, templateId }));
+    return db.insert(scheduleTemplateDays).values(rows).returning();
+  }
+
+  async getAllEmploymentProfiles(): Promise<EmploymentProfile[]> {
+    return db.select().from(userEmploymentProfiles);
   }
 }
 

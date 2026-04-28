@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useDebounce } from "@/hooks/use-debounce";
@@ -18,7 +18,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2 } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
 import { formatCurrency } from "@/lib/utils";
@@ -249,9 +249,23 @@ export default function EmployeesPage() {
                       </TableCell>
                       <TableCell data-testid={`text-employee-email-${emp.id}`}>{emp.email}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" data-testid={`badge-employee-role-${emp.id}`}>
-                          {emp.role}
-                        </Badge>
+                        <div className="flex items-center gap-1">
+                          <Badge variant="outline" data-testid={`badge-employee-role-${emp.id}`}>
+                            {emp.role}
+                          </Badge>
+                          {emp.roleManuallyOverriddenAt ? (
+                            <Badge variant="secondary" className="text-xs" title="Role was set manually" data-testid={`badge-role-manual-${emp.id}`}>Manual</Badge>
+                          ) : (emp as any).assignedByRule ? (
+                            <Badge
+                              variant="secondary"
+                              className="text-xs"
+                              title={`Set by rule: ${(emp as any).assignedByRule.name}`}
+                              data-testid={`badge-role-auto-${emp.id}`}
+                            >
+                              Set by rule
+                            </Badge>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell data-testid={`text-employee-division-${emp.id}`}>{div?.name || "—"}</TableCell>
                       <TableCell data-testid={`text-employee-dept-${emp.id}`}>{dept?.name || "—"}</TableCell>
@@ -777,6 +791,19 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     },
   });
 
+  const clearOverrideMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/users/${userId}/clear-role-override`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({ title: "Override cleared", description: "Role re-evaluated by automation rules" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const updateMutation = useMutation({
     mutationFn: async (data: { companyId?: string | null; departmentId?: string | null; locationId?: string | null }) => {
       await apiRequest("PATCH", `/api/users/${userId}`, data);
@@ -843,17 +870,45 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 <p className="font-medium" data-testid="text-profile-email">{user?.email || "—"}</p>
               </div>
               <div>
-                <Label className="text-muted-foreground text-xs">Role</Label>
-                <Select value={user?.role || "employee"} onValueChange={(v) => roleMutation.mutate(v)}>
-                  <SelectTrigger data-testid="select-profile-role">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="employee">Employee</SelectItem>
-                    <SelectItem value="manager">Manager</SelectItem>
-                    <SelectItem value="admin">Admin</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center justify-between mb-1">
+                  <Label className="text-muted-foreground text-xs">Role</Label>
+                  {user?.roleManuallyOverriddenAt ? (
+                    <Badge variant="secondary" className="text-xs" data-testid="badge-profile-role-manual">Manual override</Badge>
+                  ) : (user as any)?.assignedByRule ? (
+                    <Badge
+                      variant="secondary"
+                      className="text-xs"
+                      title={`Set by rule: ${(user as any).assignedByRule.name}`}
+                      data-testid="badge-profile-role-auto"
+                    >
+                      Set by rule
+                    </Badge>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Select value={user?.role || "employee"} onValueChange={(v) => roleMutation.mutate(v)}>
+                    <SelectTrigger data-testid="select-profile-role">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="employee">Employee</SelectItem>
+                      <SelectItem value="manager">Manager</SelectItem>
+                      <SelectItem value="admin">Admin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {user?.roleManuallyOverriddenAt && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => clearOverrideMutation.mutate()}
+                      disabled={clearOverrideMutation.isPending}
+                      data-testid="button-clear-role-override"
+                      title="Clear manual override and re-evaluate using rules"
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Division</Label>
@@ -1211,52 +1266,136 @@ function ScheduleTab({ employeeId }: { employeeId: string }) {
     setSchedule(prev => prev.map(d => d.dayOfWeek === dayOfWeek ? { ...d, [field]: value } : d));
   };
 
+  const templateIdsByDay = useMemo(() => {
+    const map = new Map<number, string | null>();
+    for (let d = 0; d < 7; d++) map.set(d, null);
+    (existingSchedules ?? []).forEach((s) => {
+      map.set(s.dayOfWeek, s.scheduleTemplateId ?? null);
+    });
+    return map;
+  }, [existingSchedules]);
+
+  const presentRows = existingSchedules ?? [];
+  const rowsWithTemplate = presentRows.filter((s) => !!s.scheduleTemplateId);
+  const rowsWithoutTemplate = presentRows.filter((s) => !s.scheduleTemplateId);
+  const templateIdSet = new Set(rowsWithTemplate.map((s) => s.scheduleTemplateId as string));
+  const sharedTemplateId = templateIdSet.size === 1 ? Array.from(templateIdSet)[0] : null;
+  const linkedDayCount = rowsWithTemplate.length;
+  const totalDayCount = presentRows.length;
+  const isFullyLinked =
+    sharedTemplateId !== null &&
+    rowsWithoutTemplate.length === 0 &&
+    templateIdSet.size === 1 &&
+    totalDayCount > 0;
+  const isPartiallyLinked = !isFullyLinked && linkedDayCount > 0;
+
+  const { data: linkedTemplate } = useQuery<{ id: string; name: string }>({
+    queryKey: ["/api/schedule-templates", sharedTemplateId],
+    enabled: !!sharedTemplateId,
+  });
+
+  const relinkMutation = useMutation({
+    mutationFn: async () => {
+      if (!sharedTemplateId) throw new Error("No template to relink");
+      const res = await apiRequest("POST", `/api/schedule-templates/${sharedTemplateId}/apply`, {
+        employeeIds: [employeeId],
+        mode: "merge",
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employees", employeeId, "schedules"] });
+      hasInitialized.current = false;
+      toast({ title: "Schedule re-linked", description: "Template re-applied to this employee." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Re-link failed", description: err.message, variant: "destructive" });
+    },
+  });
+
   if (isLoading) return <Skeleton className="h-48 w-full" />;
+
+  const templateName = linkedTemplate?.name;
 
   return (
     <Card data-testid="card-schedule">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Work Schedule</CardTitle>
+        <div className="flex items-center gap-2 flex-wrap">
+          <CardTitle>Work Schedule</CardTitle>
+          {isFullyLinked && (
+            <Badge variant="secondary" data-testid="badge-schedule-linked" title={templateName ?? undefined}>
+              <Link2 className="h-3 w-3 mr-1" />
+              Linked{templateName ? `: ${templateName}` : ""}
+            </Badge>
+          )}
+          {isPartiallyLinked && (
+            <Badge variant="outline" data-testid="badge-schedule-mixed" title={templateName ?? undefined}>
+              <Link2 className="h-3 w-3 mr-1" />
+              Mixed: {linkedDayCount} of 7{templateName ? ` from ${templateName}` : ""}
+            </Badge>
+          )}
+          {isPartiallyLinked && sharedTemplateId && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => relinkMutation.mutate()}
+              disabled={relinkMutation.isPending}
+              data-testid="button-relink-template"
+            >
+              {relinkMutation.isPending ? "Re-linking..." : "Re-link to template"}
+            </Button>
+          )}
+        </div>
         <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} data-testid="button-save-schedule">
           {saveMutation.isPending ? "Saving..." : "Save Schedule"}
         </Button>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
-          {schedule.map((day) => (
-            <div key={day.dayOfWeek} className="flex items-center gap-4 p-3 rounded-lg border" data-testid={`schedule-day-${day.dayOfWeek}`}>
-              <button
-                type="button"
-                onClick={() => toggleDay(day.dayOfWeek)}
-                className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${day.isActive ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/30"}`}
-                data-testid={`toggle-day-${day.dayOfWeek}`}
-              >
-                {day.isActive && <CheckCircle2 className="h-4 w-4" />}
-              </button>
-              <span className="w-28 font-medium" data-testid={`text-day-name-${day.dayOfWeek}`}>{DAY_NAMES[day.dayOfWeek]}</span>
-              {day.isActive ? (
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="time"
-                    value={day.startTime}
-                    onChange={(e) => updateTime(day.dayOfWeek, "startTime", e.target.value)}
-                    className="w-32"
-                    data-testid={`input-start-time-${day.dayOfWeek}`}
-                  />
-                  <span className="text-muted-foreground">to</span>
-                  <Input
-                    type="time"
-                    value={day.endTime}
-                    onChange={(e) => updateTime(day.dayOfWeek, "endTime", e.target.value)}
-                    className="w-32"
-                    data-testid={`input-end-time-${day.dayOfWeek}`}
-                  />
-                </div>
-              ) : (
-                <span className="text-muted-foreground text-sm" data-testid={`text-day-off-${day.dayOfWeek}`}>Day off</span>
-              )}
-            </div>
-          ))}
+          {schedule.map((day) => {
+            const dayTemplateId = templateIdsByDay.get(day.dayOfWeek) ?? null;
+            const isCustomized = sharedTemplateId !== null && dayTemplateId === null && day.isActive;
+            return (
+              <div key={day.dayOfWeek} className="flex items-center gap-4 p-3 rounded-lg border" data-testid={`schedule-day-${day.dayOfWeek}`}>
+                <button
+                  type="button"
+                  onClick={() => toggleDay(day.dayOfWeek)}
+                  className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${day.isActive ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/30"}`}
+                  data-testid={`toggle-day-${day.dayOfWeek}`}
+                >
+                  {day.isActive && <CheckCircle2 className="h-4 w-4" />}
+                </button>
+                <span className="w-28 font-medium" data-testid={`text-day-name-${day.dayOfWeek}`}>{DAY_NAMES[day.dayOfWeek]}</span>
+                {day.isActive ? (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="time"
+                      value={day.startTime}
+                      onChange={(e) => updateTime(day.dayOfWeek, "startTime", e.target.value)}
+                      className="w-32"
+                      data-testid={`input-start-time-${day.dayOfWeek}`}
+                    />
+                    <span className="text-muted-foreground">to</span>
+                    <Input
+                      type="time"
+                      value={day.endTime}
+                      onChange={(e) => updateTime(day.dayOfWeek, "endTime", e.target.value)}
+                      className="w-32"
+                      data-testid={`input-end-time-${day.dayOfWeek}`}
+                    />
+                  </div>
+                ) : (
+                  <span className="text-muted-foreground text-sm" data-testid={`text-day-off-${day.dayOfWeek}`}>Day off</span>
+                )}
+                {isCustomized && (
+                  <Badge variant="outline" className="ml-auto text-xs" data-testid={`badge-customized-${day.dayOfWeek}`} title="This day was customized after the template was applied.">
+                    <Unlink className="h-3 w-3 mr-1" />
+                    Customized
+                  </Badge>
+                )}
+              </div>
+            );
+          })}
         </div>
       </CardContent>
     </Card>

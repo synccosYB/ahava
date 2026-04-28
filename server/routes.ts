@@ -16,8 +16,15 @@ import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBla
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
 import { runWorkflowsForTrigger } from "./workflowEngine";
 import { requestCache } from "./lib/requestCache";
+import { appCache } from "./lib/cache";
+
+function invalidateUserCache() {
+  appCache.invalidatePrefix("rc:");
+}
 import { shouldRun } from "./lib/cooldown";
 import { drainPending, enqueue } from "./services/jobs";
+import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
+import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
@@ -190,7 +197,23 @@ export async function registerRoutes(
   });
   app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), requestCache({ scope: "user" }), async (req, res) => {
     const users = await storage.getAllUsers();
-    res.json(hideSuperAdmin(users, isSuperAdmin(req)));
+    // Attach role-rule provenance: which active rule (if any) matches this
+    // user. UI uses this to show "Set by rule" only when an actual rule
+    // matches, instead of inferring from the absence of a manual override.
+    const [activeRules, allProfiles] = await Promise.all([
+      storage.getActiveRoleAssignmentRules(),
+      storage.getAllEmploymentProfiles(),
+    ]);
+    const profileByUser = new Map(allProfiles.map(p => [p.userId, p]));
+    const { evaluateRoleForUser } = await import("./services/roleAssignment");
+    const enriched = users.map(u => {
+      const match = evaluateRoleForUser(u, profileByUser.get(u.id), activeRules);
+      return {
+        ...u,
+        assignedByRule: match ? { id: match.rule.id, name: match.rule.name } : null,
+      };
+    });
+    res.json(hideSuperAdmin(enriched, isSuperAdmin(req)));
   });
 
   app.patch("/api/users/:id/role", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
@@ -202,9 +225,54 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid role", errors: parsed.error.flatten() });
     }
     const id = req.params.id as string;
-    const user = await storage.updateUserRole(id, parsed.data.role);
+    const before = await storage.getUser(id);
+    if (!before) return res.status(404).json({ message: "User not found" });
+    const user = await storage.updateUser(id, {
+      role: parsed.data.role,
+      roleManuallyOverriddenAt: new Date(),
+    });
     if (!user) return res.status(404).json({ message: "User not found" });
+    const actor = (req as any).authUser as User | undefined;
+    if (actor && before.role !== parsed.data.role) {
+      await writeAuditLog({
+        actorUserId: actor.id,
+        targetType: "user",
+        targetId: id,
+        action: "user.role_change",
+        oldValue: { role: before.role },
+        newValue: { role: parsed.data.role },
+        context: { source: "manual" },
+      });
+    }
+    invalidateUserCache();
     res.json(user);
+  });
+
+  app.post("/api/users/:id/clear-role-override", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    const id = req.params.id as string;
+    const existing = await storage.getUser(id);
+    if (!existing) return res.status(404).json({ message: "User not found" });
+    const previouslyOverridden = existing.roleManuallyOverriddenAt;
+    await storage.updateUser(id, { roleManuallyOverriddenAt: null });
+    const actor = (req as any).authUser as User;
+    if (previouslyOverridden) {
+      await writeAuditLog({
+        actorUserId: actor.id,
+        targetType: "user",
+        targetId: id,
+        action: "user.role_override_cleared",
+        oldValue: { manualOverride: true, role: existing.role },
+        newValue: { manualOverride: false, role: existing.role },
+        context: getAuditContext(req),
+      });
+    }
+    const result = await applyRoleForUser(id, { actorUserId: actor.id, reason: "manual override cleared", force: true });
+    const user = await storage.getUser(id);
+    invalidateUserCache();
+    res.json({ user, result });
   });
 
   const createUserSchema = z.object({
@@ -278,7 +346,19 @@ export async function registerRoutes(
       });
     }
 
-    const { password: _, passwordHash: _ph, ...safeUser } = newUser;
+    try {
+      const actor = (req as any).authUser as User | undefined;
+      await applyRoleForUser(newUser.id, {
+        actorUserId: actor?.id || "system",
+        reason: "user.create",
+      });
+    } catch (err) {
+      console.error("applyRoleForUser failed on user create:", err);
+    }
+
+    invalidateUserCache();
+    const refreshed = await storage.getUser(newUser.id);
+    const { password: _, passwordHash: _ph, ...safeUser } = refreshed || newUser;
     res.status(201).json({ ...safeUser, temporaryPassword: tempPassword });
   });
 
@@ -413,7 +493,20 @@ export async function registerRoutes(
       departmentId: next.departmentId,
     });
     if (!updated) return res.status(404).json({ message: "User not found" });
-    const { password: _p, passwordHash: _ph, ...safe } = updated;
+
+    try {
+      const actor = (req as any).authUser as User | undefined;
+      await applyRoleForUser(req.params.id, {
+        actorUserId: actor?.id || "system",
+        reason: "user.update",
+      });
+    } catch (err) {
+      console.error("applyRoleForUser failed on user update:", err);
+    }
+
+    invalidateUserCache();
+    const refreshed = await storage.getUser(req.params.id);
+    const { password: _p, passwordHash: _ph, ...safe } = refreshed || updated;
     res.json(safe);
   });
 
@@ -1075,6 +1168,18 @@ export async function registerRoutes(
     }
     const profile = await storage.updateEmploymentProfile(req.params.userId, parsed.data);
     if (!profile) return res.status(404).json({ message: "Employment profile not found" });
+
+    try {
+      const actor = (req as any).authUser as User | undefined;
+      await applyRoleForUser(req.params.userId, {
+        actorUserId: actor?.id || "system",
+        reason: "employment_profile.update",
+      });
+    } catch (err) {
+      console.error("applyRoleForUser failed on profile update:", err);
+    }
+
+    invalidateUserCache();
     res.json(profile);
   });
 
@@ -1433,14 +1538,24 @@ export async function registerRoutes(
         validated.push(parsed.data);
       }
 
+      const existing = await storage.getEmployeeSchedules(employeeId);
+      const existingByDay = new Map(existing.map(e => [e.dayOfWeek, e]));
+
       const results = [];
       for (const v of validated) {
+        const prev = existingByDay.get(v.dayOfWeek);
+        const unchanged = prev
+          && prev.startTime === v.startTime
+          && prev.endTime === v.endTime
+          && prev.isActive === v.isActive;
+        const preserveTemplateId = unchanged ? prev?.scheduleTemplateId ?? null : null;
         const result = await storage.upsertEmployeeSchedule({
           employeeId,
           dayOfWeek: v.dayOfWeek,
           startTime: v.startTime,
           endTime: v.endTime,
           isActive: v.isActive,
+          scheduleTemplateId: preserveTemplateId,
         });
         results.push(result);
       }
@@ -4260,6 +4375,340 @@ export async function registerRoutes(
     }
   });
 
+  // ========= Auto Role Assignment Rules =========
+
+  const roleRuleSchema = z.object({
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).nullable().optional(),
+    conditions: z.any(),
+    targetRole: z.string().min(1),
+    priority: z.number().int().min(1).max(10000).default(100),
+    isActive: z.boolean().default(true),
+  });
+
+  app.get("/api/role-rules", requireAuth, requireRole("admin"), async (_req, res) => {
+    const rules = await storage.getAllRoleAssignmentRules();
+    res.json(rules);
+  });
+
+  app.get("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req, res) => {
+    const rule = await storage.getRoleAssignmentRule(req.params.id);
+    if (!rule) return res.status(404).json({ message: "Rule not found" });
+    res.json(rule);
+  });
+
+  app.post("/api/role-rules", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const parsed = roleRuleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid rule", errors: parsed.error.flatten() });
+    }
+    if (!isAllowedRole(parsed.data.targetRole)) {
+      return res.status(400).json({ message: "targetRole must be employee, manager, or admin" });
+    }
+    const v = validateConditions(parsed.data.conditions);
+    if (!v.ok) return res.status(400).json({ message: v.error });
+    const created = await storage.createRoleAssignmentRule({
+      name: parsed.data.name,
+      description: parsed.data.description ?? null,
+      conditions: parsed.data.conditions,
+      targetRole: parsed.data.targetRole,
+      priority: parsed.data.priority,
+      isActive: parsed.data.isActive,
+      createdBy: req.authUser.id,
+    });
+    await writeAuditLog({
+      actorUserId: req.authUser.id,
+      targetType: "role_assignment_rule",
+      targetId: created.id,
+      action: "role_assignment_rule.create",
+      newValue: created,
+      ...getAuditContext(req),
+    });
+    res.status(201).json(created);
+  });
+
+  app.patch("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const existing = await storage.getRoleAssignmentRule(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Rule not found" });
+    const parsed = roleRuleSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid rule", errors: parsed.error.flatten() });
+    }
+    if (parsed.data.targetRole !== undefined && !isAllowedRole(parsed.data.targetRole)) {
+      return res.status(400).json({ message: "targetRole must be employee, manager, or admin" });
+    }
+    if (parsed.data.conditions !== undefined) {
+      const v = validateConditions(parsed.data.conditions);
+      if (!v.ok) return res.status(400).json({ message: v.error });
+    }
+    const updated = await storage.updateRoleAssignmentRule(req.params.id, parsed.data);
+    await writeAuditLog({
+      actorUserId: req.authUser.id,
+      targetType: "role_assignment_rule",
+      targetId: req.params.id,
+      action: "role_assignment_rule.update",
+      oldValue: existing,
+      newValue: updated,
+      ...getAuditContext(req),
+    });
+    res.json(updated);
+  });
+
+  app.delete("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const existing = await storage.getRoleAssignmentRule(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Rule not found" });
+    await storage.deleteRoleAssignmentRule(req.params.id);
+    await writeAuditLog({
+      actorUserId: req.authUser.id,
+      targetType: "role_assignment_rule",
+      targetId: req.params.id,
+      action: "role_assignment_rule.delete",
+      oldValue: existing,
+      ...getAuditContext(req),
+    });
+    res.status(204).send();
+  });
+
+  const reevaluateAllHandler = async (req: any, res: any) => {
+    const allUsers = await storage.getAllUsers();
+    const job = await enqueue("re-evaluate-role-assignments", {
+      actorUserId: req.authUser.id,
+      reason: "manual re-evaluation",
+    });
+    await writeAuditLog({
+      actorUserId: req.authUser.id,
+      targetType: "role_assignment_rule",
+      targetId: job.id,
+      action: "role_assignment_rules.reevaluate_all",
+      newValue: { jobId: job.id, employeeCount: allUsers.length, reason: "manual re-evaluation" },
+      ...getAuditContext(req),
+    });
+    return res.status(202).json({ jobId: job.id, employeeCount: allUsers.length });
+  };
+  app.post("/api/role-rules/reevaluate-all", requireAuth, requireRole("admin"), reevaluateAllHandler);
+  app.post("/api/role-rules/re-evaluate", requireAuth, requireRole("admin"), reevaluateAllHandler);
+
+  const roleRuleTestSchema = z.object({
+    conditions: z.any(),
+    targetRole: z.string().min(1).optional(),
+    userIds: z.array(z.string().min(1)).max(500).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  });
+
+  app.post("/api/role-rules/test", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const parsed = roleRuleTestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid test request", errors: parsed.error.flatten() });
+    }
+    if (parsed.data.targetRole !== undefined && !isAllowedRole(parsed.data.targetRole)) {
+      return res.status(400).json({ message: "targetRole must be employee, manager, or admin" });
+    }
+    const v = validateConditions(parsed.data.conditions);
+    if (!v.ok) return res.status(400).json({ message: v.error });
+
+    const allUsers = parsed.data.userIds && parsed.data.userIds.length > 0
+      ? (await Promise.all(parsed.data.userIds.map(id => storage.getUser(id)))).filter((u): u is NonNullable<typeof u> => !!u)
+      : await storage.getAllUsers();
+
+    const limit = parsed.data.limit ?? 50;
+    const matchedUsers: Array<{ userId: string; name: string; email: string; currentRole: string; wouldBecomeRole?: string }> = [];
+    let matchedCount = 0;
+
+    const { evaluateRoleForUser } = await import("./services/roleAssignment");
+    const syntheticRule = {
+      id: "test-rule",
+      name: "test",
+      description: null,
+      conditions: parsed.data.conditions,
+      targetRole: parsed.data.targetRole ?? "employee",
+      priority: 0,
+      isActive: true,
+      createdBy: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    for (const u of allUsers) {
+      const profile = await storage.getEmploymentProfile(u.id);
+      const match = evaluateRoleForUser(u, profile, [syntheticRule]);
+      if (match) {
+        matchedCount++;
+        if (matchedUsers.length < limit) {
+          matchedUsers.push({
+            userId: u.id,
+            name: `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim(),
+            email: u.email ?? "",
+            currentRole: u.role,
+            wouldBecomeRole: parsed.data.targetRole,
+          });
+        }
+      }
+    }
+
+    await writeAuditLog({
+      actorUserId: req.authUser.id,
+      targetType: "role_assignment_rule",
+      targetId: "test",
+      action: "role_assignment_rule.test",
+      newValue: {
+        conditions: parsed.data.conditions,
+        targetRole: parsed.data.targetRole,
+        scopeUserIds: parsed.data.userIds ?? null,
+        evaluated: allUsers.length,
+        matched: matchedCount,
+      },
+      ...getAuditContext(req),
+    });
+
+    res.json({
+      evaluated: allUsers.length,
+      matched: matchedCount,
+      sample: matchedUsers,
+      limit,
+    });
+  });
+
+  // ========= Schedule Templates =========
+
+  const templateDayInputSchema = z.object({
+    dayOfWeek: z.number().int().min(0).max(6),
+    isWorkDay: z.boolean(),
+    startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  });
+
+  const scheduleTemplateSchema = z.object({
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).nullable().optional(),
+    companyId: z.string().nullable().optional(),
+    isActive: z.boolean().default(true),
+    days: z.array(templateDayInputSchema).max(7).optional(),
+  });
+
+  app.get("/api/schedule-templates", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+    const companyId = req.query.companyId as string | undefined;
+    const templates = companyId
+      ? await storage.getScheduleTemplatesByCompany(companyId)
+      : await storage.getAllScheduleTemplates();
+    res.json(templates);
+  });
+
+  app.get("/api/schedule-templates/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+    const template = await storage.getScheduleTemplate(req.params.id);
+    if (!template) return res.status(404).json({ message: "Template not found" });
+    const days = await storage.getScheduleTemplateDays(req.params.id);
+    res.json({ ...template, days });
+  });
+
+  app.post("/api/schedule-templates", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const parsed = scheduleTemplateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
+    }
+    if (parsed.data.days) {
+      const v = validateTemplateDays(parsed.data.days);
+      if (!v.ok) return res.status(400).json({ message: v.error });
+    }
+    const created = await storage.createScheduleTemplate({
+      name: parsed.data.name,
+      description: parsed.data.description ?? null,
+      companyId: parsed.data.companyId ?? null,
+      isActive: parsed.data.isActive,
+      createdBy: req.authUser.id,
+    });
+    let days: any[] = [];
+    if (parsed.data.days) {
+      days = await storage.replaceScheduleTemplateDays(created.id, parsed.data.days);
+    }
+    await writeAuditLog({
+      actorUserId: req.authUser.id,
+      targetType: "schedule_template",
+      targetId: created.id,
+      action: "schedule_template.create",
+      newValue: { ...created, days },
+      ...getAuditContext(req),
+    });
+    res.status(201).json({ ...created, days });
+  });
+
+  app.patch("/api/schedule-templates/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const existing = await storage.getScheduleTemplate(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Template not found" });
+    const parsed = scheduleTemplateSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
+    }
+    if (parsed.data.days) {
+      const v = validateTemplateDays(parsed.data.days);
+      if (!v.ok) return res.status(400).json({ message: v.error });
+    }
+    const { days, ...updateFields } = parsed.data;
+    const updated = await storage.updateScheduleTemplate(req.params.id, updateFields);
+    let updatedDays: any[] = await storage.getScheduleTemplateDays(req.params.id);
+    if (days) {
+      updatedDays = await storage.replaceScheduleTemplateDays(req.params.id, days);
+    }
+    await writeAuditLog({
+      actorUserId: req.authUser.id,
+      targetType: "schedule_template",
+      targetId: req.params.id,
+      action: "schedule_template.update",
+      oldValue: existing,
+      newValue: { ...updated, days: updatedDays },
+      ...getAuditContext(req),
+    });
+    res.json({ ...updated, days: updatedDays });
+  });
+
+  app.delete("/api/schedule-templates/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const existing = await storage.getScheduleTemplate(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Template not found" });
+    await storage.deleteScheduleTemplate(req.params.id);
+    await writeAuditLog({
+      actorUserId: req.authUser.id,
+      targetType: "schedule_template",
+      targetId: req.params.id,
+      action: "schedule_template.delete",
+      oldValue: existing,
+      ...getAuditContext(req),
+    });
+    res.status(204).send();
+  });
+
+  const applyTemplateSchema = z.object({
+    employeeIds: z.array(z.string().min(1)).min(1).max(2000),
+    mode: z.enum(["replace", "merge"]).default("replace"),
+  });
+
+  app.post("/api/schedule-templates/:id/apply", requireAuth, requireRole("admin"), async (req: any, res) => {
+    const template = await storage.getScheduleTemplate(req.params.id);
+    if (!template) return res.status(404).json({ message: "Template not found" });
+    if (!template.isActive) {
+      return res.status(400).json({ message: "Template is inactive and can no longer be applied" });
+    }
+    const parsed = applyTemplateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+    }
+    const employeeIds = Array.from(new Set(parsed.data.employeeIds));
+    if (employeeIds.length > 50) {
+      const job = await enqueue("apply-schedule-template", {
+        templateId: req.params.id,
+        employeeIds,
+        mode: parsed.data.mode,
+        actorUserId: req.authUser.id,
+      });
+      return res.json({ async: true, jobId: job.id, employeeCount: employeeIds.length });
+    }
+    const result = await applyScheduleTemplate({
+      templateId: req.params.id,
+      employeeIds,
+      mode: parsed.data.mode,
+      actorUserId: req.authUser.id,
+    });
+    res.json({ async: false, ...result });
+  });
+
   app.get("/api/workflows", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       const allWorkflows = await storage.getAllWorkflows();
@@ -4625,6 +5074,8 @@ export async function registerRoutes(
       "rebuild-report",
       "apply-pto-anniversary-adjustments",
       "evaluate-performance-reviews",
+      "re-evaluate-role-assignments",
+      "apply-schedule-template",
     ] as const;
     type AllowedJobType = typeof ALLOWED_JOB_TYPES[number];
     const rawType = req.body?.type ?? "auto-clock-out";
