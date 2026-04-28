@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,9 +19,54 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { Location, Department, Division, User, LocationAddress } from "@shared/schema";
+
+const NO_COMPANY_MESSAGE =
+  "No company is set up yet — please create your company first in Rules & Controls → General.";
+
+function friendlyMutationError(err: Error, fallback: string): string {
+  const msg = err?.message || "";
+  if (/companyId/i.test(msg) && /required|invalid/i.test(msg)) {
+    return NO_COMPANY_MESSAGE;
+  }
+  const match = msg.match(/^\d+:\s*(.*)$/);
+  if (match) {
+    const body = match[1].trim();
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed?.message) return parsed.message;
+    } catch {
+      // not JSON, use raw body
+    }
+    if (body) return body;
+  }
+  return msg || fallback;
+}
+
+function NoCompanyEmptyState({ entity }: { entity: string }) {
+  return (
+    <Card data-testid={`empty-state-no-company-${entity}`}>
+      <CardContent className="flex flex-col items-center justify-center py-12 text-center gap-3">
+        <Building className="h-10 w-10 text-muted-foreground" />
+        <div className="space-y-1">
+          <p className="font-medium">Set up your company first</p>
+          <p className="text-sm text-muted-foreground max-w-md">
+            You need to create your company (division) before adding {entity}. Head to Rules &amp; Controls
+            → General to set it up.
+          </p>
+        </div>
+        <Link href="/rules-controls">
+          <Button data-testid={`button-go-to-general-${entity}`}>
+            Set up company
+          </Button>
+        </Link>
+      </CardContent>
+    </Card>
+  );
+}
 
 interface AddressEntry {
   id?: string;
@@ -65,8 +111,13 @@ function LocationsTab() {
   const [editOriginalAddresses, setEditOriginalAddresses] = useState<LocationAddress[]>([]);
 
   const { data: locations, isLoading } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
-  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const { data: divisions, isLoading: divisionsLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
   const divisionId = divisions?.[0]?.id;
+  const hasCompany = !!divisionId;
+  const addDisabled = divisionsLoading || !hasCompany;
+  const addDisabledReason = divisionsLoading
+    ? "Loading company info…"
+    : "Set up your company first in Rules & Controls → General.";
 
   useEffect(() => {
     if (locations && locations.length > 0) {
@@ -92,6 +143,9 @@ function LocationsTab() {
       if (editingId) {
         await apiRequest("PATCH", `/api/locations/${editingId}`, form);
       } else {
+        if (!divisionId) {
+          throw new Error(NO_COMPANY_MESSAGE);
+        }
         const res = await apiRequest("POST", "/api/locations", { ...form, companyId: divisionId });
         const created = await res.json();
         locationId = created.id;
@@ -128,7 +182,11 @@ function LocationsTab() {
       toast({ title: editingId ? "Location updated" : "Location created" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({
+        title: "Could not save location",
+        description: friendlyMutationError(err, "Something went wrong saving the location."),
+        variant: "destructive",
+      });
     },
   });
 
@@ -141,7 +199,11 @@ function LocationsTab() {
       toast({ title: "Location deleted" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({
+        title: "Could not delete location",
+        description: friendlyMutationError(err, "Something went wrong deleting the location."),
+        variant: "destructive",
+      });
     },
   });
 
@@ -211,10 +273,27 @@ function LocationsTab() {
   return (
     <div className="space-y-4 mt-4">
       <div className="flex justify-end">
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger asChild>
-            <Button data-testid="button-add-location"><Plus className="h-4 w-4 mr-1" /> Add Location</Button>
-          </DialogTrigger>
+        <Dialog open={dialogOpen} onOpenChange={(open) => {
+          if (open && addDisabled) return;
+          setDialogOpen(open);
+          if (!open) resetForm();
+        }}>
+          {addDisabled ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0}>
+                  <Button disabled data-testid="button-add-location">
+                    <Plus className="h-4 w-4 mr-1" /> Add Location
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent data-testid="tooltip-add-location-disabled">{addDisabledReason}</TooltipContent>
+            </Tooltip>
+          ) : (
+            <DialogTrigger asChild>
+              <Button data-testid="button-add-location"><Plus className="h-4 w-4 mr-1" /> Add Location</Button>
+            </DialogTrigger>
+          )}
           <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto" data-testid="dialog-location-form">
             <DialogHeader>
               <DialogTitle>{editingId ? "Edit Location" : "Add Location"}</DialogTitle>
@@ -302,7 +381,11 @@ function LocationsTab() {
               </div>
             </div>
             <DialogFooter>
-              <Button onClick={() => createMutation.mutate()} disabled={!form.name || createMutation.isPending} data-testid="button-save-location">
+              <Button
+                onClick={() => createMutation.mutate()}
+                disabled={!form.name || createMutation.isPending || (!editingId && !divisionId)}
+                data-testid="button-save-location"
+              >
                 {createMutation.isPending ? "Saving..." : "Save"}
               </Button>
             </DialogFooter>
@@ -310,13 +393,20 @@ function LocationsTab() {
         </Dialog>
       </div>
 
-      <Card data-testid="card-locations-list">
-        <CardContent className="p-0">
-          {isLoading ? (
+      {divisionsLoading || isLoading ? (
+        <Card data-testid="card-locations-list">
+          <CardContent className="p-0">
             <div className="p-6 space-y-3">
               {[1, 2, 3].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
             </div>
-          ) : !locations || locations.length === 0 ? (
+          </CardContent>
+        </Card>
+      ) : !hasCompany ? (
+        <NoCompanyEmptyState entity="locations" />
+      ) : (
+      <Card data-testid="card-locations-list">
+        <CardContent className="p-0">
+          {!locations || locations.length === 0 ? (
             <p className="p-8 text-center text-muted-foreground" data-testid="text-no-locations">No locations configured.</p>
           ) : (
             <Table>
@@ -359,6 +449,7 @@ function LocationsTab() {
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }
@@ -373,11 +464,19 @@ function DepartmentsTab() {
   const { data: departments, isLoading } = useQuery<DepartmentWithManagers[]>({ queryKey: ["/api/departments"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
-  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const { data: divisions, isLoading: divisionsLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
   const divisionId = divisions?.[0]?.id;
+  const hasCompany = !!divisionId;
+  const addDisabled = divisionsLoading || !hasCompany;
+  const addDisabledReason = divisionsLoading
+    ? "Loading company info…"
+    : "Set up your company first in Rules & Controls → General.";
 
   const createMutation = useMutation({
     mutationFn: async () => {
+      if (!editingId && !divisionId) {
+        throw new Error(NO_COMPANY_MESSAGE);
+      }
       const payload = {
         name: form.name,
         description: form.description || null,
@@ -398,7 +497,11 @@ function DepartmentsTab() {
       toast({ title: editingId ? "Department updated" : "Department created" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({
+        title: "Could not save department",
+        description: friendlyMutationError(err, "Something went wrong saving the department."),
+        variant: "destructive",
+      });
     },
   });
 
@@ -411,7 +514,11 @@ function DepartmentsTab() {
       toast({ title: "Department deleted" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({
+        title: "Could not delete department",
+        description: friendlyMutationError(err, "Something went wrong deleting the department."),
+        variant: "destructive",
+      });
     },
   });
 
@@ -452,10 +559,27 @@ function DepartmentsTab() {
   return (
     <div className="space-y-4 mt-4">
       <div className="flex justify-end">
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger asChild>
-            <Button data-testid="button-add-department"><Plus className="h-4 w-4 mr-1" /> Add Department</Button>
-          </DialogTrigger>
+        <Dialog open={dialogOpen} onOpenChange={(open) => {
+          if (open && addDisabled) return;
+          setDialogOpen(open);
+          if (!open) resetForm();
+        }}>
+          {addDisabled ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0}>
+                  <Button disabled data-testid="button-add-department">
+                    <Plus className="h-4 w-4 mr-1" /> Add Department
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent data-testid="tooltip-add-department-disabled">{addDisabledReason}</TooltipContent>
+            </Tooltip>
+          ) : (
+            <DialogTrigger asChild>
+              <Button data-testid="button-add-department"><Plus className="h-4 w-4 mr-1" /> Add Department</Button>
+            </DialogTrigger>
+          )}
           <DialogContent data-testid="dialog-department-form">
             <DialogHeader>
               <DialogTitle>{editingId ? "Edit Department" : "Add Department"}</DialogTitle>
@@ -531,7 +655,11 @@ function DepartmentsTab() {
               </div>
             </div>
             <DialogFooter>
-              <Button onClick={() => createMutation.mutate()} disabled={!form.name || createMutation.isPending} data-testid="button-save-department">
+              <Button
+                onClick={() => createMutation.mutate()}
+                disabled={!form.name || createMutation.isPending || (!editingId && !divisionId)}
+                data-testid="button-save-department"
+              >
                 {createMutation.isPending ? "Saving..." : "Save"}
               </Button>
             </DialogFooter>
@@ -539,13 +667,20 @@ function DepartmentsTab() {
         </Dialog>
       </div>
 
-      <Card data-testid="card-departments-list">
-        <CardContent className="p-0">
-          {isLoading ? (
+      {divisionsLoading || isLoading ? (
+        <Card data-testid="card-departments-list">
+          <CardContent className="p-0">
             <div className="p-6 space-y-3">
               {[1, 2, 3].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
             </div>
-          ) : !departments || departments.length === 0 ? (
+          </CardContent>
+        </Card>
+      ) : !hasCompany ? (
+        <NoCompanyEmptyState entity="departments" />
+      ) : (
+      <Card data-testid="card-departments-list">
+        <CardContent className="p-0">
+          {!departments || departments.length === 0 ? (
             <p className="p-8 text-center text-muted-foreground" data-testid="text-no-departments">No departments configured.</p>
           ) : (
             <Table>
@@ -594,6 +729,7 @@ function DepartmentsTab() {
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }
