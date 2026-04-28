@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,7 +14,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { formatDate, formatDateRange } from "@/lib/utils";
-import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText } from "lucide-react";
+import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText, Search } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location, TimeOffBalanceBucket } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
@@ -43,6 +43,8 @@ function formatTimeOffTypeLabel(type: string): string {
 
 type PendingPtoRequest = TimeOffRequest & {
   employeeName: string;
+  departmentId?: string | null;
+  locationId?: string | null;
   departmentName?: string;
   locationName?: string;
   managerNames?: string[];
@@ -54,12 +56,324 @@ function formatDays(n: number): string {
 }
 type EnrichedException = AttendanceException & {
   employeeName?: string;
+  departmentId?: string | null;
+  locationId?: string | null;
   departmentName?: string;
   locationName?: string;
   managerNames?: string[];
   correctionCounts?: CorrectionCountSummary;
   correctionCount90d?: CorrectionCountSummary;
 };
+
+const PTO_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "vacation", label: "Vacation" },
+  { value: "sick", label: "Sick Leave" },
+  { value: "personal", label: "Personal" },
+  { value: "bereavement", label: "Bereavement" },
+  { value: "jury_duty", label: "Jury Duty" },
+  { value: "maternity_paternity", label: "Maternity/Paternity" },
+  { value: "fmla", label: "FMLA" },
+  { value: "unpaid", label: "Unpaid Leave" },
+];
+
+const EXCEPTION_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "missing_punch", label: "Missing Punch" },
+  { value: "time_correction", label: "Time Correction" },
+  { value: "forgotten_clock_in", label: "Forgotten Clock In" },
+  { value: "forgotten_clock_out", label: "Forgotten Clock Out" },
+];
+
+function formatExceptionTypeLabel(type: string): string {
+  const found = EXCEPTION_TYPE_OPTIONS.find(o => o.value === type);
+  if (found) return found.label;
+  return type.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function rangesOverlap(startA: string | null | undefined, endA: string | null | undefined, startB: string, endB: string): boolean {
+  // Inclusive overlap of [startA, endA] with [startB, endB]. If only one side
+  // of the filter range is provided, treat the other side as open.
+  const aStart = startA || "0000-01-01";
+  const aEnd = endA || "9999-12-31";
+  const bStart = startB || aStart;
+  const bEnd = endB || aEnd;
+  return aStart <= bEnd && aEnd >= bStart;
+}
+
+function dateInRange(date: string | null | undefined, startB: string, endB: string): boolean {
+  if (!date) return false;
+  if (startB && date < startB) return false;
+  if (endB && date > endB) return false;
+  return true;
+}
+
+function nameMatches(name: string | undefined | null, search: string): boolean {
+  if (!search) return true;
+  return (name || "").toLowerCase().includes(search.toLowerCase().trim());
+}
+
+type FilterValues = {
+  employee: string;
+  department: string;
+  location: string;
+  manager: string;
+  type: string;
+  status: string;
+  startDate: string;
+  endDate: string;
+  kind: string;
+};
+
+const EMPTY_FILTERS: FilterValues = {
+  employee: "",
+  department: "",
+  location: "",
+  manager: "",
+  type: "",
+  status: "",
+  startDate: "",
+  endDate: "",
+  kind: "",
+};
+
+type FilterField =
+  | "employee"
+  | "department"
+  | "location"
+  | "manager"
+  | "type"
+  | "status"
+  | "dateRange"
+  | "kind";
+
+interface RequestsFilterBarProps {
+  fields: FilterField[];
+  values: FilterValues;
+  onChange: (next: Partial<FilterValues>) => void;
+  onClear: () => void;
+  isAdmin: boolean;
+  departments?: Department[];
+  locations?: Location[];
+  managers?: string[];
+  typeOptions?: { value: string; label: string }[];
+  typeDisabled?: boolean;
+  typePlaceholder?: string;
+  statusOptions?: { value: string; label: string }[];
+  kindOptions?: { value: string; label: string }[];
+  testIdPrefix: string;
+}
+
+function RequestsFilterBar({
+  fields,
+  values,
+  onChange,
+  onClear,
+  isAdmin,
+  departments,
+  locations,
+  managers,
+  typeOptions,
+  typeDisabled,
+  typePlaceholder,
+  statusOptions,
+  kindOptions,
+  testIdPrefix,
+}: RequestsFilterBarProps) {
+  const showEmployee = fields.includes("employee");
+  const showDepartment = isAdmin && fields.includes("department");
+  const showLocation = isAdmin && fields.includes("location");
+  const showManager = isAdmin && fields.includes("manager");
+  const showType = fields.includes("type");
+  const showStatus = fields.includes("status");
+  const showDateRange = fields.includes("dateRange");
+  const showKind = fields.includes("kind");
+
+  const hasActive =
+    (showEmployee && !!values.employee) ||
+    (showDepartment && !!values.department) ||
+    (showLocation && !!values.location) ||
+    (showManager && !!values.manager) ||
+    (showType && !!values.type) ||
+    (showStatus && !!values.status) ||
+    (showDateRange && (!!values.startDate || !!values.endDate)) ||
+    (showKind && !!values.kind);
+
+  return (
+    <Card data-testid={`${testIdPrefix}-filter-bar-card`}>
+      <CardContent className="p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Filter className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Filters</span>
+          {hasActive && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClear}
+              className="ml-auto h-7 text-xs"
+              data-testid={`${testIdPrefix}-button-clear-filters`}
+            >
+              <RotateCcw className="h-3 w-3 mr-1" /> Clear
+            </Button>
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {showEmployee && (
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+              <Input
+                value={values.employee}
+                onChange={(e) => onChange({ employee: e.target.value })}
+                placeholder="Search employee..."
+                className="pl-8"
+                data-testid={`${testIdPrefix}-input-employee-search`}
+              />
+            </div>
+          )}
+
+          {showKind && (
+            <Select
+              value={values.kind || "all"}
+              onValueChange={(v) => onChange({ kind: v === "all" ? "" : v, type: "" })}
+              data-testid={`${testIdPrefix}-select-kind-filter`}
+            >
+              <SelectTrigger data-testid={`${testIdPrefix}-select-trigger-kind`}>
+                <SelectValue placeholder="All Kinds" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" data-testid={`${testIdPrefix}-option-kind-all`}>All Kinds</SelectItem>
+                {(kindOptions || []).map(k => (
+                  <SelectItem key={k.value} value={k.value} data-testid={`${testIdPrefix}-option-kind-${k.value}`}>{k.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          {showDepartment && (
+            <Select
+              value={values.department}
+              onValueChange={(v) => onChange({ department: v })}
+              data-testid={`${testIdPrefix}-select-department-filter`}
+            >
+              <SelectTrigger data-testid={`${testIdPrefix}-select-trigger-department`}>
+                <SelectValue placeholder="All Departments" />
+              </SelectTrigger>
+              <SelectContent>
+                {(departments || []).map(d => (
+                  <SelectItem key={d.id} value={d.id} data-testid={`${testIdPrefix}-option-department-${d.id}`}>{d.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          {showLocation && (
+            <Select
+              value={values.location}
+              onValueChange={(v) => onChange({ location: v })}
+              data-testid={`${testIdPrefix}-select-location-filter`}
+            >
+              <SelectTrigger data-testid={`${testIdPrefix}-select-trigger-location`}>
+                <SelectValue placeholder="All Locations" />
+              </SelectTrigger>
+              <SelectContent>
+                {(locations || []).map(l => (
+                  <SelectItem key={l.id} value={l.id} data-testid={`${testIdPrefix}-option-location-${l.id}`}>{l.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          {showManager && (
+            <Select
+              value={values.manager}
+              onValueChange={(v) => onChange({ manager: v })}
+              data-testid={`${testIdPrefix}-select-manager-filter`}
+            >
+              <SelectTrigger data-testid={`${testIdPrefix}-select-trigger-manager`}>
+                <SelectValue placeholder="All Managers" />
+              </SelectTrigger>
+              <SelectContent>
+                {(managers || []).map(name => (
+                  <SelectItem
+                    key={name}
+                    value={name}
+                    data-testid={`${testIdPrefix}-option-manager-${name.replace(/\s+/g, "-").toLowerCase()}`}
+                  >
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          {showType && (
+            <Select
+              value={values.type}
+              onValueChange={(v) => onChange({ type: v })}
+              disabled={typeDisabled}
+              data-testid={`${testIdPrefix}-select-type-filter`}
+            >
+              <SelectTrigger data-testid={`${testIdPrefix}-select-trigger-type`}>
+                <SelectValue placeholder={typePlaceholder || "All Types"} />
+              </SelectTrigger>
+              <SelectContent>
+                {(typeOptions || []).map(t => (
+                  <SelectItem
+                    key={t.value}
+                    value={t.value}
+                    data-testid={`${testIdPrefix}-option-type-${t.value.replace(/_/g, "-")}`}
+                  >
+                    {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          {showStatus && (
+            <Select
+              value={values.status}
+              onValueChange={(v) => onChange({ status: v })}
+              data-testid={`${testIdPrefix}-select-status-filter`}
+            >
+              <SelectTrigger data-testid={`${testIdPrefix}-select-trigger-status`}>
+                <SelectValue placeholder="All Statuses" />
+              </SelectTrigger>
+              <SelectContent>
+                {(statusOptions || []).map(s => (
+                  <SelectItem
+                    key={s.value}
+                    value={s.value}
+                    data-testid={`${testIdPrefix}-option-status-${s.value.replace(/_/g, "-")}`}
+                  >
+                    {s.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          {showDateRange && (
+            <>
+              <Input
+                type="date"
+                value={values.startDate}
+                onChange={(e) => onChange({ startDate: e.target.value })}
+                placeholder="Start date"
+                data-testid={`${testIdPrefix}-input-start-date`}
+              />
+              <Input
+                type="date"
+                value={values.endDate}
+                onChange={(e) => onChange({ endDate: e.target.value })}
+                placeholder="End date"
+                data-testid={`${testIdPrefix}-input-end-date`}
+              />
+            </>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function CorrectionCountBreakdown({
   summary,
@@ -68,6 +382,50 @@ function CorrectionCountBreakdown({
   summary: CorrectionCountSummary;
   exceptionId: string;
 }) {
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3" data-testid={`correction-count-breakdown-${exceptionId}`}>
+      <Card>
+        <CardContent className="p-3">
+          <div className="text-xs text-muted-foreground">Pay Period</div>
+          <div className="text-lg font-semibold">{summary.payPeriod.total}</div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="p-3">
+          <div className="text-xs text-muted-foreground">This Week</div>
+          <div className="text-lg font-semibold">{summary.week.total}</div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="p-3">
+          <div className="text-xs text-muted-foreground">Last 30 Days</div>
+          <div className="text-lg font-semibold">{summary.month.total}</div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="p-3">
+          <div className="text-xs text-muted-foreground">Last 365 Days</div>
+          <div className="text-lg font-semibold">{summary.year.total}</div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="p-3">
+          <div className="text-xs text-muted-foreground">All Time</div>
+          <div className="text-lg font-semibold">{summary.all.total}</div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function CorrectionCountBadge({
+  count,
+  exceptionId,
+}: {
+  count: CorrectionCountSummary;
+  exceptionId: string;
+}) {
+  const summary = count;
   const allTotal = summary.all.total;
   const high = isHighCorrectionCount(allTotal);
   return (
@@ -108,8 +466,11 @@ function CorrectionCountBreakdown({
 
 type ProcessedPtoRequest = TimeOffRequest & {
   employeeName: string;
+  departmentId?: string | null;
+  locationId?: string | null;
   departmentName: string;
   locationName: string;
+  managerNames?: string[];
   reviewerName: string;
 };
 
@@ -139,21 +500,18 @@ function ProcessedTab() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
-  const [departmentFilter, setDepartmentFilter] = useState("");
-  const [locationFilter, setLocationFilter] = useState("");
-  const [typeFilter, setTypeFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [filters, setFilters] = useState<FilterValues>(EMPTY_FILTERS);
+  const updateFilters = (next: Partial<FilterValues>) => setFilters(prev => ({ ...prev, ...next }));
+  const clearFilters = () => setFilters(EMPTY_FILTERS);
 
   const buildQueryString = () => {
     const params = new URLSearchParams();
-    if (isAdmin && departmentFilter) params.set("department", departmentFilter);
-    if (isAdmin && locationFilter) params.set("location", locationFilter);
-    if (typeFilter) params.set("type", typeFilter);
-    if (statusFilter) params.set("status", statusFilter);
-    if (startDate) params.set("startDate", startDate);
-    if (endDate) params.set("endDate", endDate);
+    if (isAdmin && filters.department) params.set("department", filters.department);
+    if (isAdmin && filters.location) params.set("location", filters.location);
+    if (filters.type) params.set("type", filters.type);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.startDate) params.set("startDate", filters.startDate);
+    if (filters.endDate) params.set("endDate", filters.endDate);
     const qs = params.toString();
     return qs ? `?${qs}` : "";
   };
@@ -179,119 +537,73 @@ function ProcessedTab() {
     enabled: isAdmin,
   });
 
-  const clearFilters = () => {
-    setDepartmentFilter("");
-    setLocationFilter("");
-    setTypeFilter("");
-    setStatusFilter("");
-    setStartDate("");
-    setEndDate("");
-  };
+  const { data: managerOptions } = useQuery<string[]>({
+    queryKey: ["/api/managers"],
+    enabled: isAdmin,
+  });
 
   const [selectedRequest, setSelectedRequest] = useState<ProcessedPtoRequest | null>(null);
 
-  const hasActiveFilters = departmentFilter || locationFilter || typeFilter || statusFilter || startDate || endDate;
+  // Employee and Manager filters are applied client-side on top of the server-side filters.
+  const filteredRequests = useMemo(() => {
+    if (!requests) return [];
+    return requests.filter(r => {
+      if (!nameMatches(r.employeeName, filters.employee)) return false;
+      if (isAdmin && filters.manager) {
+        const names = r.managerNames || [];
+        if (!names.includes(filters.manager)) return false;
+      }
+      return true;
+    });
+  }, [requests, filters.employee, filters.manager, isAdmin]);
+
+  const totalServerResults = requests?.length ?? 0;
+  const filteredCount = filteredRequests.length;
+  const hasFiltering = !!filters.employee || (isAdmin && !!filters.manager);
+  const hasAnyFilter =
+    !!filters.employee || !!filters.department || !!filters.location || !!filters.manager ||
+    !!filters.type || !!filters.status || !!filters.startDate || !!filters.endDate;
 
   return (
     <div className="space-y-4 mt-4">
-      <Card data-testid="filter-bar-card">
-        <CardContent className="p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium">Filters</span>
-            {hasActiveFilters && (
-              <Button variant="ghost" size="sm" onClick={clearFilters} className="ml-auto h-7 text-xs" data-testid="button-clear-filters">
-                <RotateCcw className="h-3 w-3 mr-1" /> Clear
-              </Button>
-            )}
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {isAdmin && (
-              <>
-                <Select value={departmentFilter} onValueChange={setDepartmentFilter} data-testid="select-department-filter">
-                  <SelectTrigger data-testid="select-trigger-department">
-                    <SelectValue placeholder="All Departments" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(departments || []).map(d => (
-                      <SelectItem key={d.id} value={d.id} data-testid={`option-department-${d.id}`}>{d.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <Select value={locationFilter} onValueChange={setLocationFilter} data-testid="select-location-filter">
-                  <SelectTrigger data-testid="select-trigger-location">
-                    <SelectValue placeholder="All Locations" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(locations || []).map(l => (
-                      <SelectItem key={l.id} value={l.id} data-testid={`option-location-${l.id}`}>{l.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </>
-            )}
-
-            <Select value={typeFilter} onValueChange={setTypeFilter} data-testid="select-type-filter">
-              <SelectTrigger data-testid="select-trigger-type">
-                <SelectValue placeholder="All Types" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="vacation" data-testid="option-type-vacation">Vacation</SelectItem>
-                <SelectItem value="sick" data-testid="option-type-sick">Sick Leave</SelectItem>
-                <SelectItem value="personal" data-testid="option-type-personal">Personal</SelectItem>
-                <SelectItem value="bereavement" data-testid="option-type-bereavement">Bereavement</SelectItem>
-                <SelectItem value="jury_duty" data-testid="option-type-jury-duty">Jury Duty</SelectItem>
-                <SelectItem value="maternity_paternity" data-testid="option-type-maternity-paternity">Maternity/Paternity</SelectItem>
-                <SelectItem value="fmla" data-testid="option-type-fmla">FMLA</SelectItem>
-                <SelectItem value="unpaid" data-testid="option-type-unpaid">Unpaid Leave</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Select value={statusFilter} onValueChange={setStatusFilter} data-testid="select-status-filter">
-              <SelectTrigger data-testid="select-trigger-status">
-                <SelectValue placeholder="All Statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="approved" data-testid="option-status-approved">Approved</SelectItem>
-                <SelectItem value="partially_approved" data-testid="option-status-partially-approved">Partially Approved</SelectItem>
-                <SelectItem value="denied" data-testid="option-status-denied">Denied</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              placeholder="Start date"
-              data-testid="input-start-date"
-            />
-
-            <Input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              placeholder="End date"
-              data-testid="input-end-date"
-            />
-          </div>
-        </CardContent>
-      </Card>
+      <RequestsFilterBar
+        fields={["employee", "department", "location", "manager", "type", "status", "dateRange"]}
+        values={filters}
+        onChange={updateFilters}
+        onClear={clearFilters}
+        isAdmin={isAdmin}
+        departments={departments}
+        locations={locations}
+        managers={managerOptions}
+        typeOptions={PTO_TYPE_OPTIONS}
+        statusOptions={[
+          { value: "approved", label: "Approved" },
+          { value: "partially_approved", label: "Partially Approved" },
+          { value: "denied", label: "Denied" },
+        ]}
+        testIdPrefix="processed"
+      />
 
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full" />)}
         </div>
-      ) : !requests || requests.length === 0 ? (
+      ) : filteredCount === 0 ? (
         <Card>
           <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-processed">
-            No processed requests found.
+            {hasAnyFilter
+              ? "No requests match these filters."
+              : "No processed requests found."}
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-3">
-          <Badge variant="secondary" data-testid="badge-processed-count">{requests.length} result{requests.length !== 1 ? "s" : ""}</Badge>
-          {requests.map((req) => (
+          <Badge variant="secondary" data-testid="badge-processed-count">
+            {hasFiltering
+              ? `${filteredCount} of ${totalServerResults} result${totalServerResults !== 1 ? "s" : ""}`
+              : `${filteredCount} result${filteredCount !== 1 ? "s" : ""}`}
+          </Badge>
+          {filteredRequests.map((req) => (
             <ProcessedRequestCard key={req.id} request={req} showDeptLocation={isAdmin} onClick={() => setSelectedRequest(req)} />
           ))}
         </div>
@@ -483,7 +795,44 @@ function ProcessedRequestDetailDialog({ request, open, onClose }: { request: Pro
   );
 }
 
+function ptoMatchesFilters(req: PendingPtoRequest, filters: FilterValues, isAdmin: boolean): boolean {
+  if (!nameMatches(req.employeeName, filters.employee)) return false;
+  if (isAdmin && filters.department && (req.departmentId || "") !== filters.department) return false;
+  if (isAdmin && filters.location && (req.locationId || "") !== filters.location) return false;
+  if (isAdmin && filters.manager) {
+    const names = req.managerNames || [];
+    if (!names.includes(filters.manager)) return false;
+  }
+  if (filters.type && req.type !== filters.type) return false;
+  if (filters.startDate || filters.endDate) {
+    if (!rangesOverlap(req.startDate, req.endDate, filters.startDate, filters.endDate)) return false;
+  }
+  return true;
+}
+
+function exceptionMatchesFilters(
+  ex: EnrichedException,
+  filters: FilterValues,
+  isAdmin: boolean,
+): boolean {
+  if (!nameMatches(ex.employeeName, filters.employee)) return false;
+  if (isAdmin && filters.department && (ex.departmentId || "") !== filters.department) return false;
+  if (isAdmin && filters.location && (ex.locationId || "") !== filters.location) return false;
+  if (isAdmin && filters.manager) {
+    const names = ex.managerNames || [];
+    if (!names.includes(filters.manager)) return false;
+  }
+  if (filters.type && ex.type !== filters.type) return false;
+  if (filters.startDate || filters.endDate) {
+    if (!dateInRange(ex.exceptionDate, filters.startDate, filters.endDate)) return false;
+  }
+  return true;
+}
+
 function AllPendingTab() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
   const { data: ptoRequests, isLoading: ptoLoading } = useQuery<PendingPtoRequest[]>({
     queryKey: ["/api/time-off/pending"],
   });
@@ -496,32 +845,106 @@ function AllPendingTab() {
     queryKey: ["/api/attendance/exceptions/reopen-pending"],
   });
 
+  const { data: departments } = useQuery<Department[]>({
+    queryKey: ["/api/departments"],
+    enabled: isAdmin,
+  });
+
+  const { data: locations } = useQuery<Location[]>({
+    queryKey: ["/api/locations"],
+    enabled: isAdmin,
+  });
+
+  const { data: managerOptions } = useQuery<string[]>({
+    queryKey: ["/api/managers"],
+    enabled: isAdmin,
+  });
+
+  const [filters, setFilters] = useState<FilterValues>(EMPTY_FILTERS);
+  const updateFilters = (next: Partial<FilterValues>) => setFilters(prev => ({ ...prev, ...next }));
+  const clearFilters = () => setFilters(EMPTY_FILTERS);
+
   const isLoading = ptoLoading || excLoading || reopenLoading;
   const totalPending =
     (ptoRequests?.length || 0) + (exceptions?.length || 0) + (reopenPending?.length || 0);
 
+  const kindFilter = filters.kind || "all";
+  const showPto = kindFilter === "all" || kindFilter === "pto";
+  const showExc = kindFilter === "all" || kindFilter === "exception";
+
+  const filteredPto = useMemo(() => {
+    if (!showPto) return [];
+    return (ptoRequests || []).filter(r => ptoMatchesFilters(r, filters, isAdmin));
+  }, [ptoRequests, filters, isAdmin, showPto]);
+
+  const filteredExc = useMemo(() => {
+    if (!showExc) return [];
+    return (exceptions || []).filter(e => exceptionMatchesFilters(e, filters, isAdmin));
+  }, [exceptions, filters, isAdmin, showExc]);
+
+  const filteredCount = filteredPto.length + filteredExc.length;
+  const hasActive =
+    !!filters.employee || !!filters.department || !!filters.location || !!filters.manager ||
+    !!filters.type || !!filters.startDate || !!filters.endDate || !!filters.kind;
+
+  // Type options adapt to selected Kind: PTO types when Kind=PTO, exception
+  // types when Kind=Exception, and the type filter is disabled when Kind=All.
+  const typeOptions = kindFilter === "pto" ? PTO_TYPE_OPTIONS
+    : kindFilter === "exception" ? EXCEPTION_TYPE_OPTIONS
+    : [];
+  const typePlaceholder = kindFilter === "all" ? "Select Kind first" : "All Types";
+
   return (
     <div className="space-y-4 mt-4">
+      <RequestsFilterBar
+        fields={["employee", "kind", "department", "location", "manager", "type", "dateRange"]}
+        values={filters}
+        onChange={updateFilters}
+        onClear={clearFilters}
+        isAdmin={isAdmin}
+        departments={departments}
+        locations={locations}
+        managers={managerOptions}
+        typeOptions={typeOptions}
+        typeDisabled={kindFilter === "all"}
+        typePlaceholder={typePlaceholder}
+        kindOptions={[
+          { value: "pto", label: "PTO" },
+          { value: "exception", label: "Missing Punch / Correction" },
+        ]}
+        testIdPrefix="all-pending"
+      />
+
       <div className="flex items-center gap-2">
-        <Badge variant="secondary" data-testid="badge-total-pending">{totalPending} pending</Badge>
+        <Badge variant="secondary" data-testid="badge-total-pending">
+          {hasActive ? `${filteredCount} of ${totalPending} pending` : `${totalPending} pending`}
+        </Badge>
       </div>
 
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full" />)}
         </div>
-      ) : totalPending === 0 ? (
-        <Card>
-          <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pending">
-            All caught up! No pending requests.
-          </CardContent>
-        </Card>
+      ) : filteredCount === 0 ? (
+        hasActive ? (
+          <Card>
+            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pending-filtered">
+              No requests match these filters.
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pending">
+              All caught up! No pending requests.
+            </CardContent>
+          </Card>
+        )
       ) : (
         <div className="space-y-3">
-          {(ptoRequests || []).map((req) => (
+          {filteredPto.map((req) => (
             <PtoRequestCard key={`pto-${req.id}`} request={req} />
           ))}
-          {(exceptions || []).map((ex) => (
+          {filteredExc.map((ex) => (
             <ExceptionCard key={`exc-${ex.id}`} exception={ex} />
           ))}
           {(reopenPending || []).map((ex) => (
@@ -534,25 +957,84 @@ function AllPendingTab() {
 }
 
 function PtoRequestsTab() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
   const { data: ptoRequests, isLoading } = useQuery<PendingPtoRequest[]>({
     queryKey: ["/api/time-off/pending"],
   });
 
+  const { data: departments } = useQuery<Department[]>({
+    queryKey: ["/api/departments"],
+    enabled: isAdmin,
+  });
+
+  const { data: locations } = useQuery<Location[]>({
+    queryKey: ["/api/locations"],
+    enabled: isAdmin,
+  });
+
+  const { data: managerOptions } = useQuery<string[]>({
+    queryKey: ["/api/managers"],
+    enabled: isAdmin,
+  });
+
+  const [filters, setFilters] = useState<FilterValues>(EMPTY_FILTERS);
+  const updateFilters = (next: Partial<FilterValues>) => setFilters(prev => ({ ...prev, ...next }));
+  const clearFilters = () => setFilters(EMPTY_FILTERS);
+
+  const filtered = useMemo(
+    () => (ptoRequests || []).filter(r => ptoMatchesFilters(r, filters, isAdmin)),
+    [ptoRequests, filters, isAdmin],
+  );
+
+  const total = ptoRequests?.length ?? 0;
+  const hasActive =
+    !!filters.employee || !!filters.department || !!filters.location ||
+    !!filters.manager || !!filters.type || !!filters.startDate || !!filters.endDate;
+
   return (
     <div className="space-y-4 mt-4">
+      <RequestsFilterBar
+        fields={["employee", "department", "location", "manager", "type", "dateRange"]}
+        values={filters}
+        onChange={updateFilters}
+        onClear={clearFilters}
+        isAdmin={isAdmin}
+        departments={departments}
+        locations={locations}
+        managers={managerOptions}
+        typeOptions={PTO_TYPE_OPTIONS}
+        testIdPrefix="pto"
+      />
+
+      <div className="flex items-center gap-2">
+        <Badge variant="secondary" data-testid="badge-pto-count">
+          {hasActive ? `${filtered.length} of ${total} pending` : `${total} pending`}
+        </Badge>
+      </div>
+
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full" />)}
         </div>
-      ) : !ptoRequests || ptoRequests.length === 0 ? (
-        <Card>
-          <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pto-requests">
-            No pending PTO requests.
-          </CardContent>
-        </Card>
+      ) : filtered.length === 0 ? (
+        hasActive ? (
+          <Card>
+            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pto-requests-filtered">
+              No requests match these filters.
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pto-requests">
+              All caught up! No pending PTO requests.
+            </CardContent>
+          </Card>
+        )
       ) : (
         <div className="space-y-3">
-          {ptoRequests.map((req) => (
+          {filtered.map((req) => (
             <PtoRequestCard key={req.id} request={req} />
           ))}
         </div>
@@ -564,6 +1046,11 @@ function PtoRequestsTab() {
 type DecidedException = AttendanceException & {
   employeeName: string;
   reviewerName: string;
+  departmentId?: string | null;
+  locationId?: string | null;
+  departmentName?: string;
+  locationName?: string;
+  managerNames?: string[];
 };
 
 type ReopenPendingException = AttendanceException & {
@@ -572,6 +1059,9 @@ type ReopenPendingException = AttendanceException & {
 };
 
 function ExceptionsTab() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
   const { data: exceptions, isLoading } = useQuery<EnrichedException[]>({
     queryKey: ["/api/attendance/exceptions/pending"],
   });
@@ -584,8 +1074,61 @@ function ExceptionsTab() {
     queryKey: ["/api/attendance/exceptions/recent-decided"],
   });
 
+  const { data: departments } = useQuery<Department[]>({
+    queryKey: ["/api/departments"],
+    enabled: isAdmin,
+  });
+
+  const { data: locations } = useQuery<Location[]>({
+    queryKey: ["/api/locations"],
+    enabled: isAdmin,
+  });
+
+  const { data: managerOptions } = useQuery<string[]>({
+    queryKey: ["/api/managers"],
+    enabled: isAdmin,
+  });
+
+  const [filters, setFilters] = useState<FilterValues>(EMPTY_FILTERS);
+  const updateFilters = (next: Partial<FilterValues>) => setFilters(prev => ({ ...prev, ...next }));
+  const clearFilters = () => setFilters(EMPTY_FILTERS);
+
+  const filteredPending = useMemo(
+    () => (exceptions || []).filter(e => exceptionMatchesFilters(e, filters, isAdmin)),
+    [exceptions, filters, isAdmin],
+  );
+
+  const filteredDecided = useMemo(() => {
+    return (recentDecided || []).filter(d => exceptionMatchesFilters(d as EnrichedException, filters, isAdmin));
+  }, [recentDecided, filters, isAdmin]);
+
+  const totalPending = exceptions?.length ?? 0;
+  const totalDecided = recentDecided?.length ?? 0;
+  const hasActive =
+    !!filters.employee || !!filters.department || !!filters.location ||
+    !!filters.manager || !!filters.type || !!filters.startDate || !!filters.endDate;
+
   return (
     <div className="space-y-6 mt-4">
+      <RequestsFilterBar
+        fields={["employee", "department", "location", "manager", "type", "dateRange"]}
+        values={filters}
+        onChange={updateFilters}
+        onClear={clearFilters}
+        isAdmin={isAdmin}
+        departments={departments}
+        locations={locations}
+        managers={managerOptions}
+        typeOptions={EXCEPTION_TYPE_OPTIONS}
+        testIdPrefix="exc"
+      />
+
+      <div className="flex items-center gap-2">
+        <Badge variant="secondary" data-testid="badge-exc-count">
+          {hasActive ? `${filteredPending.length} of ${totalPending} pending` : `${totalPending} pending`}
+        </Badge>
+      </div>
+
       {reopenLoading ? null : reopenPending && reopenPending.length > 0 ? (
         <div data-testid="section-reopen-requests">
           <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground mb-3">
@@ -603,26 +1146,43 @@ function ExceptionsTab() {
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full" />)}
         </div>
-      ) : !exceptions || exceptions.length === 0 ? (
-        <Card>
-          <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-exception-requests">
-            No pending attendance exceptions.
-          </CardContent>
-        </Card>
+      ) : filteredPending.length === 0 ? (
+        hasActive ? (
+          <Card>
+            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-exception-requests-filtered">
+              No requests match these filters.
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-exception-requests">
+              All caught up! No pending attendance exceptions.
+            </CardContent>
+          </Card>
+        )
       ) : (
         <div className="space-y-3">
-          {exceptions.map((ex) => (
+          {filteredPending.map((ex) => (
             <ExceptionCard key={ex.id} exception={ex} />
           ))}
         </div>
       )}
 
       <div data-testid="section-recently-decided">
-        <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground mb-3">Recently Decided</h3>
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">Recently Decided</h3>
+          {totalDecided > 0 && (
+            <Badge variant="outline" className="text-xs" data-testid="badge-decided-count">
+              {hasActive ? `${filteredDecided.length} of ${totalDecided}` : `${totalDecided}`}
+            </Badge>
+          )}
+        </div>
         {decidedLoading ? (
           <Skeleton className="h-32 w-full" />
-        ) : !recentDecided || recentDecided.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recently decided exceptions.</p>
+        ) : totalDecided === 0 ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-no-decided">No recently decided exceptions.</p>
+        ) : filteredDecided.length === 0 ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-no-decided-filtered">No decided exceptions match these filters.</p>
         ) : (
           <Card>
             <CardContent className="p-0">
@@ -637,11 +1197,11 @@ function ExceptionsTab() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {recentDecided.map((ex) => (
+                  {filteredDecided.map((ex) => (
                     <TableRow key={ex.id} data-testid={`row-decided-${ex.id}`}>
                       <TableCell className="font-medium">{ex.employeeName}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className="text-xs">{ex.type.replace(/_/g, " ")}</Badge>
+                        <Badge variant="outline" className="text-xs">{formatExceptionTypeLabel(ex.type)}</Badge>
                       </TableCell>
                       <TableCell className="text-sm">{formatDate(ex.exceptionDate)}</TableCell>
                       <TableCell>

@@ -1953,6 +1953,8 @@ export async function registerRoutes(
       const loc = u?.locationId ? locMap.get(u.locationId) : undefined;
       return {
         ...base,
+        departmentId: u?.departmentId || null,
+        locationId: u?.locationId || null,
         departmentName: dept?.name || "Unassigned",
         locationName: loc?.name || "Unassigned",
         managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
@@ -2873,6 +2875,8 @@ export async function registerRoutes(
         const loc = u?.locationId ? locMap.get(u.locationId) : undefined;
         return {
           ...base,
+          departmentId: u?.departmentId || null,
+          locationId: u?.locationId || null,
           departmentName: dept?.name || "Unassigned",
           locationName: loc?.name || "Unassigned",
           managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
@@ -2912,6 +2916,7 @@ export async function registerRoutes(
   app.get("/api/attendance/exceptions/recent-decided", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
     try {
       const user = req.authUser as User;
+      const isRequesterAdmin = user.role === "admin";
       const teamIds = await getTeamUserIds(user);
       const all = await storage.getAllAttendanceExceptions();
       const decided = all
@@ -2924,13 +2929,41 @@ export async function registerRoutes(
         .slice(0, 20);
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
+      let deptMap = new Map<string, Department>();
+      let locMap = new Map<string, Location>();
+      let deptManagerMap = new Map<string, string[]>();
+      if (isRequesterAdmin) {
+        const allDepartments = await storage.getAllDepartments();
+        deptMap = new Map(allDepartments.map(d => [d.id, d]));
+        const allLocations = await storage.getAllLocations();
+        locMap = new Map(allLocations.map(l => [l.id, l]));
+        await Promise.all(allDepartments.map(async (dept) => {
+          const managers = await storage.getDepartmentManagers(dept.id);
+          const names = managers.map(m => {
+            const mu = userMap.get(m.userId);
+            return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "Unknown";
+          }).filter(n => n && n !== "Unknown");
+          deptManagerMap.set(dept.id, names);
+        }));
+      }
       const enriched = decided.map(e => {
         const emp = userMap.get(e.employeeId);
         const reviewer = e.reviewedBy ? userMap.get(e.reviewedBy) : null;
-        return {
+        const base = {
           ...e,
           employeeName: emp ? `${emp.firstName || ""} ${emp.lastName || ""}`.trim() : "Unknown",
           reviewerName: reviewer ? `${reviewer.firstName || ""} ${reviewer.lastName || ""}`.trim() : "System",
+        };
+        if (!isRequesterAdmin) return base;
+        const dept = emp?.departmentId ? deptMap.get(emp.departmentId) : undefined;
+        const loc = emp?.locationId ? locMap.get(emp.locationId) : undefined;
+        return {
+          ...base,
+          departmentId: emp?.departmentId || null,
+          locationId: emp?.locationId || null,
+          departmentName: dept?.name || "Unassigned",
+          locationName: loc?.name || "Unassigned",
+          managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
         };
       });
       res.json(enriched);
@@ -3868,13 +3901,28 @@ export async function registerRoutes(
 
     const requests = await storage.getProcessedTimeOffRequests(filters);
 
+    const deptManagerMap = new Map<string, string[]>();
+    if (user.role === "admin") {
+      await Promise.all(allDepartments.map(async (dept) => {
+        const managers = await storage.getDepartmentManagers(dept.id);
+        const names = managers.map(m => {
+          const mu = userMap.get(m.userId);
+          return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "";
+        }).filter(n => n);
+        deptManagerMap.set(dept.id, names);
+      }));
+    }
+
     const enriched = requests.map(r => {
       const emp = userMap.get(r.userId);
       return {
         ...r,
         employeeName: emp ? `${emp.firstName || ""} ${emp.lastName || ""}`.trim() : "Unknown",
+        departmentId: emp?.departmentId ?? null,
+        locationId: emp?.locationId ?? null,
         departmentName: emp?.departmentId ? (deptMap.get(emp.departmentId) || "N/A") : "N/A",
         locationName: emp?.locationId ? (locMap.get(emp.locationId) || "N/A") : "N/A",
+        managerNames: user.role === "admin" && emp?.departmentId ? (deptManagerMap.get(emp.departmentId) || []) : [],
         reviewerName: (() => {
           if (!r.reviewedBy) return "N/A";
           const u = userMap.get(r.reviewedBy);
@@ -3883,6 +3931,23 @@ export async function registerRoutes(
       };
     });
     res.json(enriched);
+  });
+
+  app.get("/api/managers", requireAuth, requireRole("admin"), async (req, res) => {
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
+    const allDepartments = await storage.getAllDepartments();
+    const namesSet = new Set<string>();
+    await Promise.all(allDepartments.map(async (dept) => {
+      const managers = await storage.getDepartmentManagers(dept.id);
+      managers.forEach(m => {
+        const mu = userMap.get(m.userId);
+        const name = mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "";
+        if (name) namesSet.add(name);
+      });
+    }));
+    const names = Array.from(namesSet).sort((a, b) => a.localeCompare(b));
+    res.json(names);
   });
 
   app.get("/api/admin/company-stats", requireAuth, requireRole("admin"), requirePermission("company.view"), requestCache({ scope: "user" }), async (req, res) => {
