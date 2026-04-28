@@ -19,12 +19,13 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
-import { CalendarDays, Plus, Pencil, Settings, Search, AlertTriangle, Check, X, Filter } from "lucide-react";
+import { CalendarDays, Plus, Pencil, Settings, Search, AlertTriangle, Check, X, Filter, RotateCcw } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Progress } from "@/components/ui/progress";
-import type { PtoPolicy, User, Division, Department, AttendanceException, PtoAnniversaryAdjustment } from "@shared/schema";
+import type { PtoPolicy, User, Division, Department, Location, AttendanceException, PtoAnniversaryAdjustment } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
+import { useAuth } from "@/hooks/use-auth";
 
 type PtoBalanceEntry = {
   userId: string;
@@ -45,6 +46,53 @@ type EnrichedException = AttendanceException & {
   reviewerName?: string;
 };
 
+type AlertsExceptionsFilters = {
+  statusFilter: string;
+  setStatusFilter: (v: string) => void;
+  typeFilter: string;
+  setTypeFilter: (v: string) => void;
+  departmentFilter: string;
+  setDepartmentFilter: (v: string) => void;
+  locationFilter: string;
+  setLocationFilter: (v: string) => void;
+  employeeSearch: string;
+  setEmployeeSearch: (v: string) => void;
+  dateFrom: string;
+  setDateFrom: (v: string) => void;
+  dateTo: string;
+  setDateTo: (v: string) => void;
+  reset: () => void;
+};
+
+function useAlertsExceptionsFilters(): AlertsExceptionsFilters {
+  const [statusFilter, setStatusFilter] = useState("pending");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [departmentFilter, setDepartmentFilter] = useState("all");
+  const [locationFilter, setLocationFilter] = useState("all");
+  const [employeeSearch, setEmployeeSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const reset = () => {
+    setStatusFilter("pending");
+    setTypeFilter("all");
+    setDepartmentFilter("all");
+    setLocationFilter("all");
+    setEmployeeSearch("");
+    setDateFrom("");
+    setDateTo("");
+  };
+  return {
+    statusFilter, setStatusFilter,
+    typeFilter, setTypeFilter,
+    departmentFilter, setDepartmentFilter,
+    locationFilter, setLocationFilter,
+    employeeSearch, setEmployeeSearch,
+    dateFrom, setDateFrom,
+    dateTo, setDateTo,
+    reset,
+  };
+}
+
 export default function PtoLeavePage() {
   const searchString = useSearch();
   const urlParams = new URLSearchParams(searchString);
@@ -54,6 +102,8 @@ export default function PtoLeavePage() {
     queryKey: ["/api/attendance/exceptions/pending"],
   });
   const pendingCount = pendingExceptions?.length || 0;
+
+  const alertsFilters = useAlertsExceptionsFilters();
 
   return (
     <div className="max-w-5xl space-y-6" data-testid="pto-leave-page">
@@ -76,7 +126,7 @@ export default function PtoLeavePage() {
         <TabsContent value="balances"><PtoBalancesTab /></TabsContent>
         <TabsContent value="policies"><PoliciesTab /></TabsContent>
         <TabsContent value="employee-settings"><EmployeePtoTab /></TabsContent>
-        <TabsContent value="alerts-exceptions"><AlertsExceptionsTab /></TabsContent>
+        <TabsContent value="alerts-exceptions"><AlertsExceptionsTab filters={alertsFilters} /></TabsContent>
         <TabsContent value="anniversary-history"><AnniversaryHistoryTab /></TabsContent>
       </Tabs>
     </div>
@@ -554,18 +604,66 @@ function EmployeePtoTab() {
   );
 }
 
-function AlertsExceptionsTab() {
-  const [statusFilter, setStatusFilter] = useState("pending");
-  const [typeFilter, setTypeFilter] = useState("all");
+function AlertsExceptionsTab({ filters }: { filters: AlertsExceptionsFilters }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const {
+    statusFilter, setStatusFilter,
+    typeFilter, setTypeFilter,
+    departmentFilter, setDepartmentFilter,
+    locationFilter, setLocationFilter,
+    employeeSearch, setEmployeeSearch,
+    dateFrom, setDateFrom,
+    dateTo, setDateTo,
+    reset,
+  } = filters;
 
   const { data: exceptions, isLoading, isError } = useQuery<EnrichedException[]>({
     queryKey: ["/api/attendance/exceptions"],
   });
 
+  const { data: departments } = useQuery<Department[]>({
+    queryKey: ["/api/departments"],
+    enabled: isAdmin,
+  });
+
+  const { data: locations } = useQuery<Location[]>({
+    queryKey: ["/api/locations"],
+    enabled: isAdmin,
+  });
+
+  const { data: users } = useQuery<User[]>({
+    queryKey: ["/api/users"],
+    enabled: isAdmin,
+  });
+
+  const userMap = new Map((users || []).map(u => [u.id, u]));
+
   const allExceptions = exceptions || [];
+  const dateFromTs = dateFrom ? new Date(dateFrom).getTime() : null;
+  const dateToTs = dateTo ? new Date(dateTo).getTime() : null;
+  const employeeSearchLower = employeeSearch.trim().toLowerCase();
+
   const filtered = allExceptions.filter((ex) => {
     if (statusFilter !== "all" && ex.status !== statusFilter) return false;
     if (typeFilter !== "all" && ex.type !== typeFilter) return false;
+
+    if (isAdmin) {
+      const u = userMap.get(ex.employeeId);
+      if (departmentFilter !== "all" && (u?.departmentId || "") !== departmentFilter) return false;
+      if (locationFilter !== "all" && (u?.locationId || "") !== locationFilter) return false;
+      if (employeeSearchLower) {
+        const name = (ex.employeeName || (u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "")).toLowerCase();
+        if (!name.includes(employeeSearchLower)) return false;
+      }
+      if (dateFromTs !== null || dateToTs !== null) {
+        const exDateTs = ex.exceptionDate ? new Date(ex.exceptionDate).getTime() : NaN;
+        if (Number.isNaN(exDateTs)) return false;
+        if (dateFromTs !== null && exDateTs < dateFromTs) return false;
+        if (dateToTs !== null && exDateTs > dateToTs) return false;
+      }
+    }
+
     return true;
   });
 
@@ -591,9 +689,19 @@ function AlertsExceptionsTab() {
     return <Badge variant="outline">{labels[type] || type}</Badge>;
   };
 
+  const hasActiveAdminFilters = isAdmin && (
+    departmentFilter !== "all" ||
+    locationFilter !== "all" ||
+    employeeSearch !== "" ||
+    dateFrom !== "" ||
+    dateTo !== "" ||
+    statusFilter !== "pending" ||
+    typeFilter !== "all"
+  );
+
   return (
     <div className="space-y-4 mt-4" data-testid="alerts-exceptions-tab">
-      <div className="flex items-center gap-4 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap" data-testid="exceptions-filter-bar">
         <div className="flex items-center gap-2">
           <Filter className="h-4 w-4 text-muted-foreground" />
           <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -619,6 +727,82 @@ function AlertsExceptionsTab() {
             ))}
           </SelectContent>
         </Select>
+
+        {isAdmin && (
+          <>
+            <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
+              <SelectTrigger className="w-[180px]" data-testid="select-exception-department-filter">
+                <SelectValue placeholder="All Departments" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Departments</SelectItem>
+                {(departments || []).map(d => (
+                  <SelectItem key={d.id} value={d.id} data-testid={`option-exception-department-${d.id}`}>{d.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={locationFilter} onValueChange={setLocationFilter}>
+              <SelectTrigger className="w-[180px]" data-testid="select-exception-location-filter">
+                <SelectValue placeholder="All Locations" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Locations</SelectItem>
+                {(locations || []).map(l => (
+                  <SelectItem key={l.id} value={l.id} data-testid={`option-exception-location-${l.id}`}>{l.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <div className="relative w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={employeeSearch}
+                onChange={(e) => setEmployeeSearch(e.target.value)}
+                placeholder="Employee name..."
+                className="pl-9"
+                data-testid="input-exception-employee-search"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap">From</Label>
+              <Input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="w-[150px]"
+                data-testid="input-exception-date-from"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap">To</Label>
+              <Input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="w-[150px]"
+                data-testid="input-exception-date-to"
+              />
+            </div>
+
+            {hasActiveAdminFilters && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={reset}
+                className="h-8 text-xs"
+                data-testid="button-clear-exception-filters"
+              >
+                <RotateCcw className="h-3 w-3 mr-1" /> Clear filters
+              </Button>
+            )}
+          </>
+        )}
+
+        <div className="ml-auto text-xs text-muted-foreground" data-testid="text-exception-filter-count">
+          Showing {filtered.length} of {allExceptions.length}
+        </div>
       </div>
 
       {isError ? (
