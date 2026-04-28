@@ -16,41 +16,63 @@ import { AlertTriangle, Check, X, Filter } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { AttendanceException } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
-import { isHighCorrectionCount, HIGH_CORRECTION_THRESHOLD } from "@shared/correctionCounts";
+import {
+  isHighCorrectionCount,
+  HIGH_CORRECTION_THRESHOLD,
+  emptyCorrectionCountSummary,
+  type CorrectionCountSummary,
+} from "@shared/correctionCounts";
 import { formatTime12 } from "@/lib/utils";
 
 type EnrichedException = AttendanceException & {
   employeeName?: string;
   reviewerName?: string;
-  correctionCount90d?: { total: number; pending: number; approved: number; denied: number };
+  correctionCounts?: CorrectionCountSummary;
+  correctionCount90d?: CorrectionCountSummary;
 };
 
-function CorrectionCountBadge({
-  count,
+function CorrectionCountBreakdown({
+  summary,
   exceptionId,
 }: {
-  count: number;
+  summary: CorrectionCountSummary;
   exceptionId: string;
 }) {
-  if (count <= 0) return null;
-  const high = isHighCorrectionCount(count);
+  const allTotal = summary.all.total;
+  const high = isHighCorrectionCount(allTotal);
   return (
-    <Badge
-      variant={high ? "default" : "outline"}
-      className={
-        high
-          ? "bg-amber-500 text-white hover:bg-amber-500"
-          : "text-muted-foreground"
-      }
+    <span
+      className="text-xs text-muted-foreground inline-flex items-center gap-1 flex-wrap"
+      data-testid={`text-correction-counts-${exceptionId}`}
       title={
         high
-          ? `Frequent corrections — may need attention (≥${HIGH_CORRECTION_THRESHOLD} in last 90 days)`
-          : `Total correction requests in the last 90 days`
+          ? `Frequent corrections — may need attention (≥${HIGH_CORRECTION_THRESHOLD} all-time)`
+          : `Correction requests by time window`
       }
-      data-testid={`badge-correction-count-${exceptionId}`}
     >
-      {count} correction{count === 1 ? "" : "s"} in last 90 days
-    </Badge>
+      <span data-testid={`text-correction-count-pay-period-${exceptionId}`}>
+        Pay Period: {summary.payPeriod.total}
+      </span>
+      <span aria-hidden="true">·</span>
+      <span data-testid={`text-correction-count-week-${exceptionId}`}>
+        Week: {summary.week.total}
+      </span>
+      <span aria-hidden="true">·</span>
+      <span data-testid={`text-correction-count-month-${exceptionId}`}>
+        Month: {summary.month.total}
+      </span>
+      <span aria-hidden="true">·</span>
+      <span data-testid={`text-correction-count-year-${exceptionId}`}>
+        Year: {summary.year.total}
+      </span>
+      <span aria-hidden="true">·</span>
+      <span
+        className={high ? "font-semibold text-amber-700 dark:text-amber-400" : undefined}
+        data-testid={`text-correction-count-all-${exceptionId}`}
+      >
+        All: {allTotal}
+      </span>
+    </span>
   );
 }
 
@@ -245,16 +267,20 @@ function ExceptionRow({
               <p className="font-semibold" data-testid={`text-exception-employee-${ex.id}`}>
                 {ex.employeeName || "Employee"}
               </p>
-              <CorrectionCountBadge
-                count={ex.correctionCount90d?.total ?? 0}
-                exceptionId={ex.id}
-              />
             </div>
+            <CorrectionCountBreakdown
+              summary={
+                ex.correctionCounts ?? ex.correctionCount90d ?? emptyCorrectionCountSummary()
+              }
+              exceptionId={ex.id}
+            />
             <p className="text-sm text-muted-foreground" data-testid={`text-exception-date-${ex.id}`}>
               Date: {ex.exceptionDate}
               {ex.exceptionTime && ` at ${formatTime12(ex.exceptionTime)}`}
             </p>
-            {isHighCorrectionCount(ex.correctionCount90d?.total ?? 0) && (
+            {isHighCorrectionCount(
+              (ex.correctionCounts ?? ex.correctionCount90d)?.all.total ?? 0,
+            ) && (
               <p
                 className="text-xs text-amber-700 dark:text-amber-400"
                 data-testid={`text-frequent-corrections-${ex.id}`}

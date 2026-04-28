@@ -21,9 +21,9 @@ import { runWorkflowsForTrigger } from "./workflowEngine";
 import { requestCache } from "./lib/requestCache";
 import { appCache } from "./lib/cache";
 import {
-  CORRECTION_COUNT_WINDOW_DAYS,
-  HIGH_CORRECTION_THRESHOLD,
-  type CorrectionCountSummary,
+  DEFAULT_PAY_PERIOD_TYPE,
+  emptyCorrectionCountSummary,
+  type PayPeriodType,
 } from "@shared/correctionCounts";
 import {
   findDayOfWeekBonusOverlaps,
@@ -197,6 +197,39 @@ function punchLogToApiResponse(record: any) {
     date: record.workDate || record.date,
     totalHours: record.hoursWorked ?? record.totalHours ?? null,
   };
+}
+
+function normalizePayPeriodType(value: unknown): PayPeriodType {
+  if (
+    value === "weekly" ||
+    value === "biweekly" ||
+    value === "semimonthly" ||
+    value === "monthly"
+  ) {
+    return value;
+  }
+  return DEFAULT_PAY_PERIOD_TYPE;
+}
+
+async function resolvePayPeriodTypeForUser(user: User | undefined | null): Promise<PayPeriodType> {
+  if (!user) return DEFAULT_PAY_PERIOD_TYPE;
+  const policy = await getEffectivePolicy(user.companyId, user.id, "payroll", user);
+  const rules = policy?.rules ?? DEFAULT_PAYROLL_RULES;
+  return normalizePayPeriodType((rules as any)?.payPeriodType);
+}
+
+async function buildPayPeriodTypeMap(
+  employeeIds: string[],
+  userMap: Map<string, User>,
+): Promise<Map<string, PayPeriodType>> {
+  const out = new Map<string, PayPeriodType>();
+  await Promise.all(
+    employeeIds.map(async (id) => {
+      const u = userMap.get(id);
+      out.set(id, await resolvePayPeriodTypeForUser(u));
+    }),
+  );
+  return out;
 }
 
 async function getScheduleWarning(employeeId: string, punchType: "clock_in" | "clock_out"): Promise<string | null> {
@@ -2481,15 +2514,22 @@ export async function registerRoutes(
         const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
         const userMap = new Map(allUsers.map(u => [u.id, u]));
         const employeeIds = Array.from(new Set(all.map(e => e.employeeId)));
-        const counts = await storage.getCorrectionRequestCountsBulk(employeeIds, { windowDays: CORRECTION_COUNT_WINDOW_DAYS });
-        const enriched = all.map(e => ({
-          ...e,
-          employeeName: (() => {
-            const u = userMap.get(e.employeeId);
-            return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
-          })(),
-          correctionCount90d: counts.get(e.employeeId) || { total: 0, pending: 0, approved: 0, denied: 0 },
-        }));
+        const payPeriodTypeByEmployee = await buildPayPeriodTypeMap(employeeIds, userMap);
+        const counts = await storage.getCorrectionRequestCountsBulk(employeeIds, {
+          payPeriodTypeByEmployee,
+        });
+        const enriched = all.map(e => {
+          const summary = counts.get(e.employeeId) || emptyCorrectionCountSummary();
+          return {
+            ...e,
+            employeeName: (() => {
+              const u = userMap.get(e.employeeId);
+              return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+            })(),
+            correctionCounts: summary,
+            correctionCount90d: summary,
+          };
+        });
         return res.json(enriched);
       }
 
@@ -2504,14 +2544,14 @@ export async function registerRoutes(
   app.get("/api/attendance/exceptions/correction-counts/me", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id as string;
+      const user = req.authUser as User;
       const excludeId = typeof req.query.excludeId === "string" ? req.query.excludeId : undefined;
-      const summary = await storage.getCorrectionRequestCounts(userId, { windowDays: CORRECTION_COUNT_WINDOW_DAYS, excludeId });
-      const enriched: CorrectionCountSummary = {
-        ...summary,
-        windowDays: CORRECTION_COUNT_WINDOW_DAYS,
-        threshold: HIGH_CORRECTION_THRESHOLD,
-      };
-      res.json(enriched);
+      const payPeriodType = await resolvePayPeriodTypeForUser(user);
+      const summary = await storage.getCorrectionRequestCounts(userId, {
+        excludeId,
+        payPeriodType,
+      });
+      res.json(summary);
     } catch (error) {
       console.error("Error fetching self correction counts:", error);
       res.status(500).json({ message: "Failed to fetch correction counts" });
@@ -2530,13 +2570,10 @@ export async function registerRoutes(
         if (employeeId !== reviewer.id && !teamIds.has(employeeId)) {
           return res.status(403).json({ message: "Not authorized to view this employee's counts" });
         }
-        const summary = await storage.getCorrectionRequestCounts(employeeId, { windowDays: CORRECTION_COUNT_WINDOW_DAYS });
-        const enriched: CorrectionCountSummary = {
-          ...summary,
-          windowDays: CORRECTION_COUNT_WINDOW_DAYS,
-          threshold: HIGH_CORRECTION_THRESHOLD,
-        };
-        res.json(enriched);
+        const employee = await storage.getUser(employeeId);
+        const payPeriodType = await resolvePayPeriodTypeForUser(employee || reviewer);
+        const summary = await storage.getCorrectionRequestCounts(employeeId, { payPeriodType });
+        res.json(summary);
       } catch (error) {
         console.error("Error fetching correction counts:", error);
         res.status(500).json({ message: "Failed to fetch correction counts" });
@@ -2554,7 +2591,10 @@ export async function registerRoutes(
       const userMap = new Map(allUsers.map(u => [u.id, u]));
       const isRequesterAdmin = user.role === "admin";
       const employeeIdsForCounts = Array.from(new Set(scopedPending.map(e => e.employeeId)));
-      const correctionCounts = await storage.getCorrectionRequestCountsBulk(employeeIdsForCounts, { windowDays: CORRECTION_COUNT_WINDOW_DAYS });
+      const payPeriodTypeByEmployee = await buildPayPeriodTypeMap(employeeIdsForCounts, userMap);
+      const correctionCounts = await storage.getCorrectionRequestCountsBulk(employeeIdsForCounts, {
+        payPeriodTypeByEmployee,
+      });
       let deptMap = new Map<string, Department>();
       let locMap = new Map<string, Location>();
       let deptManagerMap = new Map<string, string[]>();
@@ -2574,10 +2614,12 @@ export async function registerRoutes(
       }
       const enriched = scopedPending.map(e => {
         const u = userMap.get(e.employeeId);
+        const summary = correctionCounts.get(e.employeeId) || emptyCorrectionCountSummary();
         const base = {
           ...e,
           employeeName: u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown",
-          correctionCount90d: correctionCounts.get(e.employeeId) || { total: 0, pending: 0, approved: 0, denied: 0 },
+          correctionCounts: summary,
+          correctionCount90d: summary,
         };
         if (!isRequesterAdmin) return base;
         const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;

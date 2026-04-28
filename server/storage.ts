@@ -165,6 +165,19 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, type SQL } from "drizzle-orm";
+import {
+  CORRECTION_COUNT_TYPES,
+  CORRECTION_COUNT_WINDOW_DAYS,
+  DEFAULT_PAY_PERIOD_TYPE,
+  emptyCorrectionCountSummary,
+  getCurrentMonthStart,
+  getCurrentPayPeriodStart,
+  getCurrentWeekStart,
+  getCurrentYearStart,
+  type CorrectionCountBucket,
+  type CorrectionCountSummary,
+  type PayPeriodType,
+} from "@shared/correctionCounts";
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
@@ -236,12 +249,12 @@ export interface IStorage {
   updateAttendanceException(id: string, data: Partial<AttendanceException>): Promise<AttendanceException | undefined>;
   getCorrectionRequestCounts(
     employeeId: string,
-    options?: { windowDays?: number; excludeId?: string }
-  ): Promise<{ total: number; pending: number; approved: number; denied: number }>;
+    options?: { excludeId?: string; payPeriodType?: PayPeriodType }
+  ): Promise<CorrectionCountSummary>;
   getCorrectionRequestCountsBulk(
     employeeIds: string[],
-    options?: { windowDays?: number }
-  ): Promise<Map<string, { total: number; pending: number; approved: number; denied: number }>>;
+    options?: { payPeriodTypeByEmployee?: Map<string, PayPeriodType> }
+  ): Promise<Map<string, CorrectionCountSummary>>;
 
   createAuditLog(entry: InsertAuditLog): Promise<AuditLog>;
   getAuditLogs(targetType?: string, targetId?: string): Promise<AuditLog[]>;
@@ -579,6 +592,41 @@ export interface IStorage {
     lastMatchedAt: Date | null;
     sampleCount: number | null;
   }[]>;
+}
+
+function incrementBucket(
+  bucket: CorrectionCountBucket,
+  status: "pending" | "approved" | "denied",
+): void {
+  bucket.total++;
+  if (status === "pending") bucket.pending++;
+  else if (status === "approved") bucket.approved++;
+  else if (status === "denied") bucket.denied++;
+}
+
+function tallyCorrectionRow(
+  summary: CorrectionCountSummary,
+  status: "pending" | "approved" | "denied",
+  created: Date,
+  windows: {
+    payPeriodStart: Date;
+    weekStart: Date;
+    monthStart: Date;
+    yearStart: Date;
+    cutoff90: Date;
+  },
+): void {
+  incrementBucket(summary.all, status);
+  if (created >= windows.yearStart) incrementBucket(summary.year, status);
+  if (created >= windows.monthStart) incrementBucket(summary.month, status);
+  if (created >= windows.weekStart) incrementBucket(summary.week, status);
+  if (created >= windows.payPeriodStart) incrementBucket(summary.payPeriod, status);
+  if (created >= windows.cutoff90) {
+    summary.total++;
+    if (status === "pending") summary.pending++;
+    else if (status === "approved") summary.approved++;
+    else if (status === "denied") summary.denied++;
+  }
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -947,80 +995,108 @@ export class DatabaseStorage implements IStorage {
 
   async getCorrectionRequestCounts(
     employeeId: string,
-    options?: { windowDays?: number; excludeId?: string }
-  ): Promise<{ total: number; pending: number; approved: number; denied: number }> {
-    const windowDays = options?.windowDays ?? 90;
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - windowDays);
+    options?: { excludeId?: string; payPeriodType?: PayPeriodType }
+  ): Promise<CorrectionCountSummary> {
     const conditions = [
       eq(attendanceExceptions.employeeId, employeeId),
-      inArray(attendanceExceptions.type, ["time_correction", "missing_punch"]),
+      inArray(attendanceExceptions.type, [...CORRECTION_COUNT_TYPES]),
       inArray(attendanceExceptions.status, ["pending", "approved", "denied"]),
-      gte(attendanceExceptions.createdAt, cutoff),
     ];
     if (options?.excludeId) {
       conditions.push(ne(attendanceExceptions.id, options.excludeId));
     }
     const rows = await db
-      .select({ status: attendanceExceptions.status })
+      .select({
+        status: attendanceExceptions.status,
+        createdAt: attendanceExceptions.createdAt,
+      })
       .from(attendanceExceptions)
       .where(and(...conditions));
-    const summary = { total: 0, pending: 0, approved: 0, denied: 0 };
+
+    const summary = emptyCorrectionCountSummary();
+    const now = new Date();
+    const payPeriodStart = getCurrentPayPeriodStart(
+      options?.payPeriodType ?? DEFAULT_PAY_PERIOD_TYPE,
+      now,
+    );
+    const weekStart = getCurrentWeekStart(now);
+    const monthStart = getCurrentMonthStart(now);
+    const yearStart = getCurrentYearStart(now);
+    const cutoff90 = new Date();
+    cutoff90.setDate(cutoff90.getDate() - CORRECTION_COUNT_WINDOW_DAYS);
+
     for (const row of rows) {
-      if (row.status === "pending") {
-        summary.pending++;
-        summary.total++;
-      } else if (row.status === "approved") {
-        summary.approved++;
-        summary.total++;
-      } else if (row.status === "denied") {
-        summary.denied++;
-        summary.total++;
-      }
+      if (!row.createdAt) continue;
+      const created =
+        row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt as any);
+      const status = row.status as "pending" | "approved" | "denied";
+      tallyCorrectionRow(summary, status, created, {
+        payPeriodStart,
+        weekStart,
+        monthStart,
+        yearStart,
+        cutoff90,
+      });
     }
     return summary;
   }
 
   async getCorrectionRequestCountsBulk(
     employeeIds: string[],
-    options?: { windowDays?: number }
-  ): Promise<Map<string, { total: number; pending: number; approved: number; denied: number }>> {
-    const result = new Map<string, { total: number; pending: number; approved: number; denied: number }>();
+    options?: { payPeriodTypeByEmployee?: Map<string, PayPeriodType> }
+  ): Promise<Map<string, CorrectionCountSummary>> {
+    const result = new Map<string, CorrectionCountSummary>();
     if (employeeIds.length === 0) return result;
     const uniqueIds = Array.from(new Set(employeeIds));
     for (const id of uniqueIds) {
-      result.set(id, { total: 0, pending: 0, approved: 0, denied: 0 });
+      result.set(id, emptyCorrectionCountSummary());
     }
-    const windowDays = options?.windowDays ?? 90;
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - windowDays);
+
+    const now = new Date();
+    const weekStart = getCurrentWeekStart(now);
+    const monthStart = getCurrentMonthStart(now);
+    const yearStart = getCurrentYearStart(now);
+    const cutoff90 = new Date();
+    cutoff90.setDate(cutoff90.getDate() - CORRECTION_COUNT_WINDOW_DAYS);
+
+    const payPeriodStartByEmployee = new Map<string, Date>();
+    for (const id of uniqueIds) {
+      const type =
+        options?.payPeriodTypeByEmployee?.get(id) ?? DEFAULT_PAY_PERIOD_TYPE;
+      payPeriodStartByEmployee.set(id, getCurrentPayPeriodStart(type, now));
+    }
+
     const rows = await db
       .select({
         employeeId: attendanceExceptions.employeeId,
         status: attendanceExceptions.status,
+        createdAt: attendanceExceptions.createdAt,
       })
       .from(attendanceExceptions)
       .where(
         and(
           inArray(attendanceExceptions.employeeId, uniqueIds),
-          inArray(attendanceExceptions.type, ["time_correction", "missing_punch"]),
+          inArray(attendanceExceptions.type, [...CORRECTION_COUNT_TYPES]),
           inArray(attendanceExceptions.status, ["pending", "approved", "denied"]),
-          gte(attendanceExceptions.createdAt, cutoff),
-        )
+        ),
       );
+
     for (const row of rows) {
       const summary = result.get(row.employeeId);
-      if (!summary) continue;
-      if (row.status === "pending") {
-        summary.pending++;
-        summary.total++;
-      } else if (row.status === "approved") {
-        summary.approved++;
-        summary.total++;
-      } else if (row.status === "denied") {
-        summary.denied++;
-        summary.total++;
-      }
+      if (!summary || !row.createdAt) continue;
+      const created =
+        row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt as any);
+      const status = row.status as "pending" | "approved" | "denied";
+      const payPeriodStart =
+        payPeriodStartByEmployee.get(row.employeeId) ??
+        getCurrentPayPeriodStart(DEFAULT_PAY_PERIOD_TYPE, now);
+      tallyCorrectionRow(summary, status, created, {
+        payPeriodStart,
+        weekStart,
+        monthStart,
+        yearStart,
+        cutoff90,
+      });
     }
     return result;
   }

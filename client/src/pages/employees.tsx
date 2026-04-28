@@ -1255,32 +1255,43 @@ function CorrectionRequestStat({ userId }: { userId: string }) {
     },
   });
 
-  const total = data?.total ?? 0;
-  const high = isHighCorrectionCount(total);
+  const allTotal = data?.all.total ?? 0;
+  const high = isHighCorrectionCount(allTotal);
 
   return (
     <div data-testid="field-correction-counts" className="md:col-span-2">
-      <Label className="text-muted-foreground text-xs">
-        Correction Requests (last {data?.windowDays ?? 90} days)
-      </Label>
+      <Label className="text-muted-foreground text-xs">Correction Requests</Label>
       {isLoading ? (
         <p className="font-medium" data-testid="text-profile-correction-loading">
           Loading…
         </p>
       ) : (
         <div className="space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge
-              variant={high ? "default" : "outline"}
-              className={
-                high ? "bg-amber-500 text-white hover:bg-amber-500" : "text-muted-foreground"
-              }
-              data-testid="badge-profile-correction-total"
+          <div
+            className="text-sm text-muted-foreground inline-flex flex-wrap items-center gap-1"
+            data-testid="text-profile-correction-breakdown"
+          >
+            <span data-testid={`text-correction-count-pay-period-${userId}`}>
+              Pay Period: {data?.payPeriod.total ?? 0}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span data-testid={`text-correction-count-week-${userId}`}>
+              Week: {data?.week.total ?? 0}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span data-testid={`text-correction-count-month-${userId}`}>
+              Month: {data?.month.total ?? 0}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span data-testid={`text-correction-count-year-${userId}`}>
+              Year: {data?.year.total ?? 0}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span
+              className={high ? "font-semibold text-amber-700 dark:text-amber-400" : undefined}
+              data-testid={`text-correction-count-all-${userId}`}
             >
-              {total} total
-            </Badge>
-            <span className="text-xs text-muted-foreground" data-testid="text-profile-correction-breakdown">
-              {data?.approved ?? 0} approved · {data?.denied ?? 0} denied · {data?.pending ?? 0} pending
+              All: {allTotal}
             </span>
           </div>
           {high && (
@@ -1288,7 +1299,7 @@ function CorrectionRequestStat({ userId }: { userId: string }) {
               className="text-xs text-amber-700 dark:text-amber-400"
               data-testid="text-profile-correction-frequent"
             >
-              Frequent corrections — may need attention (≥{HIGH_CORRECTION_THRESHOLD} in last 90 days).
+              Frequent corrections — may need attention (≥{HIGH_CORRECTION_THRESHOLD} all-time).
             </p>
           )}
         </div>
