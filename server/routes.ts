@@ -2493,13 +2493,13 @@ export async function registerRoutes(
           return res.status(400).json({ message: "Employee already has an open punch for this date" });
         }
       } else if (exception.type === "forgotten_clock_out") {
-        const latestRecord = await storage.getLatestAttendanceForUser(exception.employeeId);
-        if (!latestRecord || !latestRecord.clockIn || latestRecord.clockOut || latestRecord.workDate !== exception.exceptionDate) {
+        const dateRecord = await storage.getAttendanceForUserOnDate(exception.employeeId, exception.exceptionDate);
+        if (!dateRecord || !dateRecord.clockIn || dateRecord.clockOut) {
           return res.status(400).json({ message: "No open punch record found for this date to close" });
         }
       } else if (exception.type === "time_correction") {
-        const latestRecord = await storage.getLatestAttendanceForUser(exception.employeeId);
-        if (!latestRecord || latestRecord.workDate !== exception.exceptionDate) {
+        const dateRecord = await storage.getAttendanceForUserOnDate(exception.employeeId, exception.exceptionDate);
+        if (!dateRecord) {
           return res.status(400).json({ message: "No punch record found for this date to correct" });
         }
       }
@@ -2538,9 +2538,9 @@ export async function registerRoutes(
           punchLog = created;
         } else if (exception.type === "forgotten_clock_out") {
           const [latestRecord] = await tx.select().from(punchLogs)
-            .where(eq(punchLogs.employeeId, exception.employeeId))
+            .where(and(eq(punchLogs.employeeId, exception.employeeId), eq(punchLogs.workDate, exception.exceptionDate)))
             .orderBy(desc(punchLogs.createdAt)).limit(1);
-          if (latestRecord && latestRecord.clockIn && !latestRecord.clockOut && latestRecord.workDate === exception.exceptionDate) {
+          if (latestRecord && latestRecord.clockIn && !latestRecord.clockOut) {
             const clockOutTime = correctedTimestamp || new Date();
             const roundedClockInTime = new Date(latestRecord.roundedClockIn ?? latestRecord.clockIn);
             const breakMinutes = latestRecord.breakMinutes || 0;
@@ -2565,9 +2565,9 @@ export async function registerRoutes(
           }
         } else if (exception.type === "time_correction") {
           const [latestRecord] = await tx.select().from(punchLogs)
-            .where(eq(punchLogs.employeeId, exception.employeeId))
+            .where(and(eq(punchLogs.employeeId, exception.employeeId), eq(punchLogs.workDate, exception.exceptionDate)))
             .orderBy(desc(punchLogs.createdAt)).limit(1);
-          if (latestRecord && latestRecord.workDate === exception.exceptionDate) {
+          if (latestRecord) {
             const oldValue = {
               clockIn: latestRecord.clockIn,
               clockOut: latestRecord.clockOut,
@@ -2692,10 +2692,7 @@ export async function registerRoutes(
       });
 
       if (updated.punchLog && (exception.type === "forgotten_clock_out" || exception.type === "time_correction")) {
-        const latestRecord = await storage.getLatestAttendanceForUser(exception.employeeId);
-        if (latestRecord) {
-          await checkPostExportModification(latestRecord.id, reviewer.id);
-        }
+        await checkPostExportModification(updated.punchLog.id, reviewer.id);
       }
 
       return res.json(updated.result);

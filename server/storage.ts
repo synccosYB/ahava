@@ -274,6 +274,7 @@ export interface IStorage {
   getUserByPin(pin: string): Promise<User | undefined>;
   searchUsersByName(query: string): Promise<User[]>;
   getLatestAttendanceForUser(userId: string): Promise<PunchLog | undefined>;
+  getAttendanceForUserOnDate(userId: string, workDate: string): Promise<PunchLog | undefined>;
 
   getUsersByDepartment(departmentId: string): Promise<User[]>;
   getProcessedTimeOffRequests(filters?: {
@@ -1207,6 +1208,16 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(punchLogs)
       .where(eq(punchLogs.employeeId, userId))
+      .orderBy(desc(punchLogs.createdAt))
+      .limit(1);
+    return record ? punchLogToLegacy(record) : undefined;
+  }
+
+  async getAttendanceForUserOnDate(userId: string, workDate: string): Promise<PunchLog | undefined> {
+    const [record] = await db
+      .select()
+      .from(punchLogs)
+      .where(and(eq(punchLogs.employeeId, userId), eq(punchLogs.workDate, workDate)))
       .orderBy(desc(punchLogs.createdAt))
       .limit(1);
     return record ? punchLogToLegacy(record) : undefined;

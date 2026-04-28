@@ -495,3 +495,130 @@ test("POST /attendance/exceptions/:id/resolve still denies a time_correction wit
     .where(eq(attendanceExceptions.id, exception.id));
   assert.equal(resolved.status, "denied");
 });
+
+test("POST /attendance/exceptions/:id/resolve approves a time_correction for an older date even when newer punches exist (Task #176)", async (t) => {
+  const fx = await setupFixture("time-correction-older-date");
+  t.after(fx.cleanup);
+
+  // Older closed punch on the correction date: 9:00–17:00 (8h).
+  const correctionDate = "2026-04-20";
+  const olderClockIn = new Date("2026-04-20T09:00:00Z");
+  const olderClockOut = new Date("2026-04-20T17:00:00Z");
+  const [olderPunch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate: correctionDate,
+      clockIn: olderClockIn,
+      roundedClockIn: olderClockIn,
+      clockOut: olderClockOut,
+      roundedClockOut: olderClockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Newer punch on a later date (created AFTER the older one, so it's the
+  // "latest" record for the employee). This is the scenario that used to 400.
+  const newerDate = "2026-04-27";
+  const newerClockIn = new Date("2026-04-27T08:00:00Z");
+  const newerClockOut = new Date("2026-04-27T16:00:00Z");
+  const [newerPunch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate: newerDate,
+      clockIn: newerClockIn,
+      roundedClockIn: newerClockIn,
+      clockOut: newerClockOut,
+      roundedClockOut: newerClockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Time-correction exception targets the OLDER date.
+  const correctedClockIn = new Date("2026-04-20T08:30:00Z");
+  const correctedClockOut = new Date("2026-04-20T17:30:00Z");
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: correctionDate,
+      exceptionTime: correctedClockIn,
+      type: "time_correction",
+      reason:
+        "Forgot real start/end on 2026-04-20. [Original In: 09:00, Original Out: 17:00, Corrected In: 08:30, Corrected Out: 17:30]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({
+      action: "approve",
+      reviewNotes: "approving older-date correction",
+      correctedClockIn: correctedClockIn.toISOString(),
+      correctedClockOut: correctedClockOut.toISOString(),
+    }),
+  });
+  assert.equal(
+    res.status,
+    200,
+    `expected 200 from resolve route, got ${res.status} (${await res.text().catch(() => "")})`,
+  );
+
+  const [updatedOlder] = await db
+    .select()
+    .from(punchLogs)
+    .where(eq(punchLogs.id, olderPunch.id));
+  assert.ok(updatedOlder, "older punch row should still exist");
+  assert.equal(
+    new Date(updatedOlder.clockIn!).getTime(),
+    correctedClockIn.getTime(),
+    "older punch clockIn should reflect the corrected timestamp",
+  );
+  assert.equal(
+    new Date(updatedOlder.clockOut!).getTime(),
+    correctedClockOut.getTime(),
+    "older punch clockOut should reflect the corrected timestamp",
+  );
+  assert.equal(updatedOlder.hoursWorked, 9, "older punch hoursWorked should be recomputed (8:30–17:30 = 9h)");
+
+  // The newer punch must be untouched.
+  const [untouchedNewer] = await db
+    .select()
+    .from(punchLogs)
+    .where(eq(punchLogs.id, newerPunch.id));
+  assert.ok(untouchedNewer, "newer punch row should still exist");
+  assert.equal(
+    new Date(untouchedNewer.clockIn!).getTime(),
+    newerClockIn.getTime(),
+    "newer punch clockIn must not have changed",
+  );
+  assert.equal(
+    new Date(untouchedNewer.clockOut!).getTime(),
+    newerClockOut.getTime(),
+    "newer punch clockOut must not have changed",
+  );
+  assert.equal(untouchedNewer.hoursWorked, 8, "newer punch hoursWorked must not have changed");
+
+  const [resolvedException] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(resolvedException.status, "approved");
+  assert.equal(
+    resolvedException.punchLogId,
+    olderPunch.id,
+    "exception should link to the older (correction-date) punch, not the newer one",
+  );
+});
