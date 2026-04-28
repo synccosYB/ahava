@@ -84,6 +84,7 @@ const tocItems: TocItem[] = [
       { id: "admin-employees", label: "Managing Employees" },
       { id: "admin-org", label: "Divisions, Locations & Departments" },
       { id: "admin-rules", label: "Time Clock Rules & PTO Policies" },
+      { id: "admin-workflows", label: "Approval Workflows" },
       { id: "admin-payroll", label: "Payroll Prep & CSV Export" },
       { id: "admin-kiosks", label: "Managing Kiosks" },
       { id: "admin-permissions", label: "Permissions & Roles" },
@@ -161,6 +162,7 @@ function StepList({ steps }: { steps: string[] }) {
 
 export default function ManualPage() {
   const [activeSection, setActiveSection] = useState<string>("getting-started");
+  const [activeSubsection, setActiveSubsection] = useState<string>("");
   const [showBackToTop, setShowBackToTop] = useState(false);
 
   useEffect(() => {
@@ -177,11 +179,14 @@ export default function ManualPage() {
         if (el) {
           const rect = el.getBoundingClientRect();
           if (rect.top <= 120) {
+            const currentId = sections[i];
             const parent = tocItems.find(
-              (t) => t.id === sections[i] || t.subsections.some((s) => s.id === sections[i])
+              (t) => t.id === currentId || t.subsections.some((s) => s.id === currentId)
             );
             if (parent) {
               setActiveSection(parent.id);
+              const isSubsection = parent.subsections.some((s) => s.id === currentId);
+              setActiveSubsection(isSubsection ? currentId : "");
             }
             break;
           }
@@ -219,19 +224,38 @@ export default function ManualPage() {
             </div>
             <nav>
               {tocItems.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => scrollTo(item.id)}
-                  className={`w-full flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors text-left ${
-                    activeSection === item.id
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                  data-testid={`toc-link-${item.id}`}
-                >
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {item.label}
-                </button>
+                <div key={item.id} className="space-y-0.5">
+                  <button
+                    onClick={() => scrollTo(item.id)}
+                    className={`w-full flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors text-left ${
+                      activeSection === item.id
+                        ? "bg-primary/10 text-primary font-medium"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    }`}
+                    data-testid={`toc-link-${item.id}`}
+                  >
+                    <item.icon className="h-4 w-4 shrink-0" />
+                    {item.label}
+                  </button>
+                  {activeSection === item.id && (
+                    <div className="ml-6 border-l border-border pl-2 space-y-0.5 pb-1" data-testid={`toc-subsections-${item.id}`}>
+                      {item.subsections.map((sub) => (
+                        <button
+                          key={sub.id}
+                          onClick={() => scrollTo(sub.id)}
+                          className={`w-full text-left rounded-md px-2 py-1 text-xs transition-colors ${
+                            activeSubsection === sub.id
+                              ? "bg-primary/5 text-primary font-medium"
+                              : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                          }`}
+                          data-testid={`toc-link-${sub.id}`}
+                        >
+                          {sub.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
             </nav>
           </div>
@@ -579,6 +603,146 @@ export default function ManualPage() {
                 <li>Set blackout dates when leave cannot be taken</li>
                 <li>Manage per-employee PTO balance adjustments</li>
               </ul>
+
+              <SubHeading id="admin-workflows">Approval Workflows</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Approval workflows decide what happens automatically when key events occur — a PTO request is
+                submitted, a late arrival is detected, a clock-out is missed, and so on. They route the event
+                through conditions, approvers, actions, and notifications until the request is approved, denied,
+                or escalated. You can find them under <strong>Rules & Controls → Approval Workflows</strong>.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                There are two ways to build automation, and they live side-by-side on the same page:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li><strong>Visual Workflow Builder</strong> — A drag-and-drop canvas for multi-step flows that
+                  combine conditions, multiple approvers, actions, and notifications. Use this when you need
+                  branching logic (for example: "if more than 5 days, send to HR; otherwise, manager only").</li>
+                <li><strong>Rule Policies</strong> — Lightweight, single-rule policies (e.g. an attendance,
+                  PTO, or payroll policy with rule values). Use these when you just need a static rule applied
+                  to a division, location, department, or individual employee, without the multi-step flow.</li>
+              </ul>
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-3">
+                <strong>Available triggers</strong> — every workflow starts with one of these events:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li><strong>PTO request submitted</strong> — an employee submits a time-off request.</li>
+                <li><strong>Attendance correction filed</strong> — a missing-punch or correction request is filed.</li>
+                <li><strong>Late arrival detected</strong> — someone clocks in after their scheduled start.</li>
+                <li><strong>Missed clock-out</strong> — an employee forgot to clock out.</li>
+                <li><strong>Overtime threshold reached</strong> — an employee crosses the overtime limit.</li>
+                <li><strong>Bonus</strong> — a bonus event needs to be reviewed and routed.</li>
+              </ul>
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-3">
+                <strong>Node types</strong> — the four building blocks you drag onto the canvas:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li><strong>Condition</strong> — branches the flow into Yes / No based on a value (for example,
+                  days requested or overtime hours).</li>
+                <li><strong>Approver</strong> — pauses the flow until the chosen role signs off. Chain these to
+                  build multi-step approval (e.g. manager → HR → admin).</li>
+                <li><strong>Action</strong> — does something concrete: approve, deny, raise an alert, issue a
+                  warning, or update a balance.</li>
+                <li><strong>Notification</strong> — sends a message to the relevant people without changing the
+                  state of the request itself.</li>
+              </ul>
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-3">
+                <strong>Condition fields & operators</strong> — conditions compare one of the following fields
+                against a value you set:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li><strong>days_requested</strong> — number of days an employee asked for.</li>
+                <li><strong>pto_balance</strong> — remaining PTO days the employee has.</li>
+                <li><strong>late_count_month</strong> — late arrivals so far this month.</li>
+                <li><strong>overtime_hours</strong> — overtime hours worked.</li>
+                <li><strong>employee_department</strong> — the employee's department.</li>
+                <li><strong>employee_location</strong> — the employee's location.</li>
+              </ul>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Operators include <strong>more than (&gt;)</strong>, <strong>at least (≥)</strong>,
+                <strong> less than (&lt;)</strong>, <strong>at most (≤)</strong>, <strong>equals (=)</strong>,
+                and <strong>is not (≠)</strong>. The "Yes" branch runs when the comparison is true; the "No"
+                branch runs when it is false.
+              </p>
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-3">
+                <strong>Approvers</strong> — an Approver node waits for one of these roles to sign off before
+                the flow continues:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li><strong>Direct Manager</strong> — the employee's direct manager.</li>
+                <li><strong>Department Head</strong> — the head of the employee's department.</li>
+                <li><strong>HR</strong> — the HR team.</li>
+                <li><strong>Admin</strong> — an admin user.</li>
+              </ul>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Chain Approver nodes one after another to require multi-step sign-off — for example, drop a
+                Direct Manager approver, then connect its output into a Department Head approver, then into HR.
+              </p>
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-3">
+                <strong>Actions</strong> — Action nodes change the state of the request or the employee record:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li><strong>Approve</strong> — mark the request as approved.</li>
+                <li><strong>Deny</strong> — mark the request as denied.</li>
+                <li><strong>Generate Alert</strong> — raise a system alert for admins/managers.</li>
+                <li><strong>Generate Written Warning</strong> — add a written warning to the employee's record.</li>
+                <li><strong>Update PTO Balance</strong> — adjust the employee's remaining PTO days.</li>
+              </ul>
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-3">
+                <strong>Notifications</strong> — Notification nodes deliver a message without changing state.
+                Recipients include the <strong>employee</strong>, the <strong>manager</strong>,
+                <strong> HR</strong>, and the <strong>payroll team</strong>. Channels are <strong>email</strong>
+                and <strong>in-app system alert</strong>. You can also attach a custom message to a notification.
+              </p>
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-4">
+                <strong>Creating a workflow in the visual builder:</strong>
+              </p>
+              <StepList steps={[
+                "Go to Rules & Controls → Approval Workflows and click \"New Workflow\".",
+                "Give the workflow a clear name and pick a trigger from the dropdown.",
+                "Drag a Trigger node onto the canvas and select the matching trigger event.",
+                "Drag in the next nodes you need — Condition, Approver, Action, and/or Notification — and connect them by dragging from one node's bottom handle to the next node's top handle.",
+                "For Condition nodes, connect the green \"Yes\" handle and the red \"No\" handle to the branches you want each outcome to follow.",
+                "Click any node to open its settings panel and fill in the fields (trigger event, condition field/operator/value, approver role, action type, notification recipient, etc.).",
+                "Use the Preview toggle to read through the flow in plain English and confirm it does what you expect.",
+                "Click Save as Draft to keep working, or Save & Activate to make it live.",
+              ]} />
+              <Tip id="workflow-needs-setup">Nodes that are missing required fields show an amber "Needs setup" badge — fix those before activating a workflow so it runs as intended.</Tip>
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-4">
+                <strong>Creating a Rule Policy:</strong>
+              </p>
+              <StepList steps={[
+                "Go to Rules & Controls and choose the relevant section (Attendance Rules, PTO Policies, or Payroll Rules).",
+                "Click \"New Policy\" to open the policy wizard.",
+                "Give the policy a name, optional description, and fill in the rule values for that policy type.",
+                "Save the policy — it will appear in the list with a plain-English summary of its rules.",
+                "Click \"Assign\" on the policy and pick the level it applies to: Division, Location, Department, or an individual Employee.",
+                "Repeat the assign step to apply the same policy to additional targets if needed.",
+              ]} />
+
+              <p className="text-sm text-foreground/80 leading-relaxed mt-4">
+                <strong>What happens at runtime (end-to-end flow):</strong>
+              </p>
+              <StepList steps={[
+                "An event fires — for example, an employee submits a PTO request or a late arrival is detected.",
+                "The workflow engine looks up every active workflow whose trigger matches that event.",
+                "It walks the graph node by node: conditions are evaluated against the request data, approvers are queued for sign-off, actions are executed, and notifications are sent.",
+                "Approvers are notified and act on pending items from the Requests & Approvals page (PTO Requests, Missing Punch / Corrections, or All Pending tabs).",
+                "As approvers approve or deny, the request status updates and the next nodes in the flow run.",
+                "Every execution and decision is recorded in the audit log so you can trace exactly what happened and why.",
+              ]} />
+
+              <Tip id="workflows-multiple-per-trigger">You can have multiple workflows on the same trigger — they all run independently. This is useful for splitting logic by department or location instead of cramming everything into one giant workflow.</Tip>
+              <Tip id="workflows-test-before-activate">Build the workflow as a draft first, use the Preview toggle to read through the plain-English summary, and only flip it to Active once you're confident.</Tip>
+              <Warning id="workflows-edits-apply-forward">Toggling a workflow to inactive pauses it for new requests, but does not affect requests that are already in progress. Edits to a workflow only apply to requests created after the change is saved.</Warning>
 
               <SubHeading id="admin-payroll">Payroll Prep & CSV Export</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
