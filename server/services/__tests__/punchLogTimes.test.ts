@@ -94,3 +94,66 @@ test("computeAutoClockOutValues falls back to actual clock-in when roundedClockI
 
   assert.equal(out.hoursWorked, 8);
 });
+
+test("exception approval honors a non-default daily overtime threshold (regression for hard-coded 8h)", () => {
+  // A company policy raises the daily overtime threshold from 8h to 10h.
+  // When a manager approves a forgotten clock-out for a 9h shift, the
+  // resulting punch must be 'complete' (not 'overtime') because 9h is below
+  // the configured 10h threshold. This mirrors the math the
+  // POST /api/attendance/exceptions/:id/resolve route now performs by
+  // delegating to enforceClockOut instead of using a hard-coded 8h check.
+  const roundedClockIn = new Date(2026, 3, 21, 8, 0, 0, 0);
+  const correctedClockOut = new Date(2026, 3, 21, 17, 0, 0, 0);
+
+  const customAttendanceRules = {
+    roundingRule: "none",
+    roundingIntervalMinutes: 15,
+    otThresholdDaily: 10,
+  };
+
+  const enforcement = enforceClockOut(
+    roundedClockIn,
+    correctedClockOut,
+    0,
+    customAttendanceRules,
+    DEFAULT_PAYROLL_RULES,
+    fakeUser,
+    "Custom 10h-OT Policy",
+  );
+
+  assert.equal(enforcement.hoursWorked, 9);
+  assert.equal(enforcement.status, "complete");
+  assert.equal(enforcement.overtimeHours, 0);
+  assert.equal(enforcement.doubleTimeHours, 0);
+});
+
+test("exception approval splits overtime/double-time using the configured policy thresholds", () => {
+  // Custom policy: OT after 10h, double-time after 13h. A corrected 14h shift
+  // should yield 3h OT (10h -> 13h) and 1h double-time (13h -> 14h).
+  const roundedClockIn = new Date(2026, 3, 21, 6, 0, 0, 0);
+  const correctedClockOut = new Date(2026, 3, 21, 20, 0, 0, 0);
+
+  const customAttendanceRules = {
+    roundingRule: "none",
+    roundingIntervalMinutes: 15,
+    otThresholdDaily: 10,
+  };
+  const customPayrollRules = {
+    ...DEFAULT_PAYROLL_RULES,
+    doubleTimeThresholdDaily: 13,
+  };
+
+  const enforcement = enforceClockOut(
+    roundedClockIn,
+    correctedClockOut,
+    0,
+    customAttendanceRules,
+    customPayrollRules,
+    fakeUser,
+  );
+
+  assert.equal(enforcement.hoursWorked, 14);
+  assert.equal(enforcement.status, "overtime");
+  assert.equal(enforcement.overtimeHours, 3);
+  assert.equal(enforcement.doubleTimeHours, 1);
+});

@@ -1773,6 +1773,25 @@ export async function registerRoutes(
         }
       }
 
+      const employeeUser = await storage.getUser(exception.employeeId);
+      if (!employeeUser) {
+        return res.status(404).json({ message: "Employee not found for this exception" });
+      }
+      const exceptionAttendancePolicy = await getEffectivePolicy(
+        employeeUser.companyId,
+        employeeUser.id,
+        "attendance",
+        employeeUser,
+      );
+      const exceptionPayrollPolicy = await getEffectivePolicy(
+        employeeUser.companyId,
+        employeeUser.id,
+        "payroll",
+        employeeUser,
+      );
+      const exceptionAttRules = exceptionAttendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+      const exceptionPayrollRules = exceptionPayrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+
       const updated = await db.transaction(async (tx) => {
         let punchLog: PunchLog | undefined | null = null;
 
@@ -1792,15 +1811,24 @@ export async function registerRoutes(
             .orderBy(desc(punchLogs.createdAt)).limit(1);
           if (latestRecord && latestRecord.clockIn && !latestRecord.clockOut && latestRecord.workDate === exception.exceptionDate) {
             const clockOutTime = correctedTimestamp || new Date();
-            const clockInTime = new Date(latestRecord.clockIn).getTime();
-            const totalMs = clockOutTime.getTime() - clockInTime;
-            const breakMs = (latestRecord.breakMinutes || 0) * 60 * 1000;
-            const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+            const roundedClockInTime = new Date(latestRecord.roundedClockIn ?? latestRecord.clockIn);
+            const breakMinutes = latestRecord.breakMinutes || 0;
+
+            const enforcement = enforceClockOut(
+              roundedClockInTime,
+              clockOutTime,
+              breakMinutes,
+              exceptionAttRules,
+              exceptionPayrollRules,
+              employeeUser,
+              exceptionAttendancePolicy?.policyName,
+            );
 
             const [updated] = await tx.update(punchLogs).set({
               clockOut: clockOutTime,
-              hoursWorked,
-              status: hoursWorked > 8 ? "overtime" : "complete",
+              roundedClockOut: enforcement.roundedTime,
+              hoursWorked: enforcement.hoursWorked,
+              status: enforcement.status,
             }).where(eq(punchLogs.id, latestRecord.id)).returning();
             punchLog = updated;
           }
@@ -1820,12 +1848,21 @@ export async function registerRoutes(
               updateData.clockIn = correctedTimestamp!;
             } else {
               updateData.clockOut = correctedTimestamp!;
-              const clockInTime = new Date(latestRecord.clockIn!).getTime();
-              const totalMs = correctedTimestamp!.getTime() - clockInTime;
-              const breakMs = (latestRecord.breakMinutes || 0) * 60 * 1000;
-              const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
-              updateData.hoursWorked = hoursWorked;
-              updateData.status = hoursWorked > 8 ? "overtime" : "complete";
+              const roundedClockInTime = new Date(latestRecord.roundedClockIn ?? latestRecord.clockIn!);
+              const breakMinutes = latestRecord.breakMinutes || 0;
+
+              const enforcement = enforceClockOut(
+                roundedClockInTime,
+                correctedTimestamp!,
+                breakMinutes,
+                exceptionAttRules,
+                exceptionPayrollRules,
+                employeeUser,
+                exceptionAttendancePolicy?.policyName,
+              );
+              updateData.roundedClockOut = enforcement.roundedTime;
+              updateData.hoursWorked = enforcement.hoursWorked;
+              updateData.status = enforcement.status;
             }
 
             const [corrected] = await tx.update(punchLogs).set(updateData).where(eq(punchLogs.id, latestRecord.id)).returning();
