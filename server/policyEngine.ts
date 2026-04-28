@@ -203,6 +203,15 @@ export const DEFAULT_ALERTS_RULES = {
   notifyEmployee: true,
 };
 
+export const DEFAULT_CERTIFICATION_RULES = {
+  warningThresholdsDays: [60, 30, 7, 0] as number[],
+  expiredAlertEnabled: true,
+  expiredReminderEveryDays: 14,
+  notifyEmployee: true,
+  notifyManager: true,
+  notifyHR: true,
+};
+
 export const DEFAULT_KIOSK_RULES = {
   requirePin: true,
   allowNameSearch: true,
@@ -227,6 +236,8 @@ export function getDefaultRulesForType(policyTypeKey: string): Record<string, an
       return { ...DEFAULT_ALERTS_RULES };
     case "kiosk":
       return { ...DEFAULT_KIOSK_RULES };
+    case "certifications":
+      return { ...DEFAULT_CERTIFICATION_RULES };
     default:
       return {};
   }

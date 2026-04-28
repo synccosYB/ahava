@@ -174,6 +174,7 @@ const POLICY_TYPES = [
   { key: "approvals", name: "Approvals", description: "Approval workflow policies", module: "approvals" },
   { key: "alerts", name: "Alerts", description: "Alert and notification policies", module: "alerts" },
   { key: "kiosk", name: "Kiosk", description: "Kiosk device policies", module: "kiosk" },
+  { key: "certifications", name: "Certifications", description: "Certification expiration and required document policies", module: "hr" },
 ];
 
 export async function seed() {
@@ -282,7 +283,15 @@ export async function seed() {
     await db.insert(policyTypes).values(POLICY_TYPES);
     console.log(`Inserted ${POLICY_TYPES.length} policy types.`);
   } else {
-    console.log("Policy types already seeded, skipping.");
+    const existingTypes = await db.select().from(policyTypes);
+    const existingKeys = new Set(existingTypes.map((t) => t.key));
+    const missingTypes = POLICY_TYPES.filter((p) => !existingKeys.has(p.key));
+    if (missingTypes.length > 0) {
+      console.log(`Adding ${missingTypes.length} missing policy types: ${missingTypes.map((m) => m.key).join(", ")}`);
+      await db.insert(policyTypes).values(missingTypes);
+    } else {
+      console.log("Policy types already seeded, skipping.");
+    }
   }
 
   console.log("Seed complete.");

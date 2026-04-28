@@ -604,20 +604,36 @@ export async function registerRoutes(
         uploadedBy: adminUser.id,
       });
 
+      try {
+        const { resolveMissingDocumentAlertsFor } = await import("./services/lifecycleAlerts");
+        await resolveMissingDocumentAlertsFor(req.params.id, documentType, adminUser.id);
+      } catch (err) {
+        console.error("Failed to resolve missing-document alerts after upload:", err);
+      }
+
       res.status(201).json(doc);
     } catch (error) {
       console.error("Failed to save document:", error);
       if (storagePath) {
-        try { await deleteStoredDocument(storagePath); } catch {}
+        try { await deleteStoredDocument(storagePath); } catch (cleanupErr) {
+          console.warn("Failed to clean up stored document after error:", cleanupErr);
+        }
       }
       res.status(500).json({ message: "Failed to save document" });
     }
   });
 
-  app.get("/api/documents/:id/download", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/documents/:id/download", requireAuth, async (req, res) => {
     try {
       const doc = await storage.getDocument(req.params.id);
       if (!doc) return res.status(404).json({ message: "Document not found" });
+
+      const requester = (req as unknown as { authUser: User }).authUser;
+      const isOwner = doc.employeeId === requester.id;
+      const isAdmin = requester.role === "admin";
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
 
       const exists = await documentExists(doc.filePath);
       if (!exists) {
@@ -686,6 +702,428 @@ export async function registerRoutes(
     } catch (error) {
       res.status(500).json({ message: "Failed to delete document" });
     }
+  });
+
+  const ALLOWED_REQUIRED_DOC_TYPES = ALLOWED_DOCUMENT_TYPES;
+  const ALLOWED_SCOPE_TYPES = ["global", "company", "location", "department", "employee"] as const;
+
+  const certificationBodySchema = z.object({
+    employeeId: z.string().min(1).optional(),
+    name: z.string().min(1).max(200),
+    issuer: z.string().max(200).nullable().optional(),
+    issueDate: z.string().nullable().optional(),
+    expirationDate: z.string().nullable().optional(),
+    documentId: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+    status: z.enum(["valid", "expiring_soon", "expired", "archived"]).optional(),
+  });
+
+  app.get("/api/users/:id/certifications", requireAuth, async (req, res) => {
+    const targetId = req.params.id;
+    const requester = (req as unknown as { authUser: User }).authUser;
+    let allowed = requester.id === targetId || requester.role === "admin";
+    if (!allowed && requester.role === "manager") {
+      const target = await storage.getUser(targetId);
+      if (target?.departmentId) {
+        const managedDepts = await storage.getDepartmentsForManager(requester.id);
+        allowed = managedDepts.some((d) => d.id === target.departmentId);
+      }
+    }
+    if (!allowed) return res.status(403).json({ message: "Forbidden" });
+    try {
+      const certs = await storage.getCertificationsByEmployee(targetId);
+      res.json(certs);
+    } catch (err) {
+      console.error("Failed to fetch certifications:", err);
+      res.status(500).json({ message: "Failed to fetch certifications" });
+    }
+  });
+
+  app.get("/api/certifications", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      const certs = await storage.getAllCertifications({ status });
+      res.json(certs);
+    } catch (err) {
+      console.error("Failed to fetch certifications:", err);
+      res.status(500).json({ message: "Failed to fetch certifications" });
+    }
+  });
+
+  async function createCertificationHandler(req: any, res: any, employeeId: string) {
+    const parsed = certificationBodySchema.safeParse({ ...(req.body || {}), employeeId });
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid certification data", errors: parsed.error.flatten() });
+    }
+    const adminUser = req.authUser as User;
+    const employee = await storage.getUser(employeeId);
+    if (!employee) return res.status(404).json({ message: "Employee not found" });
+
+    try {
+      const created = await storage.createCertification({
+        employeeId,
+        name: parsed.data.name,
+        issuer: parsed.data.issuer ?? null,
+        issueDate: parsed.data.issueDate ?? null,
+        expirationDate: parsed.data.expirationDate ?? null,
+        documentId: parsed.data.documentId ?? null,
+        notes: parsed.data.notes ?? null,
+        status: parsed.data.status ?? "valid",
+        createdBy: adminUser.id,
+      });
+      try {
+        const { syncCertificationStatuses } = await import("./services/lifecycleAlerts");
+        await syncCertificationStatuses();
+      } catch (syncErr) {
+        console.warn("syncCertificationStatuses after create failed:", syncErr);
+      }
+      const ctx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "certification",
+        targetId: created.id,
+        action: "certification.create",
+        newValue: created,
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+      });
+      res.status(201).json(created);
+    } catch (err) {
+      console.error("Failed to create certification:", err);
+      res.status(500).json({ message: "Failed to create certification" });
+    }
+  }
+
+  app.post("/api/certifications", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+    const employeeId = (req.body || {}).employeeId;
+    if (!employeeId) return res.status(400).json({ message: "employeeId is required" });
+    return createCertificationHandler(req, res, employeeId);
+  });
+
+  app.patch("/api/certifications/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+    const parsed = certificationBodySchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid certification data", errors: parsed.error.flatten() });
+    }
+    const adminUser = req.authUser as User;
+    try {
+      const existing = await storage.getCertification(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Certification not found" });
+      const expirationChanged = parsed.data.expirationDate !== undefined && parsed.data.expirationDate !== existing.expirationDate;
+      const updated = await storage.updateCertification(req.params.id, parsed.data);
+      const ctx = getAuditContext(req);
+      const action = parsed.data.status === "archived" ? "certification.archive" : "certification.update";
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "certification",
+        targetId: req.params.id,
+        action,
+        oldValue: existing,
+        newValue: updated,
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+      });
+      try {
+        const { syncCertificationStatuses, resolveCertificationAlertsFor } = await import("./services/lifecycleAlerts");
+        await syncCertificationStatuses();
+        const archivedNow = parsed.data.status === "archived" && existing.status !== "archived";
+        if (expirationChanged || archivedNow) {
+          await resolveCertificationAlertsFor(req.params.id, adminUser.id);
+        }
+      } catch (syncErr) {
+        console.warn("certification PATCH alert sync failed:", syncErr);
+      }
+      res.json(updated);
+    } catch (err) {
+      console.error("Failed to update certification:", err);
+      res.status(500).json({ message: "Failed to update certification" });
+    }
+  });
+
+  app.post(
+    "/api/certifications/:id/document",
+    requireAuth,
+    requireRole("admin"),
+    requirePermission("users.edit"),
+    documentUpload.single("file"),
+    async (req, res) => {
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No file uploaded" });
+      const adminUser = (req as unknown as { authUser: User }).authUser;
+      const cert = await storage.getCertification(req.params.id);
+      if (!cert) return res.status(404).json({ message: "Certification not found" });
+
+      let storagePath: string | null = null;
+      try {
+        const uploaded = await uploadDocumentBuffer(file.buffer, file.originalname, file.mimetype);
+        storagePath = uploaded.storagePath;
+        const doc = await storage.createDocument({
+          employeeId: cert.employeeId,
+          documentType: "certification",
+          fileName: file.originalname,
+          filePath: uploaded.storagePath,
+          mimeType: file.mimetype,
+          fileSize: file.size,
+          status: "uploaded",
+          uploadedBy: adminUser.id,
+        });
+        const updated = await storage.updateCertification(req.params.id, { documentId: doc.id });
+        const ctx = getAuditContext(req);
+        await writeAuditLog({
+          actorUserId: adminUser.id,
+          targetType: "certification",
+          targetId: req.params.id,
+          action: "certification.attach_document",
+          oldValue: { documentId: cert.documentId },
+          newValue: { documentId: doc.id, fileName: file.originalname },
+          ipAddress: ctx.ipAddress,
+          userAgent: ctx.userAgent,
+        });
+        res.status(201).json(updated);
+      } catch (err) {
+        console.error("Failed to attach certification document:", err);
+        if (storagePath) {
+          try { await deleteStoredDocument(storagePath); } catch (cleanupErr) {
+            console.warn("Failed to clean up cert document storage after error:", cleanupErr);
+          }
+        }
+        res.status(500).json({ message: "Failed to attach document" });
+      }
+    },
+  );
+
+  app.delete("/api/certifications/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+    const adminUser = req.authUser as User;
+    try {
+      const existing = await storage.getCertification(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Certification not found" });
+      try {
+        const { resolveCertificationAlertsFor } = await import("./services/lifecycleAlerts");
+        await resolveCertificationAlertsFor(req.params.id, adminUser.id);
+      } catch (resErr) {
+        console.warn("Failed to resolve cert alerts before delete:", resErr);
+      }
+      await storage.deleteCertification(req.params.id);
+      const ctx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "certification",
+        targetId: req.params.id,
+        action: "certification.delete",
+        oldValue: existing,
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+      });
+      res.status(204).send();
+    } catch (err) {
+      console.error("Failed to delete certification:", err);
+      res.status(500).json({ message: "Failed to delete certification" });
+    }
+  });
+
+  const requiredDocBodySchema = z.object({
+    documentType: z.enum(ALLOWED_REQUIRED_DOC_TYPES as [string, ...string[]]),
+    scopeType: z.enum(ALLOWED_SCOPE_TYPES),
+    companyId: z.string().nullable().optional(),
+    locationId: z.string().nullable().optional(),
+    departmentId: z.string().nullable().optional(),
+    employeeId: z.string().nullable().optional(),
+    dueOffsetDays: z.number().int().min(0).max(365).default(0),
+    isActive: z.boolean().optional(),
+  });
+
+  function validateRequiredDocScope(data: {
+    scopeType?: string;
+    companyId?: string | null;
+    locationId?: string | null;
+    departmentId?: string | null;
+    employeeId?: string | null;
+  }): string | null {
+    const scopeFkMap: Record<string, string | null | undefined> = {
+      company: data.companyId,
+      location: data.locationId,
+      department: data.departmentId,
+      employee: data.employeeId,
+    };
+    if (data.scopeType === "global") {
+      const extras = Object.entries(scopeFkMap).filter(([, v]) => v != null);
+      if (extras.length > 0) {
+        return `scopeType='global' must not include scope FKs (${extras.map(([k]) => k + "Id").join(", ")})`;
+      }
+      return null;
+    }
+    if (data.scopeType && data.scopeType in scopeFkMap) {
+      const requiredFk = scopeFkMap[data.scopeType];
+      if (!requiredFk) {
+        return `scopeType='${data.scopeType}' requires ${data.scopeType}Id`;
+      }
+      const others = Object.entries(scopeFkMap)
+        .filter(([k, v]) => k !== data.scopeType && v != null);
+      if (others.length > 0) {
+        return `scopeType='${data.scopeType}' must not include other scope FKs (${others.map(([k]) => k + "Id").join(", ")})`;
+      }
+    }
+    return null;
+  }
+
+  app.get("/api/required-documents", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const documentType = typeof req.query.documentType === "string" ? req.query.documentType : undefined;
+      const isActiveRaw = req.query.isActive;
+      const isActive = isActiveRaw === "true" ? true : isActiveRaw === "false" ? false : undefined;
+      const scopeType = typeof req.query.scopeType === "string" ? req.query.scopeType : undefined;
+      const rules = await storage.getAllRequiredDocumentRules({ documentType, isActive, scopeType });
+      res.json(rules);
+    } catch (err) {
+      console.error("Failed to fetch required document rules:", err);
+      res.status(500).json({ message: "Failed to fetch required document rules" });
+    }
+  });
+
+  app.post("/api/required-documents", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+    const parsed = requiredDocBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid rule data", errors: parsed.error.flatten() });
+    }
+    const scopeErr = validateRequiredDocScope(parsed.data);
+    if (scopeErr) {
+      return res.status(400).json({ message: scopeErr });
+    }
+    const adminUser = req.authUser as User;
+    try {
+      const created = await storage.createRequiredDocumentRule({
+        ...parsed.data,
+        isActive: parsed.data.isActive ?? true,
+      });
+      const ctx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "required_document_rule",
+        targetId: created.id,
+        action: "required_document_rule.create",
+        newValue: created,
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+      });
+      try {
+        const { detectMissingDocuments } = await import("./services/lifecycleAlerts");
+        const { createPolicyAlerts } = await import("./services/policyEnforcement");
+        const generated = await detectMissingDocuments();
+        if (generated.length > 0) await createPolicyAlerts(generated);
+      } catch (evalErr) {
+        console.error("Post-create rule evaluation failed:", evalErr);
+      }
+      res.status(201).json(created);
+    } catch (err) {
+      console.error("Failed to create required document rule:", err);
+      res.status(500).json({ message: "Failed to create required document rule" });
+    }
+  });
+
+  app.patch("/api/required-documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+    const parsed = requiredDocBodySchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid rule data", errors: parsed.error.flatten() });
+    }
+    const adminUser = req.authUser as User;
+    try {
+      const existing = await storage.getRequiredDocumentRule(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Required document rule not found" });
+      const merged = {
+        scopeType: parsed.data.scopeType ?? existing.scopeType,
+        companyId: parsed.data.companyId !== undefined ? parsed.data.companyId : existing.companyId,
+        locationId: parsed.data.locationId !== undefined ? parsed.data.locationId : existing.locationId,
+        departmentId: parsed.data.departmentId !== undefined ? parsed.data.departmentId : existing.departmentId,
+        employeeId: parsed.data.employeeId !== undefined ? parsed.data.employeeId : existing.employeeId,
+      };
+      const scopeErr = validateRequiredDocScope(merged);
+      if (scopeErr) {
+        return res.status(400).json({ message: scopeErr });
+      }
+      const updated = await storage.updateRequiredDocumentRule(req.params.id, parsed.data);
+      const ctx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "required_document_rule",
+        targetId: req.params.id,
+        action: "required_document_rule.update",
+        oldValue: existing,
+        newValue: updated,
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+      });
+      try {
+        const { detectMissingDocuments } = await import("./services/lifecycleAlerts");
+        const { createPolicyAlerts } = await import("./services/policyEnforcement");
+        const generated = await detectMissingDocuments();
+        if (generated.length > 0) await createPolicyAlerts(generated);
+      } catch (evalErr) {
+        console.error("Post-update rule evaluation failed:", evalErr);
+      }
+      res.json(updated);
+    } catch (err) {
+      console.error("Failed to update required document rule:", err);
+      res.status(500).json({ message: "Failed to update required document rule" });
+    }
+  });
+
+  app.delete("/api/required-documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+    const adminUser = req.authUser as User;
+    try {
+      const existing = await storage.getRequiredDocumentRule(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Required document rule not found" });
+      await storage.deleteRequiredDocumentRule(req.params.id);
+      try {
+        const { auditOpenMissingDocumentAlerts } = await import("./services/lifecycleAlerts");
+        await auditOpenMissingDocumentAlerts();
+      } catch (auditErr) {
+        console.warn("Failed to audit missing-document alerts after rule delete:", auditErr);
+      }
+      const ctx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "required_document_rule",
+        targetId: req.params.id,
+        action: "required_document_rule.delete",
+        oldValue: existing,
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+      });
+      res.status(204).send();
+    } catch (err) {
+      console.error("Failed to delete required document rule:", err);
+      res.status(500).json({ message: "Failed to delete required document rule" });
+    }
+  });
+
+  app.post("/api/required-documents/evaluate-now", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+    const adminUser = req.authUser as User;
+    try {
+      const { detectMissingDocuments } = await import("./services/lifecycleAlerts");
+      const { createPolicyAlerts } = await import("./services/policyEnforcement");
+      const generated = await detectMissingDocuments();
+      if (generated.length > 0) {
+        await createPolicyAlerts(generated);
+      }
+      const ctx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "required_document_rule",
+        targetId: "evaluate-now",
+        action: "required_document_rule.evaluate_now",
+        newValue: { alertCount: generated.length },
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+      });
+      res.json({ ok: true, generatedAlertCount: generated.length });
+    } catch (err) {
+      console.error("Failed to evaluate missing documents:", err);
+      res.status(500).json({ message: "Failed to evaluate missing documents" });
+    }
+  });
+
+  app.post("/api/users/:id/certifications", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+    return createCertificationHandler(req, res, req.params.id);
   });
 
   app.get("/api/payroll-documents/my", requireAuth, async (req: any, res) => {
@@ -5076,6 +5514,8 @@ export async function registerRoutes(
       "evaluate-performance-reviews",
       "re-evaluate-role-assignments",
       "apply-schedule-template",
+      "evaluate-missing-documents",
+      "evaluate-expiring-certifications",
     ] as const;
     type AllowedJobType = typeof ALLOWED_JOB_TYPES[number];
     const rawType = req.body?.type ?? "auto-clock-out";

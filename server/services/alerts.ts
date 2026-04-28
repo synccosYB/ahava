@@ -12,7 +12,10 @@ export type AlertType =
   | "repeated_exception"
   | "break_violation"
   | "auto_clock_out"
-  | "review_due";
+  | "review_due"
+  | "missing_document"
+  | "certification_expiring"
+  | "certification_expired";
 
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
 
@@ -348,6 +351,17 @@ export async function runAlertDetection(): Promise<GeneratedAlert[]> {
     allAlerts.push(...reviews);
   } catch (e) {
     console.error("Alert detection - performance reviews error:", e);
+  }
+
+  try {
+    const { detectMissingDocuments, detectExpiringCertifications, syncCertificationStatuses } = await import("./lifecycleAlerts");
+    await syncCertificationStatuses();
+    const missingDocs = await detectMissingDocuments();
+    allAlerts.push(...missingDocs);
+    const certs = await detectExpiringCertifications();
+    allAlerts.push(...certs);
+  } catch (e) {
+    console.error("Alert detection - HR compliance error:", e);
   }
 
   return allAlerts;

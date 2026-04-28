@@ -111,9 +111,15 @@ import {
   scheduleTemplateDays,
   type ScheduleTemplateDay,
   type InsertScheduleTemplateDay,
+  certifications,
+  type Certification,
+  type InsertCertification,
+  requiredDocumentRules,
+  type RequiredDocumentRule,
+  type InsertRequiredDocumentRule,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, type SQL } from "drizzle-orm";
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
@@ -393,6 +399,19 @@ export interface IStorage {
   getScheduleTemplateDays(templateId: string): Promise<ScheduleTemplateDay[]>;
   replaceScheduleTemplateDays(templateId: string, days: Omit<InsertScheduleTemplateDay, "templateId">[]): Promise<ScheduleTemplateDay[]>;
   getAllEmploymentProfiles(): Promise<EmploymentProfile[]>;
+
+  getCertification(id: string): Promise<Certification | undefined>;
+  getCertificationsByEmployee(employeeId: string): Promise<Certification[]>;
+  getAllCertifications(filters?: { status?: string }): Promise<Certification[]>;
+  createCertification(data: InsertCertification): Promise<Certification>;
+  updateCertification(id: string, data: Partial<InsertCertification>): Promise<Certification | undefined>;
+  deleteCertification(id: string): Promise<void>;
+
+  getRequiredDocumentRule(id: string): Promise<RequiredDocumentRule | undefined>;
+  getAllRequiredDocumentRules(filters?: { documentType?: string; isActive?: boolean; scopeType?: string }): Promise<RequiredDocumentRule[]>;
+  createRequiredDocumentRule(data: InsertRequiredDocumentRule): Promise<RequiredDocumentRule>;
+  updateRequiredDocumentRule(id: string, data: Partial<InsertRequiredDocumentRule>): Promise<RequiredDocumentRule | undefined>;
+  deleteRequiredDocumentRule(id: string): Promise<void>;
 }
 
 function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: string; totalHours: number | null } {
@@ -1971,6 +1990,46 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  async getCertification(id: string): Promise<Certification | undefined> {
+    const [cert] = await db.select().from(certifications).where(eq(certifications.id, id));
+    return cert;
+  }
+
+  async getCertificationsByEmployee(employeeId: string): Promise<Certification[]> {
+    return db
+      .select()
+      .from(certifications)
+      .where(eq(certifications.employeeId, employeeId))
+      .orderBy(desc(certifications.createdAt));
+  }
+
+  async getAllCertifications(filters?: { status?: string }): Promise<Certification[]> {
+    const conditions: SQL[] = [];
+    if (filters?.status) conditions.push(eq(certifications.status, filters.status));
+    if (conditions.length > 0) {
+      return db
+        .select()
+        .from(certifications)
+        .where(and(...conditions))
+        .orderBy(desc(certifications.createdAt));
+    }
+    return db.select().from(certifications).orderBy(desc(certifications.createdAt));
+  }
+
+  async createCertification(data: InsertCertification): Promise<Certification> {
+    const [created] = await db.insert(certifications).values(data).returning();
+    return created;
+  }
+
+  async updateCertification(id: string, data: Partial<InsertCertification>): Promise<Certification | undefined> {
+    const [updated] = await db
+      .update(certifications)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(certifications.id, id))
+      .returning();
+    return updated;
+  }
+
   async getReviewReminder(id: string): Promise<PerformanceReviewReminder | undefined> {
     const [r] = await db
       .select()
@@ -2085,6 +2144,47 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  async deleteCertification(id: string): Promise<void> {
+    await db
+      .update(certifications)
+      .set({ status: "archived", updatedAt: new Date() })
+      .where(eq(certifications.id, id));
+  }
+
+  async getRequiredDocumentRule(id: string): Promise<RequiredDocumentRule | undefined> {
+    const [rule] = await db.select().from(requiredDocumentRules).where(eq(requiredDocumentRules.id, id));
+    return rule;
+  }
+
+  async getAllRequiredDocumentRules(filters?: { documentType?: string; isActive?: boolean; scopeType?: string }): Promise<RequiredDocumentRule[]> {
+    const conditions: SQL[] = [];
+    if (filters?.documentType) conditions.push(eq(requiredDocumentRules.documentType, filters.documentType));
+    if (filters?.isActive !== undefined) conditions.push(eq(requiredDocumentRules.isActive, filters.isActive));
+    if (filters?.scopeType) conditions.push(eq(requiredDocumentRules.scopeType, filters.scopeType));
+    if (conditions.length > 0) {
+      return db
+        .select()
+        .from(requiredDocumentRules)
+        .where(and(...conditions))
+        .orderBy(desc(requiredDocumentRules.createdAt));
+    }
+    return db.select().from(requiredDocumentRules).orderBy(desc(requiredDocumentRules.createdAt));
+  }
+
+  async createRequiredDocumentRule(data: InsertRequiredDocumentRule): Promise<RequiredDocumentRule> {
+    const [created] = await db.insert(requiredDocumentRules).values(data).returning();
+    return created;
+  }
+
+  async updateRequiredDocumentRule(id: string, data: Partial<InsertRequiredDocumentRule>): Promise<RequiredDocumentRule | undefined> {
+    const [updated] = await db
+      .update(requiredDocumentRules)
+      .set(data)
+      .where(eq(requiredDocumentRules.id, id))
+      .returning();
+    return updated;
+  }
+
   async resolveReviewDueAlertsFor(
     reminderId: string,
     resolverUserId: string,
@@ -2137,6 +2237,13 @@ export class DatabaseStorage implements IStorage {
 
   async getAllEmploymentProfiles(): Promise<EmploymentProfile[]> {
     return db.select().from(userEmploymentProfiles);
+  }
+
+  async deleteRequiredDocumentRule(id: string): Promise<void> {
+    await db
+      .update(requiredDocumentRules)
+      .set({ isActive: false })
+      .where(eq(requiredDocumentRules.id, id));
   }
 }
 

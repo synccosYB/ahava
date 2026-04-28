@@ -19,7 +19,7 @@ import {
 import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
   GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2, ClipboardCheck,
-  UserCog, CalendarRange, RefreshCw, Send,
+  UserCog, CalendarRange, RefreshCw, Send, FileCheck,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PolicyWizard } from "@/components/policy-wizard";
@@ -47,6 +47,7 @@ const sections = [
   { key: "schedule-templates", label: "Schedule Templates", icon: CalendarRange },
   { key: "alerts", label: "Alerts & Notifications", icon: Bell },
   { key: "review-cycles", label: "Review Cycles", icon: ClipboardCheck },
+  { key: "required_docs", label: "Required Documents", icon: FileCheck },
   { key: "kiosk", label: "Kiosk & Devices", icon: Tablet },
   { key: "audit", label: "Audit Logs", icon: FileSearch },
 ];
@@ -89,6 +90,7 @@ export default function RulesControlsPage() {
           {activeSection === "schedule-templates" && <ScheduleTemplatesSection />}
           {activeSection === "alerts" && <AlertsSection />}
           {activeSection === "review-cycles" && <ReviewCyclesSection />}
+          {activeSection === "required_docs" && <RequiredDocumentsSection />}
           {activeSection === "kiosk" && <KioskSection />}
           {activeSection === "audit" && <AuditSection />}
         </div>
@@ -1648,6 +1650,347 @@ function ApplyTemplateDialog({ template, onClose }: { template: ScheduleTemplate
           <Button variant="outline" onClick={onClose} data-testid="button-cancel-apply">Cancel</Button>
           <Button onClick={() => applyMutation.mutate()} disabled={selectedIds.size === 0 || applyMutation.isPending} data-testid="button-confirm-apply">
             {applyMutation.isPending ? "Applying..." : `Apply to ${selectedIds.size}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+const REQUIRED_DOC_LABELS: Record<string, string> = {
+  w9: "W-9",
+  i9: "I-9",
+  direct_deposit: "Direct Deposit Authorization",
+  emergency_contact: "Emergency Contact Form",
+  handbook_ack: "Employee Handbook Acknowledgment",
+};
+
+type RequiredDocumentRule = {
+  id: string;
+  documentType: string;
+  scopeType: "global" | "company" | "location" | "department" | "employee";
+  companyId: string | null;
+  locationId: string | null;
+  departmentId: string | null;
+  employeeId: string | null;
+  dueOffsetDays: number;
+  isActive: boolean;
+  createdAt: string | null;
+};
+
+function RequiredDocumentsSection() {
+  const { toast } = useToast();
+  const [editing, setEditing] = useState<RequiredDocumentRule | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
+
+  const { data: rules, isLoading } = useQuery<RequiredDocumentRule[]>({
+    queryKey: ["/api/required-documents"],
+  });
+  const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
+  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/required-documents/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/required-documents"] });
+      toast({ title: "Rule deleted" });
+    },
+    onError: () => toast({ title: "Failed to delete rule", variant: "destructive" }),
+  });
+
+  function scopeLabel(rule: RequiredDocumentRule): string {
+    switch (rule.scopeType) {
+      case "global":
+        return "Global (all employees)";
+      case "company":
+        return `Division: ${divisions?.find((d) => d.id === rule.companyId)?.name || rule.companyId}`;
+      case "location":
+        return `Location: ${locations?.find((l) => l.id === rule.locationId)?.name || rule.locationId}`;
+      case "department":
+        return `Department: ${departments?.find((d) => d.id === rule.departmentId)?.name || rule.departmentId}`;
+      case "employee": {
+        const u = users?.find((u) => u.id === rule.employeeId);
+        return `Employee: ${u ? `${u.firstName} ${u.lastName}` : rule.employeeId}`;
+      }
+    }
+  }
+
+  return (
+    <Card data-testid="card-required-docs-settings">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>Required Documents</CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">
+            Define which documents employees must submit and when. Rules can be scoped globally, by location, department, or specific employee.
+          </p>
+        </div>
+        <Button onClick={() => setCreating(true)} data-testid="button-new-required-doc">
+          <Plus className="h-4 w-4 mr-1" /> New Rule
+        </Button>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-32" />
+        ) : !rules || rules.length === 0 ? (
+          <p className="text-muted-foreground text-center py-6" data-testid="text-no-required-docs">
+            No required document rules defined yet.
+          </p>
+        ) : (() => {
+          const visibleRules = showInactive ? rules : rules.filter((r) => r.isActive);
+          const inactiveCount = rules.length - rules.filter((r) => r.isActive).length;
+          return (
+        <div className="space-y-3">
+          {inactiveCount > 0 && (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setShowInactive((s) => !s)}
+                data-testid="button-toggle-inactive-rules"
+              >
+                {showInactive ? "Hide inactive" : `Show inactive (${inactiveCount})`}
+              </Button>
+            </div>
+          )}
+          {visibleRules.length === 0 ? (
+            <p className="text-muted-foreground text-center py-6" data-testid="text-no-active-required-docs">
+              No active required document rules.
+            </p>
+          ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-xs uppercase tracking-wider">Document</TableHead>
+                <TableHead className="text-xs uppercase tracking-wider">Scope</TableHead>
+                <TableHead className="text-xs uppercase tracking-wider">Due (days from hire)</TableHead>
+                <TableHead className="text-xs uppercase tracking-wider">Status</TableHead>
+                <TableHead className="text-xs uppercase tracking-wider">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visibleRules.map((r) => (
+                <TableRow key={r.id} data-testid={`row-required-doc-${r.id}`}>
+                  <TableCell className="font-medium" data-testid={`text-doctype-${r.id}`}>
+                    {REQUIRED_DOC_LABELS[r.documentType] || r.documentType}
+                  </TableCell>
+                  <TableCell data-testid={`text-scope-${r.id}`}>{scopeLabel(r)}</TableCell>
+                  <TableCell data-testid={`text-due-${r.id}`}>{r.dueOffsetDays}d</TableCell>
+                  <TableCell>
+                    <Badge variant={r.isActive ? "default" : "outline"} data-testid={`badge-active-${r.id}`}>
+                      {r.isActive ? "Active" : "Inactive"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="outline" onClick={() => setEditing(r)} data-testid={`button-edit-required-doc-${r.id}`}>
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          if (confirm("Delete this rule?")) deleteMutation.mutate(r.id);
+                        }}
+                        data-testid={`button-delete-required-doc-${r.id}`}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          )}
+        </div>
+          );
+        })()}
+      </CardContent>
+
+      {(creating || editing) && (
+        <RequiredDocDialog
+          rule={editing}
+          open={creating || !!editing}
+          onOpenChange={(o) => {
+            if (!o) {
+              setCreating(false);
+              setEditing(null);
+            }
+          }}
+          locations={locations || []}
+          departments={departments || []}
+          divisions={divisions || []}
+          users={users || []}
+        />
+      )}
+    </Card>
+  );
+}
+
+function RequiredDocDialog({
+  rule,
+  open,
+  onOpenChange,
+  locations,
+  departments,
+  divisions,
+  users,
+}: {
+  rule: RequiredDocumentRule | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  locations: Location[];
+  departments: Department[];
+  divisions: Division[];
+  users: User[];
+}) {
+  const { toast } = useToast();
+  const [form, setForm] = useState({
+    documentType: rule?.documentType || "w9",
+    scopeType: rule?.scopeType || "global",
+    companyId: rule?.companyId || "",
+    locationId: rule?.locationId || "",
+    departmentId: rule?.departmentId || "",
+    employeeId: rule?.employeeId || "",
+    dueOffsetDays: rule?.dueOffsetDays ?? 0,
+    isActive: rule?.isActive ?? true,
+  });
+
+  type RequiredDocPayload = {
+    documentType: string;
+    scopeType: RequiredDocumentRule["scopeType"];
+    dueOffsetDays: number;
+    isActive: boolean;
+    companyId: string | null;
+    locationId: string | null;
+    departmentId: string | null;
+    employeeId: string | null;
+  };
+
+  const saveMutation = useMutation<RequiredDocumentRule, Error>({
+    mutationFn: async () => {
+      const payload: RequiredDocPayload = {
+        documentType: form.documentType,
+        scopeType: form.scopeType,
+        dueOffsetDays: Number(form.dueOffsetDays),
+        isActive: form.isActive,
+        companyId: form.scopeType === "company" ? form.companyId || null : null,
+        locationId: form.scopeType === "location" ? form.locationId || null : null,
+        departmentId: form.scopeType === "department" ? form.departmentId || null : null,
+        employeeId: form.scopeType === "employee" ? form.employeeId || null : null,
+      };
+      if (rule) {
+        return apiRequest("PATCH", `/api/required-documents/${rule.id}`, payload).then((r) => r.json());
+      }
+      return apiRequest("POST", "/api/required-documents", payload).then((r) => r.json());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/required-documents"] });
+      toast({ title: rule ? "Rule updated" : "Rule created" });
+      onOpenChange(false);
+    },
+    onError: (err) => toast({ title: err?.message || "Failed to save rule", variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="dialog-required-doc">
+        <DialogHeader>
+          <DialogTitle>{rule ? "Edit Required Document Rule" : "New Required Document Rule"}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>Document Type</Label>
+            <Select value={form.documentType} onValueChange={(v) => setForm((f) => ({ ...f, documentType: v }))}>
+              <SelectTrigger data-testid="select-trigger-required-doc-type"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {Object.entries(REQUIRED_DOC_LABELS).map(([k, v]) => (
+                  <SelectItem key={k} value={k}>{v}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label>Scope</Label>
+            <Select
+              value={form.scopeType}
+              onValueChange={(v) =>
+                setForm((f) => ({ ...f, scopeType: v as RequiredDocumentRule["scopeType"] }))
+              }
+            >
+              <SelectTrigger data-testid="select-trigger-required-doc-scope"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="global">Global (all employees)</SelectItem>
+                <SelectItem value="company">By Division</SelectItem>
+                <SelectItem value="location">By Location</SelectItem>
+                <SelectItem value="department">By Department</SelectItem>
+                <SelectItem value="employee">Specific Employee</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {form.scopeType === "company" && (
+            <div className="space-y-1">
+              <Label>Division</Label>
+              <Select value={form.companyId} onValueChange={(v) => setForm((f) => ({ ...f, companyId: v }))}>
+                <SelectTrigger data-testid="select-trigger-required-doc-company"><SelectValue placeholder="Select division" /></SelectTrigger>
+                <SelectContent>{divisions.map((d) => (<SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>))}</SelectContent>
+              </Select>
+            </div>
+          )}
+          {form.scopeType === "location" && (
+            <div className="space-y-1">
+              <Label>Location</Label>
+              <Select value={form.locationId} onValueChange={(v) => setForm((f) => ({ ...f, locationId: v }))}>
+                <SelectTrigger data-testid="select-trigger-required-doc-location"><SelectValue placeholder="Select location" /></SelectTrigger>
+                <SelectContent>{locations.map((l) => (<SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>))}</SelectContent>
+              </Select>
+            </div>
+          )}
+          {form.scopeType === "department" && (
+            <div className="space-y-1">
+              <Label>Department</Label>
+              <Select value={form.departmentId} onValueChange={(v) => setForm((f) => ({ ...f, departmentId: v }))}>
+                <SelectTrigger data-testid="select-trigger-required-doc-department"><SelectValue placeholder="Select department" /></SelectTrigger>
+                <SelectContent>{departments.map((d) => (<SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>))}</SelectContent>
+              </Select>
+            </div>
+          )}
+          {form.scopeType === "employee" && (
+            <div className="space-y-1">
+              <Label>Employee</Label>
+              <Select value={form.employeeId} onValueChange={(v) => setForm((f) => ({ ...f, employeeId: v }))}>
+                <SelectTrigger data-testid="select-trigger-required-doc-user"><SelectValue placeholder="Select employee" /></SelectTrigger>
+                <SelectContent>{users.map((u) => (<SelectItem key={u.id} value={u.id}>{u.firstName} {u.lastName}</SelectItem>))}</SelectContent>
+              </Select>
+            </div>
+          )}
+          <div className="space-y-1">
+            <Label>Due Offset (days from hire date)</Label>
+            <Input
+              type="number"
+              min={0}
+              max={365}
+              value={form.dueOffsetDays}
+              onChange={(e) => setForm((f) => ({ ...f, dueOffsetDays: Number(e.target.value) }))}
+              data-testid="input-required-doc-due-offset"
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <Label>Active</Label>
+            <Switch
+              checked={form.isActive}
+              onCheckedChange={(v) => setForm((f) => ({ ...f, isActive: v }))}
+              data-testid="switch-required-doc-active"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-required-doc-cancel">Cancel</Button>
+          <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} data-testid="button-required-doc-save">
+            {saveMutation.isPending ? "Saving..." : "Save"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -945,3 +945,67 @@ export const performanceReviewRemindersRelations = relations(
     }),
   }),
 );
+export const REQUIRED_DOCUMENT_TYPE_KEYS = [
+  "w9",
+  "i9",
+  "direct_deposit",
+  "emergency_contact",
+  "handbook_ack",
+] as const;
+export type RequiredDocumentTypeKey = (typeof REQUIRED_DOCUMENT_TYPE_KEYS)[number];
+
+export const certifications = pgTable("certifications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  name: varchar("name", { length: 200 }).notNull(),
+  issuer: varchar("issuer", { length: 200 }),
+  issueDate: date("issue_date"),
+  expirationDate: date("expiration_date"),
+  documentId: varchar("document_id").references(() => documents.id),
+  notes: text("notes"),
+  status: varchar("status", { length: 20 }).default("valid").notNull(),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertCertificationSchema = createInsertSchema(certifications).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertCertification = z.infer<typeof insertCertificationSchema>;
+export type Certification = typeof certifications.$inferSelect;
+
+export const certificationsRelations = relations(certifications, ({ one }) => ({
+  employee: one(users, { fields: [certifications.employeeId], references: [users.id] }),
+  document: one(documents, { fields: [certifications.documentId], references: [documents.id] }),
+  creator: one(users, { fields: [certifications.createdBy], references: [users.id] }),
+}));
+
+export const requiredDocumentRules = pgTable("required_document_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  documentType: varchar("document_type", { length: 50 }).notNull(),
+  scopeType: varchar("scope_type", { length: 20 }).notNull(),
+  companyId: varchar("company_id").references(() => companies.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  departmentId: varchar("department_id").references(() => departments.id),
+  employeeId: varchar("employee_id").references(() => users.id),
+  dueOffsetDays: integer("due_offset_days").default(0).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertRequiredDocumentRuleSchema = createInsertSchema(requiredDocumentRules).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertRequiredDocumentRule = z.infer<typeof insertRequiredDocumentRuleSchema>;
+export type RequiredDocumentRule = typeof requiredDocumentRules.$inferSelect;
+
+export const requiredDocumentRulesRelations = relations(requiredDocumentRules, ({ one }) => ({
+  company: one(companies, { fields: [requiredDocumentRules.companyId], references: [companies.id] }),
+  location: one(locations, { fields: [requiredDocumentRules.locationId], references: [locations.id] }),
+  department: one(departments, { fields: [requiredDocumentRules.departmentId], references: [departments.id] }),
+  employee: one(users, { fields: [requiredDocumentRules.employeeId], references: [users.id] }),
+}));

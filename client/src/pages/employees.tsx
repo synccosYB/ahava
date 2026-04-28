@@ -23,6 +23,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
 import { formatCurrency } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
+import { CertificationsCard } from "@/components/certifications-card";
 
 type EmployeeListItem = User & {
   departmentName?: string;
@@ -42,12 +43,23 @@ const REQUIRED_DOCUMENT_TYPES = [
 
 export default function EmployeesPage() {
   const [, navigate] = useLocation();
-  const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null);
+  const initialEmployeeId = (() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("employeeId");
+  })();
+  const [selectedEmployee, setSelectedEmployee] = useState<string | null>(initialEmployeeId);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const id = new URLSearchParams(window.location.search).get("employeeId");
+    if (id && id !== selectedEmployee) setSelectedEmployee(id);
+  }, []);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [divisionFilter, setDivisionFilter] = useState("all");
+  const [certStatusFilter, setCertStatusFilter] = useState("all");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
@@ -68,11 +80,31 @@ export default function EmployeesPage() {
     queryKey: ["/api/companies"],
   });
 
+  const { data: allCertifications } = useQuery<{ id: string; employeeId: string; status: string }[]>({
+    queryKey: ["/api/certifications"],
+    enabled: certStatusFilter !== "all",
+  });
+
+  const certStatusByEmployee = (() => {
+    const m = new Map<string, Set<string>>();
+    (allCertifications || []).forEach((c) => {
+      if (c.status === "archived") return;
+      if (!m.has(c.employeeId)) m.set(c.employeeId, new Set());
+      m.get(c.employeeId)!.add(c.status);
+    });
+    return m;
+  })();
+
   const filtered = (users || []).filter((u) => {
     const name = `${u.firstName || ""} ${u.lastName || ""}`.toLowerCase();
     if (debouncedSearch && !name.includes(debouncedSearch.toLowerCase()) && !u.email?.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
     if (departmentFilter !== "all" && u.departmentId !== departmentFilter) return false;
     if (divisionFilter !== "all" && u.companyId !== divisionFilter) return false;
+    if (certStatusFilter !== "all") {
+      const statuses = certStatusByEmployee.get(u.id) || new Set();
+      if (certStatusFilter === "none" && statuses.size > 0) return false;
+      if (certStatusFilter !== "none" && !statuses.has(certStatusFilter)) return false;
+    }
     return true;
   });
 
@@ -139,6 +171,18 @@ export default function EmployeesPage() {
             {departments?.map((d) => (
               <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={certStatusFilter} onValueChange={setCertStatusFilter}>
+          <SelectTrigger className="w-[180px]" data-testid="select-cert-status-filter">
+            <SelectValue placeholder="Cert Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Cert Statuses</SelectItem>
+            <SelectItem value="none">No Certifications</SelectItem>
+            <SelectItem value="valid">Valid</SelectItem>
+            <SelectItem value="expiring_soon">Expiring Soon</SelectItem>
+            <SelectItem value="expired">Expired</SelectItem>
           </SelectContent>
         </Select>
         <AddEmployeeDialog
@@ -743,7 +787,21 @@ function AddEmployeeDialog({
 
 function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => void }) {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState("basic");
+  const initialUrlParams = (() => {
+    if (typeof window === "undefined") return new URLSearchParams();
+    return new URLSearchParams(window.location.search);
+  })();
+  const initialTab = (() => {
+    const t = initialUrlParams.get("tab");
+    const section = initialUrlParams.get("section");
+    if (section === "certifications") return "basic";
+    if (t === "certifications") return "basic";
+    if (t && ["basic", "employment", "pay", "timeclock", "pto", "schedule", "documents", "history"].includes(t)) return t;
+    return "basic";
+  })();
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const certIdFromUrl = initialUrlParams.get("certId");
+  const focusDocType = initialUrlParams.get("focus");
 
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
   const user = users?.find((u) => u.id === userId);
@@ -964,6 +1022,9 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               </div>
             </CardContent>
           </Card>
+          <div className="mt-4">
+            <CertificationsCard employeeId={userId} canEdit={true} highlightCertId={certIdFromUrl} />
+          </div>
         </TabsContent>
 
         <TabsContent value="employment">
@@ -1054,7 +1115,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         </TabsContent>
 
         <TabsContent value="documents">
-          <DocumentsTab userId={userId} />
+          <DocumentsTab userId={userId} focusDocType={focusDocType} />
         </TabsContent>
 
         <TabsContent value="history">
@@ -1402,14 +1463,25 @@ function ScheduleTab({ employeeId }: { employeeId: string }) {
   );
 }
 
-function DocumentsTab({ userId }: { userId: string }) {
+function DocumentsTab({ userId, focusDocType }: { userId: string; focusDocType?: string | null }) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingType, setUploadingType] = useState<string | null>(null);
+  const [focusedType, setFocusedType] = useState<string | null>(null);
 
   const { data: docs, isLoading } = useQuery<DocumentRecord[]>({
     queryKey: ["/api/users", userId, "documents"],
   });
+
+  useEffect(() => {
+    if (!focusDocType) return;
+    if (focusedType === focusDocType) return;
+    if (!REQUIRED_DOCUMENT_TYPES.some((d) => d.key === focusDocType)) return;
+    if (isLoading) return;
+    setFocusedType(focusDocType);
+    setUploadingType(focusDocType);
+    setTimeout(() => fileInputRef.current?.click(), 50);
+  }, [focusDocType, focusedType, isLoading]);
 
   const uploadMutation = useMutation({
     mutationFn: async ({ file, documentType }: { file: File; documentType: string }) => {

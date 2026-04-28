@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/table";
 import type { PtoAnniversaryAdjustment } from "@shared/schema";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { CertificationsCard } from "@/components/certifications-card";
+import { useLocation } from "wouter";
 
 interface ProfileDetails {
   id: string;
@@ -303,6 +305,26 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 
 export default function ProfilePage() {
   const { user } = useAuth();
+  const [location] = useLocation();
+  const certIdFromUrl = (() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("certId");
+  })();
+  const sectionFromUrl = (() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("section");
+  })();
+
+  useEffect(() => {
+    if (!sectionFromUrl) return;
+    const id = `profile-section-${sectionFromUrl}`;
+    const el = typeof document !== "undefined" ? document.getElementById(id) : null;
+    if (el) {
+      requestAnimationFrame(() => el.scrollIntoView({ behavior: "smooth", block: "start" }));
+    }
+  }, [sectionFromUrl]);
 
   const {
     data: profile,
@@ -461,6 +483,12 @@ export default function ProfilePage() {
           )}
         </CardContent>
       </Card>
+
+      {!isLoading && profile && (
+        <div id="profile-section-certifications">
+          <CertificationsCard employeeId={user!.id} canEdit={false} highlightCertId={certIdFromUrl} />
+        </div>
+      )}
 
     </div>
   );

@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { AlertTriangle, Bell, CheckCircle, Eye, Loader2, Play } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle, Eye, Loader2, Play, Upload, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import {
   Dialog,
@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useLocation } from "wouter";
 
 type SystemAlert = {
   id: string;
@@ -71,11 +72,17 @@ const typeLabels: Record<string, string> = {
   no_show: "No Show",
   repeated_exception: "Repeated Exception",
   review_due: "Performance Review Due",
+  break_violation: "Break Violation",
+  auto_clock_out: "Auto Clock-Out",
+  missing_document: "Missing Document",
+  certification_expiring: "Certification Expiring",
+  certification_expired: "Certification Expired",
 };
 
 export default function AlertsPage() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const [, setLocation] = useLocation();
   const isAdmin = user?.role === "admin";
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -143,6 +150,41 @@ export default function AlertsPage() {
 
   const openCount = alerts?.filter(a => a.status === "open").length || 0;
 
+  function getCta(alert: SystemAlert): { label: string; icon: React.ReactNode; href: string } | null {
+    const details = (alert.details || {}) as Record<string, unknown>;
+    const isSelf = !!user?.id && alert.employeeId === user.id;
+    if (alert.type === "missing_document" && alert.employeeId) {
+      const docType = typeof details.documentType === "string" ? details.documentType : "";
+      if (isAdmin) {
+        return {
+          label: "Upload now",
+          icon: <Upload className="h-3 w-3 mr-1" />,
+          href: `/employees?employeeId=${alert.employeeId}&tab=documents&focus=${encodeURIComponent(docType)}`,
+        };
+      }
+      return null;
+    }
+    if ((alert.type === "certification_expiring" || alert.type === "certification_expired") && alert.employeeId) {
+      const certId = typeof details.certificationId === "string" ? details.certificationId : "";
+      if (isAdmin) {
+        return {
+          label: "Renew",
+          icon: <RefreshCw className="h-3 w-3 mr-1" />,
+          href: `/employees?employeeId=${alert.employeeId}&tab=basic&section=certifications&certId=${encodeURIComponent(certId)}`,
+        };
+      }
+      if (isSelf) {
+        return {
+          label: "View certifications",
+          icon: <RefreshCw className="h-3 w-3 mr-1" />,
+          href: `/profile?section=certifications&certId=${encodeURIComponent(certId)}`,
+        };
+      }
+      return null;
+    }
+    return null;
+  }
+
   return (
     <div className="max-w-6xl space-y-6" data-testid="alerts-page">
       <PageHeader
@@ -180,6 +222,9 @@ export default function AlertsPage() {
               <SelectItem value="late_clock_in">Late Clock-In</SelectItem>
               <SelectItem value="overtime_threshold">Overtime Threshold</SelectItem>
               <SelectItem value="no_show">No Show</SelectItem>
+              <SelectItem value="missing_document">Missing Document</SelectItem>
+              <SelectItem value="certification_expiring">Certification Expiring</SelectItem>
+              <SelectItem value="certification_expired">Certification Expired</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -267,7 +312,21 @@ export default function AlertsPage() {
                       {alert.createdAt ? new Date(alert.createdAt).toLocaleDateString() : "—"}
                     </TableCell>
                     <TableCell>
-                      <div className="flex gap-1">
+                      <div className="flex gap-1 flex-wrap">
+                        {(() => {
+                          const cta = getCta(alert);
+                          if (!cta || alert.status === "resolved") return null;
+                          return (
+                            <Button
+                              size="sm"
+                              variant="default"
+                              onClick={() => setLocation(cta.href)}
+                              data-testid={`button-action-${alert.id}`}
+                            >
+                              {cta.icon} {cta.label}
+                            </Button>
+                          );
+                        })()}
                         {alert.status === "open" && (
                           <Button
                             size="sm"

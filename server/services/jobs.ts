@@ -1,11 +1,17 @@
 import { db } from "../db";
 import { jobs, type Job, type InsertJob } from "@shared/schema";
-import { and, eq, asc, desc } from "drizzle-orm";
+import { and, eq, asc, gte, inArray, desc } from "drizzle-orm";
 import { runAutoClockOut, createPolicyAlerts } from "./policyEnforcement";
 import { applyPtoAnniversaryAdjustments } from "./ptoAnniversary";
 import { evaluatePerformanceReviews } from "./performanceReviews";
 import { reevaluateAllUsers } from "./roleAssignment";
 import { applyScheduleTemplate, type ApplyMode } from "./scheduleTemplates";
+import {
+  detectMissingDocuments,
+  detectExpiringCertifications,
+  syncCertificationStatuses,
+} from "./lifecycleAlerts";
+import type { GeneratedAlert } from "./alerts";
 
 export type JobType =
   | "auto-clock-out"
@@ -13,7 +19,11 @@ export type JobType =
   | "apply-pto-anniversary-adjustments"
   | "evaluate-performance-reviews"
   | "re-evaluate-role-assignments"
-  | "apply-schedule-template";
+  | "apply-schedule-template"
+  | "evaluate-missing-documents"
+  | "evaluate-expiring-certifications";
+
+const DAILY_RECURRING_HOURS = 24;
 
 export async function enqueue(type: JobType, payload?: unknown): Promise<Job> {
   const [created] = await db
@@ -70,6 +80,21 @@ async function processJob(job: Job): Promise<void> {
       });
       return;
     }
+    case "evaluate-missing-documents": {
+      const alerts: GeneratedAlert[] = await detectMissingDocuments();
+      if (alerts.length > 0) {
+        await createPolicyAlerts(alerts);
+      }
+      return;
+    }
+    case "evaluate-expiring-certifications": {
+      await syncCertificationStatuses();
+      const alerts: GeneratedAlert[] = await detectExpiringCertifications();
+      if (alerts.length > 0) {
+        await createPolicyAlerts(alerts);
+      }
+      return;
+    }
     default:
       throw new Error(`Unknown job type: ${job.type}`);
   }
@@ -101,13 +126,14 @@ export async function drainPending(limit: number): Promise<{ processed: number; 
         .set({ status: "completed", completedAt: new Date(), error: null })
         .where(eq(jobs.id, job.id));
       processed += 1;
-    } catch (err: any) {
+    } catch (err: unknown) {
       failed += 1;
+      const message = err instanceof Error ? err.message : String(err);
       await db
         .update(jobs)
         .set({
           status: "failed",
-          error: String(err?.message || err),
+          error: message,
           completedAt: new Date(),
         })
         .where(eq(jobs.id, job.id));
@@ -119,6 +145,24 @@ export async function drainPending(limit: number): Promise<{ processed: number; 
 }
 
 const ROLE_REEVAL_INTERVAL_MINUTES = 60;
+
+async function shouldEnqueueRecurring(type: JobType, minHoursBetween: number): Promise<boolean> {
+  const pending = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(and(eq(jobs.type, type), inArray(jobs.status, ["pending", "running"])))
+    .limit(1);
+  if (pending.length > 0) return false;
+
+  const cutoff = new Date(Date.now() - minHoursBetween * 60 * 60 * 1000);
+  const recent = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(and(eq(jobs.type, type), gte(jobs.createdAt, cutoff)))
+    .orderBy(desc(jobs.createdAt))
+    .limit(1);
+  return recent.length === 0;
+}
 
 export async function ensureRecurringEnqueued(): Promise<void> {
   const recurring: JobType[] = [
@@ -158,6 +202,13 @@ export async function ensureRecurringEnqueued(): Promise<void> {
     const dueForRun = !lastCompleted?.completedAt || lastCompleted.completedAt < intervalAgo;
     if (dueForRun) {
       await enqueue("re-evaluate-role-assignments");
+    }
+  }
+
+  const recurringHr: JobType[] = ["evaluate-missing-documents", "evaluate-expiring-certifications"];
+  for (const t of recurringHr) {
+    if (await shouldEnqueueRecurring(t, DAILY_RECURRING_HOURS)) {
+      await enqueue(t);
     }
   }
 }
