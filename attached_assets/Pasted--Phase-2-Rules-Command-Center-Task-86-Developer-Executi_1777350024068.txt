@@ -1,0 +1,325 @@
+# Phase 2 — Rules Command Center (Task #86)
+
+## Developer Execution + Enterprise Design Specification
+
+This is the correct next major build phase.
+
+---
+
+# Primary Objective
+
+Create a centralized, enterprise-grade **Rules Command Center** that becomes the single source of truth for:
+
+* Attendance
+* Breaks
+* Auto clock-out
+* Overtime
+* PTO
+* Holiday calendars
+* Blackout dates
+* Payroll rounding
+* Approval chains
+* Kiosk restrictions
+* Department overrides
+* Employee overrides
+* Emergency overrides
+
+---
+
+# Strategic Priority
+
+This phase is both:
+
+## Operational:
+
+Eliminate fragmented rule management.
+
+## Design:
+
+Create a polished master-admin operational control center.
+
+---
+
+# Developer Deliverables Required BEFORE Coding
+
+## 1. Full Technical Architecture Spec
+
+Must include:
+
+### Backend:
+
+* Schema expansion
+* policy_versions
+* holiday_calendars
+* blackout_dates
+* emergency override logic
+* resolver precedence updates
+* scheduling engine
+* simulation service
+* conflict detection engine
+* rollback engine
+* audit logging integration
+* route modularization plan
+
+---
+
+## 2. Full UI/UX Design Specification
+
+Developer must provide design mockups/specs for:
+
+### Main Page:
+
+* Rules Command Center dashboard
+* Left navigation category rail
+* Active vs Draft side-by-side comparison
+* Scheduled policies panel
+* Version history timeline
+* Diff viewer
+* Rollback confirmation modal
+* Assignment scope selector
+* Emergency override manager
+* Impact preview panel
+* Conflict detector panel
+* Policy simulation lab
+* Holiday calendar manager
+* Blackout date manager
+
+---
+
+# Required Design Standards
+
+## Must strictly follow Ahava design system:
+
+* Dark Navy `#123047`
+* Teal `#56b9ca`
+* Green `#009972`
+* Blue `#1f97d4`
+* Shadcn UI
+* PageHeader
+* max-w-6xl
+* space-y-6
+* table header consistency
+* tabular numeric displays
+* No random redesigns
+* Touch-safe admin controls
+* Enterprise HR software appearance
+
+
+
+---
+
+# Page-by-Page Design Requirements
+
+---
+
+## Page A — Rules Command Center Dashboard
+
+### Must show:
+
+* 13 rule categories
+* Active policy count
+* Draft count
+* Scheduled changes
+* Emergency overrides live
+* Conflict alerts
+* Last changed by
+* Last changed date
+* Quick simulator access
+
+### UI Style:
+
+* Card-based operational dashboard
+* High-density but organized
+* Severity color indicators
+* Sticky left navigation
+
+---
+
+## Page B — Category Detail View
+
+### Required Layout:
+
+### Header:
+
+* Policy category
+* Active version
+* Draft version
+* Scheduled version
+* Publish button
+* Schedule button
+* Rollback button
+
+### Sections:
+
+* Rule builder form
+* Assignment scope
+* Impact preview
+* Conflict warnings
+* Simulation preview
+* Version history
+
+---
+
+## Page C — Simulator Lab
+
+### Inputs:
+
+* Employee
+* Date
+* Department
+* Location
+* Sample punch
+* Sample PTO request
+* Sample overtime scenario
+
+### Outputs:
+
+* Resolved policy
+* Policy chain
+* Effective version
+* Rule results
+* Warnings
+* Comparison against active rules
+
+---
+
+## Page D — Version History
+
+### Must include:
+
+* Version #
+* Created by
+* Created date
+* Notes
+* Diff
+* Rollback
+* Activation date
+* Emergency status
+
+---
+
+## Page E — Emergency Override Center
+
+### Features:
+
+* Time-boxed override
+* Scope
+* Reason
+* Start/end
+* Auto-expire
+* Override priority
+* Audit confirmation
+
+---
+
+# Build Task Breakdown
+
+---
+
+## Task 2.1 — Schema & Backend Foundation
+
+* policy_versions
+* effective dates
+* emergency precedence
+* holiday calendars
+* blackout dates
+* audit logging
+
+---
+
+## Task 2.2 — Resolver Expansion
+
+* Scheduling logic
+* Emergency precedence
+* Version resolution
+* Simulation engine
+
+---
+
+## Task 2.3 — Safety Engines
+
+* Conflict detection
+* Impact preview
+* Diff service
+* Rollback engine
+
+---
+
+## Task 2.4 — API Layer
+
+* Full /api/rules suite
+* Validation
+* Security
+* Modular routes
+
+---
+
+## Task 2.5 — UI/UX Implementation
+
+* Full Command Center
+* Simulator
+* Version history
+* Emergency override UI
+* Legacy migration
+
+---
+
+## Task 2.6 — Testing
+
+* Scheduling
+* Versioning
+* Rollbacks
+* Emergency overrides
+* UI
+* Audit logging
+* Resolver correctness
+
+---
+
+# Developer Non-Negotiables
+
+## Must NOT:
+
+* Break existing enforcement
+* Replace policy engine
+* Change design language
+* Rewrite unrelated pages
+* Alter RBAC
+* Retroactively recalculate historical data
+
+---
+
+# Executive Instruction to Developer
+
+> Build the Rules Command Center as the enterprise policy governance layer for Ahava Medical Center.
+> Every rule change must be:
+>
+> * Versioned
+> * Simulatable
+> * Auditable
+> * Schedulable
+> * Reversible
+> * Conflict-checked
+> * Design-consistent
+
+---
+
+# Success Benchmark
+
+When complete:
+
+## Ahava becomes:
+
+### “Enterprise Workforce Governance Platform”
+
+Rather than:
+
+### “Time clock software with policies”
+
+---
+
+# Immediate Next Step
+
+## Ask developer for:
+
+### “Technical Architecture Spec + Full UI/UX Design Spec for Phase 2 before implementation begins.”

@@ -1,0 +1,252 @@
+Phase 2 Approved Build Sequence
+Task #87 MUST happen first (Architecture + UI/UX Spec)
+Task #86 implementation ONLY begins after spec approval
+This is the correct enterprise approach.
+
+Immediate Next Developer Task
+Phase 2A — Rules Command Center Spec Package
+Task #87
+
+What Developer Must Deliver
+Documentation Only
+NO production code.
+
+Required Outputs
+1. Technical Architecture Spec
+File:
+docs/phase2/architecture.md
+Must include:
+
+
+Existing policy engine baseline
+
+
+Schema expansion
+
+
+Resolver changes
+
+
+Scheduling logic
+
+
+Simulation engine
+
+
+Conflict detection
+
+
+Impact preview
+
+
+Rollback logic
+
+
+Audit integration
+
+
+API design
+
+
+Route modularization
+
+
+Migration plan
+
+
+Risk analysis
+
+
+Product decisions required
+
+
+
+2. Full UI/UX Design Spec
+File:
+docs/phase2/ui-ux.md
+Must include:
+
+
+Ahava design system constraints
+
+
+Information architecture
+
+
+Dashboard page
+
+
+Category detail pages
+
+
+Simulator lab
+
+
+Version history
+
+
+Emergency override center
+
+
+Holiday manager
+
+
+Blackout manager
+
+
+Reusable components
+
+
+Accessibility
+
+
+Testing selectors
+
+
+Product design decisions required
+
+
+
+Developer Instruction
+Before writing any implementation:
+
+Review:
+
+
+
+server/policyEngine.ts
+
+
+server/services/policyEnforcement.ts
+
+
+shared/schema.ts
+
+
+client/src/pages/rules-controls.tsx
+
+
+policy-wizard.tsx
+
+
+workflow-builder.tsx
+
+
+Then produce complete architecture and design specifications only.
+
+Design Requirements (Strict)
+Must follow:
+
+
+Dark Navy #123047
+
+
+Teal #56b9ca
+
+
+Green #009972
+
+
+Blue #1f97d4
+
+
+Shadcn UI only
+
+
+PageHeader
+
+
+max-w-6xl
+
+
+space-y-6
+
+
+Enterprise HR software style
+
+
+No redesign deviations
+
+
+
+
+Strategic Reason
+This prevents:
+
+
+Bad schema decisions
+
+
+UI inconsistency
+
+
+Policy engine regressions
+
+
+Scheduling logic flaws
+
+
+Override precedence bugs
+
+
+Costly rewrites
+
+
+
+Phase Sequence
+
+Phase 2A
+Task #87
+Deliver:
+
+
+architecture.md
+
+
+ui-ux.md
+
+
+
+Review + Approval
+You approve:
+
+
+Schema
+
+
+Resolver
+
+
+Scheduling
+
+
+UI
+
+
+Navigation
+
+
+Components
+
+
+Product decisions
+
+
+
+Phase 2B
+Task #86
+Full implementation begins
+
+Executive Governance Rule
+
+No schema, API, or UI work for Rules Command Center may begin until Task #87 documentation is completed and approved.
+
+
+What This Achieves
+You move from:
+“Scattered policy settings”
+To:
+“Enterprise governance-grade workforce rule administration”
+
+Recommended Next Action to Developer
+“Begin Task #87 — Produce full Phase 2 architecture and UI/UX specification package only. No implementation.”

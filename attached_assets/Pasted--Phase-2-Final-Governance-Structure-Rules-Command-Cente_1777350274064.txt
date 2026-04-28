@@ -1,0 +1,192 @@
+# Phase 2 Final Governance Structure
+
+## Rules Command Center Implementation Locked Behind Spec Approval
+
+This is now correctly structured as enterprise-grade phased governance.
+
+---
+
+# Mandatory Build Order
+
+---
+
+## Phase 2A — Task #87
+
+### Architecture + UI/UX Documentation Only
+
+### Deliverables:
+
+* `docs/phase2/architecture.md`
+* `docs/phase2/ui-ux.md`
+
+### Status:
+
+**Required first**
+
+---
+
+## Governance Gate
+
+### YOU must explicitly approve:
+
+* Technical architecture
+* Schema design
+* Resolver logic
+* Scheduling
+* Simulation
+* Conflict detection
+* UI/UX
+* Navigation
+* Components
+* Design system adherence
+
+---
+
+## Phase 2B — Task #86
+
+### Full implementation
+
+### Status:
+
+**BLOCKED until approval**
+
+---
+
+# Developer Master Instruction
+
+> This task MUST NOT begin until Task #87 has been completed and explicitly approved.
+> Implementation must follow approved architecture and UI/UX documents exactly.
+> If implementation reveals needed deviations:
+>
+> 1. Pause
+> 2. Update spec
+> 3. Re-approve
+> 4. Resume
+
+
+
+---
+
+# Core Implementation Scope After Approval
+
+---
+
+## Backend:
+
+### Schema:
+
+* policy_versions
+* effectiveAt/effectiveUntil
+* emergency override fields
+* holiday calendars
+* blackout dates
+
+### Engines:
+
+* Scheduling
+* Resolver expansion
+* Simulator
+* Conflict detection
+* Impact analyzer
+* Rollback
+* Audit lifecycle
+
+---
+
+## API:
+
+### `/api/rules/*`
+
+* Categories
+* Drafts
+* Activation
+* Scheduling
+* Rollback
+* Diff
+* Simulation
+* Impact
+* Conflicts
+* Holiday
+* Blackout
+* Emergency override
+
+---
+
+## Frontend:
+
+### Full Rules Command Center:
+
+* Dashboard
+* Category management
+* Draft vs Active
+* Scheduling
+* Version history
+* Simulator
+* Emergency center
+* Holiday manager
+* Blackout manager
+* Legacy rules migration
+
+---
+
+# Design Authority
+
+### Must preserve:
+
+* Ahava branding
+* Existing admin language
+* Existing policy field semantics
+* Existing policy engine
+* Existing RBAC
+* Existing enforcement integrations
+
+---
+
+# Operational Safeguards
+
+### Must include:
+
+* No destructive rollback
+* Immutable history
+* Impact previews
+* Conflict blockers
+* Audit logs
+* Time-boxed emergency overrides
+* Scheduled effective dates
+* Auto-expiring emergency rules
+
+---
+
+# Strategic Outcome
+
+When complete:
+
+## Ahava evolves from:
+
+### “Policy settings pages”
+
+## Into:
+
+### “Enterprise Workforce Governance Command Platform”
+
+---
+
+# Executive Product Rule
+
+### No shortcuts:
+
+> Documentation → Approval → Implementation → Validation
+
+---
+
+# Immediate Developer Task
+
+## Proceed ONLY with:
+
+### Task #87 — Produce full architecture + UI/UX spec package
+
+---
+
+# After Approval:
+
+## Begin Task #86 implementation exactly as approved.
