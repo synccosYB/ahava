@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
-import { formatHoursMinutes } from "@/lib/utils";
+import { formatHoursMinutes, getOvernightShiftInfo } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
@@ -373,9 +374,35 @@ export default function MyAttendance() {
                 {sortedRecords.map((record) => {
                   const isInProgress = record.status === "in-progress" || !record.clockOut;
                   const hasPending = pendingDates.has(record.date);
+                  const overnightInfo = getOvernightShiftInfo(record.date, record.clockOut);
                   return (
                     <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
-                      <TableCell className="text-sm font-medium">{record.date}</TableCell>
+                      <TableCell className="text-sm font-medium">
+                        <div className="flex items-center gap-1.5">
+                          <span>{record.date}</span>
+                          {overnightInfo && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  tabIndex={0}
+                                  data-testid={`badge-overnight-${record.id}`}
+                                  className="inline-flex"
+                                >
+                                  <Badge
+                                    variant="outline"
+                                    className="border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+                                  >
+                                    Overnight
+                                  </Badge>
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                Ended {overnightInfo.endDate} at {overnightInfo.endTime}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell className="text-sm tabular-nums">
                         {record.clockIn
                           ? new Date(record.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })

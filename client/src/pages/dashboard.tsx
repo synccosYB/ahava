@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours } from "@/lib/utils";
+import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours, getOvernightShiftInfo } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -224,9 +226,36 @@ export default function Dashboard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {recentActivity.map((record) => (
+                {recentActivity.map((record) => {
+                  const overnightInfo = getOvernightShiftInfo(record.date, record.clockOut);
+                  return (
                   <TableRow key={record.id} data-testid={`row-activity-${record.id}`}>
-                    <TableCell className="font-medium text-sm">{record.date}</TableCell>
+                    <TableCell className="font-medium text-sm">
+                      <div className="flex items-center gap-1.5">
+                        <span>{record.date}</span>
+                        {overnightInfo && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                tabIndex={0}
+                                data-testid={`badge-overnight-${record.id}`}
+                                className="inline-flex"
+                              >
+                                <Badge
+                                  variant="outline"
+                                  className="border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+                                >
+                                  Overnight
+                                </Badge>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              Ended {overnightInfo.endDate} at {overnightInfo.endTime}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell className="text-sm">
                       {record.clockIn
                         ? new Date(record.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -239,7 +268,8 @@ export default function Dashboard() {
                       {record.totalHours != null ? formatHoursMinutes(record.totalHours) : "In progress"}
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           )}

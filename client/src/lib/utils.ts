@@ -38,6 +38,29 @@ export function liveElapsedSeconds(
 }
 
 /**
+ * Determine whether a shift's clock-out timestamp falls on a calendar day
+ * later than the shift's work date (in the viewer's local timezone). Returns
+ * `null` for in-progress shifts, missing input, or same-day shifts. When the
+ * shift crosses midnight, returns the local end date (YYYY-MM-DD) and a
+ * formatted end time suitable for display in a tooltip.
+ */
+export function getOvernightShiftInfo(
+  workDate: string | null | undefined,
+  clockOut: string | Date | null | undefined,
+): { endDate: string; endTime: string } | null {
+  if (!workDate || !clockOut) return null;
+  const out = clockOut instanceof Date ? clockOut : new Date(clockOut);
+  if (isNaN(out.getTime())) return null;
+  const yyyy = out.getFullYear();
+  const mm = String(out.getMonth() + 1).padStart(2, "0");
+  const dd = String(out.getDate()).padStart(2, "0");
+  const endDate = `${yyyy}-${mm}-${dd}`;
+  if (endDate <= workDate) return null;
+  const endTime = out.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return { endDate, endTime };
+}
+
+/**
  * Add the time elapsed since the server values were fetched to a base hours
  * count. Used to make the "Today"/"This Week" totals tick on the client
  * between server refetches without double-counting.
