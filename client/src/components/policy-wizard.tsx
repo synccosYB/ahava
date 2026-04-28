@@ -14,10 +14,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
   ChevronLeft, ChevronRight, Check, Clock, CalendarDays,
-  DollarSign, GitBranch, AlertCircle, ChevronsUpDown
+  DollarSign, GitBranch, AlertCircle, ChevronsUpDown, Sparkles, FileText
 } from "lucide-react";
 import type { Policy, PolicyType, Division, Location, Department, User, PolicyAssignment, Role } from "@shared/schema";
 import {
@@ -29,6 +33,12 @@ import {
   DAY_NAMES,
   type OverlapInfo,
 } from "@shared/policyOverlap";
+import {
+  getTemplatesForType,
+  hasTemplatesForType,
+  SCRATCH_TEMPLATE_ID,
+  type PolicyTemplate,
+} from "@/lib/policy-templates";
 
 const EMPLOYMENT_TYPE_OPTIONS = [
   { value: "full_time", label: "Full Time" },
@@ -56,12 +66,24 @@ function getAssignmentLevelLabel(level: string): string {
   return ASSIGNMENT_LEVEL_LABELS[level] || level;
 }
 
-const STEPS = [
-  { label: "Basics", description: "Name and type" },
-  { label: "Rules", description: "Configure settings" },
-  { label: "Assignments", description: "Apply to groups" },
-  { label: "Review", description: "Confirm and save" },
+interface WizardStep {
+  key: "basics" | "template" | "rules" | "assignments" | "review";
+  label: string;
+  description: string;
+}
+
+const BASE_STEPS: WizardStep[] = [
+  { key: "basics", label: "Basics", description: "Name and type" },
+  { key: "rules", label: "Rules", description: "Configure settings" },
+  { key: "assignments", label: "Assignments", description: "Apply to groups" },
+  { key: "review", label: "Review", description: "Confirm and save" },
 ];
+
+const TEMPLATE_STEP: WizardStep = {
+  key: "template",
+  label: "Template",
+  description: "Pick a starting point",
+};
 
 interface RuleFieldDef {
   key: string;
@@ -279,6 +301,18 @@ export function PolicyWizard({
   const [rulesForm, setRulesForm] = useState<Record<string, any>>({});
   const [assignments, setAssignments] = useState<AssignmentEntry[]>([]);
   const [saveStatus, setSaveStatus] = useState<"draft" | "active">("draft");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [templateBaseline, setTemplateBaseline] = useState<string | null>(null);
+  const [pendingTemplateId, setPendingTemplateId] = useState<string | null>(null);
+
+  const isCreating = !editingPolicy;
+  const wizardSteps = useMemo<WizardStep[]>(() => {
+    if (!isCreating) return BASE_STEPS;
+    const showTemplateStep = !selectedTypeKey || hasTemplatesForType(selectedTypeKey);
+    if (!showTemplateStep) return BASE_STEPS;
+    return [BASE_STEPS[0], TEMPLATE_STEP, ...BASE_STEPS.slice(1)];
+  }, [isCreating, selectedTypeKey]);
+  const currentStepKey = wizardSteps[currentStep]?.key ?? "basics";
 
   const { data: policyTypes } = useQuery<PolicyType[]>({ queryKey: ["/api/policy-types"] });
   const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
@@ -364,6 +398,9 @@ export function PolicyWizard({
         setAssignments([]);
       }
       setSaveStatus(editingPolicy.status === "active" ? "active" : "draft");
+      setSelectedTemplateId(null);
+      setTemplateBaseline(null);
+      setPendingTemplateId(null);
     } else {
       setName("");
       setDescription("");
@@ -374,6 +411,9 @@ export function PolicyWizard({
       setRulesForm(defaults);
       setAssignments([]);
       setSaveStatus("draft");
+      setSelectedTemplateId(null);
+      setTemplateBaseline(null);
+      setPendingTemplateId(null);
     }
   }, [open, editingPolicy, policyTypeKey, existingRules, existingAssignments, policyTypes, users, departments, locations, divisions, roles]);
 
@@ -391,16 +431,81 @@ export function PolicyWizard({
         });
         return merged;
       });
+      // Switching policy type invalidates any previously picked template,
+      // since templates are scoped to a single policy type.
+      setSelectedTemplateId(null);
+      setTemplateBaseline(null);
+      setPendingTemplateId(null);
     }
   }, [selectedTypeKey, open, editingPolicy]);
 
+  function getDefaultRulesForCurrentType(): Record<string, any> {
+    const fields = getRuleFieldsForType(selectedTypeKey);
+    const defaults: Record<string, any> = {};
+    fields.forEach((f) => { defaults[f.key] = f.defaultValue; });
+    return defaults;
+  }
+
+  function snapshotState(n: string, d: string, r: Record<string, any>): string {
+    return JSON.stringify({ name: n, description: d, rules: r });
+  }
+
+  function applyTemplate(templateId: string) {
+    if (templateId === SCRATCH_TEMPLATE_ID) {
+      const defaults = getDefaultRulesForCurrentType();
+      setName("");
+      setDescription("");
+      setRulesForm(defaults);
+      setSelectedTemplateId(SCRATCH_TEMPLATE_ID);
+      setTemplateBaseline(snapshotState("", "", defaults));
+      return;
+    }
+    const template = getTemplatesForType(selectedTypeKey).find((t) => t.id === templateId);
+    if (!template) return;
+    // Start from the per-type defaults so any rule fields the template
+    // doesn't explicitly set still have a sensible value.
+    const merged = { ...getDefaultRulesForCurrentType(), ...template.rules };
+    setName(template.suggestedName);
+    setDescription(template.suggestedDescription);
+    setRulesForm(merged);
+    setSelectedTemplateId(template.id);
+    setTemplateBaseline(snapshotState(template.suggestedName, template.suggestedDescription, merged));
+  }
+
+  function hasEditedSinceTemplate(): boolean {
+    if (templateBaseline === null) return false;
+    return snapshotState(name, description, rulesForm) !== templateBaseline;
+  }
+
+  function handleTemplatePick(templateId: string) {
+    if (selectedTemplateId === templateId) return; // no-op
+    if (selectedTemplateId !== null && hasEditedSinceTemplate()) {
+      setPendingTemplateId(templateId);
+      return;
+    }
+    applyTemplate(templateId);
+  }
+
+  function confirmPendingTemplate() {
+    if (pendingTemplateId) {
+      applyTemplate(pendingTemplateId);
+    }
+    setPendingTemplateId(null);
+  }
+
   const validateStep = (step: number): boolean => {
     const newErrors: Record<string, string> = {};
-    if (step === 0) {
+    const stepKey = wizardSteps[step]?.key;
+    if (stepKey === "basics") {
       if (!name.trim()) newErrors.name = "Policy name is required";
       if (!selectedTypeKey) newErrors.type = "Please select a policy type";
     }
-    if (step === 1) {
+    if (stepKey === "template") {
+      if (!selectedTemplateId) {
+        newErrors.template = "Pick a template or choose Start from scratch to continue";
+      }
+    }
+    if (stepKey === "rules") {
       visibleRuleFields.forEach((field) => {
         if (field.type === "number") {
           // Skip validation when this field belongs to a payroll rule whose
@@ -516,7 +621,7 @@ export function PolicyWizard({
 
   const goNext = () => {
     if (validateStep(currentStep)) {
-      setCurrentStep((s) => Math.min(s + 1, STEPS.length - 1));
+      setCurrentStep((s) => Math.min(s + 1, wizardSteps.length - 1));
     }
   };
 
@@ -594,7 +699,7 @@ export function PolicyWizard({
     },
   });
 
-  const progressValue = ((currentStep + 1) / STEPS.length) * 100;
+  const progressValue = ((currentStep + 1) / wizardSteps.length) * 100;
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!saveMutation.isPending) onOpenChange(o); }}>
@@ -614,7 +719,7 @@ export function PolicyWizard({
           </div>
 
           <div className="flex justify-between mb-4">
-            {STEPS.map((step, i) => (
+            {wizardSteps.map((step, i) => (
               <button
                 key={i}
                 onClick={() => {
@@ -650,7 +755,7 @@ export function PolicyWizard({
         <Separator />
 
         <div className="p-6 min-h-[320px]">
-          {currentStep === 0 && (
+          {currentStepKey === "basics" && (
             <StepBasics
               name={name}
               setName={setName}
@@ -662,7 +767,15 @@ export function PolicyWizard({
               errors={errors}
             />
           )}
-          {currentStep === 1 && (
+          {currentStepKey === "template" && (
+            <StepTemplate
+              policyTypeKey={selectedTypeKey}
+              selectedTemplateId={selectedTemplateId}
+              onPick={handleTemplatePick}
+              errors={errors}
+            />
+          )}
+          {currentStepKey === "rules" && (
             <StepRules
               ruleFields={visibleRuleFields}
               rulesForm={rulesForm}
@@ -673,7 +786,7 @@ export function PolicyWizard({
               earlyOverlaps={earlyOverlaps}
             />
           )}
-          {currentStep === 2 && (
+          {currentStepKey === "assignments" && (
             <StepAssignments
               assignments={assignments}
               setAssignments={setAssignments}
@@ -684,7 +797,7 @@ export function PolicyWizard({
               roles={roles || []}
             />
           )}
-          {currentStep === 3 && (
+          {currentStepKey === "review" && (
             <StepReview
               name={name}
               description={description}
@@ -709,10 +822,10 @@ export function PolicyWizard({
           </Button>
 
           <div className="flex gap-2">
-            {currentStep < STEPS.length - 1 ? (
+            {currentStep < wizardSteps.length - 1 ? (
               <Button
                 onClick={goNext}
-                disabled={currentStep === 1 && hasBonusOverlaps}
+                disabled={currentStepKey === "rules" && hasBonusOverlaps}
                 data-testid="button-wizard-next"
               >
                 Next <ChevronRight className="h-4 w-4 ml-1" />
@@ -739,7 +852,132 @@ export function PolicyWizard({
           </div>
         </div>
       </DialogContent>
+
+      <AlertDialog
+        open={!!pendingTemplateId}
+        onOpenChange={(o) => { if (!o) setPendingTemplateId(null); }}
+      >
+        <AlertDialogContent data-testid="dialog-template-overwrite-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Overwrite your edits?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You've edited the policy name, description, or rules since picking the current template.
+              Switching templates will replace those edits with the new template's values. Continue?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-template-overwrite-cancel">Keep my edits</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmPendingTemplate}
+              data-testid="button-template-overwrite-confirm"
+            >
+              Replace with template
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
+  );
+}
+
+function StepTemplate({
+  policyTypeKey, selectedTemplateId, onPick, errors,
+}: {
+  policyTypeKey: string;
+  selectedTemplateId: string | null;
+  onPick: (templateId: string) => void;
+  errors: Record<string, string>;
+}) {
+  const templates = getTemplatesForType(policyTypeKey);
+  const typeLabel = getPolicyTypeLabel(policyTypeKey).toLowerCase();
+
+  return (
+    <div className="space-y-6" data-testid="wizard-step-template">
+      <div>
+        <h3 className="text-base font-semibold mb-1">Choose a template</h3>
+        <p className="text-sm text-muted-foreground">
+          Pick a pre-made {typeLabel} policy as your starting point. You'll be able to review
+          and edit every rule on the next step.
+        </p>
+      </div>
+
+      {errors.template && (
+        <p className="text-sm text-destructive flex items-center gap-1" data-testid="error-template">
+          <AlertCircle className="h-3 w-3" /> {errors.template}
+        </p>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {templates.map((template) => {
+          const isSelected = selectedTemplateId === template.id;
+          return (
+            <button
+              key={template.id}
+              type="button"
+              onClick={() => onPick(template.id)}
+              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+                isSelected
+                  ? "border-primary bg-primary/5"
+                  : "border-border hover:border-primary/40"
+              }`}
+              data-testid={`button-template-${template.id}`}
+            >
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <div className="flex items-center gap-2">
+                  <Sparkles className={`h-4 w-4 ${isSelected ? "text-primary" : "text-muted-foreground"}`} />
+                  <span className={`font-medium text-sm ${isSelected ? "text-primary" : ""}`}>
+                    {template.title}
+                  </span>
+                </div>
+                {isSelected && (
+                  <Check className="h-4 w-4 text-primary flex-shrink-0" data-testid={`icon-template-selected-${template.id}`} />
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mb-3">{template.description}</p>
+              <div className="flex flex-wrap gap-1">
+                {template.summary.map((item, idx) => (
+                  <Badge
+                    key={idx}
+                    variant="outline"
+                    className="text-xs"
+                    data-testid={`badge-template-${template.id}-summary-${idx}`}
+                  >
+                    {item.label}: {item.value}
+                  </Badge>
+                ))}
+              </div>
+            </button>
+          );
+        })}
+
+        <button
+          type="button"
+          onClick={() => onPick(SCRATCH_TEMPLATE_ID)}
+          className={`text-left p-4 rounded-lg border-2 border-dashed transition-colors ${
+            selectedTemplateId === SCRATCH_TEMPLATE_ID
+              ? "border-primary bg-primary/5"
+              : "border-border hover:border-primary/40"
+          }`}
+          data-testid="button-template-scratch"
+        >
+          <div className="flex items-start justify-between gap-2 mb-1">
+            <div className="flex items-center gap-2">
+              <FileText className={`h-4 w-4 ${selectedTemplateId === SCRATCH_TEMPLATE_ID ? "text-primary" : "text-muted-foreground"}`} />
+              <span className={`font-medium text-sm ${selectedTemplateId === SCRATCH_TEMPLATE_ID ? "text-primary" : ""}`}>
+                Start from scratch
+              </span>
+            </div>
+            {selectedTemplateId === SCRATCH_TEMPLATE_ID && (
+              <Check className="h-4 w-4 text-primary flex-shrink-0" data-testid="icon-template-selected-scratch" />
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Begin with the system defaults and a blank name and description. You'll fill in
+            every rule yourself on the next step.
+          </p>
+        </button>
+      </div>
+    </div>
   );
 }
 
