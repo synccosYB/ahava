@@ -16,7 +16,7 @@ The system is built with an Express.js backend (TypeScript), a React frontend (V
 - **Corporate Design System:** Consistent `PageHeader` component, `App layout` with top bar and sidebar, standardized page styling conventions (e.g., `max-w-5xl`, `space-y-6`).
 
 **Technical Implementations:**
-- **Role-Based Access Control (RBAC):** Granular permissions via roles, user overrides, and access scopes (division/company, location, department). Enforced by middleware.
+- **Role-Based Access Control (RBAC):** Granular permissions via roles, user overrides, and access scopes (division/company, location, department). Enforced by middleware. **Convention:** every key passed to `requirePermission(...)` in `server/routes.ts` MUST exist in `PERMISSION_KEYS` in `server/seed.ts` and be granted to at least one system role. The drift guard `server/__tests__/permissionDrift.test.ts` enforces this and will fail loudly if a route gates on a key the seed catalog doesn't define (regression for task #210, where `company.create`/`edit`/`delete` were dropped from the catalog but still gated routes — which silently 403'd every non–Super Admin).
 - **Policy Engine:** Dynamic, hierarchical rule resolution for attendance, PTO, payroll, approvals, alerts, and kiosk behaviors. Policies are defined with JSON rules.
 - **Time & Attendance:** Manages `punch_logs`, `attendance_exceptions` (with approval workflows), and `hoursWorked` computation.
 - **PTO Management:** Tracks `time_off_requests` (time-off vs. cashout), `time_off_balances`, and configurable `pto_policies` (accrual, caps, carryover, expiration). PTO cash-outs integrated with payroll exports.

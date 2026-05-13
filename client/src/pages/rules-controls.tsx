@@ -156,7 +156,19 @@ function GeneralSection() {
       toast({ title: division ? "Division settings updated" : "Division created" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      const msg = err.message || "";
+      const missingMatch = msg.match(/missing permission ([\w.]+)/);
+      if (missingMatch) {
+        const missingKey = missingMatch[1];
+        console.error("Division save permission denied:", err);
+        toast({
+          title: "Permission required",
+          description: `You don't have the "${missingKey}" permission. Ask a Super Admin to grant it on Roles & Permissions.`,
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({ title: "Error", description: msg, variant: "destructive" });
     },
   });
 

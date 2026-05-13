@@ -1558,7 +1558,7 @@ export async function registerRoutes(
     res.json(company);
   });
 
-  app.delete("/api/companies/:id", requireAuth, requireRole("admin"), requirePermission("company.edit"), async (req, res) => {
+  app.delete("/api/companies/:id", requireAuth, requireRole("admin"), requirePermission("company.delete"), async (req, res) => {
     const company = await storage.getCompany(req.params.id);
     if (!company) return res.status(404).json({ message: "Company not found" });
     await storage.deleteCompany(req.params.id);

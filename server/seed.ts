@@ -16,6 +16,9 @@ const PERMISSION_KEYS = [
   { key: "system.super_admin", name: "Super Admin", description: "Full system access", module: "system" },
   { key: "company.manage", name: "Manage Division", description: "Manage division settings", module: "company" },
   { key: "company.view", name: "View Division", description: "View division information", module: "company" },
+  { key: "company.create", name: "Create Division", description: "Create a new division", module: "company" },
+  { key: "company.edit", name: "Edit Division", description: "Edit division details", module: "company" },
+  { key: "company.delete", name: "Delete Division", description: "Delete a division", module: "company" },
   { key: "users.create", name: "Create Users", description: "Create users", module: "users" },
   { key: "users.view", name: "View Users", description: "View users", module: "users" },
   { key: "users.edit", name: "Edit Users", description: "Edit user details", module: "users" },
@@ -69,7 +72,7 @@ const SYSTEM_ROLES = [
     name: "Division Admin",
     description: "Full access within a division",
     permissions: [
-      "company.manage", "company.view",
+      "company.manage", "company.view", "company.create", "company.edit", "company.delete",
       "users.create", "users.view", "users.edit", "users.deactivate",
       "roles.manage",
       "departments.create", "departments.view", "departments.edit", "departments.delete",
@@ -273,6 +276,27 @@ export async function seed() {
       console.log(`  Created role "${roleDef.name}" with ${rpValues.length} permissions.`);
     }
   } else {
+    // One-time rename: the "Company" → "Division" terminology refresh renamed the
+    // canonical role from "Company Admin" to "Division Admin". Older deployments
+    // still carry the legacy row, which prevents the top-up loop below from finding
+    // it (and was the root cause of task #210 — Division Admins couldn't pick up
+    // the restored company.* permissions). Rename in place so the loop matches.
+    const [legacyDivAdmin] = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.name, "Company Admin"));
+    const [newDivAdmin] = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.name, "Division Admin"));
+    if (legacyDivAdmin && !newDivAdmin) {
+      await db
+        .update(roles)
+        .set({ name: "Division Admin", description: "Full access within a division" })
+        .where(eq(roles.id, legacyDivAdmin.id));
+      console.log('Renamed legacy role "Company Admin" → "Division Admin".');
+    }
+
     // Idempotently grant any newly added permissions to system roles. (Run after every
     // seed so post-deploy permission additions reach the canned roles automatically.)
     for (const roleDef of SYSTEM_ROLES) {
