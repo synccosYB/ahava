@@ -20,6 +20,10 @@ export interface TimesheetEntry {
   overtimeHours: number;
   status: TimesheetStatus;
   ptoType: string | null;
+  // Source attribution: the kiosk the punch came from, when any of the
+  // day's punches were captured at a registered kiosk. `null` means a
+  // web/manager-entered punch (or no punches at all on that day).
+  sources: Array<{ kioskDeviceId: string | null; kioskName: string | null }>;
 }
 
 export interface TimesheetTotals {
@@ -113,6 +117,18 @@ export async function buildEmployeeTimesheet(
     punchesByDate.set(p.workDate, arr);
   }
 
+  // Resolve kiosk device names once per range so the per-day rows can show
+  // the source (e.g., "Lobby Kiosk") without N round trips.
+  const kioskIds = new Set<string>();
+  for (const p of punches) {
+    if (p.kioskDeviceId) kioskIds.add(p.kioskDeviceId);
+  }
+  const kioskNameById = new Map<string, string>();
+  for (const id of Array.from(kioskIds)) {
+    const d = await storage.getKioskDevice(id);
+    if (d) kioskNameById.set(id, d.name);
+  }
+
   const start = new Date(startDate + "T00:00:00Z");
   const end = new Date(endDate + "T00:00:00Z");
 
@@ -126,6 +142,23 @@ export async function buildEmployeeTimesheet(
       const effectiveEnd = r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate : r.endDate;
       return r.startDate <= dateStr && effectiveEnd >= dateStr;
     });
+
+    // Per-day source attribution (dedup by kiosk id; null → manual/web).
+    const sourcesForDay = (() => {
+      if (!datePunches.length) return [] as Array<{ kioskDeviceId: string | null; kioskName: string | null }>;
+      const seen = new Set<string>();
+      const out: Array<{ kioskDeviceId: string | null; kioskName: string | null }> = [];
+      for (const p of datePunches) {
+        const key = p.kioskDeviceId ?? "__manual__";
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          kioskDeviceId: p.kioskDeviceId ?? null,
+          kioskName: p.kioskDeviceId ? (kioskNameById.get(p.kioskDeviceId) ?? null) : null,
+        });
+      }
+      return out;
+    })();
 
     if (datePunches.length > 0) {
       let firstIn: Date | null = null;
@@ -170,6 +203,7 @@ export async function buildEmployeeTimesheet(
         overtimeHours: inProgress ? 0 : dayOvertime,
         status,
         ptoType: null,
+        sources: sourcesForDay,
       });
     } else if (ptoForDay.length > 0) {
       const primary = ptoForDay[0];
@@ -183,6 +217,7 @@ export async function buildEmployeeTimesheet(
         overtimeHours: 0,
         status: "pto",
         ptoType: primary.type,
+        sources: [],
       });
     } else {
       entries.push({
@@ -195,6 +230,7 @@ export async function buildEmployeeTimesheet(
         overtimeHours: 0,
         status: "none",
         ptoType: null,
+        sources: [],
       });
     }
   }

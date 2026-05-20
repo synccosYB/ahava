@@ -279,6 +279,7 @@ export const punchLogs = pgTable("punch_logs", {
   status: varchar("status", { length: 20 }).default("present").notNull(),
   notes: text("notes"),
   source: varchar("source", { length: 20 }).default("web").notNull(),
+  kioskDeviceId: varchar("kiosk_device_id"),
   approved: boolean("approved").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -449,6 +450,10 @@ export const kioskDevices = pgTable("kiosk_devices", {
   departmentId: varchar("department_id").references(() => departments.id),
   isActive: boolean("is_active").default(true).notNull(),
   lastHeartbeat: timestamp("last_heartbeat"),
+  pairingCode: varchar("pairing_code", { length: 16 }),
+  pairingCodeExpiresAt: timestamp("pairing_code_expires_at"),
+  pairedAt: timestamp("paired_at"),
+  status: varchar("status", { length: 20 }).default("unpaired").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -456,6 +461,10 @@ export const insertKioskDeviceSchema = createInsertSchema(kioskDevices).omit({
   id: true,
   createdAt: true,
   lastHeartbeat: true,
+  pairingCode: true,
+  pairingCodeExpiresAt: true,
+  pairedAt: true,
+  status: true,
 });
 export type InsertKioskDevice = z.infer<typeof insertKioskDeviceSchema>;
 export type KioskDevice = typeof kioskDevices.$inferSelect;

@@ -285,8 +285,15 @@ export interface IStorage {
   getKioskDevice(id: string): Promise<KioskDevice | undefined>;
   getAllKioskDevices(): Promise<KioskDevice[]>;
   createKioskDevice(device: InsertKioskDevice): Promise<KioskDevice>;
-  updateKioskDevice(id: string, device: Partial<InsertKioskDevice>): Promise<KioskDevice | undefined>;
+  updateKioskDevice(id: string, device: Partial<KioskDevice>): Promise<KioskDevice | undefined>;
   deleteKioskDevice(id: string): Promise<void>;
+  setKioskPairingCode(id: string, code: string, expiresAt: Date): Promise<KioskDevice | undefined>;
+  getKioskByPairingCode(code: string): Promise<KioskDevice | undefined>;
+  markKioskPaired(id: string): Promise<KioskDevice | undefined>;
+  unpairKioskDevice(id: string): Promise<KioskDevice | undefined>;
+  updateKioskHeartbeat(id: string): Promise<KioskDevice | undefined>;
+  getRecentPunchesByKiosk(deviceId: string, limit: number): Promise<Array<PunchLog & { userId: string; date: string; totalHours: number | null; employeeName: string }>>;
+  getKioskPunchTotalsToday(deviceId: string): Promise<{ clockIns: number; clockOuts: number; uniqueEmployees: number }>;
 
   getUserByPin(pin: string): Promise<User | undefined>;
   searchUsersByName(query: string): Promise<User[]>;
@@ -1286,13 +1293,108 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async updateKioskDevice(id: string, device: Partial<InsertKioskDevice>): Promise<KioskDevice | undefined> {
+  async updateKioskDevice(id: string, device: Partial<KioskDevice>): Promise<KioskDevice | undefined> {
     const [updated] = await db.update(kioskDevices).set(device).where(eq(kioskDevices.id, id)).returning();
     return updated;
   }
 
   async deleteKioskDevice(id: string): Promise<void> {
     await db.delete(kioskDevices).where(eq(kioskDevices.id, id));
+  }
+
+  async setKioskPairingCode(id: string, code: string, expiresAt: Date): Promise<KioskDevice | undefined> {
+    const [updated] = await db
+      .update(kioskDevices)
+      .set({ pairingCode: code, pairingCodeExpiresAt: expiresAt })
+      .where(eq(kioskDevices.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getKioskByPairingCode(code: string): Promise<KioskDevice | undefined> {
+    const [device] = await db
+      .select()
+      .from(kioskDevices)
+      .where(eq(kioskDevices.pairingCode, code));
+    return device;
+  }
+
+  async markKioskPaired(id: string): Promise<KioskDevice | undefined> {
+    const now = new Date();
+    const [updated] = await db
+      .update(kioskDevices)
+      .set({
+        pairingCode: null,
+        pairingCodeExpiresAt: null,
+        pairedAt: now,
+        lastHeartbeat: now,
+        status: "paired",
+      })
+      .where(eq(kioskDevices.id, id))
+      .returning();
+    return updated;
+  }
+
+  async unpairKioskDevice(id: string): Promise<KioskDevice | undefined> {
+    const [updated] = await db
+      .update(kioskDevices)
+      .set({
+        pairingCode: null,
+        pairingCodeExpiresAt: null,
+        pairedAt: null,
+        status: "unpaired",
+      })
+      .where(eq(kioskDevices.id, id))
+      .returning();
+    return updated;
+  }
+
+  async updateKioskHeartbeat(id: string): Promise<KioskDevice | undefined> {
+    const [updated] = await db
+      .update(kioskDevices)
+      .set({ lastHeartbeat: new Date() })
+      .where(eq(kioskDevices.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getRecentPunchesByKiosk(deviceId: string, limit: number) {
+    const rows = await db
+      .select({
+        log: punchLogs,
+        firstName: users.firstName,
+        lastName: users.lastName,
+      })
+      .from(punchLogs)
+      .innerJoin(users, eq(users.id, punchLogs.employeeId))
+      .where(eq(punchLogs.kioskDeviceId, deviceId))
+      .orderBy(desc(punchLogs.createdAt))
+      .limit(limit);
+    return rows.map((r) => ({
+      ...punchLogToLegacy(r.log),
+      employeeName: `${r.firstName || ""} ${r.lastName || ""}`.trim() || "Employee",
+    }));
+  }
+
+  async getKioskPunchTotalsToday(deviceId: string): Promise<{ clockIns: number; clockOuts: number; uniqueEmployees: number }> {
+    const today = new Date().toISOString().split("T")[0];
+    const rows = await db
+      .select({
+        id: punchLogs.id,
+        employeeId: punchLogs.employeeId,
+        clockIn: punchLogs.clockIn,
+        clockOut: punchLogs.clockOut,
+      })
+      .from(punchLogs)
+      .where(and(eq(punchLogs.kioskDeviceId, deviceId), eq(punchLogs.workDate, today)));
+    let clockIns = 0;
+    let clockOuts = 0;
+    for (const r of rows) {
+      if (r.clockIn) clockIns += 1;
+      if (r.clockOut) clockOuts += 1;
+    }
+    const uniq = new Set(rows.map((r) => r.employeeId));
+    return { clockIns, clockOuts, uniqueEmployees: uniq.size };
   }
 
   async getUserByPin(pin: string): Promise<User | undefined> {

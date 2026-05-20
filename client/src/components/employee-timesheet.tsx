@@ -24,7 +24,14 @@ export type TimesheetEntry = {
   overtimeHours: number;
   status: TimesheetStatus;
   ptoType: string | null;
+  sources?: Array<{ kioskDeviceId: string | null; kioskName: string | null }>;
 };
+
+function formatSources(sources: TimesheetEntry["sources"]): string {
+  if (!sources || sources.length === 0) return "—";
+  const labels = sources.map((s) => s.kioskName ?? (s.kioskDeviceId ? "Kiosk" : "Web"));
+  return Array.from(new Set(labels)).join(", ");
+}
 
 export type TimesheetResponse = {
   employeeId: string;
@@ -144,7 +151,7 @@ export function EmployeeTimesheetTable({
   }
 
   const exportCSV = () => {
-    const headers = ["Date", "Day", "Clock In", "Clock Out", "Break (min)", "Total Hours", "Overtime", "Status"];
+    const headers = ["Date", "Day", "Clock In", "Clock Out", "Break (min)", "Total Hours", "Overtime", "Source", "Status"];
     const rows = data.entries.map((e) => [
       e.date,
       e.dayOfWeek,
@@ -153,9 +160,10 @@ export function EmployeeTimesheetTable({
       String(e.breakMinutes || 0),
       e.totalHours != null ? formatHoursMinutes(e.totalHours) : "—",
       formatHoursMinutes(e.overtimeHours || 0),
+      formatSources(e.sources),
       timesheetStatusLabel(e),
     ]);
-    const totalsRow = ["Totals", "", "", "", "", formatHoursMinutes(data.totals.totalHours), formatHoursMinutes(data.totals.overtimeHours), `${data.totals.daysWorked} days worked`];
+    const totalsRow = ["Totals", "", "", "", "", formatHoursMinutes(data.totals.totalHours), formatHoursMinutes(data.totals.overtimeHours), "", `${data.totals.daysWorked} days worked`];
     const csv = [headers, ...rows, totalsRow]
       .map((row) => row.map((c) => /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(","))
       .join("\n");
@@ -194,6 +202,7 @@ export function EmployeeTimesheetTable({
               <TableHead className="text-xs font-medium uppercase tracking-wider">Break</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Total Hours</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Overtime</TableHead>
+              <TableHead className="text-xs font-medium uppercase tracking-wider">Source</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
             </TableRow>
           </TableHeader>
@@ -217,6 +226,9 @@ export function EmployeeTimesheetTable({
                     <span className="text-amber-600 font-semibold">{formatHoursMinutes(e.overtimeHours)}</span>
                   ) : "—"}
                 </TableCell>
+                <TableCell className="text-xs text-muted-foreground" data-testid={`text-timesheet-source-${e.date}`}>
+                  {formatSources(e.sources)}
+                </TableCell>
                 <TableCell data-testid={`badge-timesheet-status-${e.date}`}>
                   <TimesheetStatusBadge entry={e} />
                 </TableCell>
@@ -230,6 +242,7 @@ export function EmployeeTimesheetTable({
               <TableCell className="text-sm tabular-nums" data-testid="text-timesheet-total-overtime">
                 {formatHoursMinutes(data.totals.overtimeHours)}
               </TableCell>
+              <TableCell />
               <TableCell className="text-sm" data-testid="text-timesheet-days-worked">
                 {data.totals.daysWorked} day{data.totals.daysWorked === 1 ? "" : "s"} worked
               </TableCell>

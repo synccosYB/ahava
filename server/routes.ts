@@ -1969,14 +1969,88 @@ export async function registerRoutes(
     return dept?.name || "Unassigned";
   }
 
-  app.post("/api/kiosk/lookup-pin", async (req, res) => {
+  // Read the kiosk device id header (set by paired tablets) and resolve to an active
+  // device. Returns null if unknown / inactive / unpaired so callers can degrade.
+  async function resolveKioskFromHeaders(req: any) {
+    const headerVal = req.headers?.["x-kiosk-device-id"];
+    const deviceId = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+    if (!deviceId || typeof deviceId !== "string") return null;
+    const device = await storage.getKioskDevice(deviceId);
+    if (!device || !device.isActive) return null;
+    if (device.status === "unpaired") return null;
+    return device;
+  }
+
+  // Friendly error helpers: kiosk endpoints must never leak raw exception text.
+  function kioskError(res: any, code: number, errCode: string, message: string, extra: Record<string, any> = {}) {
+    return res.status(code).json({ error: message, code: errCode, ...extra });
+  }
+  function wrapKiosk(handler: (req: any, res: any) => Promise<any>) {
+    return async (req: any, res: any) => {
+      try {
+        await handler(req, res);
+      } catch (err: any) {
+        console.error("[kiosk] unhandled error:", err);
+        if (!res.headersSent) {
+          res.status(500).json({
+            error: "Something went wrong. Please try again.",
+            code: "internal_error",
+          });
+        }
+      }
+    };
+  }
+
+  function generatePairingCode(): string {
+    // 6 digits, zero-padded; collision-checked at insert time.
+    return String(Math.floor(100000 + Math.random() * 900000));
+  }
+
+  // Strict kiosk gate: only paired + active devices may use the public kiosk
+  // surface. When this returns null, it has already written a {error, code}
+  // 4xx response so callers can simply `return`.
+  async function requireKioskDevice(req: any, res: any): Promise<Awaited<ReturnType<typeof storage.getKioskDevice>> | null> {
+    const headerVal = req.headers?.["x-kiosk-device-id"];
+    const deviceId = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+    if (!deviceId || typeof deviceId !== "string") {
+      kioskError(res, 400, "missing_device_id", "This tablet isn't paired yet. Please enter a pairing code.");
+      return null;
+    }
+    const device = await storage.getKioskDevice(deviceId);
+    if (!device) {
+      kioskError(res, 404, "device_not_found", "This kiosk is no longer registered.");
+      return null;
+    }
+    if (!device.isActive) {
+      kioskError(res, 403, "device_inactive", "This kiosk has been turned off.");
+      return null;
+    }
+    if (device.status === "unpaired") {
+      kioskError(res, 403, "device_unpaired", "This kiosk was unpaired. Please enter a new pairing code.");
+      return null;
+    }
+    return device;
+  }
+
+  function deriveDeviceStatus(d: { status: string; lastHeartbeat: Date | null; isActive: boolean }): "online" | "idle" | "offline" | "unpaired" | "inactive" {
+    if (!d.isActive) return "inactive";
+    if (d.status === "unpaired") return "unpaired";
+    if (!d.lastHeartbeat) return "offline";
+    const ageMs = Date.now() - new Date(d.lastHeartbeat).getTime();
+    if (ageMs < 2 * 60 * 1000) return "online";
+    if (ageMs < 10 * 60 * 1000) return "idle";
+    return "offline";
+  }
+
+  app.post("/api/kiosk/lookup-pin", wrapKiosk(async (req, res) => {
+    if (!(await requireKioskDevice(req, res))) return;
     const parsed = pinLookupSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Valid PIN is required" });
+      return kioskError(res, 400, "invalid_request", "Please enter a valid PIN.");
     }
     const user = await storage.getUserByPin(parsed.data.pin);
     if (!user) {
-      return res.status(404).json({ error: "Invalid PIN" });
+      return kioskError(res, 404, "invalid_pin", "We didn't recognize that PIN. Please try again.");
     }
     const deptName = await getDepartmentName(user.departmentId);
     const lastRecord = await storage.getLatestAttendanceForUser(user.id);
@@ -1986,9 +2060,10 @@ export async function registerRoutes(
       timestamp: lastRecord.clockOut || lastRecord.clockIn,
     } : null;
     return res.json({ employee: sanitizeUserForKiosk(user, deptName), lastRecord: kioskLastRecord });
-  });
+  }));
 
-  app.get("/api/kiosk/search", async (req, res) => {
+  app.get("/api/kiosk/search", wrapKiosk(async (req, res) => {
+    if (!(await requireKioskDevice(req, res))) return;
     const query = req.query.q as string;
     if (!query || query.length < 1) {
       return res.json([]);
@@ -2001,16 +2076,17 @@ export async function registerRoutes(
       })
     );
     return res.json(results);
-  });
+  }));
 
-  app.get("/api/kiosk/employee/:id", async (req, res) => {
+  app.get("/api/kiosk/employee/:id", wrapKiosk(async (req, res) => {
+    if (!(await requireKioskDevice(req, res))) return;
     const id = req.params.id;
     if (!id) {
-      return res.status(400).json({ error: "Invalid employee ID" });
+      return kioskError(res, 400, "invalid_request", "Please choose an employee.");
     }
     const user = await storage.getUser(id);
     if (!user) {
-      return res.status(404).json({ error: "Employee not found" });
+      return kioskError(res, 404, "employee_not_found", "We couldn't find that employee.");
     }
     const deptName = await getDepartmentName(user.departmentId);
     const lastRecord = await storage.getLatestAttendanceForUser(user.id);
@@ -2020,17 +2096,19 @@ export async function registerRoutes(
       timestamp: lastRecord.clockOut || lastRecord.clockIn,
     } : null;
     return res.json({ employee: sanitizeUserForKiosk(user, deptName), lastRecord: kioskLastRecord });
-  });
+  }));
 
-  app.post("/api/kiosk/punch", async (req, res) => {
+  app.post("/api/kiosk/punch", wrapKiosk(async (req, res) => {
     const parsed = kioskPunchSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Valid employee ID and type (clock_in/clock_out) are required" });
+      return kioskError(res, 400, "invalid_request", "Please choose an employee and try again.");
     }
     const { employeeId, type } = parsed.data;
+    const kioskDevice = await requireKioskDevice(req, res);
+    if (!kioskDevice) return;
     const user = await storage.getUser(employeeId);
     if (!user) {
-      return res.status(404).json({ error: "Employee not found" });
+      return kioskError(res, 404, "employee_not_found", "We couldn't find that employee.");
     }
     const today = new Date().toISOString().split("T")[0];
     const deptName = await getDepartmentName(user.departmentId);
@@ -2041,14 +2119,14 @@ export async function registerRoutes(
     if (type === "clock_in") {
       const lastRecord = await storage.getLatestAttendanceForUser(user.id);
       if (lastRecord && lastRecord.clockIn && !lastRecord.clockOut && lastRecord.workDate === today) {
-        return res.status(400).json({ error: "Employee is already clocked in" });
+        return kioskError(res, 400, "already_clocked_in", "You're already clocked in.");
       }
 
       const now = new Date();
       const enforcement = await enforceClockIn(user, now, attRules, attendancePolicy?.policyName);
 
       if (!enforcement.allowed) {
-        return res.status(403).json({ error: enforcement.rejectionMessage });
+        return kioskError(res, 403, "policy_blocked", enforcement.rejectionMessage || "Clock-in not allowed right now.");
       }
 
       const record = await storage.createAttendanceRecord({
@@ -2058,6 +2136,7 @@ export async function registerRoutes(
         roundedClockIn: enforcement.roundedTime,
         status: "present",
         source: "kiosk",
+        kioskDeviceId: kioskDevice.id,
         approved: true,
       });
 
@@ -2066,6 +2145,13 @@ export async function registerRoutes(
       }
 
       const scheduleWarning = await getScheduleWarning(user.id, "clock_in");
+      try {
+        (globalThis as any).__broadcastAttendanceUpdate?.({
+          type: "kiosk_punch",
+          employeeId: user.id,
+          status: "clock_in",
+        });
+      } catch {}
       return res.json({
         record: { id: record.id, type: "clock_in", timestamp: record.clockIn },
         employee: sanitizeUserForKiosk(user, deptName),
@@ -2074,7 +2160,7 @@ export async function registerRoutes(
     } else {
       const lastRecord = await storage.getLatestAttendanceForUser(user.id);
       if (!lastRecord || !lastRecord.clockIn || lastRecord.clockOut) {
-        return res.status(400).json({ error: "Employee is not clocked in" });
+        return kioskError(res, 400, "not_clocked_in", "You're not currently clocked in.");
       }
 
       const payrollPolicy = await getEffectivePolicy(user.companyId, user.id, "payroll", user);
@@ -2091,6 +2177,9 @@ export async function registerRoutes(
         roundedClockOut: enforcement.roundedTime,
         hoursWorked: enforcement.hoursWorked,
         status: enforcement.status,
+        // Stamp the kiosk that closed the punch so admins can see which device
+        // each side of a shift came from.
+        kioskDeviceId: kioskDevice.id,
       });
 
       if (enforcement.alerts.length > 0) {
@@ -2099,13 +2188,68 @@ export async function registerRoutes(
 
       await checkPostExportModification(lastRecord.id, user.id);
       const scheduleWarning = await getScheduleWarning(user.id, "clock_out");
+      try {
+        (globalThis as any).__broadcastAttendanceUpdate?.({
+          type: "kiosk_punch",
+          employeeId: user.id,
+          status: "clock_out",
+        });
+      } catch {}
       return res.json({
         record: { id: updated?.id, type: "clock_out", timestamp: updated?.clockOut },
         employee: sanitizeUserForKiosk(user, deptName),
         ...(scheduleWarning ? { scheduleWarning } : {}),
       });
     }
-  });
+  }));
+
+  // Tablet submits a pairing code shown by an admin. On match, we return the
+  // device id; the tablet stores it in localStorage and uses it going forward.
+  app.post("/api/kiosk/pair", wrapKiosk(async (req, res) => {
+    const code = String(req.body?.code || "").trim();
+    if (!/^\d{4,8}$/.test(code)) {
+      return kioskError(res, 400, "invalid_code", "Please enter the 6-digit pairing code from your admin.");
+    }
+    const device = await storage.getKioskByPairingCode(code);
+    if (!device) {
+      return kioskError(res, 404, "invalid_code", "That code didn't match any kiosk. Please double-check with your admin.");
+    }
+    if (!device.isActive) {
+      return kioskError(res, 403, "device_inactive", "This kiosk is currently inactive. Ask an admin to enable it.");
+    }
+    if (device.pairingCodeExpiresAt && new Date(device.pairingCodeExpiresAt).getTime() < Date.now()) {
+      return kioskError(res, 410, "code_expired", "That pairing code has expired. Ask your admin for a new one.");
+    }
+    const paired = await storage.markKioskPaired(device.id);
+    return res.json({
+      deviceId: paired?.id ?? device.id,
+      name: device.name,
+      locationDescription: device.locationDescription,
+    });
+  }));
+
+  // Tablet heartbeat: confirms the device is still paired/active. The tablet
+  // pings this every minute and uses the response to know if it should drop back
+  // to the pairing screen.
+  app.post("/api/kiosk/heartbeat", wrapKiosk(async (req, res) => {
+    const headerVal = req.headers?.["x-kiosk-device-id"];
+    const deviceId = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+    if (!deviceId || typeof deviceId !== "string") {
+      return kioskError(res, 400, "missing_device_id", "This tablet isn't paired yet.");
+    }
+    const device = await storage.getKioskDevice(deviceId);
+    if (!device) {
+      return kioskError(res, 404, "device_not_found", "This kiosk is no longer registered.");
+    }
+    if (!device.isActive) {
+      return kioskError(res, 403, "device_inactive", "This kiosk has been turned off.");
+    }
+    if (device.status === "unpaired") {
+      return kioskError(res, 403, "device_unpaired", "This kiosk was unpaired. Please enter a new pairing code.");
+    }
+    await storage.updateKioskHeartbeat(device.id);
+    return res.json({ ok: true, deviceId: device.id, status: "paired" });
+  }));
 
   app.get("/api/attendance/status", requireAuth, async (req: any, res) => {
     try {
@@ -2302,9 +2446,18 @@ export async function registerRoutes(
         ));
       const correctedIds = new Set(approvedExceptions.map(e => e.punchLogId).filter(Boolean) as string[]);
 
+      // Resolve kiosk names so the UI can render "via Kiosk — <name>" per row.
+      const kioskIds = Array.from(new Set(records.map(r => r.kioskDeviceId).filter((x): x is string => !!x)));
+      const kioskNameById = new Map<string, string>();
+      for (const id of kioskIds) {
+        const d = await storage.getKioskDevice(id);
+        if (d) kioskNameById.set(id, d.name);
+      }
+
       res.json(records.map(r => ({
         ...punchLogToApiResponse(r),
         wasCorrected: correctedIds.has(r.id),
+        kioskDeviceName: r.kioskDeviceId ? (kioskNameById.get(r.kioskDeviceId) ?? null) : null,
       })));
     } catch (error) {
       console.error("Error fetching records:", error);
@@ -2747,6 +2900,34 @@ export async function registerRoutes(
     }
   });
 
+  // Enrich an exception list with the originating kiosk name (when the
+  // exception was raised against a kiosk punch). Batched: one device map
+  // lookup per request rather than per row.
+  async function attachKioskNamesToExceptions<T extends { punchLogId?: string | null }>(rows: T[]): Promise<Array<T & { kioskDeviceName: string | null }>> {
+    const punchIds = Array.from(new Set(rows.map(r => r.punchLogId).filter((x): x is string => !!x)));
+    if (punchIds.length === 0) {
+      return rows.map(r => ({ ...r, kioskDeviceName: null }));
+    }
+    const punches = await Promise.all(punchIds.map(id => storage.getPunchLog(id)));
+    const kioskIdByPunch = new Map<string, string>();
+    const deviceIds = new Set<string>();
+    for (const p of punches) {
+      if (p && p.kioskDeviceId) {
+        kioskIdByPunch.set(p.id, p.kioskDeviceId);
+        deviceIds.add(p.kioskDeviceId);
+      }
+    }
+    const nameByDevice = new Map<string, string>();
+    for (const id of Array.from(deviceIds)) {
+      const d = await storage.getKioskDevice(id);
+      if (d) nameByDevice.set(id, d.name);
+    }
+    return rows.map(r => {
+      const devId = r.punchLogId ? kioskIdByPunch.get(r.punchLogId) : undefined;
+      return { ...r, kioskDeviceName: devId ? (nameByDevice.get(devId) ?? null) : null };
+    });
+  }
+
   app.get("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
@@ -2779,11 +2960,11 @@ export async function registerRoutes(
             correctionCount90d: summary,
           };
         });
-        return res.json(enriched);
+        return res.json(await attachKioskNamesToExceptions(enriched));
       }
 
       const exceptions = await storage.getAttendanceExceptionsByEmployee(userId);
-      res.json(exceptions);
+      res.json(await attachKioskNamesToExceptions(exceptions));
     } catch (error) {
       console.error("Error fetching attendance exceptions:", error);
       res.status(500).json({ message: "Failed to fetch attendance exceptions" });
@@ -2882,7 +3063,7 @@ export async function registerRoutes(
           managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
         };
       });
-      res.json(enriched);
+      res.json(await attachKioskNamesToExceptions(enriched));
     } catch (error) {
       console.error("Error fetching pending exceptions:", error);
       res.status(500).json({ message: "Failed to fetch pending exceptions" });
@@ -5776,10 +5957,101 @@ export async function registerRoutes(
   app.get("/api/kiosk-devices", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (_req, res) => {
     try {
       const devices = await storage.getAllKioskDevices();
-      res.json(devices);
+      // Decorate with a derived liveness status (online / idle / offline / unpaired /
+      // inactive) so the admin UI can show a meaningful badge instead of just a date.
+      const enriched = devices.map((d) => ({
+        ...d,
+        derivedStatus: deriveDeviceStatus(d),
+      }));
+      res.json(enriched);
     } catch (error) {
       console.error("Error fetching kiosk devices:", error);
       res.status(500).json({ message: "Failed to fetch kiosk devices" });
+    }
+  });
+
+  // Generate (or regenerate) a short-lived pairing code for a device. The code is
+  // 6 digits and lives 10 minutes — long enough for an admin to walk the code to
+  // the tablet, short enough that stale codes don't pile up.
+  app.post("/api/kiosk-devices/:id/pairing-code", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+    try {
+      const device = await storage.getKioskDevice(req.params.id);
+      if (!device) return res.status(404).json({ message: "Device not found" });
+      // Loop a few times to avoid the (very unlikely) collision with another device's
+      // current code, since the column is not unique.
+      let code = generatePairingCode();
+      for (let i = 0; i < 5; i++) {
+        const existing = await storage.getKioskByPairingCode(code);
+        if (!existing || existing.id === device.id) break;
+        code = generatePairingCode();
+      }
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+      const updated = await storage.setKioskPairingCode(device.id, code, expiresAt);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "kiosk_device",
+        targetId: device.id,
+        action: "kiosk_device.pairing_code_issued",
+        newValue: { expiresAt },
+        ...getAuditContext(req),
+      });
+      res.json({
+        code,
+        expiresAt: expiresAt.toISOString(),
+        device: { ...updated, derivedStatus: deriveDeviceStatus(updated || device) },
+      });
+    } catch (error) {
+      console.error("Error generating pairing code:", error);
+      res.status(500).json({ message: "Failed to generate pairing code" });
+    }
+  });
+
+  app.post("/api/kiosk-devices/:id/unpair", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+    try {
+      const device = await storage.getKioskDevice(req.params.id);
+      if (!device) return res.status(404).json({ message: "Device not found" });
+      const updated = await storage.unpairKioskDevice(device.id);
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        targetType: "kiosk_device",
+        targetId: device.id,
+        action: "kiosk_device.unpaired",
+        oldValue: { status: device.status, pairedAt: device.pairedAt },
+        ...getAuditContext(req),
+      });
+      res.json({ ...updated, derivedStatus: deriveDeviceStatus(updated || device) });
+    } catch (error) {
+      console.error("Error unpairing kiosk device:", error);
+      res.status(500).json({ message: "Failed to unpair device" });
+    }
+  });
+
+  app.get("/api/kiosk-devices/:id/recent-punches", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+    try {
+      const device = await storage.getKioskDevice(req.params.id);
+      if (!device) return res.status(404).json({ message: "Device not found" });
+      const limit = Math.min(parseInt(String(req.query.limit || "20"), 10) || 20, 100);
+      const [punches, totals] = await Promise.all([
+        storage.getRecentPunchesByKiosk(device.id, limit),
+        storage.getKioskPunchTotalsToday(device.id),
+      ]);
+      res.json({
+        deviceId: device.id,
+        punches: punches.map((p) => ({
+          id: p.id,
+          employeeId: p.employeeId,
+          employeeName: p.employeeName,
+          clockIn: p.clockIn,
+          clockOut: p.clockOut,
+          type: p.clockOut ? "clock_out" : "clock_in",
+          timestamp: p.clockOut || p.clockIn,
+          workDate: p.workDate,
+        })),
+        totals,
+      });
+    } catch (error) {
+      console.error("Error fetching kiosk recent punches:", error);
+      res.status(500).json({ message: "Failed to fetch recent punches" });
     }
   });
 
@@ -7622,14 +7894,12 @@ export async function registerRoutes(
   );
 
   // ---- Kiosk public face flow ----
-  app.post("/api/kiosk/face/identify", async (req, res) => {
-    const device = await getKioskDeviceFromReq(req);
-    if (!device) {
-      return res.status(403).json({ error: "Unknown or inactive kiosk device" });
-    }
+  app.post("/api/kiosk/face/identify", wrapKiosk(async (req, res) => {
+    const device = await requireKioskDevice(req, res);
+    if (!device) return;
     const settings = await storage.getBiometricSettings();
     if (!isFeatureEnabled(settings)) {
-      return res.status(503).json({ error: "Face login is disabled" });
+      return kioskError(res, 503, "face_disabled", "Face login is currently disabled. Please use your PIN.");
     }
     const probe = req.body?.descriptor;
     if (!Array.isArray(probe) || probe.length !== 128 || probe.some((x: any) => typeof x !== "number")) {
@@ -7640,7 +7910,7 @@ export async function registerRoutes(
         confidence: null,
         livenessPassed: null,
       });
-      return res.status(400).json({ error: "Invalid face descriptor" });
+      return kioskError(res, 400, "camera_error", "We couldn't read the camera frame. Please try again.");
     }
     if (settings.livenessRequired && req.body?.livenessPassed !== true) {
       await storage.recordBiometricAttempt({
@@ -7649,7 +7919,7 @@ export async function registerRoutes(
         confidence: null,
         livenessPassed: false,
       });
-      return res.status(400).json({ error: "Liveness check failed", outcome: "liveness_failed" });
+      return kioskError(res, 400, "liveness_failed", "Liveness check failed. Please face the camera and try again.", { outcome: "liveness_failed" });
     }
 
     const candidatesRaw = await storage.getBiometricTemplatesByCompanyAndType(
@@ -7694,7 +7964,7 @@ export async function registerRoutes(
       if (tplRow) await storage.touchBiometricTemplateMatched(tplRow.id);
       const user = await storage.getUser(match.userId);
       if (!user) {
-        return res.status(404).json({ error: "Matched user not found" });
+        return kioskError(res, 404, "employee_not_found", "We couldn't find that employee.");
       }
       const deptName = await getDepartmentName(user.departmentId);
       const lastRecord = await storage.getLatestAttendanceForUser(user.id);
@@ -7720,29 +7990,27 @@ export async function registerRoutes(
       consecutiveFailures,
       lockoutThreshold: settings.maxAttemptsBeforeLockout,
     });
-  });
+  }));
 
-  app.post("/api/kiosk/face/supervisor-override", async (req, res) => {
-    const device = await getKioskDeviceFromReq(req);
-    if (!device) {
-      return res.status(403).json({ error: "Unknown or inactive kiosk device" });
-    }
+  app.post("/api/kiosk/face/supervisor-override", wrapKiosk(async (req, res) => {
+    const device = await requireKioskDevice(req, res);
+    if (!device) return;
     const supervisorPin = req.body?.supervisorPin as string | undefined;
     const targetEmployeeId = req.body?.targetEmployeeId as string | undefined;
     const reason = (req.body?.reason as string | undefined) ?? "kiosk_override";
     const attemptId = req.body?.attemptId as string | undefined;
     if (!supervisorPin || !targetEmployeeId) {
-      return res.status(400).json({ error: "supervisorPin and targetEmployeeId are required" });
+      return kioskError(res, 400, "invalid_request", "Supervisor PIN and employee are required.");
     }
     const supervisor = await storage.getUserByPin(supervisorPin);
     if (!supervisor) {
-      return res.status(403).json({ error: "Invalid supervisor PIN" });
+      return kioskError(res, 403, "invalid_pin", "We didn't recognize that supervisor PIN.");
     }
     if (supervisor.role !== "admin" && supervisor.role !== "manager") {
-      return res.status(403).json({ error: "Only managers or admins can override" });
+      return kioskError(res, 403, "not_authorized", "Only managers or admins can override.");
     }
     const target = await storage.getUser(targetEmployeeId);
-    if (!target) return res.status(404).json({ error: "Target employee not found" });
+    if (!target) return kioskError(res, 404, "employee_not_found", "We couldn't find that employee.");
 
     const override = await storage.recordBiometricSupervisorOverride({
       supervisorUserId: supervisor.id,
@@ -7775,7 +8043,7 @@ export async function registerRoutes(
       employee: sanitizeUserForKiosk(target, deptName),
       lastRecord: kioskLastRecord,
     });
-  });
+  }));
 
   return httpServer;
 }
