@@ -253,6 +253,13 @@
       "when": 1778600000000,
       "tag": "0035_kiosk_pairing_heartbeat",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1778700000000,
+      "tag": "0036_drop_time_off_balances_expiration_date",
+      "breakpoints": true
     }
   ]
 }
