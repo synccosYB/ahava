@@ -649,6 +649,7 @@ function AddEmployeeDialog({
     payType: "hourly",
     hourlyRate: "",
     weeklySalary: "",
+    dailySalary: "",
     onboardingTemplateId: "",
   });
 
@@ -706,6 +707,9 @@ function AddEmployeeDialog({
       if (formData.payType === "salary" && formData.weeklySalary) {
         body.weeklySalary = parseFloat(formData.weeklySalary);
       }
+      if (formData.payType === "daily" && formData.dailySalary) {
+        body.dailySalary = parseFloat(formData.dailySalary);
+      }
       if (formData.onboardingTemplateId) {
         body.onboardingTemplateId = formData.onboardingTemplateId;
       }
@@ -740,7 +744,7 @@ function AddEmployeeDialog({
       companyId: "", departmentId: "", locationId: "", employmentType: "full_time",
       taxClassification: "W-2",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
-      hourlyRate: "", weeklySalary: "", onboardingTemplateId: "",
+      hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
     });
     onOpenChange(false);
   };
@@ -754,7 +758,14 @@ function AddEmployeeDialog({
 
   const canProceedStep1 = !!(formData.firstName && formData.lastName && formData.email && formData.companyId);
   const canProceedStep2 = true;
-  const canProceedStep3 = true;
+  const ratePositive = (v: string) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) && n > 0;
+  };
+  const canProceedStep3 =
+    (formData.payType === "hourly" && ratePositive(formData.hourlyRate)) ||
+    (formData.payType === "daily" && ratePositive(formData.dailySalary)) ||
+    (formData.payType === "salary" && ratePositive(formData.weeklySalary));
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(v); }}>
@@ -949,12 +960,24 @@ function AddEmployeeDialog({
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Pay Type</Label>
-              <Select value={formData.payType} onValueChange={(v) => setFormData({ ...formData, payType: v })}>
+              <Select
+                value={formData.payType}
+                onValueChange={(v) =>
+                  setFormData({
+                    ...formData,
+                    payType: v,
+                    hourlyRate: v === "hourly" ? formData.hourlyRate : "",
+                    weeklySalary: v === "salary" ? formData.weeklySalary : "",
+                    dailySalary: v === "daily" ? formData.dailySalary : "",
+                  })
+                }
+              >
                 <SelectTrigger data-testid="select-add-pay-type">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="hourly">Hourly</SelectItem>
+                  <SelectItem value="daily">Daily</SelectItem>
                   <SelectItem value="salary">Salary</SelectItem>
                 </SelectContent>
               </Select>
@@ -969,6 +992,19 @@ function AddEmployeeDialog({
                   onChange={(e) => setFormData({ ...formData, hourlyRate: e.target.value })}
                   placeholder="0.00"
                   data-testid="input-add-hourly-rate"
+                />
+              </div>
+            )}
+            {formData.payType === "daily" && (
+              <div className="space-y-2">
+                <Label>Daily Rate ($)</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={formData.dailySalary}
+                  onChange={(e) => setFormData({ ...formData, dailySalary: e.target.value })}
+                  placeholder="0.00"
+                  data-testid="input-add-daily-rate"
                 />
               </div>
             )}
@@ -1023,7 +1059,7 @@ function AddEmployeeDialog({
           {step === 3 && (
             <Button
               onClick={() => createMutation.mutate()}
-              disabled={createMutation.isPending}
+              disabled={createMutation.isPending || !canProceedStep3}
               data-testid="button-create-employee"
             >
               {createMutation.isPending ? "Creating..." : "Create Employee"}
@@ -1354,18 +1390,30 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 <Label className="text-muted-foreground text-xs">Pay Type</Label>
                 <p className="font-medium" data-testid="text-profile-pay-type">{profile?.payType || "—"}</p>
               </div>
-              <div>
-                <Label className="text-muted-foreground text-xs">Hourly Rate</Label>
-                <p className="font-medium" data-testid="text-profile-hourly-rate">
-                  {profile?.hourlyRate != null ? formatCurrency(profile.hourlyRate) : "—"}
-                </p>
-              </div>
-              <div>
-                <Label className="text-muted-foreground text-xs">Weekly Salary</Label>
-                <p className="font-medium" data-testid="text-profile-weekly-salary">
-                  {profile?.weeklySalary != null ? formatCurrency(profile.weeklySalary) : "—"}
-                </p>
-              </div>
+              {profile?.payType === "hourly" && (
+                <div>
+                  <Label className="text-muted-foreground text-xs">Hourly Rate</Label>
+                  <p className="font-medium" data-testid="text-profile-hourly-rate">
+                    {profile?.hourlyRate != null ? formatCurrency(profile.hourlyRate) : "—"}
+                  </p>
+                </div>
+              )}
+              {profile?.payType === "daily" && (
+                <div>
+                  <Label className="text-muted-foreground text-xs">Daily Rate</Label>
+                  <p className="font-medium" data-testid="text-profile-daily-rate">
+                    {profile?.dailySalary != null ? formatCurrency(profile.dailySalary) : "—"}
+                  </p>
+                </div>
+              )}
+              {profile?.payType === "salary" && (
+                <div>
+                  <Label className="text-muted-foreground text-xs">Weekly Salary</Label>
+                  <p className="font-medium" data-testid="text-profile-weekly-salary">
+                    {profile?.weeklySalary != null ? formatCurrency(profile.weeklySalary) : "—"}
+                  </p>
+                </div>
+              )}
               <div>
                 <Label className="text-muted-foreground text-xs">Holiday Pay</Label>
                 <p className="font-medium" data-testid="text-profile-holiday-pay">

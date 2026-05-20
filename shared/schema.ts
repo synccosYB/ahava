@@ -201,7 +201,7 @@ export const POLICY_ASSIGNMENT_TARGET_FIELDS = [
 ] as const;
 
 export const POLICY_ASSIGNMENT_EMPLOYMENT_TYPES = ["full_time", "part_time", "contractor", "per_diem"] as const;
-export const POLICY_ASSIGNMENT_PAY_TYPES = ["hourly", "salary"] as const;
+export const POLICY_ASSIGNMENT_PAY_TYPES = ["hourly", "daily", "salary"] as const;
 
 export const insertPolicyAssignmentSchema = baseInsertPolicyAssignmentSchema.superRefine((val, ctx) => {
   const set = POLICY_ASSIGNMENT_TARGET_FIELDS.filter(

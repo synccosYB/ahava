@@ -50,6 +50,7 @@ const EMPLOYMENT_TYPE_OPTIONS = [
 
 const PAY_TYPE_OPTIONS = [
   { value: "hourly", label: "Hourly" },
+  { value: "daily", label: "Daily" },
   { value: "salary", label: "Salary" },
 ];
 

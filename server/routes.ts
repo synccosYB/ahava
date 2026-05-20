@@ -397,6 +397,7 @@ export async function registerRoutes(
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
     weeklySalary: z.number().optional(),
+    dailySalary: z.number().optional(),
     onboardingTemplateId: z.string().optional().nullable(),
     skipOnboarding: z.boolean().optional(),
   });
@@ -431,6 +432,20 @@ export async function registerRoutes(
       }
     }
 
+    // Always create an employment profile so every new hire has a tax
+    // classification on record (defaults to W-2). Reports and payroll filters
+    // depend on this field being present.
+    const profilePayType = parsed.data.payType || "hourly";
+    if (profilePayType === "hourly" && !(parsed.data.hourlyRate && parsed.data.hourlyRate > 0)) {
+      return res.status(400).json({ message: "Hourly pay type requires a positive Hourly Rate." });
+    }
+    if (profilePayType === "daily" && !(parsed.data.dailySalary && parsed.data.dailySalary > 0)) {
+      return res.status(400).json({ message: "Daily pay type requires a positive Daily Rate." });
+    }
+    if (profilePayType === "salary" && !(parsed.data.weeklySalary && parsed.data.weeklySalary > 0)) {
+      return res.status(400).json({ message: "Salary pay type requires a positive Weekly Salary." });
+    }
+
     const tempPassword = generateTempPassword();
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
@@ -447,18 +462,16 @@ export async function registerRoutes(
       departmentId: parsed.data.departmentId || null,
     });
 
-    // Always create an employment profile so every new hire has a tax
-    // classification on record (defaults to W-2). Reports and payroll filters
-    // depend on this field being present.
     await storage.createEmploymentProfile({
       userId: newUser.id,
       employmentType: parsed.data.employmentType || "full_time",
       taxClassification: parsed.data.taxClassification || "W-2",
-      payType: parsed.data.payType || "hourly",
+      payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
       weeklySalary: parsed.data.weeklySalary || null,
+      dailySalary: parsed.data.dailySalary || null,
       hireDate: parsed.data.hireDate || null,
-      overtimeEligible: false,
+      overtimeEligible: profilePayType === "hourly",
       holidayPayEnabled: false,
       voluntaryPayEnabled: false,
     });
@@ -1919,7 +1932,20 @@ export async function registerRoutes(
     if (existing) {
       return res.status(409).json({ message: "Employment profile already exists for this user" });
     }
-    const profile = await storage.createEmploymentProfile(parsed.data);
+    const data = { ...parsed.data };
+    if (data.payType === "hourly" && !(data.hourlyRate && data.hourlyRate > 0)) {
+      return res.status(400).json({ message: "Hourly pay type requires a positive Hourly Rate." });
+    }
+    if (data.payType === "daily" && !(data.dailySalary && data.dailySalary > 0)) {
+      return res.status(400).json({ message: "Daily pay type requires a positive Daily Rate." });
+    }
+    if (data.payType === "salary" && !(data.weeklySalary && data.weeklySalary > 0)) {
+      return res.status(400).json({ message: "Salary pay type requires a positive Weekly Salary." });
+    }
+    if (data.payType && req.body?.overtimeEligible === undefined) {
+      data.overtimeEligible = data.payType === "hourly";
+    }
+    const profile = await storage.createEmploymentProfile(data);
     res.status(201).json(profile);
   });
 
@@ -1929,7 +1955,31 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
     }
     const before = await storage.getEmploymentProfile(req.params.userId);
-    const profile = await storage.updateEmploymentProfile(req.params.userId, parsed.data);
+    const data = { ...parsed.data };
+    const payTypeChanged = data.payType !== undefined && data.payType !== before?.payType;
+    const rateTouched =
+      data.hourlyRate !== undefined ||
+      data.dailySalary !== undefined ||
+      data.weeklySalary !== undefined;
+    if (payTypeChanged || rateTouched) {
+      const nextPayType = data.payType ?? before?.payType;
+      const nextHourly = data.hourlyRate !== undefined ? data.hourlyRate : before?.hourlyRate;
+      const nextDaily = data.dailySalary !== undefined ? data.dailySalary : before?.dailySalary;
+      const nextWeekly = data.weeklySalary !== undefined ? data.weeklySalary : before?.weeklySalary;
+      if (nextPayType === "hourly" && !(nextHourly && nextHourly > 0)) {
+        return res.status(400).json({ message: "Hourly pay type requires a positive Hourly Rate." });
+      }
+      if (nextPayType === "daily" && !(nextDaily && nextDaily > 0)) {
+        return res.status(400).json({ message: "Daily pay type requires a positive Daily Rate." });
+      }
+      if (nextPayType === "salary" && !(nextWeekly && nextWeekly > 0)) {
+        return res.status(400).json({ message: "Salary pay type requires a positive Weekly Salary." });
+      }
+    }
+    if (payTypeChanged && req.body?.overtimeEligible === undefined) {
+      data.overtimeEligible = data.payType === "hourly";
+    }
+    const profile = await storage.updateEmploymentProfile(req.params.userId, data);
     if (!profile) return res.status(404).json({ message: "Employment profile not found" });
 
     try {
