@@ -24,6 +24,8 @@ import {
 import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
+import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { formatCurrency, formatHoursMinutes, formatDate } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
@@ -72,6 +74,10 @@ export default function EmployeesPage() {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
+  const { user: currentUser } = useAuth();
+  const { has: hasPermission } = usePermissions();
+  const canDelete = hasPermission("users.delete");
 
   const { data: users, isLoading, isError } = useQuery<User[]>({
     queryKey: ["/api/users"],
@@ -228,9 +234,28 @@ export default function EmployeesPage() {
               <Building2 className="h-4 w-4 mr-2" />
               Assign Division
             </Button>
+            {canDelete && (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setBulkDeleteDialogOpen(true)}
+                data-testid="button-bulk-delete"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete
+              </Button>
+            )}
           </div>
         </div>
       )}
+
+      <BulkDeleteEmployeesDialog
+        open={bulkDeleteDialogOpen}
+        onOpenChange={setBulkDeleteDialogOpen}
+        users={(users || []).filter((u) => selectedIds.has(u.id))}
+        currentUserId={currentUser?.id}
+        onSuccess={clearSelection}
+      />
 
       <BulkAssignDivisionDialog
         open={bulkDialogOpen}
@@ -442,6 +467,123 @@ function BulkAssignDivisionDialog({
             data-testid="button-confirm-bulk-assign"
           >
             {mutation.isPending ? "Assigning..." : `Assign ${userIds.length}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BulkDeleteEmployeesDialog({
+  open,
+  onOpenChange,
+  users,
+  currentUserId,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  users: User[];
+  currentUserId?: string;
+  onSuccess: () => void;
+}) {
+  const { toast } = useToast();
+  const [confirmText, setConfirmText] = useState("");
+
+  useEffect(() => {
+    if (!open) setConfirmText("");
+  }, [open]);
+
+  const selfFiltered = users.filter((u) => u.id !== currentUserId);
+  const filteredSelfOut = users.length - selfFiltered.length;
+  const targetIds = selfFiltered.map((u) => u.id);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/users/bulk-delete", { userIds: targetIds });
+      return res.json();
+    },
+    onSuccess: (data: { deleted: string[]; skipped: { userId: string; reason: string }[] }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      const deletedCount = data.deleted.length;
+      const skipped = data.skipped || [];
+      const skippedDesc = skipped.length
+        ? ` ${skipped.length} skipped (${Array.from(new Set(skipped.map((s) => s.reason))).join(", ")}).`
+        : "";
+      toast({
+        title: "Employees deleted",
+        description: `${deletedCount} employee${deletedCount === 1 ? "" : "s"} deleted.${skippedDesc}`,
+      });
+      onOpenChange(false);
+      onSuccess();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const confirmReady = confirmText.trim().toUpperCase() === "DELETE" && targetIds.length > 0;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="dialog-bulk-delete">
+        <DialogHeader>
+          <DialogTitle>Delete employees</DialogTitle>
+          <DialogDescription>
+            This permanently removes {targetIds.length} employee
+            {targetIds.length === 1 ? "" : "s"} and their account access. This
+            action cannot be undone. Use offboarding instead if you only need to
+            deactivate them.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {filteredSelfOut > 0 && (
+            <div
+              className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+              data-testid="text-self-filtered-note"
+            >
+              You cannot delete your own account, so it was removed from the
+              selection.
+            </div>
+          )}
+          <div className="max-h-48 overflow-y-auto rounded-md border p-2 text-sm" data-testid="list-delete-targets">
+            {selfFiltered.length === 0 ? (
+              <p className="text-muted-foreground">No employees to delete.</p>
+            ) : (
+              <ul className="space-y-1">
+                {selfFiltered.map((u) => (
+                  <li key={u.id} data-testid={`text-delete-target-${u.id}`}>
+                    {u.firstName} {u.lastName}{" "}
+                    <span className="text-muted-foreground">({u.email})</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="confirm-delete-input">
+              Type <span className="font-mono font-semibold">DELETE</span> to confirm
+            </Label>
+            <Input
+              id="confirm-delete-input"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="DELETE"
+              data-testid="input-confirm-delete"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-bulk-delete">
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => mutation.mutate()}
+            disabled={!confirmReady || mutation.isPending}
+            data-testid="button-confirm-bulk-delete"
+          >
+            {mutation.isPending ? "Deleting..." : `Delete ${targetIds.length}`}
           </Button>
         </DialogFooter>
       </DialogContent>

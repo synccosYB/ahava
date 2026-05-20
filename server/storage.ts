@@ -428,6 +428,7 @@ export interface IStorage {
 
   createUser(user: UpsertUser): Promise<User>;
   updateUser(id: string, data: Partial<UpsertUser>): Promise<User | undefined>;
+  deleteUser(id: string): Promise<void>;
 
   getDocumentsByEmployee(employeeId: string): Promise<Document[]>;
   getDocument(id: string): Promise<Document | undefined>;
@@ -2411,6 +2412,24 @@ export class DatabaseStorage implements IStorage {
     }
     const [updated] = await db.update(users).set({ ...payload, updatedAt: new Date() }).where(eq(users.id, id)).returning();
     return updated;
+  }
+
+  async deleteUser(id: string): Promise<void> {
+    // Hard-delete a user account. Used by the admin bulk-delete flow for cleaning
+    // up test/duplicate accounts. Runs inside a transaction so partial cleanup
+    // is rolled back on FK violation. Pre-cleans well-known auth/profile child
+    // tables that any user may have; remaining child rows (attendance, documents,
+    // payroll, audit history, etc.) intentionally surface as FK errors so real
+    // employees with data must go through the offboarding/deactivation flow.
+    await db.transaction(async (tx) => {
+      await tx.delete(userRoles).where(eq(userRoles.userId, id));
+      await tx.delete(userPermissionOverrides).where(eq(userPermissionOverrides.userId, id));
+      await tx.delete(userAccessScopes).where(eq(userAccessScopes.userId, id));
+      await tx.delete(userEmploymentProfiles).where(eq(userEmploymentProfiles.userId, id));
+      await tx.delete(employeePins).where(eq(employeePins.userId, id));
+      await tx.delete(employeePtoSettings).where(eq(employeePtoSettings.userId, id));
+      await tx.delete(users).where(eq(users.id, id));
+    });
   }
 
   async getDocumentsByEmployee(employeeId: string): Promise<Document[]> {

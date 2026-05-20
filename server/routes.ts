@@ -5,7 +5,7 @@ import { storage } from "./storage";
 import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
-import { requirePermission } from "./middleware/rbac";
+import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
@@ -292,6 +292,13 @@ export async function registerRoutes(
     }
     requirePasswordChanged(req, res, next);
   });
+  app.get("/api/auth/permissions", requireAuth, async (req, res) => {
+    const user = (req as any).authUser as User | undefined;
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const perms = await resolveUserPermissions(user.id);
+    res.json({ permissions: Array.from(perms) });
+  });
+
   app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), requestCache({ scope: "user" }), async (req, res) => {
     const users = await storage.getAllUsers();
     // Attach role-rule provenance: which active rule (if any) matches this
@@ -581,6 +588,65 @@ export async function registerRoutes(
     }
 
     res.json({ updatedCount: updated.length, updatedIds: updated, skipped });
+  });
+
+  const bulkDeleteUsersSchema = z.object({
+    userIds: z.array(z.string().min(1)).min(1).max(200),
+  });
+
+  app.post("/api/users/bulk-delete", requireAuth, requireRole("admin"), requirePermission("users.delete"), async (req, res) => {
+    const parsed = bulkDeleteUsersSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+    }
+    const actor = (req as any).authUser as User;
+    const auditCtx = getAuditContext(req);
+    const requesterIsSuper = isSuperAdmin(req);
+    const userIds = Array.from(new Set(parsed.data.userIds));
+
+    const deleted: string[] = [];
+    const skipped: { userId: string; reason: string }[] = [];
+
+    for (const uid of userIds) {
+      if (uid === actor.id) {
+        skipped.push({ userId: uid, reason: "cannot_delete_self" });
+        continue;
+      }
+      if (uid === SUPER_ADMIN_USER_ID && !requesterIsSuper) {
+        skipped.push({ userId: uid, reason: "not_found" });
+        continue;
+      }
+      const existing = await storage.getUser(uid);
+      if (!existing) {
+        skipped.push({ userId: uid, reason: "not_found" });
+        continue;
+      }
+      try {
+        await storage.deleteUser(uid);
+      } catch (err: any) {
+        const code = err?.code || err?.cause?.code;
+        const reason = code === "23503" ? "has_dependent_records" : "delete_failed";
+        console.error(`[bulk-delete] failed to delete user ${uid}:`, err?.message || err);
+        skipped.push({ userId: uid, reason });
+        continue;
+      }
+
+      await writeAuditLog({
+        actorUserId: actor.id,
+        targetType: "user",
+        targetId: uid,
+        action: "user.delete",
+        oldValue: existing as unknown as Record<string, unknown>,
+        newValue: null,
+        context: { bulk: true },
+        ...auditCtx,
+      });
+
+      deleted.push(uid);
+    }
+
+    if (deleted.length > 0) invalidateUserCache();
+    res.json({ deleted, skipped });
   });
 
   app.patch("/api/users/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {

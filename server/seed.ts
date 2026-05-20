@@ -26,6 +26,7 @@ const PERMISSION_KEYS = [
   { key: "users.view", name: "View Users", description: "View users", module: "users" },
   { key: "users.edit", name: "Edit Users", description: "Edit user details", module: "users" },
   { key: "users.deactivate", name: "Deactivate Users", description: "Deactivate users", module: "users" },
+  { key: "users.delete", name: "Delete Users", description: "Permanently delete user accounts (cleanup of test/duplicate accounts)", module: "users" },
   { key: "roles.manage", name: "Manage Roles", description: "Manage roles and permissions", module: "roles" },
   { key: "departments.create", name: "Create Departments", description: "Create departments", module: "departments" },
   { key: "departments.view", name: "View Departments", description: "View departments", module: "departments" },
@@ -76,7 +77,7 @@ const SYSTEM_ROLES = [
     description: "Full access within a division",
     permissions: [
       "company.manage", "company.view", "company.create", "company.edit", "company.delete",
-      "users.create", "users.view", "users.edit", "users.deactivate",
+      "users.create", "users.view", "users.edit", "users.deactivate", "users.delete",
       "roles.manage",
       "departments.create", "departments.view", "departments.edit", "departments.delete",
       "attendance.view_all", "attendance.edit", "attendance.manage_rules", "attendance.approve_corrections",
@@ -97,7 +98,7 @@ const SYSTEM_ROLES = [
     description: "Human resources management",
     permissions: [
       "company.view",
-      "users.create", "users.view", "users.edit",
+      "users.create", "users.view", "users.edit", "users.delete",
       "departments.view", "departments.edit",
       "attendance.view_all", "attendance.edit", "attendance.approve_corrections",
       "pto.view_all", "pto.approve", "pto.manage_policies",
