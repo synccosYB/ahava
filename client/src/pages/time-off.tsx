@@ -327,17 +327,22 @@ export default function TimeOff() {
               />
             </div>
 
-            {startDate && endDate && daysRequested > 0 && (
-              <div
-                className={`rounded-md border p-3 space-y-1 ${
-                  projectedExceeds
-                    ? "bg-orange-50 dark:bg-orange-950/20 border-orange-400"
-                    : "bg-amber-50 dark:bg-amber-950/20 border-amber-300"
-                }`}
-                data-testid="card-hours-summary"
-              >
-                <p className="text-sm font-semibold">
-                  Hours Requested: <span className="tabular-nums">{hoursRequested}</span> hrs
+            <div
+              className={`rounded-md border p-3 space-y-1 ${
+                projectedExceeds
+                  ? "bg-orange-50 dark:bg-orange-950/20 border-orange-400"
+                  : "bg-amber-50 dark:bg-amber-950/20 border-amber-300"
+              }`}
+              data-testid="card-hours-summary"
+            >
+                <p className="text-sm font-semibold" data-testid="text-hours-breakdown">
+                  Hours Requested:{" "}
+                  <span className="tabular-nums">{daysRequested}</span> work day{daysRequested === 1 ? "" : "s"} ×{" "}
+                  <span className="tabular-nums">8</span> hrs ={" "}
+                  <span className="tabular-nums">{hoursRequested}</span> hrs
+                </p>
+                <p className="text-xs text-muted-foreground" data-testid="text-hours-breakdown-note">
+                  Weekends are excluded. Each work day counts as 8 hours.
                 </p>
                 {selectedBalance && projectedRemaining !== null && (
                   <p className="text-sm" data-testid="text-projected-remaining">
@@ -362,7 +367,6 @@ export default function TimeOff() {
                   </p>
                 )}
               </div>
-            )}
 
             <Button
               onClick={() => submitMutation.mutate()}
@@ -501,11 +505,17 @@ export default function TimeOff() {
               />
             </div>
 
-            {editStartDate && editEndDate && editDaysRequested > 0 && (
-              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3" data-testid="card-edit-hours-summary">
-                <p className="text-sm font-semibold">Hours Requested: <span className="tabular-nums">{editHoursRequested}</span> hrs</p>
+            <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-300 rounded-md p-3 space-y-1" data-testid="card-edit-hours-summary">
+                <p className="text-sm font-semibold" data-testid="text-edit-hours-breakdown">
+                  Hours Requested:{" "}
+                  <span className="tabular-nums">{editDaysRequested}</span> work day{editDaysRequested === 1 ? "" : "s"} ×{" "}
+                  <span className="tabular-nums">8</span> hrs ={" "}
+                  <span className="tabular-nums">{editHoursRequested}</span> hrs
+                </p>
+                <p className="text-xs text-muted-foreground" data-testid="text-edit-hours-breakdown-note">
+                  Weekends are excluded. Each work day counts as 8 hours.
+                </p>
               </div>
-            )}
 
             <Button
               onClick={() => editMutation.mutate()}
