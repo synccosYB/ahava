@@ -383,6 +383,8 @@ export const timeOffRequests = pgTable("time_off_requests", {
   reason: text("reason"),
   exceedsBalance: boolean("exceeds_balance").default(false).notNull(),
   balanceAtSubmission: real("balance_at_submission"),
+  exceedsMaxConsecutive: boolean("exceeds_max_consecutive").default(false).notNull(),
+  maxConsecutiveAtSubmission: real("max_consecutive_at_submission"),
   reviewedBy: varchar("reviewed_by").references(() => users.id),
   reviewedAt: timestamp("reviewed_at"),
   editedAt: timestamp("edited_at"),

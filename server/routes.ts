@@ -3600,11 +3600,7 @@ export async function registerRoutes(
       }
 
       const maxConsecutiveHours = ptoRules.maxConsecutiveHours ?? 80;
-      if (computedHours > maxConsecutiveHours) {
-        return res.status(400).json({
-          message: `Request exceeds the maximum consecutive hours allowed (${maxConsecutiveHours}).`,
-        });
-      }
+      const exceedsMaxConsecutive = computedHours > maxConsecutiveHours;
 
       const advanceCheck = enforcePtoAdvanceNotice(parsed.startDate, ptoRules);
       if (!advanceCheck.allowed) {
@@ -3638,6 +3634,8 @@ export async function registerRoutes(
         hoursRequested: computedHours,
         exceedsBalance,
         balanceAtSubmission: availableBalance ?? null,
+        exceedsMaxConsecutive,
+        maxConsecutiveAtSubmission: maxConsecutiveHours,
       });
 
       runWorkflowsForTrigger({
@@ -3754,11 +3752,7 @@ export async function registerRoutes(
       }
 
       const maxConsecutiveHours = ptoRules.maxConsecutiveHours ?? 80;
-      if (computedHours > maxConsecutiveHours) {
-        return res.status(400).json({
-          message: `Request exceeds the maximum consecutive hours allowed (${maxConsecutiveHours}).`,
-        });
-      }
+      const exceedsMaxConsecutive = computedHours > maxConsecutiveHours;
 
       const advanceCheck = enforcePtoAdvanceNotice(parsed.startDate, ptoRules);
       if (!advanceCheck.allowed) {
@@ -3796,6 +3790,8 @@ export async function registerRoutes(
         endDate: parsed.endDate,
         hoursRequested: computedHours,
         reason: parsed.reason,
+        exceedsMaxConsecutive,
+        maxConsecutiveAtSubmission: maxConsecutiveHours,
         editedAt: new Date(),
       });
 

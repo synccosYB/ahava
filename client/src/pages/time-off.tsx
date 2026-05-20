@@ -408,6 +408,13 @@ export default function TimeOff() {
                           Exceeds Balance
                         </Badge>
                       )}
+                      {request.exceedsMaxConsecutive && (
+                        <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-300 text-xs" data-testid={`badge-exceeds-max-consecutive-${request.id}`}>
+                          <AlertTriangle className="h-3 w-3 mr-1" />
+                          Exceeds Max Consecutive Hours
+                          {request.maxConsecutiveAtSubmission != null ? ` (${request.maxConsecutiveAtSubmission})` : ""}
+                        </Badge>
+                      )}
                     </div>
                     <p className="text-sm font-semibold mt-2">
                       {formatDateRange(request.startDate, request.endDate)}

@@ -170,6 +170,15 @@ export default function ApprovalQueuePage() {
                         </p>
                       </div>
                     )}
+                    {request.exceedsMaxConsecutive && (
+                      <div className="bg-orange-50 dark:bg-orange-950/20 border border-orange-400 rounded-md p-2 flex items-start gap-2" data-testid={`warning-exceeds-max-consecutive-${request.id}`}>
+                        <AlertTriangle className="h-4 w-4 text-orange-600 mt-0.5 shrink-0" />
+                        <p className="text-sm text-orange-800 dark:text-orange-300">
+                          Exceeds max consecutive hours
+                          {request.maxConsecutiveAtSubmission != null ? ` (${request.maxConsecutiveAtSubmission})` : ""}: Requested {request.hoursRequested} hrs
+                        </p>
+                      </div>
+                    )}
                     {request.currentBalance && (() => {
                       const isPartial = partialMode[request.id];
                       const hoursToApprove = isPartial

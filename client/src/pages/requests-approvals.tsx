@@ -716,6 +716,13 @@ function ProcessedRequestDetailDialog({ request, open, onClose }: { request: Pro
                 Exceeds Balance
               </Badge>
             )}
+            {request.exceedsMaxConsecutive && (
+              <Badge variant="destructive" className="flex items-center gap-1" data-testid="detail-badge-exceeds-max-consecutive">
+                <AlertTriangle className="h-3 w-3" />
+                Exceeds max consecutive hours
+                {request.maxConsecutiveAtSubmission != null ? ` (${request.maxConsecutiveAtSubmission})` : ""}
+              </Badge>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
@@ -1274,6 +1281,13 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
                 <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-300" data-testid={`badge-pto-exceeds-balance-${request.id}`}>
                   <AlertTriangle className="h-3 w-3 mr-1" />
                   Exceeds Balance
+                </Badge>
+              )}
+              {request.exceedsMaxConsecutive && (
+                <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-300" data-testid={`badge-pto-exceeds-max-consecutive-${request.id}`}>
+                  <AlertTriangle className="h-3 w-3 mr-1" />
+                  Exceeds max consecutive hours
+                  {request.maxConsecutiveAtSubmission != null ? ` (${request.maxConsecutiveAtSubmission})` : ""}
                 </Badge>
               )}
             </div>
