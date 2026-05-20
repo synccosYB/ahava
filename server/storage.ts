@@ -164,6 +164,8 @@ import {
   biometricSupervisorOverrides,
   type BiometricSupervisorOverride,
   type InsertBiometricSupervisorOverride,
+  isSaneTimeOffHours,
+  MAX_TIME_OFF_HOURS_PER_REQUEST,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, type SQL } from "drizzle-orm";
@@ -1241,10 +1243,16 @@ export class DatabaseStorage implements IStorage {
 
     for (const r of requests) {
       if (r.status !== "approved" && r.status !== "partially_approved") continue;
-      const hours = r.hoursApproved ?? r.hoursRequested ?? 8;
-      if (r.type === "vacation") usedVacation += hours;
-      else if (r.type === "sick") usedSick += hours;
-      else if (r.type === "personal") usedPersonal += hours;
+      const rawHours = r.hoursApproved ?? r.hoursRequested ?? 8;
+      if (!isSaneTimeOffHours(rawHours)) {
+        console.warn(
+          `[time-off balance] skipping corrupt hours value ${rawHours} on request ${r.id} (user ${r.userId}, type ${r.type}). Run the cleanup-invalid-hours job.`,
+        );
+        continue;
+      }
+      if (r.type === "vacation") usedVacation += rawHours;
+      else if (r.type === "sick") usedSick += rawHours;
+      else if (r.type === "personal") usedPersonal += rawHours;
     }
 
     return {
@@ -1946,7 +1954,14 @@ export class DatabaseStorage implements IStorage {
           ));
         let holidayHours = 0;
         for (const r of holidayRequests) {
-          holidayHours += r.hoursApproved ?? r.hoursRequested ?? 8;
+          const rawHours = r.hoursApproved ?? r.hoursRequested ?? 8;
+          if (!isSaneTimeOffHours(rawHours)) {
+            console.warn(
+              `[time-off balance] skipping corrupt holiday hours ${rawHours} on request ${r.id} (user ${r.userId}).`,
+            );
+            continue;
+          }
+          holidayHours += rawHours;
         }
         annualVacation = Math.max(0, annualVacation - holidayHours);
       }
@@ -2039,10 +2054,16 @@ export class DatabaseStorage implements IStorage {
 
     for (const r of requests) {
       if (r.status !== "approved" && r.status !== "partially_approved") continue;
-      const hours = r.hoursApproved ?? r.hoursRequested ?? 8;
-      if (r.type === "vacation") usedVacation += hours;
-      else if (r.type === "sick") usedSick += hours;
-      else if (r.type === "personal") usedPersonal += hours;
+      const rawHours = r.hoursApproved ?? r.hoursRequested ?? 8;
+      if (!isSaneTimeOffHours(rawHours)) {
+        console.warn(
+          `[time-off balance] skipping corrupt hours value ${rawHours} on request ${r.id} (user ${r.userId}, type ${r.type}). Run the cleanup-invalid-hours job.`,
+        );
+        continue;
+      }
+      if (r.type === "vacation") usedVacation += rawHours;
+      else if (r.type === "sick") usedSick += rawHours;
+      else if (r.type === "personal") usedPersonal += rawHours;
     }
 
     const round2 = (n: number) => Math.round(n * 100) / 100;

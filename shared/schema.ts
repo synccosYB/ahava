@@ -391,12 +391,40 @@ export const timeOffRequests = pgTable("time_off_requests", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Maximum hours a single time-off request can plausibly span. A standard
+// full-time year is ~2080 work hours, so anything above this cap is treated as
+// corrupt/garbage input (see task #230 — `hours_requested`/`hours_approved` are
+// `real` columns with no DB-level bound, and a single absurd row was poisoning
+// the running balance calculation with values like `4.25e+37`).
+export const MAX_TIME_OFF_HOURS_PER_REQUEST = 2000;
+
+export function isSaneTimeOffHours(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= MAX_TIME_OFF_HOURS_PER_REQUEST
+  );
+}
+
+const timeOffHoursField = z
+  .number()
+  .finite("Hours must be a finite number")
+  .positive("Hours must be greater than zero")
+  .max(
+    MAX_TIME_OFF_HOURS_PER_REQUEST,
+    `Hours must be ${MAX_TIME_OFF_HOURS_PER_REQUEST} or less`,
+  );
+
 export const insertTimeOffRequestSchema = createInsertSchema(timeOffRequests).omit({
   id: true,
   createdAt: true,
   reviewedBy: true,
   reviewedAt: true,
   editedAt: true,
+}).extend({
+  hoursRequested: timeOffHoursField,
+  hoursApproved: timeOffHoursField.nullable().optional(),
 });
 export type InsertTimeOffRequest = z.infer<typeof insertTimeOffRequestSchema>;
 export type TimeOffRequest = typeof timeOffRequests.$inferSelect;

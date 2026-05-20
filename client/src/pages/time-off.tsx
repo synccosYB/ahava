@@ -16,7 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { formatDate, formatDateRange } from "@/lib/utils";
 import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle, Wallet } from "lucide-react";
 import type { TimeOffRequest, TimeOffBalanceDetailed } from "@shared/schema";
-import { isBalanceTrackedTimeOffType } from "@shared/schema";
+import { isBalanceTrackedTimeOffType, MAX_TIME_OFF_HOURS_PER_REQUEST } from "@shared/schema";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
   vacation: "Vacation",
@@ -179,6 +179,8 @@ export default function TimeOff() {
 
   const daysRequested = calculateDays();
   const hoursRequested = daysRequested * 8;
+  const hoursExceedCap = hoursRequested > MAX_TIME_OFF_HOURS_PER_REQUEST;
+  const editHoursExceedCap = editHoursRequested > MAX_TIME_OFF_HOURS_PER_REQUEST;
 
   const isBalanceTracked = isBalanceTrackedTimeOffType(type);
   const selectedBalance = isBalanceTracked && balance ? balance[type as "vacation" | "sick" | "personal"] : null;
@@ -368,9 +370,18 @@ export default function TimeOff() {
                 )}
               </div>
 
+            {hoursExceedCap && (
+              <p
+                className="text-xs text-destructive flex items-center gap-1"
+                data-testid="error-hours-exceed-cap"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                A single request can't exceed {MAX_TIME_OFF_HOURS_PER_REQUEST} hours. Please shorten the date range.
+              </p>
+            )}
             <Button
               onClick={() => submitMutation.mutate()}
-              disabled={!startDate || !endDate || daysRequested === 0 || submitMutation.isPending}
+              disabled={!startDate || !endDate || daysRequested === 0 || hoursExceedCap || submitMutation.isPending}
               className="w-full"
               data-testid="button-submit-request"
             >
@@ -524,9 +535,19 @@ export default function TimeOff() {
                 </p>
               </div>
 
+            {editHoursExceedCap && (
+              <p
+                className="text-xs text-destructive flex items-center gap-1"
+                data-testid="error-edit-hours-exceed-cap"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                A single request can't exceed {MAX_TIME_OFF_HOURS_PER_REQUEST} hours. Please shorten the date range.
+              </p>
+            )}
+
             <Button
               onClick={() => editMutation.mutate()}
-              disabled={!editStartDate || !editEndDate || editDaysRequested === 0 || editMutation.isPending}
+              disabled={!editStartDate || !editEndDate || editDaysRequested === 0 || editHoursExceedCap || editMutation.isPending}
               className="w-full"
               data-testid="button-save-edit"
             >

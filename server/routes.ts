@@ -6,7 +6,7 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
@@ -4004,7 +4004,12 @@ export async function registerRoutes(
 
   const approvalSchema = z.object({
     comment: z.string().optional(),
-    hoursApproved: z.number().positive().optional(),
+    hoursApproved: z
+      .number()
+      .finite()
+      .positive()
+      .max(MAX_TIME_OFF_HOURS_PER_REQUEST)
+      .optional(),
     approvedEndDate: z.string().optional(),
   });
 
@@ -4121,6 +4126,113 @@ export async function registerRoutes(
       res.status(500).json({ message: "Failed to deny time-off request" });
     }
   });
+
+  // One-time / re-runnable cleanup for corrupt time_off_requests hours values.
+  // Scans for non-finite, negative, zero, or absurdly large hours_requested /
+  // hours_approved values and resets them to a sane fallback (the implied
+  // business-day hours for the request's date range, or null for hoursApproved).
+  // Every fix writes an audit_logs entry so admins can trace what changed.
+  app.post(
+    "/api/time-off/cleanup-invalid-hours",
+    requireAuth,
+    requireRole("admin"),
+    async (req, res) => {
+      try {
+        const actor = (req as any).authUser as User;
+        const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
+        const all = await db.select().from(timeOffRequests);
+        const auditCtx = getAuditContext(req);
+
+        const businessDayHours = (startDate: string, endDate: string): number => {
+          const startMs = new Date(startDate + "T00:00:00Z").getTime();
+          const endMs = new Date(endDate + "T00:00:00Z").getTime();
+          if (isNaN(startMs) || isNaN(endMs) || endMs < startMs) return 8;
+          let days = 0;
+          const cur = new Date(startMs);
+          while (cur.getTime() <= endMs) {
+            const d = cur.getUTCDay();
+            if (d !== 0 && d !== 6) days++;
+            cur.setUTCDate(cur.getUTCDate() + 1);
+          }
+          return Math.max(1, days) * 8;
+        };
+
+        const fixed: Array<{
+          id: string;
+          userId: string;
+          oldHoursRequested: number | null;
+          newHoursRequested: number;
+          oldHoursApproved: number | null;
+          newHoursApproved: number | null;
+        }> = [];
+
+        for (const r of all) {
+          const badRequested = !isSaneTimeOffHours(r.hoursRequested);
+          const badApproved =
+            r.hoursApproved !== null &&
+            r.hoursApproved !== undefined &&
+            !isSaneTimeOffHours(r.hoursApproved);
+          if (!badRequested && !badApproved) continue;
+
+          const safeRequested = badRequested
+            ? Math.min(businessDayHours(r.startDate, r.endDate), MAX_TIME_OFF_HOURS_PER_REQUEST)
+            : r.hoursRequested;
+          const safeApproved = badApproved ? null : r.hoursApproved ?? null;
+
+          fixed.push({
+            id: r.id,
+            userId: r.userId,
+            oldHoursRequested: r.hoursRequested,
+            newHoursRequested: safeRequested,
+            oldHoursApproved: r.hoursApproved ?? null,
+            newHoursApproved: safeApproved,
+          });
+
+          if (dryRun) continue;
+
+          await db.transaction(async (tx) => {
+            await tx
+              .update(timeOffRequests)
+              .set({
+                hoursRequested: safeRequested,
+                hoursApproved: safeApproved,
+              })
+              .where(eq(timeOffRequests.id, r.id));
+
+            await writeAuditLog(
+              {
+                actorUserId: actor.id,
+                targetType: "time_off_request",
+                targetId: r.id,
+                action: "time_off.hours_cleanup",
+                oldValue: {
+                  hoursRequested: r.hoursRequested,
+                  hoursApproved: r.hoursApproved ?? null,
+                },
+                newValue: {
+                  hoursRequested: safeRequested,
+                  hoursApproved: safeApproved,
+                },
+                context: {
+                  employeeId: r.userId,
+                  reason: "Reset out-of-range hours value (task #230 backfill)",
+                  badRequested,
+                  badApproved,
+                },
+                ...auditCtx,
+              },
+              tx,
+            );
+          });
+        }
+
+        res.json({ dryRun, scanned: all.length, fixedCount: fixed.length, fixed });
+      } catch (err) {
+        console.error("Error running time-off hours cleanup:", err);
+        res.status(500).json({ message: "Failed to clean up time-off hours" });
+      }
+    },
+  );
 
   app.get("/api/time-off/processed", requireAuth, requireRole("manager", "admin"), requirePermission("pto.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
