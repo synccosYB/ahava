@@ -41,7 +41,6 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger
 } from "@/components/ui/alert-dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ReviewCyclesSection } from "@/components/review-cycles/review-cycles-section";
 import type {
   Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User,
@@ -683,9 +682,9 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
                       </Badge>
                     </TableCell>
                     <TableCell>v{p.version}</TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        <Button variant="ghost" size="icon" onClick={() => startEdit(p)} data-testid={`button-edit-policy-${p.id}`}>
+                    <TableCell className="w-[1%] whitespace-nowrap">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <Button variant="ghost" size="icon" onClick={() => startEdit(p)} data-testid={`button-edit-policy-${p.id}`} title="Edit policy" aria-label="Edit policy">
                           <Pencil className="h-4 w-4" />
                         </Button>
                         <AssignPolicyDialog policy={p} divisions={divisions || []} />
@@ -694,26 +693,18 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
                             Activate
                           </Button>
                         )}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className={p.isSystemDefault ? "inline-flex cursor-not-allowed" : "inline-flex"}>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="text-destructive hover:text-destructive"
-                                disabled={p.isSystemDefault}
-                                onClick={() => setPolicyToDelete(p)}
-                                data-testid={`button-delete-policy-${p.id}`}
-                                aria-label={p.isSystemDefault ? "System default policies cannot be deleted" : "Delete policy"}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {p.isSystemDefault ? "System default policies cannot be deleted." : "Delete policy"}
-                          </TooltipContent>
-                        </Tooltip>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-destructive hover:text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                          disabled={p.isSystemDefault}
+                          onClick={() => setPolicyToDelete(p)}
+                          data-testid={`button-delete-policy-${p.id}`}
+                          title={p.isSystemDefault ? "System default policies cannot be deleted" : "Delete policy"}
+                          aria-label={p.isSystemDefault ? "System default policies cannot be deleted" : "Delete policy"}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
