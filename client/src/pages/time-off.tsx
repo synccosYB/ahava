@@ -67,7 +67,7 @@ export default function TimeOff() {
     enabled: isAuthenticated,
   });
 
-  const canViewBalance = user?.role === "manager" || user?.role === "admin";
+  const canViewBalance = user?.role === "admin";
   const { data: balance, isLoading: balanceLoading } = useQuery<TimeOffBalanceDetailed>({
     queryKey: ["/api/time-off/my-balance"],
     enabled: isAuthenticated && canViewBalance,
