@@ -1121,20 +1121,38 @@ function DayOfWeekBonusEditor({
   onChange: (next: DayOfWeekBonus[]) => void;
   overlaps: Map<string, OverlapInfo>;
 }) {
-  const [draft, setDraft] = useState<{ dayOfWeek: string; minHoursThreshold: string; bonusType: "money" | "hours"; bonusAmount: string }>({
-    dayOfWeek: "0",
+  const usedDays = useMemo(() => new Set(bonuses.map((b) => b.dayOfWeek)), [bonuses]);
+  const firstAvailableDay = useMemo(() => {
+    for (let d = 0; d <= 6; d++) {
+      if (!usedDays.has(d)) return d;
+    }
+    return null;
+  }, [usedDays]);
+  const allDaysTaken = firstAvailableDay === null;
+
+  const [draft, setDraft] = useState<{ dayOfWeek: string; minHoursThreshold: string; bonusType: "money" | "hours"; bonusAmount: string }>(() => ({
+    dayOfWeek: String(firstAvailableDay ?? 0),
     minHoursThreshold: "8",
     bonusType: "money",
     bonusAmount: "",
-  });
+  }));
+
+  useEffect(() => {
+    if (allDaysTaken) return;
+    const currentDay = parseInt(draft.dayOfWeek, 10);
+    if (!Number.isInteger(currentDay) || usedDays.has(currentDay)) {
+      setDraft((prev) => ({ ...prev, dayOfWeek: String(firstAvailableDay) }));
+    }
+  }, [allDaysTaken, firstAvailableDay, usedDays, draft.dayOfWeek]);
 
   const draftDay = parseInt(draft.dayOfWeek, 10);
-  const draftConflictsWith = bonuses.find((b) => b.dayOfWeek === draftDay);
+  const draftConflictsWith = !allDaysTaken && bonuses.find((b) => b.dayOfWeek === draftDay);
   const draftConflictMessage = draftConflictsWith
     ? `A rule for ${DAY_NAMES[draftDay]} already exists. Edit or remove it first.`
     : null;
 
   const addBonus = () => {
+    if (allDaysTaken) return;
     const threshold = parseFloat(draft.minHoursThreshold);
     const amount = parseFloat(draft.bonusAmount);
     if (Number.isNaN(threshold) || threshold < 0) return;
@@ -1147,8 +1165,18 @@ function DayOfWeekBonusEditor({
       bonusType: draft.bonusType,
       bonusAmount: amount,
     };
-    onChange([...bonuses, next]);
-    setDraft({ ...draft, bonusAmount: "" });
+    const newBonuses = [...bonuses, next];
+    onChange(newBonuses);
+    const newUsed = new Set(newBonuses.map((b) => b.dayOfWeek));
+    let nextDay: number | null = null;
+    for (let d = 0; d <= 6; d++) {
+      if (!newUsed.has(d)) { nextDay = d; break; }
+    }
+    setDraft({
+      ...draft,
+      dayOfWeek: nextDay !== null ? String(nextDay) : draft.dayOfWeek,
+      bonusAmount: "",
+    });
   };
 
   const removeBonus = (id: string) => {
@@ -1160,6 +1188,7 @@ function DayOfWeekBonusEditor({
   };
 
   const canAdd =
+    !allDaysTaken &&
     draft.dayOfWeek !== "" &&
     draft.minHoursThreshold !== "" &&
     parseFloat(draft.minHoursThreshold) >= 0 &&
@@ -1275,12 +1304,22 @@ function DayOfWeekBonusEditor({
       <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
         <div>
           <Label className="text-xs">Day</Label>
-          <Select value={draft.dayOfWeek} onValueChange={(v) => setDraft({ ...draft, dayOfWeek: v })}>
+          <Select
+            value={draft.dayOfWeek}
+            onValueChange={(v) => setDraft({ ...draft, dayOfWeek: v })}
+            disabled={allDaysTaken}
+          >
             <SelectTrigger data-testid="select-dow-bonus-day"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {DAY_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
+              {DAY_OPTIONS.map((o) => {
+                const dayNum = parseInt(o.value, 10);
+                const taken = usedDays.has(dayNum);
+                return (
+                  <SelectItem key={o.value} value={o.value} disabled={taken}>
+                    {o.label}{taken ? " (already has a rule)" : ""}
+                  </SelectItem>
+                );
+              })}
             </SelectContent>
           </Select>
         </div>
@@ -1327,11 +1366,15 @@ function DayOfWeekBonusEditor({
           Add Bonus
         </Button>
       </div>
-      {draftConflictMessage && (
+      {allDaysTaken ? (
+        <p className="text-sm text-muted-foreground flex items-center gap-1" data-testid="hint-dow-bonus-all-days-taken">
+          <AlertCircle className="h-3 w-3" /> All days already have a rule. Edit or remove an existing rule to add a different one.
+        </p>
+      ) : draftConflictMessage ? (
         <p className="text-sm text-destructive flex items-center gap-1" data-testid="error-dow-bonus-draft-conflict">
           <AlertCircle className="h-3 w-3" /> {draftConflictMessage}
         </p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -1353,13 +1396,43 @@ function EarlyArrivalBonusEditor({
   errors: Record<string, string>;
   overlaps: Map<string, OverlapInfo>;
 }) {
-  const [draft, setDraft] = useState<{ cutoffTime: string; bonusAmountPerHour: string; minHoursThreshold: string; daysOfWeek: number[]; applyScope: "entire_shift" | "before_cutoff" }>({
+  const coveredDays = useMemo(() => {
+    const set = new Set<number>();
+    for (const b of bonuses) {
+      for (const d of expandDaysOfWeek(b.daysOfWeek)) set.add(d);
+    }
+    return set;
+  }, [bonuses]);
+  const availableDays = useMemo(
+    () => [0, 1, 2, 3, 4, 5, 6].filter((d) => !coveredDays.has(d)),
+    [coveredDays],
+  );
+  const allDaysTaken = availableDays.length === 0;
+
+  const [draft, setDraft] = useState<{ cutoffTime: string; bonusAmountPerHour: string; minHoursThreshold: string; daysOfWeek: number[]; applyScope: "entire_shift" | "before_cutoff" }>(() => ({
     cutoffTime: "07:00",
     bonusAmountPerHour: "",
     minHoursThreshold: "0",
-    daysOfWeek: [],
+    daysOfWeek: availableDays.length > 0 && availableDays.length < 7 ? [...availableDays] : [],
     applyScope: "entire_shift",
-  });
+  }));
+
+  useEffect(() => {
+    if (allDaysTaken) return;
+    const draftDaySet = new Set(draft.daysOfWeek);
+    const draftIsAllDays = draft.daysOfWeek.length === 0;
+    const conflicts = draftIsAllDays
+      ? coveredDays.size > 0
+      : draft.daysOfWeek.some((d) => coveredDays.has(d));
+    if (conflicts) {
+      const next = availableDays.length < 7 ? [...availableDays] : [];
+      const sameLen = next.length === draft.daysOfWeek.length;
+      const sameMembers = sameLen && next.every((d) => draftDaySet.has(d));
+      if (!sameMembers) {
+        setDraft((prev) => ({ ...prev, daysOfWeek: next }));
+      }
+    }
+  }, [allDaysTaken, availableDays, coveredDays, draft.daysOfWeek]);
 
   const draftConflictDays = useMemo(() => {
     const conflictingDays = new Set<number>();
@@ -1378,6 +1451,7 @@ function EarlyArrivalBonusEditor({
     : null;
 
   const addBonus = () => {
+    if (allDaysTaken) return;
     const perHour = parseFloat(draft.bonusAmountPerHour);
     const threshold = parseFloat(draft.minHoursThreshold);
     if (!/^\d{1,2}:\d{2}$/.test(draft.cutoffTime)) return;
@@ -1392,8 +1466,18 @@ function EarlyArrivalBonusEditor({
       daysOfWeek: draft.daysOfWeek.length > 0 ? [...draft.daysOfWeek].sort() : undefined,
       applyScope: draft.applyScope,
     };
-    onChange([...bonuses, next]);
-    setDraft({ ...draft, bonusAmountPerHour: "" });
+    const newBonuses = [...bonuses, next];
+    onChange(newBonuses);
+    const newCovered = new Set<number>();
+    for (const b of newBonuses) {
+      for (const d of expandDaysOfWeek(b.daysOfWeek)) newCovered.add(d);
+    }
+    const newAvailable = [0, 1, 2, 3, 4, 5, 6].filter((d) => !newCovered.has(d));
+    setDraft({
+      ...draft,
+      bonusAmountPerHour: "",
+      daysOfWeek: newAvailable.length > 0 && newAvailable.length < 7 ? [...newAvailable] : [],
+    });
   };
 
   const removeBonus = (id: string) => {
@@ -1415,6 +1499,7 @@ function EarlyArrivalBonusEditor({
   };
 
   const canAdd =
+    !allDaysTaken &&
     /^\d{1,2}:\d{2}$/.test(draft.cutoffTime) &&
     draft.bonusAmountPerHour !== "" &&
     parseFloat(draft.bonusAmountPerHour) > 0 &&
@@ -1619,14 +1704,21 @@ function EarlyArrivalBonusEditor({
             {DAY_OPTIONS.map((o) => {
               const dayNum = parseInt(o.value, 10);
               const active = draft.daysOfWeek.includes(dayNum);
+              const taken = coveredDays.has(dayNum) && !active;
               return (
                 <button
                   key={o.value}
                   type="button"
                   onClick={() => setDraft({ ...draft, daysOfWeek: toggleDay(draft.daysOfWeek, dayNum) })}
+                  disabled={taken}
                   className={`px-2 py-1 rounded text-xs border transition-colors ${
-                    active ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:border-primary/40"
+                    active
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : taken
+                        ? "bg-muted text-muted-foreground border-muted cursor-not-allowed opacity-60"
+                        : "bg-background hover:border-primary/40"
                   }`}
+                  title={taken ? `${o.label} already has a rule` : undefined}
                   data-testid={`button-early-day-${o.value}`}
                 >
                   {o.label.slice(0, 3)}
@@ -1662,11 +1754,15 @@ function EarlyArrivalBonusEditor({
             "Entire shift" pays the bonus on every hour worked. "Only hours before cutoff" pays only for time worked before the cutoff (e.g. clock-in 05:00 with a 07:00 cutoff = 2 bonus hours).
           </p>
         </div>
-        {draftConflictMessage && (
+        {allDaysTaken ? (
+          <p className="text-sm text-muted-foreground flex items-center gap-1" data-testid="hint-early-bonus-all-days-taken">
+            <AlertCircle className="h-3 w-3" /> All days already have a rule. Edit or remove an existing rule to add a different one.
+          </p>
+        ) : draftConflictMessage ? (
           <p className="text-sm text-destructive flex items-center gap-1" data-testid="error-early-bonus-draft-conflict">
             <AlertCircle className="h-3 w-3" /> {draftConflictMessage}
           </p>
-        )}
+        ) : null}
       </div>
     </div>
   );
