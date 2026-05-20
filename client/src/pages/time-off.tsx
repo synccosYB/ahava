@@ -67,9 +67,10 @@ export default function TimeOff() {
     enabled: isAuthenticated,
   });
 
+  const canViewBalance = user?.role === "manager" || user?.role === "admin";
   const { data: balance, isLoading: balanceLoading } = useQuery<TimeOffBalanceDetailed>({
     queryKey: ["/api/time-off/my-balance"],
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && canViewBalance,
   });
 
   const submitMutation = useMutation({
@@ -206,6 +207,21 @@ export default function TimeOff() {
         subtitle="Request time off and view your upcoming schedule"
       />
 
+      {!canViewBalance ? (
+        <Card data-testid="card-balance-notice">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Wallet className="h-4 w-4 text-muted-foreground" />
+              PTO Balance
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground" data-testid="text-balance-message-notice">
+              Your PTO balance isn't shown here. If you have a balance inquiry, please send a message to HR.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
       <Card data-testid="card-balance-summary">
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
@@ -256,6 +272,7 @@ export default function TimeOff() {
           )}
         </CardContent>
       </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card data-testid="card-new-request">

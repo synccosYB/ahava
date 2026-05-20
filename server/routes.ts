@@ -3760,8 +3760,11 @@ export async function registerRoutes(
 
   app.get("/api/time-off/my-balance", requireAuth, async (req: any, res) => {
     try {
-      const userId = req.authUser.id;
-      const balance = await storage.computeTimeOffBalanceDetailed(userId);
+      const user = req.authUser as User;
+      if (user.role !== "manager" && user.role !== "admin") {
+        return res.status(403).json({ message: "PTO balances are not available here. Please send a message for any balance inquiry." });
+      }
+      const balance = await storage.computeTimeOffBalanceDetailed(user.id);
       res.json(balance);
     } catch (error) {
       console.error("Error fetching balance:", error);
