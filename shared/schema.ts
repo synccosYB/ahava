@@ -395,8 +395,14 @@ export const timeOffRequests = pgTable("time_off_requests", {
 // Maximum hours a single time-off request can plausibly span. A standard
 // full-time year is ~2080 work hours, so anything above this cap is treated as
 // corrupt/garbage input (see task #230 — `hours_requested`/`hours_approved` are
-// `real` columns with no DB-level bound, and a single absurd row was poisoning
-// the running balance calculation with values like `4.25e+37`).
+// `real` columns, and a single absurd row was poisoning the running balance
+// calculation with values like `4.25e+37`).
+//
+// Task #235 mirrors this cap at the DB level via CHECK constraints
+// `time_off_requests_hours_requested_check` and
+// `time_off_requests_hours_approved_check` (migration 0042). If this value
+// changes, ship a follow-up migration that drops + re-adds those constraints
+// with the new bound.
 export const MAX_TIME_OFF_HOURS_PER_REQUEST = 2000;
 
 export function isSaneTimeOffHours(value: unknown): value is number {

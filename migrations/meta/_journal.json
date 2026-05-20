@@ -295,6 +295,13 @@
       "when": 1779200000000,
       "tag": "0041_user_employment_profiles_tax_classification",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1779300000000,
+      "tag": "0042_time_off_requests_hours_check",
+      "breakpoints": true
     }
   ]
 }
