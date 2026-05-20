@@ -25,6 +25,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
+import { buildGoogleMapsUrl, GoogleMapsIconLink } from "@/lib/googleMaps";
 import { PolicyWizard } from "@/components/policy-wizard";
 import { WorkflowBuilder } from "@/components/workflow-builder";
 import { RuleSummary } from "@/components/rule-summary";
@@ -208,7 +209,13 @@ function GeneralSection() {
                 <Input value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} data-testid="input-edit-phone" />
               </div>
               <div>
-                <Label>Address</Label>
+                <div className="flex items-center justify-between">
+                  <Label>Address</Label>
+                  <GoogleMapsIconLink
+                    address={editForm.address}
+                    testId="link-map-address-division-edit"
+                  />
+                </div>
                 <Input value={editForm.address} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} data-testid="input-edit-address" />
               </div>
             </div>
@@ -243,7 +250,23 @@ function GeneralSection() {
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Address</Label>
-              <p className="font-medium" data-testid="text-division-address">{division?.address || "—"}</p>
+              {(() => {
+                const url = division?.address ? buildGoogleMapsUrl(division.address) : null;
+                if (url) {
+                  return (
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium text-primary hover:underline"
+                      data-testid="text-division-address"
+                    >
+                      {division!.address}
+                    </a>
+                  );
+                }
+                return <p className="font-medium" data-testid="text-division-address">{division?.address || "—"}</p>;
+              })()}
             </div>
           </div>
         )}

@@ -24,6 +24,7 @@ import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building } 
 import { PageHeader } from "@/components/page-header";
 import { useAuth } from "@/hooks/use-auth";
 import type { Location, Department, Division, User, LocationAddress } from "@shared/schema";
+import { buildGoogleMapsUrl, GoogleMapsIconLink } from "@/lib/googleMaps";
 
 const NO_COMPANY_MESSAGE =
   "No company is set up yet — please set one up in Rules & Controls → General.";
@@ -331,12 +332,11 @@ function LocationsTab() {
 
   const getAddressSummary = (locId: string) => {
     const addrs = addressCounts[locId] || [];
-    if (addrs.length === 0) return "—";
+    if (addrs.length === 0) return { text: "—", first: null as LocationAddress | null, extra: 0 };
     const first = addrs[0];
     const parts = [first.city, first.state].filter(Boolean).join(", ");
     const display = first.label ? `${first.label}: ${parts || first.address || ""}` : (parts || first.address || "—");
-    if (addrs.length === 1) return display;
-    return `${display} +${addrs.length - 1} more`;
+    return { text: display, first, extra: addrs.length - 1 };
   };
 
   return (
@@ -382,18 +382,25 @@ function LocationsTab() {
                 <div className="space-y-3">
                   {addresses.map((addr, idx) => (
                     <div key={idx} className="border rounded-md p-3 relative" data-testid={`address-entry-${idx}`}>
-                      {(addresses.length > 1 || addr.id) && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="absolute top-1 right-1 h-6 w-6"
-                          onClick={() => removeAddress(idx)}
-                          data-testid={`button-remove-address-${idx}`}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                      )}
+                      <div className="absolute top-1 right-1 flex items-center gap-1">
+                        <GoogleMapsIconLink
+                          address={addr}
+                          testId={`link-map-address-${idx}`}
+                          className="inline-flex items-center gap-1 text-xs text-primary hover:underline px-1"
+                        />
+                        {(addresses.length > 1 || addr.id) && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={() => removeAddress(idx)}
+                            data-testid={`button-remove-address-${idx}`}
+                          >
+                            <X className="h-3 w-3" />
+                          </Button>
+                        )}
+                      </div>
                       <div className="space-y-2">
                         <div>
                           <Label className="text-xs">Label</Label>
@@ -498,7 +505,26 @@ function LocationsTab() {
                     <TableCell className="font-medium" data-testid={`text-location-name-${loc.id}`}>{loc.name}</TableCell>
                     <TableCell data-testid={`text-location-code-${loc.id}`}>{loc.code || "—"}</TableCell>
                     <TableCell data-testid={`text-location-address-${loc.id}`}>
-                      {getAddressSummary(loc.id)}
+                      {(() => {
+                        const summary = getAddressSummary(loc.id);
+                        if (!summary.first) return summary.text;
+                        const url = buildGoogleMapsUrl(summary.first);
+                        const label = summary.extra > 0
+                          ? `${summary.text} +${summary.extra} more`
+                          : summary.text;
+                        if (!url) return label;
+                        return (
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary hover:underline"
+                            data-testid={`link-map-address-${loc.id}`}
+                          >
+                            {label}
+                          </a>
+                        );
+                      })()}
                     </TableCell>
                     <TableCell>
                       <Badge variant={loc.isActive ? "default" : "secondary"} data-testid={`badge-location-status-${loc.id}`}>
