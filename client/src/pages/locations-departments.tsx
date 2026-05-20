@@ -166,17 +166,20 @@ export default function LocationsDepartmentsPage() {
   );
 }
 
+type LocationWithCompanies = Location & { companyIds?: string[] };
+
 function LocationsTab() {
   const { toast } = useToast();
   const { user, isLoading: authLoading } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", code: "", timezone: "" });
+  const [companyIds, setCompanyIds] = useState<string[]>([]);
   const [addresses, setAddresses] = useState<AddressEntry[]>([emptyAddress()]);
   const [addressCounts, setAddressCounts] = useState<Record<string, LocationAddress[]>>({});
   const [editOriginalAddresses, setEditOriginalAddresses] = useState<LocationAddress[]>([]);
 
-  const { data: locations, isLoading } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { data: locations, isLoading } = useQuery<LocationWithCompanies[]>({ queryKey: ["/api/locations"] });
   const { data: divisions, isLoading: divisionsLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
   const divisionId = resolveActiveCompanyId(user, divisions);
   const hasCompany = !!divisionId;
@@ -207,15 +210,22 @@ function LocationsTab() {
   const createMutation = useMutation({
     mutationFn: async () => {
       let locationId = editingId;
+      const effectiveCompanyIds = companyIds.length > 0
+        ? companyIds
+        : (divisionId ? [divisionId] : []);
       if (editingId) {
-        await apiRequest("PATCH", `/api/locations/${editingId}`, form);
+        await apiRequest("PATCH", `/api/locations/${editingId}`, {
+          ...form,
+          companyIds: effectiveCompanyIds,
+        });
       } else {
-        if (!divisionId) {
+        if (effectiveCompanyIds.length === 0) {
           throw new Error(NO_COMPANY_MESSAGE);
         }
         const res = await apiRequest("POST", "/api/locations", {
           ...form,
-          companyId: divisionId,
+          companyId: effectiveCompanyIds[0],
+          companyIds: effectiveCompanyIds,
         });
         const created = await res.json();
         locationId = created.id;
@@ -279,17 +289,22 @@ function LocationsTab() {
 
   const resetForm = () => {
     setForm({ name: "", code: "", timezone: "" });
+    setCompanyIds(divisionId ? [divisionId] : []);
     setAddresses([emptyAddress()]);
     setEditOriginalAddresses([]);
     setEditingId(null);
   };
 
-  const startEdit = async (loc: Location) => {
+  const startEdit = async (loc: LocationWithCompanies) => {
     setForm({
       name: loc.name,
       code: loc.code || "",
       timezone: loc.timezone || "",
     });
+    const initial = (loc.companyIds && loc.companyIds.length > 0)
+      ? loc.companyIds
+      : (loc.companyId ? [loc.companyId] : []);
+    setCompanyIds(initial);
     setEditingId(loc.id);
 
     try {
@@ -371,6 +386,42 @@ function LocationsTab() {
               <div><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-location-name" /></div>
               <div><Label>Code</Label><Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} data-testid="input-location-code" /></div>
               <div><Label>Timezone</Label><Input value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} placeholder="America/New_York" data-testid="input-location-timezone" /></div>
+              {divisions && divisions.length > 0 && (
+                <div data-testid="field-location-companies">
+                  <Label>Companies *</Label>
+                  <p className="text-xs text-muted-foreground mb-2">A location can belong to one or more companies.</p>
+                  <div className="space-y-1 border rounded-md p-2 max-h-40 overflow-y-auto">
+                    {divisions.map((d) => {
+                      const checked = companyIds.includes(d.id);
+                      return (
+                        <label
+                          key={d.id}
+                          className="flex items-center gap-2 cursor-pointer text-sm py-0.5"
+                          data-testid={`label-location-company-${d.id}`}
+                        >
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(v) => {
+                              setCompanyIds((prev) =>
+                                v
+                                  ? Array.from(new Set([...prev, d.id]))
+                                  : prev.filter((id) => id !== d.id),
+                              );
+                            }}
+                            data-testid={`checkbox-location-company-${d.id}`}
+                          />
+                          <span>{d.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {companyIds.length === 0 && (
+                    <p className="text-xs text-destructive mt-1" data-testid="text-location-companies-error">
+                      Pick at least one company.
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="border-t pt-3 mt-3">
                 <div className="flex items-center justify-between mb-2">
@@ -462,7 +513,8 @@ function LocationsTab() {
                 disabled={
                   !form.name ||
                   createMutation.isPending ||
-                  (!editingId && (companyContextLoading || !divisionId))
+                  companyIds.length === 0 ||
+                  (!editingId && companyContextLoading)
                 }
                 data-testid="button-save-location"
               >
@@ -494,6 +546,7 @@ function LocationsTab() {
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Code</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Companies</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Addresses</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
@@ -504,6 +557,26 @@ function LocationsTab() {
                   <TableRow key={loc.id} data-testid={`row-location-${loc.id}`}>
                     <TableCell className="font-medium" data-testid={`text-location-name-${loc.id}`}>{loc.name}</TableCell>
                     <TableCell data-testid={`text-location-code-${loc.id}`}>{loc.code || "—"}</TableCell>
+                    <TableCell data-testid={`text-location-companies-${loc.id}`}>
+                      {(() => {
+                        const ids = (loc.companyIds && loc.companyIds.length > 0)
+                          ? loc.companyIds
+                          : (loc.companyId ? [loc.companyId] : []);
+                        if (ids.length === 0) return "—";
+                        const names = ids
+                          .map((id) => divisions?.find((d) => d.id === id)?.name)
+                          .filter(Boolean) as string[];
+                        return (
+                          <div className="flex flex-wrap gap-1">
+                            {names.map((n, i) => (
+                              <Badge key={i} variant="secondary" data-testid={`badge-location-company-${loc.id}-${i}`}>
+                                {n}
+                              </Badge>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </TableCell>
                     <TableCell data-testid={`text-location-address-${loc.id}`}>
                       {(() => {
                         const summary = getAddressSummary(loc.id);

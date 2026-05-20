@@ -9,6 +9,8 @@ import {
   locations,
   type Location,
   type InsertLocation,
+  locationCompanies,
+  type LocationCompany,
   locationAddresses,
   type LocationAddress,
   type InsertLocationAddress,
@@ -205,6 +207,9 @@ export interface IStorage {
   createLocation(location: InsertLocation): Promise<Location>;
   updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined>;
   deleteLocation(id: string): Promise<void>;
+  getLocationCompanyIds(locationId: string): Promise<string[]>;
+  getLocationCompanyIdsMap(locationIds: string[]): Promise<Record<string, string[]>>;
+  setLocationCompanyIds(locationId: string, companyIds: string[]): Promise<string[]>;
 
   getLocationAddresses(locationId: string): Promise<LocationAddress[]>;
   getLocationAddress(id: string): Promise<LocationAddress | undefined>;
@@ -713,8 +718,32 @@ export class DatabaseStorage implements IStorage {
     return location;
   }
 
+  // Locations may belong to multiple companies via `location_companies`. The
+  // primary `locations.companyId` is also honored so single-tenant rows that
+  // pre-date the join (or were inserted bypassing the join) still resolve.
   async getLocationsByCompany(companyId: string): Promise<Location[]> {
-    return db.select().from(locations).where(eq(locations.companyId, companyId));
+    const rows = await db
+      .select({
+        id: locations.id,
+        companyId: locations.companyId,
+        name: locations.name,
+        code: locations.code,
+        timezone: locations.timezone,
+        isActive: locations.isActive,
+        createdAt: locations.createdAt,
+        updatedAt: locations.updatedAt,
+      })
+      .from(locations)
+      .leftJoin(locationCompanies, eq(locationCompanies.locationId, locations.id))
+      .where(or(eq(locations.companyId, companyId), eq(locationCompanies.companyId, companyId)));
+    const seen = new Set<string>();
+    const out: Location[] = [];
+    for (const r of rows) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(r as Location);
+    }
+    return out;
   }
 
   async getAllLocations(): Promise<Location[]> {
@@ -723,16 +752,77 @@ export class DatabaseStorage implements IStorage {
 
   async createLocation(location: InsertLocation): Promise<Location> {
     const [created] = await db.insert(locations).values(location).returning();
+    if (created.companyId) {
+      await db
+        .insert(locationCompanies)
+        .values({ locationId: created.id, companyId: created.companyId })
+        .onConflictDoNothing();
+    }
     return created;
   }
 
   async updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined> {
     const [updated] = await db.update(locations).set(location).where(eq(locations.id, id)).returning();
+    if (updated && location.companyId) {
+      await db
+        .insert(locationCompanies)
+        .values({ locationId: updated.id, companyId: updated.companyId })
+        .onConflictDoNothing();
+    }
     return updated;
   }
 
   async deleteLocation(id: string): Promise<void> {
+    await db.delete(locationCompanies).where(eq(locationCompanies.locationId, id));
     await db.delete(locations).where(eq(locations.id, id));
+  }
+
+  async getLocationCompanyIds(locationId: string): Promise<string[]> {
+    const rows = await db
+      .select({ companyId: locationCompanies.companyId })
+      .from(locationCompanies)
+      .where(eq(locationCompanies.locationId, locationId));
+    return rows.map((r) => r.companyId);
+  }
+
+  async getLocationCompanyIdsMap(locationIds: string[]): Promise<Record<string, string[]>> {
+    const out: Record<string, string[]> = {};
+    if (locationIds.length === 0) return out;
+    const rows = await db
+      .select({ locationId: locationCompanies.locationId, companyId: locationCompanies.companyId })
+      .from(locationCompanies)
+      .where(inArray(locationCompanies.locationId, locationIds));
+    for (const r of rows) {
+      (out[r.locationId] ||= []).push(r.companyId);
+    }
+    return out;
+  }
+
+  // Replace the company set for a location. Always keeps `locations.companyId`
+  // (the primary/legacy column) as one of the entries so existing
+  // single-tenant code paths keep working.
+  async setLocationCompanyIds(locationId: string, companyIds: string[]): Promise<string[]> {
+    const loc = await this.getLocation(locationId);
+    if (!loc) return [];
+    const dedup = Array.from(new Set(companyIds.filter(Boolean)));
+    // Ensure the primary companyId stays included unless explicitly being
+    // replaced — if the caller didn't list it but provided at least one other,
+    // promote the first listed companyId to primary for backward compatibility.
+    let primary = loc.companyId;
+    if (dedup.length > 0 && primary && !dedup.includes(primary)) {
+      primary = dedup[0];
+      await db.update(locations).set({ companyId: primary }).where(eq(locations.id, locationId));
+    } else if (dedup.length === 0 && primary) {
+      dedup.push(primary);
+    }
+    await db.delete(locationCompanies).where(eq(locationCompanies.locationId, locationId));
+    if (dedup.length > 0) {
+      await db
+        .insert(locationCompanies)
+        .values(dedup.map((companyId) => ({ locationId, companyId })))
+        .onConflictDoNothing();
+    }
+    return dedup;
   }
 
   async getLocationAddresses(locationId: string): Promise<LocationAddress[]> {
@@ -1526,52 +1616,6 @@ export class DatabaseStorage implements IStorage {
 
   async deleteCompany(id: string): Promise<void> {
     await db.delete(companies).where(eq(companies.id, id));
-  }
-
-  async getLocation(id: string): Promise<Location | undefined> {
-    const [location] = await db.select().from(locations).where(eq(locations.id, id));
-    return location;
-  }
-
-  async getLocationsByCompany(companyId: string): Promise<Location[]> {
-    return db.select().from(locations).where(eq(locations.companyId, companyId));
-  }
-
-  async createLocation(location: InsertLocation): Promise<Location> {
-    const [created] = await db.insert(locations).values(location).returning();
-    return created;
-  }
-
-  async updateLocation(id: string, location: Partial<InsertLocation>): Promise<Location | undefined> {
-    const [updated] = await db.update(locations).set(location).where(eq(locations.id, id)).returning();
-    return updated;
-  }
-
-  async deleteLocation(id: string): Promise<void> {
-    await db.delete(locations).where(eq(locations.id, id));
-  }
-
-  async getLocationAddresses(locationId: string): Promise<LocationAddress[]> {
-    return db.select().from(locationAddresses).where(eq(locationAddresses.locationId, locationId));
-  }
-
-  async getLocationAddress(id: string): Promise<LocationAddress | undefined> {
-    const [addr] = await db.select().from(locationAddresses).where(eq(locationAddresses.id, id));
-    return addr;
-  }
-
-  async createLocationAddress(address: InsertLocationAddress): Promise<LocationAddress> {
-    const [created] = await db.insert(locationAddresses).values(address).returning();
-    return created;
-  }
-
-  async updateLocationAddress(id: string, address: Partial<InsertLocationAddress>): Promise<LocationAddress | undefined> {
-    const [updated] = await db.update(locationAddresses).set(address).where(eq(locationAddresses.id, id)).returning();
-    return updated;
-  }
-
-  async deleteLocationAddress(id: string): Promise<void> {
-    await db.delete(locationAddresses).where(eq(locationAddresses.id, id));
   }
 
   async getRole(id: string): Promise<Role | undefined> {

@@ -302,6 +302,13 @@
       "when": 1779300000000,
       "tag": "0042_time_off_requests_hours_check",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1779400000000,
+      "tag": "0043_location_companies",
+      "breakpoints": true
     }
   ]
 }

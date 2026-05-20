@@ -420,7 +420,14 @@ export async function registerRoutes(
     if (parsed.data.companyId) {
       if (parsed.data.locationId) {
         const loc = await storage.getLocation(parsed.data.locationId);
-        if (!loc || loc.companyId !== parsed.data.companyId) {
+        if (!loc) {
+          return res.status(400).json({ message: "Location does not belong to the selected company" });
+        }
+        const locCompanies = new Set([
+          ...(loc.companyId ? [loc.companyId] : []),
+          ...(await storage.getLocationCompanyIds(loc.id)),
+        ]);
+        if (!locCompanies.has(parsed.data.companyId)) {
           return res.status(400).json({ message: "Location does not belong to the selected company" });
         }
       }
@@ -563,7 +570,14 @@ export async function registerRoutes(
       if (keepCompatible) {
         if (existing.locationId) {
           const loc = await storage.getLocation(existing.locationId);
-          if (loc && loc.companyId === companyId) nextLocationId = existing.locationId;
+          if (loc) {
+            const locCompanyIds = await storage.getLocationCompanyIds(loc.id);
+            const merged = new Set([
+              ...(loc.companyId ? [loc.companyId] : []),
+              ...locCompanyIds,
+            ]);
+            if (merged.has(companyId)) nextLocationId = existing.locationId;
+          }
         }
         if (existing.departmentId) {
           const dept = await storage.getDepartment(existing.departmentId);
@@ -685,7 +699,14 @@ export async function registerRoutes(
     if (next.companyId) {
       if (next.locationId) {
         const loc = await storage.getLocation(next.locationId);
-        if (!loc || loc.companyId !== next.companyId) {
+        if (!loc) {
+          return res.status(400).json({ message: "Location does not belong to the selected company" });
+        }
+        const locCompanies = new Set([
+          ...(loc.companyId ? [loc.companyId] : []),
+          ...(await storage.getLocationCompanyIds(loc.id)),
+        ]);
+        if (!locCompanies.has(next.companyId)) {
           return res.status(400).json({ message: "Location does not belong to the selected company" });
         }
       }
@@ -1655,22 +1676,46 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
+  // Task #258: locations can belong to multiple companies. The list/detail
+  // responses include a `companyIds` array (always non-empty: at minimum the
+  // primary `locations.companyId`). POST/PATCH accept an optional
+  // `companyIds: string[]` body field; when omitted the location keeps its
+  // existing companies.
+  const enrichLocation = async (loc: Location) => {
+    const companyIds = await storage.getLocationCompanyIds(loc.id);
+    const merged = Array.from(new Set([
+      ...(loc.companyId ? [loc.companyId] : []),
+      ...companyIds,
+    ]));
+    return { ...loc, companyIds: merged };
+  };
+  const enrichLocations = async (locs: Location[]) => {
+    const map = await storage.getLocationCompanyIdsMap(locs.map((l) => l.id));
+    return locs.map((l) => ({
+      ...l,
+      companyIds: Array.from(new Set([
+        ...(l.companyId ? [l.companyId] : []),
+        ...(map[l.id] || []),
+      ])),
+    }));
+  };
+
   app.get("/api/locations", requireAuth, requirePermission("locations.view"), async (req, res) => {
     const user = (req as any).authUser as User;
     const companyId = req.query.companyId as string | undefined;
 
     if (user.role === "admin") {
       if (companyId) {
-        return res.json(await storage.getLocationsByCompany(companyId));
+        return res.json(await enrichLocations(await storage.getLocationsByCompany(companyId)));
       }
-      return res.json(await storage.getAllLocations());
+      return res.json(await enrichLocations(await storage.getAllLocations()));
     }
     if (user.companyId) {
       const locs = await storage.getLocationsByCompany(user.companyId);
       if (user.locationId) {
-        return res.json(locs.filter(l => l.id === user.locationId));
+        return res.json(await enrichLocations(locs.filter(l => l.id === user.locationId)));
       }
-      return res.json(locs);
+      return res.json(await enrichLocations(locs));
     }
     return res.json([]);
   });
@@ -1679,32 +1724,53 @@ export async function registerRoutes(
     const user = (req as any).authUser as User;
     const location = await storage.getLocation(req.params.id);
     if (!location) return res.status(404).json({ message: "Location not found" });
-    if (user.role !== "admin" && user.companyId !== location.companyId) {
+    const companyIds = await storage.getLocationCompanyIds(req.params.id);
+    const merged = Array.from(new Set([
+      ...(location.companyId ? [location.companyId] : []),
+      ...companyIds,
+    ]));
+    if (user.role !== "admin" && (!user.companyId || !merged.includes(user.companyId))) {
       return res.status(403).json({ message: "Forbidden" });
     }
     if (user.role !== "admin" && user.locationId && user.locationId !== location.id) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    res.json(location);
+    res.json({ ...location, companyIds: merged });
+  });
+
+  const locationBodySchema = insertLocationSchema.extend({
+    companyIds: z.array(z.string().min(1)).optional(),
   });
 
   app.post("/api/locations", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
-    const parsed = insertLocationSchema.safeParse(req.body);
+    const parsed = locationBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
     }
-    const location = await storage.createLocation(parsed.data);
-    res.status(201).json(location);
+    const { companyIds, ...locationData } = parsed.data;
+    // If extra companyIds were supplied but no primary companyId, pick the first.
+    if (!locationData.companyId && companyIds && companyIds.length > 0) {
+      locationData.companyId = companyIds[0];
+    }
+    const location = await storage.createLocation(locationData);
+    if (companyIds && companyIds.length > 0) {
+      await storage.setLocationCompanyIds(location.id, companyIds);
+    }
+    res.status(201).json(await enrichLocation(location));
   });
 
   app.patch("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
-    const parsed = insertLocationSchema.partial().safeParse(req.body);
+    const parsed = locationBodySchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
     }
-    const location = await storage.updateLocation(req.params.id, parsed.data);
+    const { companyIds, ...locationData } = parsed.data;
+    const location = await storage.updateLocation(req.params.id, locationData);
     if (!location) return res.status(404).json({ message: "Location not found" });
-    res.json(location);
+    if (companyIds !== undefined) {
+      await storage.setLocationCompanyIds(location.id, companyIds);
+    }
+    res.json(await enrichLocation(location));
   });
 
   app.delete("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
@@ -1805,7 +1871,17 @@ export async function registerRoutes(
     const uniqueManagerIds = [...new Set(mgrParsed.data)];
     if (parsed.data.locationId && parsed.data.companyId) {
       const location = await storage.getLocation(parsed.data.locationId);
-      if (!location || location.companyId !== parsed.data.companyId) {
+      if (!location) {
+        return res.status(400).json({ message: "Location does not belong to the specified company" });
+      }
+      // Task #258: locations can belong to multiple companies. Membership is
+      // valid if the requested company is the legacy primary OR is linked via
+      // the `location_companies` join table.
+      const linkedCompanyIds = new Set([
+        ...(location.companyId ? [location.companyId] : []),
+        ...(await storage.getLocationCompanyIds(location.id)),
+      ]);
+      if (!linkedCompanyIds.has(parsed.data.companyId)) {
         return res.status(400).json({ message: "Location does not belong to the specified company" });
       }
     }

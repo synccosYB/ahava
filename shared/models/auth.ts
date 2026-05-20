@@ -59,6 +59,31 @@ export const insertLocationSchema = createInsertSchema(locations).omit({
 export type InsertLocation = z.infer<typeof insertLocationSchema>;
 export type Location = typeof locations.$inferSelect;
 
+// Task #258: locations can belong to multiple companies. `locations.companyId`
+// remains the "primary" company (and the legacy single-tenant default) but the
+// join table is the source of truth for company-scoped filtering.
+export const locationCompanies = pgTable(
+  "location_companies",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    locationId: varchar("location_id").notNull().references(() => locations.id, { onDelete: "cascade" }),
+    companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    unique("location_companies_unique").on(table.locationId, table.companyId),
+    index("IDX_location_companies_company").on(table.companyId),
+    index("IDX_location_companies_location").on(table.locationId),
+  ],
+);
+
+export const insertLocationCompanySchema = createInsertSchema(locationCompanies).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertLocationCompany = z.infer<typeof insertLocationCompanySchema>;
+export type LocationCompany = typeof locationCompanies.$inferSelect;
+
 export const locationAddresses = pgTable("location_addresses", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   locationId: varchar("location_id").notNull().references(() => locations.id, { onDelete: "cascade" }),
