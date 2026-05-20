@@ -103,7 +103,7 @@ function NoCompanyEmptyState({ entity }: { entity: string }) {
         <div className="space-y-1">
           <p className="font-medium">Set up your company first</p>
           <p className="text-sm text-muted-foreground max-w-md">
-            You need to create your company (division) before adding {entity}. Head to Rules &amp; Controls
+            You need to create your company before adding {entity}. Head to Rules &amp; Controls
             → General to set it up.
           </p>
         </div>
@@ -149,7 +149,7 @@ function resolveActiveCompanyId(
 export default function LocationsDepartmentsPage() {
   return (
     <div className="max-w-6xl space-y-6" data-testid="locations-departments-page">
-      <PageHeader title="Locations & Departments" subtitle="Configure division locations and department structure" />
+      <PageHeader title="Locations & Departments" subtitle="Configure company locations and department structure" />
       <Tabs defaultValue="locations" data-testid="tabs-loc-dept">
         <TabsList>
           <TabsTrigger value="locations" data-testid="tab-locations">

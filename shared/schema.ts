@@ -254,6 +254,7 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   overtimeEligible: boolean("overtime_eligible").default(false).notNull(),
   holidayPayEnabled: boolean("holiday_pay_enabled").default(false).notNull(),
   voluntaryPayEnabled: boolean("voluntary_pay_enabled").default(false).notNull(),
+  taxClassification: varchar("tax_classification", { length: 10 }).default("W-2").notNull(),
   hireDate: date("hire_date"),
   terminationDate: date("termination_date"),
   createdAt: timestamp("created_at").defaultNow(),

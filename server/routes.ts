@@ -392,6 +392,7 @@ export async function registerRoutes(
     locationId: z.string().optional().nullable(),
     departmentId: z.string().optional().nullable(),
     employmentType: z.string().optional(),
+    taxClassification: z.enum(["W-2", "1099"]).optional(),
     hireDate: z.string().optional(),
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
@@ -446,19 +447,21 @@ export async function registerRoutes(
       departmentId: parsed.data.departmentId || null,
     });
 
-    if (parsed.data.employmentType || parsed.data.payType || parsed.data.hourlyRate || parsed.data.weeklySalary || parsed.data.hireDate) {
-      await storage.createEmploymentProfile({
-        userId: newUser.id,
-        employmentType: parsed.data.employmentType || "full_time",
-        payType: parsed.data.payType || "hourly",
-        hourlyRate: parsed.data.hourlyRate || null,
-        weeklySalary: parsed.data.weeklySalary || null,
-        hireDate: parsed.data.hireDate || null,
-        overtimeEligible: false,
-        holidayPayEnabled: false,
-        voluntaryPayEnabled: false,
-      });
-    }
+    // Always create an employment profile so every new hire has a tax
+    // classification on record (defaults to W-2). Reports and payroll filters
+    // depend on this field being present.
+    await storage.createEmploymentProfile({
+      userId: newUser.id,
+      employmentType: parsed.data.employmentType || "full_time",
+      taxClassification: parsed.data.taxClassification || "W-2",
+      payType: parsed.data.payType || "hourly",
+      hourlyRate: parsed.data.hourlyRate || null,
+      weeklySalary: parsed.data.weeklySalary || null,
+      hireDate: parsed.data.hireDate || null,
+      overtimeEligible: false,
+      holidayPayEnabled: false,
+      voluntaryPayEnabled: false,
+    });
 
     try {
       const actor = (req as any).authUser as User | undefined;
@@ -1856,10 +1859,12 @@ export async function registerRoutes(
         role: user.role,
 
         divisionName: company?.name ?? "—",
+        companyName: company?.name ?? "—",
         locationName: location?.name ?? "—",
         departmentName: department?.name ?? "—",
 
         employmentType: emp?.employmentType ?? "—",
+        taxClassification: emp?.taxClassification ?? "W-2",
         payType: emp?.payType ?? "—",
         hireDate: emp?.hireDate ?? null,
         overtimeEligible: emp?.overtimeEligible ?? false,
@@ -1872,6 +1877,17 @@ export async function registerRoutes(
       console.error("[GET /api/profile/details]", err);
       return res.status(500).json({ message: "Failed to load profile details" });
     }
+  });
+
+  app.get("/api/employment-profiles", requireAuth, async (req, res) => {
+    const authUser = (req as any).authUser as User;
+    const all = await storage.getAllEmploymentProfiles();
+    if (authUser.role === "admin") return res.json(all);
+    if (authUser.role === "manager") {
+      const scopedIds = await storage.getScopedUserIds(authUser);
+      return res.json(all.filter((p) => scopedIds.has(p.userId)));
+    }
+    res.json(all.filter((p) => p.userId === authUser.id));
   });
 
   app.get("/api/employment-profiles/:userId", requireAuth, async (req, res) => {
@@ -4506,15 +4522,19 @@ export async function registerRoutes(
 
       const allDepartments = await storage.getAllDepartments();
       const allLocations = await storage.getAllLocations();
+      const allCompanies = await storage.getAllCompanies();
 
       let departments = allDepartments;
       let locations = allLocations;
+      let companies = allCompanies;
 
       if (user.role !== "admin") {
         const deptIds = new Set(scopedUsers.map(u => u.departmentId).filter(Boolean) as string[]);
         const locIds = new Set(scopedUsers.map(u => u.locationId).filter(Boolean) as string[]);
+        const compIds = new Set(scopedUsers.map(u => u.companyId).filter(Boolean) as string[]);
         departments = allDepartments.filter(d => deptIds.has(d.id));
         locations = allLocations.filter(l => locIds.has(l.id));
+        companies = allCompanies.filter(c => compIds.has(c.id));
       }
 
       res.json({
@@ -4522,6 +4542,8 @@ export async function registerRoutes(
         departments: departments.map(d => ({ id: d.id, name: d.name }))
           .sort((a, b) => a.name.localeCompare(b.name)),
         locations: locations.map(l => ({ id: l.id, name: l.name }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+        companies: companies.map(c => ({ id: c.id, name: c.name }))
           .sort((a, b) => a.name.localeCompare(b.name)),
       });
     },
@@ -4542,6 +4564,11 @@ export async function registerRoutes(
     departmentIds: idArrayField,
     employeeIds: idArrayField,
     locationIds: idArrayField,
+    companyIds: idArrayField,
+    taxClassifications: z.preprocess(
+      (v) => (typeof v === "string" ? [v] : v),
+      z.array(z.enum(["W-2", "1099"])).optional(),
+    ),
   });
 
   app.post("/api/reports/generate", requireAuth, requireRole("manager", "admin"), requirePermission("reports.view"), async (req, res) => {
@@ -4560,7 +4587,7 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid report parameters", errors: parsed.error.flatten() });
     }
 
-    const { reportType, startDate, endDate, department, employeeId, status, departmentIds, employeeIds, locationIds } = parsed.data;
+    const { reportType, startDate, endDate, department, employeeId, status, departmentIds, employeeIds, locationIds, companyIds, taxClassifications } = parsed.data;
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const depts = await storage.getAllDepartments();
     const deptMap = new Map(depts.map(d => [d.id, d.name]));
@@ -4597,6 +4624,28 @@ export async function registerRoutes(
       const set = new Set(locationIds);
       filteredUsers = filteredUsers.filter(u => u.locationId && set.has(u.locationId));
     }
+    if (companyIds && companyIds.length > 0) {
+      const set = new Set(companyIds);
+      filteredUsers = filteredUsers.filter(u => u.companyId && set.has(u.companyId));
+    }
+
+    // Tax classification filter requires loading employment profiles. Always
+    // load them when any rows survive filtering — the column is also included
+    // in the response payload (and in CSV exports) so HR can pull e.g.
+    // "Ahava → 1099".
+    const profilesByUser = new Map<string, { taxClassification: string }>();
+    if (filteredUsers.length > 0) {
+      await Promise.all(
+        filteredUsers.map(async (u) => {
+          const p = await storage.getEmploymentProfile(u.id);
+          profilesByUser.set(u.id, { taxClassification: p?.taxClassification || "W-2" });
+        })
+      );
+    }
+    if (taxClassifications && taxClassifications.length > 0) {
+      const set = new Set(taxClassifications);
+      filteredUsers = filteredUsers.filter(u => set.has(profilesByUser.get(u.id)?.taxClassification as any || "W-2"));
+    }
 
     const userIds = new Set(filteredUsers.map(u => u.id));
     const filteredAttendance = attendance.filter(a => userIds.has(a.employeeId));
@@ -4630,6 +4679,7 @@ export async function registerRoutes(
         employeeId: user.id,
         employeeName: `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Unknown",
         department: user.departmentId ? (deptMap.get(user.departmentId) || "Unassigned") : "Unassigned",
+        taxClassification: profilesByUser.get(user.id)?.taxClassification || "W-2",
         totalHours: Math.round(totalHours * 10) / 10,
         daysWorked,
         daysOff,
@@ -5670,7 +5720,7 @@ export async function registerRoutes(
         approvedExceptionsForBatch.map(e => e.punchLogId).filter(Boolean) as string[]
       );
 
-      type DayRow = { employeeName: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
+      type DayRow = { employeeName: string; taxClassification: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
       const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
@@ -5726,6 +5776,7 @@ export async function registerRoutes(
         } else {
           empDays.set(dateKey, {
             employeeName,
+            taxClassification: profile?.taxClassification || "W-2",
             amount,
             payType,
             department,
@@ -5747,7 +5798,7 @@ export async function registerRoutes(
       }
 
       let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
-      csv += "Employee Name,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
+      csv += "Employee Name,Tax Classification,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
 
       for (const [, dayMap] of employeeRecords) {
         const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
@@ -5758,15 +5809,16 @@ export async function registerRoutes(
         for (const row of rows) {
           const bonusAmtCell = row.bonusAmount > 0 ? formatAmountCurrency(row.bonusAmount) : "";
           const bonusDescCell = row.bonusDescriptions.length > 0 ? escapeCSV(row.bonusDescriptions.join("; ")) : "";
-          csv += `${escapeCSV(row.employeeName)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
+          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
           totalAmount += row.amount;
           totalPaidHours += row.paidHours;
           totalBonusAmount += row.bonusAmount;
         }
 
         const empName = rows[0].employeeName;
+        const taxClass = rows[0].taxClassification;
         const totalBonusCell = totalBonusAmount > 0 ? formatAmountCurrency(totalBonusAmount) : "";
-        csv += `${escapeCSV(empName + " - Paid Totals")},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
       }
 
       const adminUser = req.authUser as User;

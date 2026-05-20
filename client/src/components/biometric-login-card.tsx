@@ -139,7 +139,7 @@ export function BiometricLoginCard() {
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>
               No legal profile is configured for your location. Ask an administrator to enable
-              biometric login for your division.
+              biometric login for your company.
             </AlertDescription>
           </Alert>
         )}

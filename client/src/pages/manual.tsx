@@ -90,7 +90,7 @@ const tocItems: TocItem[] = [
     subsections: [
       { id: "admin-employees", label: "Managing Employees" },
       { id: "admin-password-reset", label: "Resetting Employee Passwords" },
-      { id: "admin-org", label: "Divisions, Locations & Departments" },
+      { id: "admin-org", label: "Companies, Locations & Departments" },
       { id: "admin-rules", label: "Time Clock Rules & PTO Policies" },
       { id: "admin-policy-wizard", label: "Policy Wizard & Payroll Toggles" },
       { id: "admin-payday", label: "Payday Weekday & Pay Period" },
@@ -524,7 +524,7 @@ export default function ManualPage() {
               <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
                 <li>Your name, email, and role</li>
                 <li>Current shift status with a live timer when clocked in</li>
-                <li>Organization details (Division, Location, Department)</li>
+                <li>Organization details (Company, Location, Department)</li>
                 <li>Employment details (Type, Pay Type, Hire Date, Overtime eligibility)</li>
               </ul>
               <Tip id="profile-contact-admin">If any of your information is incorrect, contact your administrator to have it updated.</Tip>
@@ -724,18 +724,18 @@ export default function ManualPage() {
               </p>
               <Warning id="admin-reset-email-required">The emailed reset link only works if the employee has a valid email on file and the system's email service is configured. If neither is true, fall back to the temporary password option.</Warning>
 
-              <SubHeading id="admin-org">Divisions, Locations & Departments</SubHeading>
+              <SubHeading id="admin-org">Companies, Locations & Departments</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
                 Navigate to <strong>Locations</strong> in the sidebar to manage your organizational structure:
               </p>
               <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
-                <li><strong>Divisions</strong> — Top-level organizational groups</li>
-                <li><strong>Locations</strong> — Physical office or facility locations within a division</li>
+                <li><strong>Companies</strong> — Top-level organizational groups</li>
+                <li><strong>Locations</strong> — Physical office or facility locations within a company</li>
                 <li><strong>Departments</strong> — Functional teams within a location</li>
               </ul>
               <p className="text-sm text-foreground/80 leading-relaxed mt-2">
                 You can create, edit, and delete entries for each level. Employees are assigned to a department, 
-                which belongs to a location, which belongs to a division.
+                which belongs to a location, which belongs to a company.
               </p>
 
               <SubHeading id="admin-rules">Time Clock Rules & PTO Policies</SubHeading>
@@ -786,7 +786,7 @@ export default function ManualPage() {
                 <li>Rejects the save on the server too (so the same protection holds even via direct API edits)</li>
               </ul>
               <p className="text-sm text-foreground/80 leading-relaxed mt-2">
-                On the assignment step, you can apply a policy at the level that fits — <strong>Division,
+                On the assignment step, you can apply a policy at the level that fits — <strong>Company,
                 Location, Department, Role, Employment Type, Pay Type,</strong> or individual
                 <strong> Employee</strong> — and pick multiple targets at once via multi-select.
               </p>
@@ -817,7 +817,7 @@ export default function ManualPage() {
                   branching logic (for example: "if more than 5 days, send to HR; otherwise, manager only").</li>
                 <li><strong>Rule Policies</strong> — Lightweight, single-rule policies (e.g. an attendance,
                   PTO, or payroll policy with rule values). Use these when you just need a static rule applied
-                  to a division, location, department, or individual employee, without the multi-step flow.</li>
+                  to a company, location, department, or individual employee, without the multi-step flow.</li>
               </ul>
 
               <p className="text-sm text-foreground/80 leading-relaxed mt-3">
@@ -921,7 +921,7 @@ export default function ManualPage() {
                 "Click \"New Policy\" to open the policy wizard.",
                 "Give the policy a name, optional description, and fill in the rule values for that policy type.",
                 "Save the policy — it will appear in the list with a plain-English summary of its rules.",
-                "Click \"Assign\" on the policy and pick the level it applies to: Division, Location, Department, or an individual Employee.",
+                "Click \"Assign\" on the policy and pick the level it applies to: Company, Location, Department, or an individual Employee.",
                 "Repeat the assign step to apply the same policy to additional targets if needed.",
               ]} />
 

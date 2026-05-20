@@ -70,6 +70,7 @@ export default function EmployeesPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [divisionFilter, setDivisionFilter] = useState("all");
+  const [taxClassFilter, setTaxClassFilter] = useState("all");
   const [certStatusFilter, setCertStatusFilter] = useState("all");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -100,6 +101,16 @@ export default function EmployeesPage() {
     enabled: certStatusFilter !== "all",
   });
 
+  // Bulk-fetch all employment profiles so we can show + filter on tax
+  // classification in the Employees list. Falls back to W-2 for users without
+  // a profile (rollout default).
+  const { data: allProfiles } = useQuery<EmploymentProfile[]>({
+    queryKey: ["/api/employment-profiles"],
+  });
+  const taxClassByUser = new Map<string, string>(
+    (allProfiles || []).map((p) => [p.userId, p.taxClassification || "W-2"]),
+  );
+
   const certStatusByEmployee = (() => {
     const m = new Map<string, Set<string>>();
     (allCertifications || []).forEach((c) => {
@@ -115,6 +126,7 @@ export default function EmployeesPage() {
     if (debouncedSearch && !name.includes(debouncedSearch.toLowerCase()) && !u.email?.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
     if (departmentFilter !== "all" && u.departmentId !== departmentFilter) return false;
     if (divisionFilter !== "all" && u.companyId !== divisionFilter) return false;
+    if (taxClassFilter !== "all" && (taxClassByUser.get(u.id) || "W-2") !== taxClassFilter) return false;
     if (certStatusFilter !== "all") {
       const statuses = certStatusByEmployee.get(u.id) || new Set();
       if (certStatusFilter === "none" && statuses.size > 0) return false;
@@ -167,14 +179,24 @@ export default function EmployeesPage() {
           />
         </div>
         <Select value={divisionFilter} onValueChange={setDivisionFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-division-filter">
-            <SelectValue placeholder="Division" />
+          <SelectTrigger className="w-[180px]" data-testid="select-company-filter">
+            <SelectValue placeholder="Company" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Divisions</SelectItem>
+            <SelectItem value="all">All Companies</SelectItem>
             {divisions?.map((d) => (
               <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={taxClassFilter} onValueChange={setTaxClassFilter}>
+          <SelectTrigger className="w-[180px]" data-testid="select-tax-class-filter">
+            <SelectValue placeholder="Tax Classification" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Tax Classifications</SelectItem>
+            <SelectItem value="W-2">W-2</SelectItem>
+            <SelectItem value="1099">1099</SelectItem>
           </SelectContent>
         </Select>
         <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
@@ -232,7 +254,7 @@ export default function EmployeesPage() {
               data-testid="button-bulk-assign-division"
             >
               <Building2 className="h-4 w-4 mr-2" />
-              Assign Division
+              Assign Company
             </Button>
             {canDelete && (
               <Button
@@ -295,9 +317,10 @@ export default function EmployeesPage() {
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Email</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Role</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Division</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Company</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Location</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Tax Class</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
@@ -345,9 +368,12 @@ export default function EmployeesPage() {
                           ) : null}
                         </div>
                       </TableCell>
-                      <TableCell data-testid={`text-employee-division-${emp.id}`}>{div?.name || "—"}</TableCell>
+                      <TableCell data-testid={`text-employee-company-${emp.id}`}>{div?.name || "—"}</TableCell>
                       <TableCell data-testid={`text-employee-dept-${emp.id}`}>{dept?.name || "—"}</TableCell>
                       <TableCell data-testid={`text-employee-loc-${emp.id}`}>{loc?.name || "—"}</TableCell>
+                      <TableCell data-testid={`text-employee-tax-class-${emp.id}`}>
+                        <Badge variant="outline">{taxClassByUser.get(emp.id) || "W-2"}</Badge>
+                      </TableCell>
                       <TableCell>
                         <Badge variant="default" className="bg-green-600" data-testid={`badge-employee-status-${emp.id}`}>
                           Active
@@ -404,7 +430,7 @@ function BulkAssignDivisionDialog({
     onSuccess: (data: { updatedCount: number; skipped: { id: string; reason: string }[] }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       toast({
-        title: "Division assigned",
+        title: "Company assigned",
         description: `${data.updatedCount} employee${data.updatedCount === 1 ? "" : "s"} updated${
           data.skipped.length ? `, ${data.skipped.length} skipped` : ""
         }.`,
@@ -421,17 +447,17 @@ function BulkAssignDivisionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-testid="dialog-bulk-assign-division">
         <DialogHeader>
-          <DialogTitle>Assign Division</DialogTitle>
+          <DialogTitle>Assign Company</DialogTitle>
           <DialogDescription>
-            Assign {userIds.length} selected employee{userIds.length === 1 ? "" : "s"} to a division.
+            Assign {userIds.length} selected employee{userIds.length === 1 ? "" : "s"} to a company.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label>Division</Label>
+            <Label>Company</Label>
             <Select value={companyId} onValueChange={setCompanyId}>
               <SelectTrigger data-testid="select-bulk-division">
-                <SelectValue placeholder="Select a division" />
+                <SelectValue placeholder="Select a company" />
               </SelectTrigger>
               <SelectContent>
                 {divisions.map((d) => (
@@ -452,7 +478,7 @@ function BulkAssignDivisionDialog({
                 Keep existing department & location if compatible
               </Label>
               <p className="text-xs text-muted-foreground">
-                When unchecked, department and location are cleared. When checked, they're kept only if they belong to the new division.
+                When unchecked, department and location are cleared. When checked, they're kept only if they belong to the new company.
               </p>
             </div>
           </div>
@@ -618,6 +644,7 @@ function AddEmployeeDialog({
     departmentId: "",
     locationId: "",
     employmentType: "full_time",
+    taxClassification: "W-2",
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
     hourlyRate: "",
@@ -669,6 +696,7 @@ function AddEmployeeDialog({
         departmentId: formData.departmentId || null,
         locationId: formData.locationId || null,
         employmentType: formData.employmentType,
+        taxClassification: formData.taxClassification,
         hireDate: formData.hireDate,
         payType: formData.payType,
       };
@@ -710,6 +738,7 @@ function AddEmployeeDialog({
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentId: "", locationId: "", employmentType: "full_time",
+      taxClassification: "W-2",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", onboardingTemplateId: "",
     });
@@ -807,13 +836,13 @@ function AddEmployeeDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Division *</Label>
+              <Label>Company *</Label>
               <Select
                 value={formData.companyId}
                 onValueChange={(v) => setFormData({ ...formData, companyId: v, departmentId: "", locationId: "" })}
               >
                 <SelectTrigger data-testid="select-add-division">
-                  <SelectValue placeholder="Select division" />
+                  <SelectValue placeholder="Select company" />
                 </SelectTrigger>
                 <SelectContent>
                   {divisions.map((d) => (
@@ -868,6 +897,19 @@ function AddEmployeeDialog({
                   <SelectItem value="per_diem">Per Diem</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Tax Classification</Label>
+              <Select value={formData.taxClassification} onValueChange={(v) => setFormData({ ...formData, taxClassification: v })}>
+                <SelectTrigger data-testid="select-add-tax-classification">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="W-2">W-2</SelectItem>
+                  <SelectItem value="1099">1099</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Tax form classification — independent from employment type.</p>
             </div>
             <div className="space-y-2">
               <Label>Hire Date</Label>
@@ -1088,6 +1130,20 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     },
   });
 
+  const taxClassMutation = useMutation({
+    mutationFn: async (taxClassification: string) => {
+      await apiRequest("PATCH", `/api/employment-profiles/${userId}`, { taxClassification });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      toast({ title: "Tax classification updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const dept = departments?.find((d) => d.id === user?.departmentId);
   const loc = locations?.find((l) => l.id === user?.locationId);
   const div = divisions?.find((d) => d.id === user?.companyId);
@@ -1184,13 +1240,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </div>
               </div>
               <div>
-                <Label className="text-muted-foreground text-xs">Division</Label>
+                <Label className="text-muted-foreground text-xs">Company</Label>
                 <Select
                   value={user?.companyId || ""}
                   onValueChange={(v) => updateMutation.mutate({ companyId: v, departmentId: null, locationId: null })}
                 >
                   <SelectTrigger data-testid="select-profile-division">
-                    <SelectValue placeholder="Select division" />
+                    <SelectValue placeholder="Select company" />
                   </SelectTrigger>
                   <SelectContent>
                     {(divisions || []).map((d) => (
@@ -1259,6 +1315,22 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 <p className="font-medium" data-testid="text-profile-employment-type">{profile?.employmentType || "—"}</p>
               </div>
               <div>
+                <Label className="text-muted-foreground text-xs">Tax Classification</Label>
+                <Select
+                  value={profile?.taxClassification || "W-2"}
+                  onValueChange={(v) => taxClassMutation.mutate(v)}
+                  disabled={profileLoading || !profile}
+                >
+                  <SelectTrigger data-testid="select-profile-tax-classification">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="W-2">W-2</SelectItem>
+                    <SelectItem value="1099">1099</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
                 <Label className="text-muted-foreground text-xs">Hire Date</Label>
                 <p className="font-medium" data-testid="text-profile-hire-date">{formatDate(profile?.hireDate) || "—"}</p>
               </div>
@@ -1309,7 +1381,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             <CardHeader><CardTitle>Time Clock Settings</CardTitle></CardHeader>
             <CardContent>
               <p className="text-muted-foreground" data-testid="text-timeclock-info">
-                Time clock settings are managed through the Rules & Controls center. This employee follows the division default time clock rules.
+                Time clock settings are managed through the Rules & Controls center. This employee follows the company default time clock rules.
               </p>
             </CardContent>
           </Card>

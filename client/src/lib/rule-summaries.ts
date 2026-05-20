@@ -394,7 +394,7 @@ function capitalize(s: string): string {
 // ============== Auto Role Assignment summarizer ==============
 
 const ROLE_FIELD_LABELS: Record<string, string> = {
-  companyId: "Division",
+  companyId: "Company",
   locationId: "Location",
   departmentId: "Department",
   employmentType: "Employment Type",

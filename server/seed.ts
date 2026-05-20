@@ -20,11 +20,11 @@ import bcrypt from "bcryptjs";
 
 const PERMISSION_KEYS = [
   { key: "system.super_admin", name: "Super Admin", description: "Full system access", module: "system" },
-  { key: "company.manage", name: "Manage Division", description: "Manage division settings", module: "company" },
-  { key: "company.view", name: "View Division", description: "View division information", module: "company" },
-  { key: "company.create", name: "Create Division", description: "Create a new division", module: "company" },
-  { key: "company.edit", name: "Edit Division", description: "Edit division details", module: "company" },
-  { key: "company.delete", name: "Delete Division", description: "Delete a division", module: "company" },
+  { key: "company.manage", name: "Manage Company", description: "Manage company settings", module: "company" },
+  { key: "company.view", name: "View Company", description: "View company information", module: "company" },
+  { key: "company.create", name: "Create Company", description: "Create a new company", module: "company" },
+  { key: "company.edit", name: "Edit Company", description: "Edit company details", module: "company" },
+  { key: "company.delete", name: "Delete Company", description: "Delete a company", module: "company" },
   { key: "users.create", name: "Create Users", description: "Create users", module: "users" },
   { key: "users.view", name: "View Users", description: "View users", module: "users" },
   { key: "users.edit", name: "Edit Users", description: "Edit user details", module: "users" },
@@ -72,12 +72,12 @@ const PERMISSION_KEYS = [
 const SYSTEM_ROLES = [
   {
     name: "Super Admin",
-    description: "Full system access across all divisions",
+    description: "Full system access across all companies",
     permissions: ["system.super_admin"],
   },
   {
     name: "Division Admin",
-    description: "Full access within a division",
+    description: "Full access within a company",
     permissions: [
       "company.manage", "company.view", "company.create", "company.edit", "company.delete",
       "users.create", "users.view", "users.edit", "users.deactivate", "users.delete",

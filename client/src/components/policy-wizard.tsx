@@ -54,7 +54,7 @@ const PAY_TYPE_OPTIONS = [
 ];
 
 const ASSIGNMENT_LEVEL_LABELS: Record<string, string> = {
-  division: "Division",
+  division: "Company",
   location: "Location",
   department: "Department",
   employee: "Employee",
@@ -374,7 +374,7 @@ export function PolicyWizard({
       }
       if (a.companyId) {
         const div = divs.find((d) => d.id === a.companyId);
-        return { level: "division", id: a.companyId, label: div?.name || "Division" };
+        return { level: "division", id: a.companyId, label: div?.name || "Company" };
       }
       return { level: LEGACY_GLOBAL_LEVEL, id: "", label: "Applies to all (legacy)" };
     });
@@ -2184,7 +2184,7 @@ function StepAssignments({
   const options = getOptions();
 
   const levelAvailability: Record<string, { count: number; emptyHint: string }> = {
-    division: { count: divisions.length, emptyHint: "No divisions exist yet — create one in Locations & Departments first" },
+    division: { count: divisions.length, emptyHint: "No companies exist yet — create one in Locations & Departments first" },
     location: { count: locations.length, emptyHint: "No locations exist yet — create one in Locations & Departments first" },
     department: { count: departments.length, emptyHint: "No departments exist yet — create one in Locations & Departments first" },
     employee: { count: users.length, emptyHint: "No employees exist yet — add one in Employees first" },
@@ -2237,7 +2237,7 @@ function StepAssignments({
       <div>
         <h3 className="text-base font-semibold mb-1">Assign Policy</h3>
         <p className="text-sm text-muted-foreground">
-          Choose which divisions, locations, departments, employees, roles, employment types, or pay types this policy applies to.
+          Choose which companies, locations, departments, employees, roles, employment types, or pay types this policy applies to.
           You can skip this step and assign later.
         </p>
       </div>
@@ -2254,7 +2254,7 @@ function StepAssignments({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="division" disabled={divisions.length === 0}>
-                Division (Company-wide){divisions.length === 0 ? " — none yet" : ""}
+                Company (Org-wide){divisions.length === 0 ? " — none yet" : ""}
               </SelectItem>
               <SelectItem value="location" disabled={locations.length === 0}>
                 Location{locations.length === 0 ? " — none yet" : ""}
@@ -2352,7 +2352,7 @@ function StepAssignments({
               className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2"
               data-testid="text-legacy-global-warning"
             >
-              This policy has a legacy "Applies to all" row that's no longer supported. It will be removed on save — replace it with a specific division, location, role, or other target if you want this policy to keep applying.
+              This policy has a legacy "Applies to all" row that's no longer supported. It will be removed on save — replace it with a specific company, location, role, or other target if you want this policy to keep applying.
             </div>
           )}
           {assignments.map((a, i) => (

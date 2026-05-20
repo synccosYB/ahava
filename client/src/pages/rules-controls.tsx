@@ -72,7 +72,7 @@ export default function RulesControlsPage() {
 
   return (
     <div className="max-w-6xl space-y-6" data-testid="rules-controls-page">
-      <PageHeader title="Rules & Controls" subtitle="Configure division policies and system settings" />
+      <PageHeader title="Rules & Controls" subtitle="Configure company policies and system settings" />
 
       <div className="flex gap-6">
         <div className="w-56 shrink-0 space-y-1" data-testid="rules-nav">
@@ -155,14 +155,14 @@ function GeneralSection() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
       setEditing(false);
-      toast({ title: division ? "Division settings updated" : "Division created" });
+      toast({ title: division ? "Company settings updated" : "Company created" });
     },
     onError: (err: Error) => {
       const msg = err.message || "";
       const missingMatch = msg.match(/missing permission ([\w.]+)/);
       if (missingMatch) {
         const missingKey = missingMatch[1];
-        console.error("Division save permission denied:", err);
+        console.error("Company save permission denied:", err);
         toast({
           title: "Permission required",
           description: `You don't have the "${missingKey}" permission. Ask a Super Admin to grant it on Roles & Permissions.`,
@@ -189,7 +189,7 @@ function GeneralSection() {
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <Label>Division Name *</Label>
+                <Label>Company Name *</Label>
                 <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} data-testid="input-edit-division-name" />
               </div>
               <div>
@@ -229,7 +229,7 @@ function GeneralSection() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <Label className="text-muted-foreground text-xs">Division Name</Label>
+              <Label className="text-muted-foreground text-xs">Company Name</Label>
               <p className="font-medium" data-testid="text-division-name">{division?.name || "—"}</p>
             </div>
             <div>
@@ -384,7 +384,7 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
                 <SelectValue placeholder="Select level..." />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="division">Division (Company-wide)</SelectItem>
+                <SelectItem value="division">Company (Org-wide)</SelectItem>
                 <SelectItem value="location">Location</SelectItem>
                 <SelectItem value="department">Department</SelectItem>
                 <SelectItem value="employee">Individual Employee</SelectItem>
@@ -393,7 +393,7 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
           </div>
           {level && (
             <div>
-              <Label>Select {level === "division" ? "Division" : level === "location" ? "Location" : level === "department" ? "Department" : "Employee"}</Label>
+              <Label>Select {level === "division" ? "Company" : level === "location" ? "Location" : level === "department" ? "Department" : "Employee"}</Label>
               <Select value={selectedId} onValueChange={setSelectedId}>
                 <SelectTrigger data-testid={`select-assignment-target-${policy.id}`}>
                   <SelectValue placeholder={`Select ${level}...`} />
@@ -492,7 +492,7 @@ function PolicyAssignmentBadges({ policyId }: { policyId: string }) {
     }
     if (a.companyId) {
       const div = divisions?.find((d) => d.id === a.companyId);
-      return `Division · ${div?.name || "Division"}`;
+      return `Company · ${div?.name || "Company"}`;
     }
     return "Global";
   };
@@ -641,15 +641,15 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
       {!hasDivisions && (
         <div
           className="flex items-start gap-3 rounded-md border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 px-4 py-3 text-sm"
-          data-testid={`banner-no-divisions-${policyTypeKey}`}
+          data-testid={`banner-no-companies-${policyTypeKey}`}
         >
           <AlertCircle className="h-4 w-4 mt-0.5 text-amber-700 dark:text-amber-400 shrink-0" />
           <div className="flex-1">
             <p className="font-medium text-amber-900 dark:text-amber-200">
-              You haven't created any divisions yet.
+              You haven't created any companies yet.
             </p>
             <p className="text-amber-800 dark:text-amber-300/90">
-              Some policy assignments (Division, Location, Department) need a division first.{" "}
+              Some policy assignments (Company, Location, Department) need a company first.{" "}
               <Link
                 href="/locations"
                 className="underline font-medium"
@@ -1029,7 +1029,7 @@ function AuditSection() {
 // ========= Auto Role Assignment Rules =========
 
 const RULE_FIELDS = [
-  { value: "companyId", label: "Division" },
+  { value: "companyId", label: "Company" },
   { value: "locationId", label: "Location" },
   { value: "departmentId", label: "Department" },
   { value: "employmentType", label: "Employment Type" },
@@ -1946,11 +1946,11 @@ function ScheduleTemplateDialog({ template, onClose }: { template: ScheduleTempl
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label>Division (optional)</Label>
+              <Label>Company (optional)</Label>
               <Select value={companyId || "all"} onValueChange={(v) => setCompanyId(v === "all" ? "" : v)}>
                 <SelectTrigger data-testid="select-template-division"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All divisions</SelectItem>
+                  <SelectItem value="all">All companies</SelectItem>
                   {divisions?.map(d => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -2046,7 +2046,7 @@ function ApplyTemplateDialog({ template, onClose }: { template: ScheduleTemplate
               </Select>
             </div>
             <div>
-              <Label>Filter Division</Label>
+              <Label>Filter Company</Label>
               <Select value={filterDiv} onValueChange={setFilterDiv}>
                 <SelectTrigger data-testid="select-apply-filter-division"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -2148,7 +2148,7 @@ function RequiredDocumentsSection() {
       case "global":
         return "Global (all employees)";
       case "company":
-        return `Division: ${divisions?.find((d) => d.id === rule.companyId)?.name || rule.companyId}`;
+        return `Company: ${divisions?.find((d) => d.id === rule.companyId)?.name || rule.companyId}`;
       case "location":
         return `Location: ${locations?.find((l) => l.id === rule.locationId)?.name || rule.locationId}`;
       case "department":
@@ -2375,7 +2375,7 @@ function RequiredDocDialog({
               <SelectTrigger data-testid="select-trigger-required-doc-scope"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="global">Global (all employees)</SelectItem>
-                <SelectItem value="company">By Division</SelectItem>
+                <SelectItem value="company">By Company</SelectItem>
                 <SelectItem value="location">By Location</SelectItem>
                 <SelectItem value="department">By Department</SelectItem>
                 <SelectItem value="employee">Specific Employee</SelectItem>
@@ -2384,9 +2384,9 @@ function RequiredDocDialog({
           </div>
           {form.scopeType === "company" && (
             <div className="space-y-1">
-              <Label>Division</Label>
+              <Label>Company</Label>
               <Select value={form.companyId} onValueChange={(v) => setForm((f) => ({ ...f, companyId: v }))}>
-                <SelectTrigger data-testid="select-trigger-required-doc-company"><SelectValue placeholder="Select division" /></SelectTrigger>
+                <SelectTrigger data-testid="select-trigger-required-doc-company"><SelectValue placeholder="Select company" /></SelectTrigger>
                 <SelectContent>{divisions.map((d) => (<SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>))}</SelectContent>
               </Select>
             </div>

@@ -706,7 +706,7 @@ function EmployeePtoTab() {
                         <SelectValue placeholder="Use default" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">Use Division Default</SelectItem>
+                        <SelectItem value="none">Use Company Default</SelectItem>
                         {policies?.map((p) => (
                           <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
                         ))}

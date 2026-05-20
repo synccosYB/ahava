@@ -288,6 +288,13 @@
       "when": 1779100000000,
       "tag": "0040_reopen_exceptions_and_onboarding",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1779200000000,
+      "tag": "0041_user_employment_profiles_tax_classification",
+      "breakpoints": true
     }
   ]
 }

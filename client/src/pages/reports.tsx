@@ -25,6 +25,7 @@ type ReportRow = {
   employeeId: string;
   employeeName: string;
   department: string;
+  taxClassification: string;
   totalHours: number;
   daysWorked: number;
   daysOff: number;
@@ -35,6 +36,7 @@ type FilterOptions = {
   employees: { id: string; name: string }[];
   departments: { id: string; name: string }[];
   locations: { id: string; name: string }[];
+  companies: { id: string; name: string }[];
 };
 
 const reportTypes = [
@@ -95,6 +97,8 @@ function StandardReport({
   const [departmentIds, setDepartmentIds] = useState<string[]>([]);
   const [employeeIds, setEmployeeIds] = useState<string[]>([]);
   const [locationIds, setLocationIds] = useState<string[]>([]);
+  const [companyIds, setCompanyIds] = useState<string[]>([]);
+  const [taxClassifications, setTaxClassifications] = useState<string[]>([]);
   const [status, setStatus] = useState("all");
   const [reportData, setReportData] = useState<ReportRow[] | null>(null);
 
@@ -114,6 +118,17 @@ function StandardReport({
     () => (filterOptions?.locations ?? []).map((l) => ({ label: l.name, value: l.id })),
     [filterOptions],
   );
+  const companyOptions = useMemo(
+    () => (filterOptions?.companies ?? []).map((c) => ({ label: c.name, value: c.id })),
+    [filterOptions],
+  );
+  const taxClassOptions = useMemo(
+    () => [
+      { label: "W-2", value: "W-2" },
+      { label: "1099", value: "1099" },
+    ],
+    [],
+  );
 
   const generateMutation = useMutation({
     mutationFn: async () => {
@@ -127,6 +142,8 @@ function StandardReport({
         departmentIds: departmentIds.length > 0 ? departmentIds : undefined,
         employeeIds: employeeIds.length > 0 ? employeeIds : undefined,
         locationIds: locationIds.length > 0 ? locationIds : undefined,
+        companyIds: companyIds.length > 0 ? companyIds : undefined,
+        taxClassifications: taxClassifications.length > 0 ? taxClassifications : undefined,
         status: showStatusFilter && status !== "all" ? status : undefined,
       });
       return res.json();
@@ -142,8 +159,8 @@ function StandardReport({
 
   const downloadCSV = () => {
     if (!reportData || reportData.length === 0) return;
-    const headers = ["Employee", "Department", "Total Hours", "Days Worked", "Days Off", "Overtime"];
-    const rows = reportData.map((r) => [r.employeeName, r.department, formatHoursMinutes(r.totalHours), r.daysWorked, r.daysOff, formatHoursMinutes(r.overtime)]);
+    const headers = ["Employee", "Tax Classification", "Department", "Total Hours", "Days Worked", "Days Off", "Overtime"];
+    const rows = reportData.map((r) => [r.employeeName, r.taxClassification || "W-2", r.department, formatHoursMinutes(r.totalHours), r.daysWorked, r.daysOff, formatHoursMinutes(r.overtime)]);
     const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -203,6 +220,30 @@ function StandardReport({
                 data-testid="multiselect-location"
               />
             </div>
+            <div className="space-y-2">
+              <Label>Company</Label>
+              <MultiSelect
+                options={companyOptions}
+                selected={companyIds}
+                onChange={setCompanyIds}
+                placeholder="All companies"
+                allLabel="All companies"
+                searchPlaceholder="Search companies..."
+                data-testid="multiselect-company"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Tax Classification</Label>
+              <MultiSelect
+                options={taxClassOptions}
+                selected={taxClassifications}
+                onChange={setTaxClassifications}
+                placeholder="All tax classifications"
+                allLabel="All tax classifications"
+                searchPlaceholder="Search..."
+                data-testid="multiselect-tax-classification"
+              />
+            </div>
             {showStatusFilter && (
               <div className="space-y-2">
                 <Label>Status</Label>
@@ -256,6 +297,7 @@ function StandardReport({
                   <TableHeader>
                     <TableRow>
                       <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Tax Class</TableHead>
                       <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
                       <TableHead className="text-xs font-medium uppercase tracking-wider">Total Hours</TableHead>
                       <TableHead className="text-xs font-medium uppercase tracking-wider">Days Worked</TableHead>
@@ -267,6 +309,7 @@ function StandardReport({
                     {reportData.map((row) => (
                       <TableRow key={row.employeeId} data-testid={`row-report-${row.employeeId}`}>
                         <TableCell className="font-medium" data-testid={`text-report-name-${row.employeeId}`}>{row.employeeName}</TableCell>
+                        <TableCell data-testid={`text-report-tax-${row.employeeId}`}>{row.taxClassification || "W-2"}</TableCell>
                         <TableCell data-testid={`text-report-dept-${row.employeeId}`}>{row.department}</TableCell>
                         <TableCell className="tabular-nums" data-testid={`text-report-hours-${row.employeeId}`}>{formatHoursMinutes(row.totalHours)}</TableCell>
                         <TableCell className="tabular-nums" data-testid={`text-report-days-${row.employeeId}`}>{row.daysWorked}</TableCell>
