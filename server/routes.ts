@@ -6,7 +6,7 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
@@ -3626,17 +3626,65 @@ export async function registerRoutes(
         : requestType === "sick" ? balance.sick
         : requestType === "personal" ? balance.personal : null;
 
+      const isBalanceTracked = isBalanceTrackedTimeOffType(requestType);
       const exceedsBalance = availableBalance !== null && computedHours > availableBalance;
+
+      // Approval routing:
+      //   - When the PTO policy's `requireApproval` toggle is off AND the
+      //     request fits within the employee's available balance (for
+      //     balance-tracked leave types) AND doesn't exceed the max
+      //     consecutive cap, auto-approve on submit.
+      //   - A balance-tracked request that exceeds the employee's available
+      //     balance ALWAYS routes to manager approval, regardless of the
+      //     `requireApproval` toggle. The request is never auto-rejected for
+      //     being over balance — it just lands in the pending queue.
+      //   - The same over-balance guard must be honored by every other
+      //     auto-approve path (see `canAutoApprovePtoRequest` used by
+      //     `server/workflowEngine.ts`).
+      const requireApprovalPolicy = ptoRules.requireApproval !== false;
+      const forceManagerApprovalForOverBalance = isBalanceTracked && exceedsBalance;
+      const wouldAutoApprovePerPolicy =
+        !requireApprovalPolicy && !exceedsMaxConsecutive;
+      const autoApprove =
+        wouldAutoApprovePerPolicy && !forceManagerApprovalForOverBalance;
+      const overBalanceOverridesAutoApprove =
+        forceManagerApprovalForOverBalance && wouldAutoApprovePerPolicy;
+      const finalStatus: "pending" | "approved" = autoApprove ? "approved" : "pending";
 
       const request = await storage.createTimeOffRequest({
         ...parsed,
-        status: "pending",
+        status: finalStatus,
         hoursRequested: computedHours,
+        hoursApproved: autoApprove ? computedHours : undefined,
+        reviewedBy: autoApprove ? userId : undefined,
+        reviewedAt: autoApprove ? new Date() : undefined,
         exceedsBalance,
         balanceAtSubmission: availableBalance ?? null,
         exceedsMaxConsecutive,
         maxConsecutiveAtSubmission: maxConsecutiveHours,
       });
+
+      if (overBalanceOverridesAutoApprove) {
+        try {
+          const auditCtx = getAuditContext(req);
+          await writeAuditLog({
+            actorUserId: userId,
+            targetType: "time_off_request",
+            targetId: request.id,
+            action: "time_off.over_balance_forced_approval",
+            newValue: {
+              type: requestType,
+              hoursRequested: computedHours,
+              availableBalance,
+              policyRequireApproval: requireApprovalPolicy,
+              reason: "Over-balance PTO request routed to manager approval despite policy auto-approve setting",
+            },
+            ...auditCtx,
+          });
+        } catch (auditError) {
+          console.error("Failed to write audit log for time_off.over_balance_forced_approval:", auditError);
+        }
+      }
 
       runWorkflowsForTrigger({
         userId,

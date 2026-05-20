@@ -365,7 +365,7 @@ export default function TimeOff() {
                 {projectedExceeds && (
                   <p className="text-xs text-orange-700 dark:text-orange-400 flex items-center gap-1" data-testid="warning-projected-exceeds">
                     <AlertTriangle className="h-3 w-3" />
-                    This request exceeds your remaining balance.
+                    This request exceeds your available balance and will require manager approval.
                   </p>
                 )}
               </div>

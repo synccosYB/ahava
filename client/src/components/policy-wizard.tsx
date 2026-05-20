@@ -132,7 +132,7 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
         { key: "accrualType", label: "Accrual Type", type: "select", description: "How PTO is accrued over time", defaultValue: "annual", options: [{ value: "annual", label: "Annual" }, { value: "monthly", label: "Monthly" }, { value: "per_pay_period", label: "Per Pay Period" }] },
         { key: "accrualHoursPerYear", label: "Accrual Rate (hours/year)", type: "number", description: "Number of PTO hours accrued per year", defaultValue: 120, min: 0, max: 2920 },
         { key: "maxConsecutiveHours", label: "Max Consecutive Hours", type: "number", description: "Maximum number of consecutive PTO hours allowed", defaultValue: 80, min: 1, max: 720 },
-        { key: "requireApproval", label: "Require Approval", type: "boolean", description: "Require manager approval for PTO requests", defaultValue: true },
+        { key: "requireApproval", label: "Require Approval", type: "boolean", description: "Require manager approval for PTO requests. Requests that exceed an employee's available balance always require approval regardless of this setting.", defaultValue: true },
         { key: "requireAdvanceNotice", label: "Require Advance Notice", type: "boolean", description: "Require employees to submit PTO requests in advance", defaultValue: true },
         { key: "advanceNoticeDays", label: "Advance Notice Days", type: "number", description: "Minimum days in advance for PTO requests", defaultValue: 3, min: 0, max: 90 },
         { key: "blackoutDatesEnabled", label: "Blackout Dates", type: "boolean", description: "Enable blackout dates when PTO cannot be taken", defaultValue: false },

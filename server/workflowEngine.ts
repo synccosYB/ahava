@@ -1,6 +1,33 @@
 import { storage } from "./storage";
 import type { Workflow, User } from "@shared/schema";
+import { isBalanceTrackedTimeOffType } from "@shared/schema";
 import { writeAuditLog } from "./services/audit";
+
+/**
+ * Shared guard: a balance-tracked PTO request that exceeds the employee's
+ * available balance must never be auto-approved by any code path
+ * (POST /api/time-off, workflow auto-approve actions, future auto-approve
+ * threshold jobs, etc.). Over-balance requests must route to manager
+ * approval instead. Returns `true` when auto-approve is allowed.
+ */
+export function canAutoApprovePtoRequest(args: {
+  type: string;
+  hoursRequested: number;
+  availableBalance: number | null;
+}): { allowed: boolean; reason?: string } {
+  const isBalanceTracked = isBalanceTrackedTimeOffType(args.type);
+  if (
+    isBalanceTracked &&
+    args.availableBalance !== null &&
+    args.hoursRequested > args.availableBalance
+  ) {
+    return {
+      allowed: false,
+      reason: "over_balance",
+    };
+  }
+  return { allowed: true };
+}
 
 interface WorkflowContext {
   userId: string;
@@ -131,6 +158,61 @@ async function executeNode(
         });
       } catch (err) {
         result.logs.push(`Failed to create alert: ${err}`);
+      }
+    }
+
+    if (node.data.actionType === "auto_approve_pto" && context.userId) {
+      // Over-balance guard: never auto-approve a balance-tracked PTO request
+      // that exceeds the employee's available balance. Route to manager
+      // approval instead.
+      const ptoRequestType = String(context.data.requestType ?? "");
+      const hoursRequested = Number(context.data.hoursRequested);
+      const availableBalance =
+        context.data.ptoBalance == null ? null : Number(context.data.ptoBalance);
+      const guard = canAutoApprovePtoRequest({
+        type: ptoRequestType,
+        hoursRequested: Number.isFinite(hoursRequested) ? hoursRequested : 0,
+        availableBalance:
+          availableBalance !== null && Number.isFinite(availableBalance)
+            ? availableBalance
+            : null,
+      });
+      if (!guard.allowed) {
+        result.logs.push(
+          `Auto-approve PTO blocked: ${guard.reason ?? "guard"} (request stays pending for manager review)`,
+        );
+        if (context.data.requestId) {
+          try {
+            await writeAuditLog({
+              actorUserId: context.userId,
+              targetType: "time_off_request",
+              targetId: String(context.data.requestId),
+              action: "time_off.over_balance_forced_approval",
+              newValue: {
+                type: ptoRequestType,
+                hoursRequested,
+                availableBalance,
+                source: "workflow",
+                workflowName: result.workflowName,
+                reason:
+                  "Workflow auto-approve action blocked because the request exceeds the employee's available balance",
+              },
+            });
+          } catch (err) {
+            result.logs.push(`Failed to write over-balance audit log: ${err}`);
+          }
+        }
+      } else if (context.data.requestId) {
+        try {
+          await storage.updateTimeOffRequest(String(context.data.requestId), {
+            status: "approved",
+            reviewedBy: context.userId,
+            reviewedAt: new Date(),
+            hoursApproved: Number.isFinite(hoursRequested) ? hoursRequested : undefined,
+          });
+        } catch (err) {
+          result.logs.push(`Failed to auto-approve PTO request: ${err}`);
+        }
       }
     }
 
