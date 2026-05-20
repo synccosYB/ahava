@@ -30,8 +30,10 @@ const tocItems: TocItem[] = [
     subsections: [
       { id: "gs-logging-in", label: "Logging In" },
       { id: "gs-password-change", label: "First-Time Password Change" },
+      { id: "gs-forgot-password", label: "Forgot Password & Self-Service Reset" },
       { id: "gs-navigation", label: "Navigating the Sidebar" },
       { id: "gs-roles", label: "Understanding Your Role" },
+      { id: "gs-formats", label: "Date & Time Formats" },
     ],
   },
   {
@@ -44,6 +46,8 @@ const tocItems: TocItem[] = [
       { id: "emp-dashboard", label: "Dashboard Overview" },
       { id: "emp-clock", label: "Clocking In & Out" },
       { id: "emp-attendance", label: "Viewing Attendance History" },
+      { id: "emp-corrections", label: "Correction Requests & Reopen" },
+      { id: "emp-timesheet", label: "Your Day-by-Day Timesheet" },
       { id: "emp-timeoff", label: "Submitting Time-Off Requests" },
       { id: "emp-profile", label: "Updating Your Profile" },
     ],
@@ -58,6 +62,7 @@ const tocItems: TocItem[] = [
       { id: "kiosk-overview", label: "What is the Kiosk?" },
       { id: "kiosk-pin", label: "Clock In/Out via PIN" },
       { id: "kiosk-search", label: "Clock In/Out via Name Search" },
+      { id: "kiosk-attribution", label: "Kiosk Attribution on Punches" },
     ],
   },
   {
@@ -69,6 +74,8 @@ const tocItems: TocItem[] = [
     subsections: [
       { id: "mgr-team", label: "Team Dashboard" },
       { id: "mgr-approvals", label: "Approving/Denying Requests" },
+      { id: "mgr-corrections", label: "Correction Counts & Reopen Requests" },
+      { id: "mgr-filters", label: "Filter Bars & Persistent Filters" },
       { id: "mgr-monitoring", label: "Monitoring Attendance" },
       { id: "mgr-alerts", label: "Viewing Alerts" },
       { id: "mgr-reports", label: "Running Reports" },
@@ -82,10 +89,14 @@ const tocItems: TocItem[] = [
     bgColor: "bg-rose-50 dark:bg-rose-950/30",
     subsections: [
       { id: "admin-employees", label: "Managing Employees" },
+      { id: "admin-password-reset", label: "Resetting Employee Passwords" },
       { id: "admin-org", label: "Divisions, Locations & Departments" },
       { id: "admin-rules", label: "Time Clock Rules & PTO Policies" },
+      { id: "admin-policy-wizard", label: "Policy Wizard & Payroll Toggles" },
+      { id: "admin-payday", label: "Payday Weekday & Pay Period" },
       { id: "admin-workflows", label: "Approval Workflows" },
       { id: "admin-payroll", label: "Payroll Prep & CSV Export" },
+      { id: "admin-reports", label: "Reports & Filters" },
       { id: "admin-kiosks", label: "Managing Kiosks" },
       { id: "admin-permissions", label: "Permissions & Roles" },
       { id: "admin-audit", label: "Audit Logs" },
@@ -219,7 +230,7 @@ export default function ManualPage() {
               <img src={ahavaLogoPath} alt="Ahava Medical Center" className="h-8 w-8 rounded object-contain" data-testid="img-manual-logo" />
               <div>
                 <p className="text-xs font-semibold text-foreground">Ahava Medical</p>
-                <p className="text-[10px] text-muted-foreground">User Manual v1.0</p>
+                <p className="text-[10px] text-muted-foreground">User Manual v1.1 — May 2026</p>
               </div>
             </div>
             <nav>
@@ -336,6 +347,20 @@ export default function ManualPage() {
               ]} />
               <Warning id="password-security">Never share your password with anyone. If you suspect your account has been compromised, contact your administrator immediately.</Warning>
 
+              <SubHeading id="gs-forgot-password">Forgot Password & Self-Service Reset</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                If you can't remember your password, you can reset it yourself — no need to wait for an
+                administrator. The reset link is valid for one hour and can only be used once.
+              </p>
+              <StepList steps={[
+                "On the login screen, click \"Forgot password?\".",
+                "Enter the email address on your account and submit.",
+                "Check your inbox for a message from Ahava Medical Center with a reset link.",
+                "Click the link and enter your new password (at least 8 characters), then confirm it.",
+                "You'll be redirected to the login screen — sign in with your new password.",
+              ]} />
+              <Tip id="forgot-password-no-email">If you don't see the email within a few minutes, check your spam folder. If it still doesn't arrive, your email may not be on file — contact your administrator to verify it.</Tip>
+
               <SubHeading id="gs-navigation">Navigating the Sidebar</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
                 The sidebar on the left side of the screen is your main navigation tool. It displays different
@@ -375,6 +400,19 @@ export default function ManualPage() {
                   <p className="text-xs text-foreground/70">Full system access including employee management, payroll, rules configuration, and audit logs.</p>
                 </div>
               </div>
+
+              <SubHeading id="gs-formats">Date & Time Formats</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Throughout the app, dates are shown in <strong>MM/DD/YYYY</strong> format and times use
+                12-hour <strong>AM/PM</strong> (e.g. <code>05/20/2026 · 8:15 AM</code>). You'll see this
+                consistently on your dashboard, the kiosk, attendance history, timesheets, reports, and CSV
+                exports — so the time you see on the kiosk matches what shows up later on My Attendance.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                For shifts that span midnight, the clock-out cell shows the time plus the next-day date
+                (e.g. <code>11:42 PM → 7:08 AM (05/21)</code>) and the row is flagged as an
+                <strong> Overnight</strong> shift so you can tell at a glance the punch wasn't on the same day.
+              </p>
 
               <div className="border-t my-10" />
 
@@ -421,17 +459,53 @@ export default function ManualPage() {
               </ul>
               <p className="text-sm text-foreground/80 leading-relaxed">
                 Each record shows the date, clock-in time, clock-out time, break duration, total hours, and status 
-                (Complete, Overtime, or In Progress).
+                (Complete, Overtime, In Progress, or <strong>Overnight</strong>). Punches recorded at a shared kiosk
+                show a small <strong>Kiosk</strong> tag with the kiosk's name so you can tell at a glance which
+                device the punch came from versus a web clock-in.
               </p>
+
+              <SubHeading id="emp-corrections">Correction Requests & Reopen</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                If a punch is wrong or missing, click <strong>Request Fix</strong> next to the day on My Attendance
+                to open a correction request. The dialog shows how many corrections you've submitted in the last
+                90 days. Submitting 5 or more in a 90-day window is flagged as <strong>Frequent corrections</strong>
+                and surfaces to your manager, so try to keep them rare.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                Once a correction is <strong>approved, denied, or cancelled</strong>, that day is <strong>locked</strong> —
+                the row no longer shows "Request Fix"; instead it shows the verdict badge. If something still looks
+                wrong after a verdict, you get one <strong>Ask to reopen</strong> message per resolved exception
+                (visible right on the locked row). Your manager or an admin reviews it from Requests & Approvals.
+                If they grant the reopen, the day unlocks for one new correction submission and is consumed when used.
+              </p>
+              <Tip id="emp-corrections-counts">You can see your own 90-day correction count right inside the correction dialog (look for the count above the form fields).</Tip>
+              <Warning id="emp-reopen-one-shot">Each resolved exception gets a single Ask-to-Reopen — make it count by including a clear, specific reason.</Warning>
+
+              <SubHeading id="emp-timesheet">Your Day-by-Day Timesheet</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                A full day-by-day breakdown of your attendance is available from your <strong>Profile</strong> page
+                on the <strong>History / Audit</strong> tab. Pick a date range and you'll see one row per day with
+                clock-in, clock-out, hours worked, and a totals row at the bottom (Total Hours, Overtime Hours, and
+                Days Worked).
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li>Days you didn't work show <strong>—</strong>.</li>
+                <li>Approved time-off days are surfaced as <strong>PTO</strong>.</li>
+                <li>Days that exceed the daily overtime threshold are flagged as <strong>Overtime</strong>.</li>
+                <li>Overnight shifts are labelled and show the clock-out's next-day date.</li>
+              </ul>
+              <Tip id="emp-timesheet-totals">The totals row uses the same calculation as the official time report, so the numbers you see here will match what your manager sees on Reports.</Tip>
 
               <SubHeading id="emp-timeoff">Submitting Time-Off Requests</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
-                To request time off, go to the <strong>Time Off</strong> page:
+                To request time off, go to the <strong>Time Off</strong> page. PTO and leave are tracked in
+                <strong> hours</strong> (not days) across the entire app — request forms, summaries, balances, and
+                CSV exports all use hours so the units match what you actually work.
               </p>
               <StepList steps={[
                 "Click \"Time Off\" in the sidebar.",
                 "In the \"New Request\" form, select the request type (Vacation, Sick Leave, or Personal).",
-                "Choose your start and end dates. The system automatically calculates business days.",
+                "Choose your start and end dates. The system automatically calculates the hours requested.",
                 "Optionally, add a reason for your request.",
                 "Review the \"Hours Requested\" summary shown below.",
                 "Click \"Submit Request\" to send it to your manager for approval.",
@@ -440,6 +514,8 @@ export default function ManualPage() {
                 Your submitted requests will appear in the <strong>My Requests</strong> panel, showing their current 
                 status (Pending, Approved, or Denied). You can also see approved time off on the Team Calendar below.
               </p>
+              <Tip id="emp-pto-balance-hidden">Your remaining PTO balance is not shown on the Time Off page — that view is reserved for admins. If you need to know your current balance, ask your manager or HR.</Tip>
+              <Tip id="emp-vacation-accrual">Vacation accrues based on the hours you actually work, so picking up extra shifts grows your vacation bank faster.</Tip>
 
               <SubHeading id="emp-profile">Updating Your Profile</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
@@ -493,6 +569,16 @@ export default function ManualPage() {
               ]} />
               <Warning id="kiosk-wrong-employee">If you see the wrong employee, tap "Not me — Go Back" to return to the identification screen.</Warning>
 
+              <SubHeading id="kiosk-attribution">Kiosk Attribution on Punches</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Every punch recorded at a kiosk is tagged with the kiosk's name. You'll see a small
+                <strong> Kiosk · &lt;Device Name&gt;</strong> chip next to the punch on My Attendance, the manager
+                Team View, the admin live attendance feed, and on per-employee timesheets. Punches made from the
+                web (the Dashboard's Clock In/Out button) don't show this chip, so it's easy to tell at a glance
+                where each punch came from.
+              </p>
+              <Tip id="kiosk-attribution-naming">Give each kiosk a descriptive name when registering it (e.g. "Main Entrance Tablet" or "Break Room iPad") — that name is what shows up on every attendance view.</Tip>
+
               <div className="border-t my-10" />
 
               <SectionHeading id="manager-guide" icon={UserCog} color="text-emerald-600" bgColor="bg-emerald-50 dark:bg-emerald-950/30">
@@ -517,35 +603,85 @@ export default function ManualPage() {
 
               <SubHeading id="mgr-approvals">Approving/Denying Requests</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
-                Navigate to <strong>Requests & Approvals</strong> to manage pending requests. The page has three tabs:
+                Navigate to <strong>Requests & Approvals</strong> to manage pending requests. The page has multiple tabs:
               </p>
               <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
                 <li><strong>All Pending</strong> — Shows both PTO requests and attendance exceptions together</li>
                 <li><strong>PTO Requests</strong> — Time-off requests only</li>
                 <li><strong>Missing Punch / Corrections</strong> — Attendance exception requests</li>
+                <li><strong>Reopen Requests</strong> — Employee requests to reopen a resolved correction</li>
               </ul>
               <p className="text-sm text-foreground/80 leading-relaxed mt-2">
                 For each request, you can review the details, add an optional comment, then click 
-                <strong> Approve</strong> (green) or <strong>Deny</strong> (red).
+                <strong> Approve</strong> (green) or <strong>Deny</strong> (red). On correction rows, the
+                <strong> Pending — Edit</strong> tag only appears on the specific row the request belongs to,
+                so it's clear which day is awaiting your decision.
               </p>
               <Tip id="sidebar-badge">The sidebar shows a badge with the total number of pending requests so you always know when action is needed.</Tip>
+
+              <SubHeading id="mgr-corrections">Correction Counts & Reopen Requests</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Every incoming correction request shows a <strong>correction count badge</strong> next to the
+                employee's name — how many corrections that person has filed in the selected window. You can
+                switch the window from a dropdown: <strong>Pay Period, Week, Month, Year,</strong> or <strong>All</strong>.
+                Anyone with 5 or more corrections in the last 90 days is highlighted as
+                <strong> Frequent corrections</strong> so patterns are easy to spot.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                The same correction-count breakdown also appears on the employee's profile under the
+                <strong> Employment</strong> tab, so you have the context whether you're approving in the queue or
+                reviewing an individual employee.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                When an employee asks to reopen a resolved correction, it lands in the
+                <strong> Reopen Requests</strong> section. Read their message, then choose
+                <strong> Grant</strong> (unlocks the day for one new correction submission) or
+                <strong> Decline</strong>. Every decision is written to the audit log.
+              </p>
+              <Tip id="mgr-corrections-badge">Click the count badge to jump straight to that employee's correction history — useful for documenting a coaching conversation.</Tip>
+
+              <SubHeading id="mgr-filters">Filter Bars & Persistent Filters</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Every tab on Requests & Approvals has a filter bar at the top — narrow the list by
+                employee, location, department, status, or date range without scrolling through everything.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                On <strong>Alerts & Exceptions</strong>, the filters you set are <strong>persisted across refreshes</strong>,
+                so you can come back to the page later and the queue is already filtered down to what you care about.
+                There's also a dedicated <strong>PTO Alerts & Exceptions</strong> filter set for leave-related items.
+              </p>
+              <Tip id="mgr-filters-clear">If you suddenly see fewer rows than expected, check the filter bar — your previous filter selection may still be applied.</Tip>
 
               <SubHeading id="mgr-monitoring">Monitoring Attendance</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
                 Use the Team Status table on the Team View page to monitor who is currently clocked in, 
                 their hours for the day and week. Team members with approved PTO for the day are shown with a small "PTO" badge alongside their attendance status. Note that PTO represents sick paid hours and does not imply the employee is absent.
               </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                Kiosk punches show a <strong>Kiosk · &lt;Device Name&gt;</strong> tag right on the row, and shifts
+                that crossed midnight are flagged as <strong>Overnight</strong> with the next-day clock-out date
+                visible — so you don't have to dig into the punch detail to see what happened.
+              </p>
 
               <SubHeading id="mgr-alerts">Viewing Alerts</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
                 The <strong>Alerts</strong> page displays important notifications about your team, including 
-                attendance anomalies, overtime warnings, and other items that need your attention.
+                attendance anomalies, overtime warnings, and other items that need your attention. Each alert
+                card now shows the employee's <strong>department</strong> and <strong>location</strong>, so
+                triaging across a multi-location team doesn't require an extra click into the profile.
               </p>
 
               <SubHeading id="mgr-reports">Running Reports</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
-                The <strong>Reports</strong> page allows you to generate and view various attendance and time-off 
-                reports for your team. You can filter by date range, employee, and report type.
+                The <strong>Reports</strong> page generates attendance and time-off reports across your team. You
+                can filter by date range, <strong>employee (multi-select)</strong>, <strong>location (multi-select)</strong>,
+                and report type — useful for slicing a single export to just the people or sites you need.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                The dedicated <strong>Employee Timesheet</strong> tab gives you a day-by-day view for any
+                eligible employee in your scope, with a totals row and CSV export. Numbers match the per-employee
+                timesheet on the Employee Profile, so an employee and their manager always see the same totals.
+                (See the Employee Guide → Your Day-by-Day Timesheet for the row-level details.)
               </p>
 
               <div className="border-t my-10" />
@@ -569,6 +705,24 @@ export default function ManualPage() {
                 <li><strong>Department/Location Assignment</strong> — Assign employees to the correct organizational unit</li>
                 <li><strong>PIN Management</strong> — Assign or reset kiosk PINs for employees</li>
               </ul>
+
+              <SubHeading id="admin-password-reset">Resetting Employee Passwords</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                On any employee's row, the <strong>Reset Password</strong> action lets you choose between two paths:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li><strong>Generate a temporary password</strong> — The system creates a one-time password you can
+                  read out or copy. The employee is forced to change it the next time they log in.</li>
+                <li><strong>Email a reset link</strong> — A one-hour, single-use link is sent to the employee's email
+                  on file. They click it, set a new password, and sign in. Nothing for you to read out.</li>
+              </ul>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Employees can also reset their own password from the login page via
+                <strong> Forgot password?</strong> — covered in <em>Getting Started → Forgot Password & Self-Service Reset</em>.
+                Use the emailed link path when possible; it avoids ever putting a plain-text password in chat or
+                on paper.
+              </p>
+              <Warning id="admin-reset-email-required">The emailed reset link only works if the employee has a valid email on file and the system's email service is configured. If neither is true, fall back to the temporary password option.</Warning>
 
               <SubHeading id="admin-org">Divisions, Locations & Departments</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
@@ -595,14 +749,57 @@ export default function ManualPage() {
                 <li>Grace periods for late arrivals</li>
               </ul>
               <p className="text-sm text-foreground/80 leading-relaxed mt-3">
-                <strong>PTO & Leave</strong> lets you configure leave policies:
+                <strong>PTO & Leave</strong> lets you configure leave policies. All PTO values across the system
+                — accruals, caps, balances, and exports — are expressed in <strong>hours</strong>, not days.
               </p>
               <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
-                <li>Set annual accrual rates for vacation, sick, and personal time</li>
+                <li>Set vacation accrual rates that <strong>scale with hours worked</strong> (so part-time and
+                  full-time employees earn vacation proportionally to what they actually clock).</li>
+                <li>Set sick and personal accrual rates and annual caps</li>
                 <li>Configure carry-over policies</li>
                 <li>Set blackout dates when leave cannot be taken</li>
-                <li>Manage per-employee PTO balance adjustments</li>
+                <li>Manage per-employee PTO balance adjustments (admin-only — employees no longer see their
+                  balance on the Time Off page)</li>
               </ul>
+              <Tip id="admin-pto-hours">When migrating values from another system that tracked days, multiply by the standard shift length before entering them here.</Tip>
+
+              <SubHeading id="admin-policy-wizard">Policy Wizard & Payroll Toggles</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                The <strong>Policy Wizard</strong> walks you through creating attendance, PTO, and payroll
+                policies in four steps: <strong>pick a type, configure the rules, assign it, review</strong>.
+                You can start from a <strong>static template</strong> for common scenarios (standard overtime,
+                weekend differential, holiday bonus, etc.) and tweak the values rather than building from scratch.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                Each rule inside a policy has its own <strong>on/off toggle</strong>, so you can stage a policy
+                with several rules and switch individual rules on once they're approved — no need to delete a rule
+                just to pause it.
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                <strong>Day-of-Week</strong> and <strong>Early-Arrival</strong> payroll bonus rules can't overlap.
+                If two rules cover the same day (or the same arrival window for early arrival), the wizard:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li>Disables the <strong>Add</strong> button for the conflicting row</li>
+                <li>Shows an inline conflict message under the affected day(s)</li>
+                <li>Blocks <strong>Next</strong> / <strong>Save</strong> until the conflict is resolved</li>
+                <li>Rejects the save on the server too (so the same protection holds even via direct API edits)</li>
+              </ul>
+              <p className="text-sm text-foreground/80 leading-relaxed mt-2">
+                On the assignment step, you can apply a policy at the level that fits — <strong>Division,
+                Location, Department, Role, Employment Type, Pay Type,</strong> or individual
+                <strong> Employee</strong> — and pick multiple targets at once via multi-select.
+              </p>
+              <Warning id="admin-policy-overlap">If you don't see a conflict warning but the wizard won't let you save, scroll the rule list — the offending row often has an amber message you can miss without scrolling.</Warning>
+
+              <SubHeading id="admin-payday">Payday Weekday & Pay Period</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                Pay period configuration now includes a <strong>Payday Weekday</strong> selector — pick the day
+                of the week your organization pays (Monday through Sunday). The system aligns pay-period
+                boundaries and the Payroll Prep export to land on the day you've chosen, so the file you hand
+                off to your payroll provider matches your check date.
+              </p>
+              <Tip id="admin-payday-change">Changing the payday weekday only affects pay periods that haven't been finalized yet — historical periods stay where they were.</Tip>
 
               <SubHeading id="admin-workflows">Approval Workflows</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
@@ -757,6 +954,21 @@ export default function ManualPage() {
               ]} />
               <Warning id="payroll-exceptions">Always review and resolve all pending exceptions before exporting payroll data to ensure accuracy.</Warning>
 
+              <SubHeading id="admin-reports">Reports & Filters</SubHeading>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                The <strong>Reports</strong> page has been expanded with stronger filters and a new tab:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-foreground/80 my-3 ml-4">
+                <li><strong>Employee multi-select</strong> — pick any combination of employees in one report.</li>
+                <li><strong>Location multi-select</strong> — narrow to one site or several at once.</li>
+                <li><strong>Date range and report type</strong> — same as before, but now combine cleanly with the
+                  multi-selects above.</li>
+                <li><strong>Employee Timesheet tab</strong> — a day-by-day view for a single employee with totals
+                  row and CSV export. Numbers match the per-employee timesheet on the Employee Profile because
+                  both views share the same calculation.</li>
+              </ul>
+              <Tip id="admin-reports-totals">Run the Employee Timesheet report at the start of each pay period to sanity-check overtime and PTO days before exporting payroll.</Tip>
+
               <SubHeading id="admin-kiosks">Managing Kiosks</SubHeading>
               <p className="text-sm text-foreground/80 leading-relaxed">
                 The <strong>Kiosks</strong> page lets you manage your clock-in/out kiosk stations:
@@ -822,16 +1034,19 @@ export default function ManualPage() {
               <div className="rounded-lg border bg-muted/30 p-4 my-3">
                 <p className="text-sm font-medium text-foreground mb-2">Q: I forgot my password. How do I reset it?</p>
                 <p className="text-sm text-foreground/80">
-                  <strong>A:</strong> Contact your system administrator. They can reset your password and trigger 
-                  the forced password change flow so you can set a new one upon your next login.
+                  <strong>A:</strong> Click <strong>Forgot password?</strong> on the login screen, enter your
+                  email, and follow the reset link sent to your inbox. The link is good for one hour and can be
+                  used once. See <em>Getting Started → Forgot Password & Self-Service Reset</em> for the full flow.
+                  If you don't have an email on file or the link never arrives, contact your administrator — they
+                  can either email you a fresh link or generate a temporary password.
                 </p>
               </div>
               <div className="rounded-lg border bg-muted/30 p-4 my-3">
-                <p className="text-sm font-medium text-foreground mb-2">Q: I want to change my password. How?</p>
+                <p className="text-sm font-medium text-foreground mb-2">Q: I want to change my password while I'm logged in. How?</p>
                 <p className="text-sm text-foreground/80">
-                  <strong>A:</strong> Contact your administrator to request a password change. They can enable 
-                  the forced password change flag on your account, which will prompt you to set a new password 
-                  the next time you log in.
+                  <strong>A:</strong> Use the same <strong>Forgot password?</strong> flow from the login screen
+                  with your current email — or ask your administrator to enable forced password change on your
+                  account, which prompts you to set a new password the next time you log in.
                 </p>
               </div>
 
