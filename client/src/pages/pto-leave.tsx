@@ -571,11 +571,23 @@ function PoliciesTab() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {policies.map((p) => (
+                {policies.map((p) => {
+                  const isPerHoursWorked = p.accrualType === "per_hours_worked";
+                  const rateLabel = isPerHoursWorked
+                    ? `${p.vacationAccrualHoursPerThreshold ?? 1} hr per ${p.vacationAccrualPerHoursWorked ?? 30} hrs worked${p.yearlyCapHours ? `, ${p.yearlyCapHours}/yr cap` : ""}`
+                    : `${p.accrualHoursPerYear} hrs/yr`;
+                  return (
                   <TableRow key={p.id} data-testid={`row-policy-${p.id}`}>
-                    <TableCell className="font-medium" data-testid={`text-policy-name-${p.id}`}>{p.name}</TableCell>
+                    <TableCell className="font-medium" data-testid={`text-policy-name-${p.id}`}>
+                      {p.name}
+                      {p.isDefault && (
+                        <div className="text-xs text-muted-foreground font-normal mt-1" data-testid={`text-policy-default-rule-${p.id}`}>
+                          Company default — employees earn 1 hour of PTO for every 30 hours worked, capped at 40 hours/year. Unused PTO resets each year.
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell data-testid={`text-policy-accrual-${p.id}`}>{p.accrualType}</TableCell>
-                    <TableCell data-testid={`text-policy-rate-${p.id}`}>{p.accrualHoursPerYear} hrs/yr</TableCell>
+                    <TableCell data-testid={`text-policy-rate-${p.id}`}>{rateLabel}</TableCell>
                     <TableCell>
                       <Badge variant={p.isActive ? "default" : "secondary"} data-testid={`badge-policy-status-${p.id}`}>
                         {p.isActive ? "Active" : "Inactive"}
@@ -590,7 +602,8 @@ function PoliciesTab() {
                       </Button>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           )}
