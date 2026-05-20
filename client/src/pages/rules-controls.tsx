@@ -20,12 +20,13 @@ import {
 import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
   GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2, ClipboardCheck,
-  UserCog, CalendarRange, RefreshCw, Send, FileCheck, UserPlus, UserMinus,
+  UserCog, CalendarRange, RefreshCw, Send, FileCheck, UserPlus, UserMinus, AlertCircle,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
 import { buildGoogleMapsUrl, GoogleMapsIconLink } from "@/lib/googleMaps";
+import { Link } from "wouter";
 import { PolicyWizard } from "@/components/policy-wizard";
 import { WorkflowBuilder } from "@/components/workflow-builder";
 import { RuleSummary } from "@/components/rule-summary";
@@ -623,6 +624,8 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
     }
   };
 
+  const hasDivisions = (divisions || []).length > 0;
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -634,6 +637,31 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
           <Plus className="h-4 w-4 mr-1" /> Add Policy
         </Button>
       </div>
+
+      {!hasDivisions && (
+        <div
+          className="flex items-start gap-3 rounded-md border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 px-4 py-3 text-sm"
+          data-testid={`banner-no-divisions-${policyTypeKey}`}
+        >
+          <AlertCircle className="h-4 w-4 mt-0.5 text-amber-700 dark:text-amber-400 shrink-0" />
+          <div className="flex-1">
+            <p className="font-medium text-amber-900 dark:text-amber-200">
+              You haven't created any divisions yet.
+            </p>
+            <p className="text-amber-800 dark:text-amber-300/90">
+              Some policy assignments (Division, Location, Department) need a division first.{" "}
+              <Link
+                href="/locations"
+                className="underline font-medium"
+                data-testid={`link-create-division-${policyTypeKey}`}
+              >
+                Go to Locations & Departments
+              </Link>
+              .
+            </p>
+          </div>
+        </div>
+      )}
 
       <PolicyWizard
         open={wizardOpen}

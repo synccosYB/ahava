@@ -5048,16 +5048,38 @@ export async function registerRoutes(
 
       const parsedItems: any[] = [];
       const errorsByIndex: Record<number, any> = {};
+      const friendlyRowMessages: string[] = [];
       items.forEach((item: unknown, idx: number) => {
         const parsed = insertPolicyAssignmentSchema.safeParse(item);
         if (parsed.success) {
           parsedItems.push(parsed.data);
         } else {
-          errorsByIndex[idx] = parsed.error.flatten();
+          const flat = parsed.error.flatten();
+          errorsByIndex[idx] = flat;
+          const issues = parsed.error.issues || [];
+          const noTargetIssue = issues.find(
+            (i) => typeof i.message === "string" && i.message.includes("Exactly one assignment target")
+          );
+          const tooManyIssue = issues.find(
+            (i) => typeof i.message === "string" && i.message.includes("Only one assignment target")
+          );
+          let rowMsg: string;
+          if (noTargetIssue) {
+            rowMsg = `Row ${idx + 1}: please choose a specific division, location, department, employee, role, employment type, or pay type.`;
+          } else if (tooManyIssue) {
+            rowMsg = `Row ${idx + 1}: ${tooManyIssue.message}`;
+          } else {
+            const first = issues[0];
+            rowMsg = `Row ${idx + 1}: ${first?.message || "invalid data"}`;
+          }
+          friendlyRowMessages.push(rowMsg);
         }
       });
       if (Object.keys(errorsByIndex).length > 0) {
-        return res.status(400).json({ message: "Invalid assignment data", errors: errorsByIndex });
+        return res.status(400).json({
+          message: friendlyRowMessages.join(" "),
+          errors: errorsByIndex,
+        });
       }
 
       const created = [];

@@ -60,7 +60,10 @@ const ASSIGNMENT_LEVEL_LABELS: Record<string, string> = {
   role: "Role",
   employment_type: "Employment Type",
   pay_type: "Pay Type",
+  legacy_global: "Applies to all (legacy)",
 };
+
+const LEGACY_GLOBAL_LEVEL = "legacy_global";
 
 function getAssignmentLevelLabel(level: string): string {
   return ASSIGNMENT_LEVEL_LABELS[level] || level;
@@ -368,7 +371,7 @@ export function PolicyWizard({
         const div = divs.find((d) => d.id === a.companyId);
         return { level: "division", id: a.companyId, label: div?.name || "Division" };
       }
-      return { level: "division", id: "", label: "Global" };
+      return { level: LEGACY_GLOBAL_LEVEL, id: "", label: "Applies to all (legacy)" };
     });
   }
 
@@ -661,8 +664,11 @@ export function PolicyWizard({
         }
       }
 
-      if (assignments.length > 0) {
-        const payloads = assignments.map((a) => {
+      const validAssignments = assignments.filter(
+        (a) => a.level !== LEGACY_GLOBAL_LEVEL && a.id && a.id.trim() !== "",
+      );
+      if (validAssignments.length > 0) {
+        const payloads = validAssignments.map((a) => {
           const payload: Record<string, string | null> = {
             policyId,
             companyId: null,
@@ -684,15 +690,24 @@ export function PolicyWizard({
         });
         await apiRequest("POST", "/api/policy-assignments", payloads);
       }
+      return { savedAssignmentCount: validAssignments.length };
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/policies"] });
       queryClient.invalidateQueries({ queryKey: ["/api/policy-assignments"] });
       if (editingPolicy?.id) {
         queryClient.invalidateQueries({ queryKey: ["/api/policies", editingPolicy.id, "rules"] });
       }
       onOpenChange(false);
-      toast({ title: editingPolicy ? "Policy updated" : "Policy created" });
+      const savedCount = result?.savedAssignmentCount ?? 0;
+      if (savedCount === 0) {
+        toast({
+          title: editingPolicy ? "Policy updated" : "Policy saved",
+          description: "Not assigned to anyone yet — use Assign to apply it.",
+        });
+      } else {
+        toast({ title: editingPolicy ? "Policy updated" : "Policy created" });
+      }
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -1952,6 +1967,18 @@ function StepAssignments({
 
   const options = getOptions();
 
+  const levelAvailability: Record<string, { count: number; emptyHint: string }> = {
+    division: { count: divisions.length, emptyHint: "No divisions exist yet — create one in Locations & Departments first" },
+    location: { count: locations.length, emptyHint: "No locations exist yet — create one in Locations & Departments first" },
+    department: { count: departments.length, emptyHint: "No departments exist yet — create one in Locations & Departments first" },
+    employee: { count: users.length, emptyHint: "No employees exist yet — add one in Employees first" },
+    role: { count: roles.length, emptyHint: "No roles exist yet — create one in Roles & Permissions first" },
+    employment_type: { count: EMPLOYMENT_TYPE_OPTIONS.length, emptyHint: "" },
+    pay_type: { count: PAY_TYPE_OPTIONS.length, emptyHint: "" },
+  };
+  const currentLevelEmpty = !!addLevel && levelAvailability[addLevel]?.count === 0;
+  const currentLevelEmptyHint = currentLevelEmpty ? levelAvailability[addLevel]?.emptyHint : "";
+
   const isAlreadyAssigned = (id: string) =>
     assignments.some((a) => a.level === addLevel && a.id === id);
 
@@ -2010,15 +2037,33 @@ function StepAssignments({
               <SelectValue placeholder="Select level..." />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="division">Division (Company-wide)</SelectItem>
-              <SelectItem value="location">Location</SelectItem>
-              <SelectItem value="department">Department</SelectItem>
-              <SelectItem value="employee">Individual Employee</SelectItem>
-              <SelectItem value="role">Role</SelectItem>
+              <SelectItem value="division" disabled={divisions.length === 0}>
+                Division (Company-wide){divisions.length === 0 ? " — none yet" : ""}
+              </SelectItem>
+              <SelectItem value="location" disabled={locations.length === 0}>
+                Location{locations.length === 0 ? " — none yet" : ""}
+              </SelectItem>
+              <SelectItem value="department" disabled={departments.length === 0}>
+                Department{departments.length === 0 ? " — none yet" : ""}
+              </SelectItem>
+              <SelectItem value="employee" disabled={users.length === 0}>
+                Individual Employee{users.length === 0 ? " — none yet" : ""}
+              </SelectItem>
+              <SelectItem value="role" disabled={roles.length === 0}>
+                Role{roles.length === 0 ? " — none yet" : ""}
+              </SelectItem>
               <SelectItem value="employment_type">Employment Type</SelectItem>
               <SelectItem value="pay_type">Pay Type</SelectItem>
             </SelectContent>
           </Select>
+          {currentLevelEmpty && currentLevelEmptyHint && (
+            <p
+              className="text-xs text-muted-foreground mt-1"
+              data-testid="text-wizard-level-empty-hint"
+            >
+              {currentLevelEmptyHint}
+            </p>
+          )}
         </div>
         <div className="flex-1">
           <Label>Target</Label>
@@ -2086,6 +2131,14 @@ function StepAssignments({
       {assignments.length > 0 ? (
         <div className="space-y-2">
           <Label className="text-xs text-muted-foreground uppercase tracking-wider">Current Assignments</Label>
+          {assignments.some((a) => a.level === LEGACY_GLOBAL_LEVEL) && (
+            <div
+              className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2"
+              data-testid="text-legacy-global-warning"
+            >
+              This policy has a legacy "Applies to all" row that's no longer supported. It will be removed on save — replace it with a specific division, location, role, or other target if you want this policy to keep applying.
+            </div>
+          )}
           {assignments.map((a, i) => (
             <div
               key={`${a.level}-${a.id}-${i}`}
@@ -2093,8 +2146,15 @@ function StepAssignments({
               data-testid={`assignment-entry-${i}`}
             >
               <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs">{getAssignmentLevelLabel(a.level)}</Badge>
-                <span className="text-sm">{a.label}</span>
+                <Badge
+                  variant={a.level === LEGACY_GLOBAL_LEVEL ? "secondary" : "outline"}
+                  className="text-xs"
+                >
+                  {getAssignmentLevelLabel(a.level)}
+                </Badge>
+                {a.level !== LEGACY_GLOBAL_LEVEL && (
+                  <span className="text-sm">{a.label}</span>
+                )}
               </div>
               <Button
                 variant="ghost"
