@@ -35,6 +35,7 @@ export {
   userAccessScopes,
   policyTypes,
   passwordResetTokens,
+  normalizeEmail,
 } from "./models/auth";
 export type {
   User,

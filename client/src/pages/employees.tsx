@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -465,6 +465,7 @@ function AddEmployeeDialog({
   const { toast } = useToast();
   const [step, setStep] = useState(1);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     firstName: "",
@@ -520,7 +521,7 @@ function AddEmployeeDialog({
       const body: Record<string, string | number | null> = {
         firstName: formData.firstName,
         lastName: formData.lastName,
-        email: formData.email,
+        email: formData.email.trim().toLowerCase(),
         role: formData.role,
         companyId: formData.companyId || null,
         departmentId: formData.departmentId || null,
@@ -545,9 +546,17 @@ function AddEmployeeDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       setTempPassword(data.temporaryPassword);
       setStep(4);
+      setEmailError(null);
       toast({ title: "Employee created successfully" });
     },
     onError: (err: Error) => {
+      if (isApiError(err) && err.status === 409 && err.code === "EMAIL_ALREADY_EXISTS") {
+        const msg = "An employee with this email already exists.";
+        setEmailError(msg);
+        setStep(1);
+        toast({ title: "Duplicate email", description: msg, variant: "destructive" });
+        return;
+      }
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
@@ -555,6 +564,7 @@ function AddEmployeeDialog({
   const handleClose = () => {
     setStep(1);
     setTempPassword(null);
+    setEmailError(null);
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentId: "", locationId: "", employmentType: "full_time",
@@ -623,10 +633,23 @@ function AddEmployeeDialog({
               <Input
                 type="email"
                 value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                onChange={(e) => {
+                  setFormData({ ...formData, email: e.target.value.toLowerCase() });
+                  if (emailError) setEmailError(null);
+                }}
                 placeholder="employee@company.com"
                 data-testid="input-add-email"
+                aria-invalid={emailError ? true : undefined}
+                className={emailError ? "border-destructive focus-visible:ring-destructive" : undefined}
               />
+              {emailError && (
+                <p
+                  className="text-sm text-destructive"
+                  data-testid="text-add-email-error"
+                >
+                  {emailError}
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Role</Label>

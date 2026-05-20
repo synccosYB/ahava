@@ -97,6 +97,20 @@ export const users = pgTable("users", {
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;
 
+/**
+ * Canonical form for `users.email` — trimmed + lowercased so duplicates that
+ * differ only in casing/whitespace collide. Returns `null` for nullish or
+ * empty input so optional-email rows stay null. Use this anywhere we write
+ * or look up `users.email` (Add Employee, Replit Auth upsert, password
+ * reset, seed) so the DB-level case-insensitive unique index never has to
+ * paper over inconsistent app-layer normalization.
+ */
+export function normalizeEmail(email: string | null | undefined): string | null {
+  if (email === null || email === undefined) return null;
+  const trimmed = String(email).trim().toLowerCase();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
 export const passwordResetTokens = pgTable(
   "password_reset_tokens",
   {

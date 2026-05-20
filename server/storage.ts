@@ -1,6 +1,7 @@
 import {
   type User,
   type UpsertUser,
+  normalizeEmail,
   users,
   companies,
   type Company,
@@ -657,7 +658,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.email, email));
+    const normalized = normalizeEmail(email);
+    if (!normalized) return undefined;
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(sql`lower(${users.email}) = ${normalized}`);
     return user;
   }
 
@@ -2381,12 +2387,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createUser(user: UpsertUser): Promise<User> {
-    const [created] = await db.insert(users).values(user).returning();
+    const payload = { ...user };
+    if (payload.email !== undefined) {
+      payload.email = normalizeEmail(payload.email);
+    }
+    const [created] = await db.insert(users).values(payload).returning();
     return created;
   }
 
   async updateUser(id: string, data: Partial<UpsertUser>): Promise<User | undefined> {
-    const [updated] = await db.update(users).set({ ...data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+    const payload: Partial<UpsertUser> = { ...data };
+    if (payload.email !== undefined) {
+      payload.email = normalizeEmail(payload.email);
+    }
+    const [updated] = await db.update(users).set({ ...payload, updatedAt: new Date() }).where(eq(users.id, id)).returning();
     return updated;
   }
 

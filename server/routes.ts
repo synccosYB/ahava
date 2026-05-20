@@ -373,7 +373,11 @@ export async function registerRoutes(
   });
 
   const createUserSchema = z.object({
-    email: z.string().email(),
+    email: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .pipe(z.string().email()),
     firstName: z.string().min(1),
     lastName: z.string().min(1),
     role: z.enum(["employee", "manager", "admin"]).default("employee"),
@@ -397,7 +401,11 @@ export async function registerRoutes(
 
     const existing = await storage.getUserByEmail(parsed.data.email);
     if (existing) {
-      return res.status(409).json({ message: "A user with this email already exists" });
+      return res.status(409).json({
+        message: "A user with this email already exists",
+        code: "EMAIL_ALREADY_EXISTS",
+        field: "email",
+      });
     }
 
     if (parsed.data.companyId) {
