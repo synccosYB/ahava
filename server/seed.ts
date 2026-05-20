@@ -5,10 +5,13 @@ import {
   roles,
   rolePermissions,
   policyTypes,
+  policies,
+  policyRules,
   userRoles,
   biometricSettings,
   biometricLegalProfiles,
 } from "@shared/schema";
+import { getDefaultRulesForType } from "./policyEngine";
 import { eq, and, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
@@ -356,6 +359,61 @@ export async function seed() {
     } else {
       console.log("Policy types already seeded, skipping.");
     }
+  }
+
+  // System default policies — one per policy type with sensible defaults from
+  // policyEngine.getDefaultRulesForType. Flagged with isSystemDefault=true so
+  // the Delete action in /rules-controls disables the trash button and the
+  // server rejects deletion. Idempotent — only inserts when no system default
+  // exists for a given policy type.
+  const SYSTEM_DEFAULT_POLICY_TYPES: { key: string; name: string; description: string }[] = [
+    { key: "attendance", name: "Default Attendance Policy", description: "System default attendance rules. Used when no more specific policy applies." },
+    { key: "pto", name: "Default PTO Policy", description: "System default PTO rules. Used when no more specific policy applies." },
+    { key: "payroll", name: "Default Payroll Policy", description: "System default payroll rules. Used when no more specific policy applies." },
+    { key: "approvals", name: "Default Approval Workflow", description: "System default approval rules. Used when no more specific policy applies." },
+  ];
+
+  const allTypes = await db.select().from(policyTypes);
+  const typesByKey = new Map(allTypes.map((t) => [t.key, t]));
+  for (const def of SYSTEM_DEFAULT_POLICY_TYPES) {
+    const type = typesByKey.get(def.key);
+    if (!type) continue;
+    const [existingDefault] = await db
+      .select()
+      .from(policies)
+      .where(and(eq(policies.policyTypeId, type.id), eq(policies.isSystemDefault, true)));
+    if (existingDefault) continue;
+    const [created] = await db
+      .insert(policies)
+      .values({
+        policyTypeId: type.id,
+        name: def.name,
+        description: def.description,
+        status: "active",
+        isSystemDefault: true,
+      })
+      .returning();
+    const rules = getDefaultRulesForType(def.key);
+    if (Object.keys(rules).length > 0) {
+      await db.insert(policyRules).values({ policyId: created.id, rules });
+    }
+    console.log(`Seeded system default policy: ${def.name}`);
+  }
+
+  // Backfill — if any previously seeded policies match a default name but
+  // lack the flag (legacy data from before this column existed), mark them
+  // as system defaults so they're protected from deletion.
+  for (const def of SYSTEM_DEFAULT_POLICY_TYPES) {
+    const type = typesByKey.get(def.key);
+    if (!type) continue;
+    await db
+      .update(policies)
+      .set({ isSystemDefault: true })
+      .where(and(
+        eq(policies.policyTypeId, type.id),
+        eq(policies.name, def.name),
+        eq(policies.isSystemDefault, false),
+      ));
   }
 
   // Biometric singleton settings — feature flag defaults OFF.

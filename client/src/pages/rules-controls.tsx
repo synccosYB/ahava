@@ -40,6 +40,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger
 } from "@/components/ui/alert-dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ReviewCyclesSection } from "@/components/review-cycles/review-cycles-section";
 import type {
   Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User,
@@ -525,6 +526,7 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
   const [editRules, setEditRules] = useState<Record<string, any>>({});
   const [editAssignments, setEditAssignments] = useState<PolicyAssignment[]>([]);
+  const [policyToDelete, setPolicyToDelete] = useState<Policy | null>(null);
 
   const { data: policies, isLoading } = useQuery<Policy[]>({ queryKey: ["/api/policies"] });
   const { data: policyTypes } = useQuery<PolicyType[]>({ queryKey: ["/api/policy-types"] });
@@ -540,6 +542,25 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/policies"] });
       toast({ title: "Policy activated" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/policies/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/policies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/policy-assignments"] });
+      toast({ title: "Policy deleted" });
+      setPolicyToDelete(null);
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Could not delete policy",
+        description: error?.message || "Please try again.",
+        variant: "destructive",
+      });
     },
   });
 
@@ -650,6 +671,26 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
                             Activate
                           </Button>
                         )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className={p.isSystemDefault ? "inline-flex cursor-not-allowed" : "inline-flex"}>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="text-destructive hover:text-destructive"
+                                disabled={p.isSystemDefault}
+                                onClick={() => setPolicyToDelete(p)}
+                                data-testid={`button-delete-policy-${p.id}`}
+                                aria-label={p.isSystemDefault ? "System default policies cannot be deleted" : "Delete policy"}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {p.isSystemDefault ? "System default policies cannot be deleted." : "Delete policy"}
+                          </TooltipContent>
+                        </Tooltip>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -659,6 +700,32 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={!!policyToDelete} onOpenChange={(open) => { if (!open) setPolicyToDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete policy?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete <strong>{policyToDelete?.name}</strong>, including its rules
+              and all of its assignments. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                if (policyToDelete) deleteMutation.mutate(policyToDelete.id);
+              }}
+              disabled={deleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-confirm-delete-policy"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete policy"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

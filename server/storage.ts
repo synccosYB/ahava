@@ -386,6 +386,7 @@ export interface IStorage {
   getAllPolicies(): Promise<Policy[]>;
   createPolicy(policy: InsertPolicy): Promise<Policy>;
   updatePolicy(id: string, policy: Partial<InsertPolicy>): Promise<Policy | undefined>;
+  deletePolicy(id: string): Promise<void>;
 
   getPolicyRulesByPolicy(policyId: string): Promise<PolicyRule[]>;
   upsertPolicyRules(policyId: string, rules: Record<string, any>): Promise<PolicyRule>;
@@ -2124,6 +2125,14 @@ export class DatabaseStorage implements IStorage {
       .where(eq(policies.id, id))
       .returning();
     return updated;
+  }
+
+  async deletePolicy(id: string): Promise<void> {
+    await db.transaction(async (tx) => {
+      await tx.delete(policyAssignments).where(eq(policyAssignments.policyId, id));
+      await tx.delete(policyRules).where(eq(policyRules.policyId, id));
+      await tx.delete(policies).where(eq(policies.id, id));
+    });
   }
 
   async getPolicyRulesByPolicy(policyId: string): Promise<PolicyRule[]> {

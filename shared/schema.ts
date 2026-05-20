@@ -143,6 +143,7 @@ export const policies = pgTable("policies", {
   description: text("description"),
   status: varchar("status", { length: 20 }).default("draft").notNull(),
   version: integer("version").default(1).notNull(),
+  isSystemDefault: boolean("is_system_default").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

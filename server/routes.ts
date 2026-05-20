@@ -4768,6 +4768,32 @@ export async function registerRoutes(
     }
   });
 
+  app.delete("/api/policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const policy = await storage.getPolicy(req.params.id);
+      if (!policy) return res.status(404).json({ message: "Policy not found" });
+      if (policy.isSystemDefault) {
+        return res.status(400).json({ message: "System default policies cannot be deleted." });
+      }
+
+      await storage.deletePolicy(policy.id);
+
+      await writeAuditLog({
+        actorUserId: req.authUser.id,
+        action: "policy.deleted",
+        targetId: policy.id,
+        targetType: "policy",
+        oldValue: { name: policy.name, policyTypeId: policy.policyTypeId, status: policy.status },
+        ...getAuditContext(req),
+      });
+
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting policy:", error);
+      res.status(500).json({ message: "Failed to delete policy" });
+    }
+  });
+
   app.get("/api/policies/:id/rules", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const rules = await storage.getPolicyRulesByPolicy(req.params.id);
