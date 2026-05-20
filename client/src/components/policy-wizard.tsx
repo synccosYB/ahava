@@ -29,9 +29,12 @@ import {
   findDayOfWeekBonusOverlaps,
   findEarlyArrivalBonusOverlaps,
   expandDaysOfWeek,
-  daySetsIntersect,
   describeDays,
   DAY_NAMES,
+  pickNextDayOfWeekDraftDay,
+  dayOfWeekDraftConflict,
+  pickNextEarlyArrivalDraftDays,
+  earlyArrivalDraftConflict,
   type OverlapInfo,
 } from "@shared/policyOverlap";
 import {
@@ -1128,12 +1131,7 @@ function DayOfWeekBonusEditor({
   overlaps: Map<string, OverlapInfo>;
 }) {
   const usedDays = useMemo(() => new Set(bonuses.map((b) => b.dayOfWeek)), [bonuses]);
-  const firstAvailableDay = useMemo(() => {
-    for (let d = 0; d <= 6; d++) {
-      if (!usedDays.has(d)) return d;
-    }
-    return null;
-  }, [usedDays]);
+  const firstAvailableDay = useMemo(() => pickNextDayOfWeekDraftDay(bonuses), [bonuses]);
   const allDaysTaken = firstAvailableDay === null;
 
   const [draft, setDraft] = useState<{ dayOfWeek: string; minHoursThreshold: string; bonusType: "money" | "hours"; bonusAmount: string }>(() => ({
@@ -1152,10 +1150,9 @@ function DayOfWeekBonusEditor({
   }, [allDaysTaken, firstAvailableDay, usedDays, draft.dayOfWeek]);
 
   const draftDay = parseInt(draft.dayOfWeek, 10);
-  const draftConflictsWith = !allDaysTaken && bonuses.find((b) => b.dayOfWeek === draftDay);
-  const draftConflictMessage = draftConflictsWith
-    ? `A rule for ${DAY_NAMES[draftDay]} already exists. Edit or remove it first.`
-    : null;
+  const draftConflict = dayOfWeekDraftConflict(bonuses, draftDay);
+  const draftConflictsWith = draftConflict.hasConflict;
+  const draftConflictMessage = draftConflict.message;
 
   const addBonus = () => {
     if (allDaysTaken) return;
@@ -1173,11 +1170,7 @@ function DayOfWeekBonusEditor({
     };
     const newBonuses = [...bonuses, next];
     onChange(newBonuses);
-    const newUsed = new Set(newBonuses.map((b) => b.dayOfWeek));
-    let nextDay: number | null = null;
-    for (let d = 0; d <= 6; d++) {
-      if (!newUsed.has(d)) { nextDay = d; break; }
-    }
+    const nextDay = pickNextDayOfWeekDraftDay(newBonuses);
     setDraft({
       ...draft,
       dayOfWeek: nextDay !== null ? String(nextDay) : draft.dayOfWeek,
@@ -1419,7 +1412,7 @@ function EarlyArrivalBonusEditor({
     cutoffTime: "07:00",
     bonusAmountPerHour: "",
     minHoursThreshold: "0",
-    daysOfWeek: availableDays.length > 0 && availableDays.length < 7 ? [...availableDays] : [],
+    daysOfWeek: pickNextEarlyArrivalDraftDays(bonuses),
     applyScope: "entire_shift",
   }));
 
@@ -1431,30 +1424,22 @@ function EarlyArrivalBonusEditor({
       ? coveredDays.size > 0
       : draft.daysOfWeek.some((d) => coveredDays.has(d));
     if (conflicts) {
-      const next = availableDays.length < 7 ? [...availableDays] : [];
+      const next = pickNextEarlyArrivalDraftDays(bonuses);
       const sameLen = next.length === draft.daysOfWeek.length;
       const sameMembers = sameLen && next.every((d) => draftDaySet.has(d));
       if (!sameMembers) {
         setDraft((prev) => ({ ...prev, daysOfWeek: next }));
       }
     }
-  }, [allDaysTaken, availableDays, coveredDays, draft.daysOfWeek]);
+  }, [allDaysTaken, bonuses, coveredDays, draft.daysOfWeek]);
 
-  const draftConflictDays = useMemo(() => {
-    const conflictingDays = new Set<number>();
-    const draftDays = new Set(expandDaysOfWeek(draft.daysOfWeek));
-    for (const existing of bonuses) {
-      const shared = daySetsIntersect(draft.daysOfWeek, existing.daysOfWeek ?? null);
-      for (const d of shared) {
-        if (draftDays.has(d)) conflictingDays.add(d);
-      }
-    }
-    return Array.from(conflictingDays).sort((a, b) => a - b);
-  }, [draft.daysOfWeek, bonuses]);
+  const draftConflictInfo = useMemo(
+    () => earlyArrivalDraftConflict(bonuses, draft.daysOfWeek),
+    [draft.daysOfWeek, bonuses],
+  );
+  const draftConflictDays = draftConflictInfo.conflictingDays;
   const draftHasConflict = draftConflictDays.length > 0;
-  const draftConflictMessage = draftHasConflict
-    ? `Day(s) overlap with another rule: ${describeDays(draftConflictDays)}. Edit or remove the conflicting rule first.`
-    : null;
+  const draftConflictMessage = draftConflictInfo.message;
 
   const addBonus = () => {
     if (allDaysTaken) return;
@@ -1474,15 +1459,10 @@ function EarlyArrivalBonusEditor({
     };
     const newBonuses = [...bonuses, next];
     onChange(newBonuses);
-    const newCovered = new Set<number>();
-    for (const b of newBonuses) {
-      for (const d of expandDaysOfWeek(b.daysOfWeek)) newCovered.add(d);
-    }
-    const newAvailable = [0, 1, 2, 3, 4, 5, 6].filter((d) => !newCovered.has(d));
     setDraft({
       ...draft,
       bonusAmountPerHour: "",
-      daysOfWeek: newAvailable.length > 0 && newAvailable.length < 7 ? [...newAvailable] : [],
+      daysOfWeek: pickNextEarlyArrivalDraftDays(newBonuses),
     });
   };
 

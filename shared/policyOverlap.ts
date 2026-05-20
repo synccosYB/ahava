@@ -116,3 +116,109 @@ export function daySetsIntersect(a: number[] | null | undefined, b: number[] | n
   for (const d of bDays) if (aDays.has(d)) shared.push(d);
   return shared.sort((x, y) => x - y);
 }
+
+/**
+ * Helpers used by the payroll bonus draft editors in `policy-wizard.tsx`.
+ *
+ * These exist so the auto-advance / "skip covered days" behavior added in
+ * task #244 (and regression-guarded by task #246) can be unit-tested without
+ * spinning up a full React DOM. The editors must keep using these helpers so
+ * a future refactor cannot re-introduce the "Sunday rule already exists"
+ * warning on a brand-new payroll policy.
+ */
+
+export function pickNextDayOfWeekDraftDay<T extends DayOfWeekBonusForOverlap>(
+  bonuses: T[],
+): number | null {
+  const used = new Set<number>();
+  if (Array.isArray(bonuses)) {
+    for (const b of bonuses) {
+      if (b && Number.isInteger(b.dayOfWeek) && b.dayOfWeek >= 0 && b.dayOfWeek <= 6) {
+        used.add(b.dayOfWeek);
+      }
+    }
+  }
+  for (let d = 0; d <= 6; d++) {
+    if (!used.has(d)) return d;
+  }
+  return null;
+}
+
+export interface DayOfWeekDraftConflict {
+  hasConflict: boolean;
+  allDaysTaken: boolean;
+  message: string | null;
+}
+
+export function dayOfWeekDraftConflict<T extends DayOfWeekBonusForOverlap>(
+  bonuses: T[],
+  draftDay: number,
+): DayOfWeekDraftConflict {
+  const allDaysTaken = pickNextDayOfWeekDraftDay(bonuses) === null;
+  if (allDaysTaken) {
+    return { hasConflict: false, allDaysTaken: true, message: null };
+  }
+  if (!Number.isInteger(draftDay) || draftDay < 0 || draftDay > 6) {
+    return { hasConflict: false, allDaysTaken: false, message: null };
+  }
+  const conflict = Array.isArray(bonuses)
+    && bonuses.some((b) => b && b.dayOfWeek === draftDay);
+  if (!conflict) return { hasConflict: false, allDaysTaken: false, message: null };
+  return {
+    hasConflict: true,
+    allDaysTaken: false,
+    message: `A rule for ${DAY_NAMES[draftDay]} already exists. Edit or remove it first.`,
+  };
+}
+
+export function pickNextEarlyArrivalDraftDays<T extends EarlyArrivalBonusForOverlap>(
+  bonuses: T[],
+): number[] {
+  const covered = new Set<number>();
+  if (Array.isArray(bonuses)) {
+    for (const b of bonuses) {
+      for (const d of expandDaysOfWeek(b?.daysOfWeek)) covered.add(d);
+    }
+  }
+  const available = [0, 1, 2, 3, 4, 5, 6].filter((d) => !covered.has(d));
+  // The editor treats an empty draft-day list as "apply every day", so we only
+  // pre-fill the available subset when at least one (but not all) days remain.
+  return available.length > 0 && available.length < 7 ? [...available] : [];
+}
+
+export interface EarlyArrivalDraftConflict {
+  conflictingDays: number[];
+  allDaysTaken: boolean;
+  message: string | null;
+}
+
+export function earlyArrivalDraftConflict<T extends EarlyArrivalBonusForOverlap>(
+  bonuses: T[],
+  draftDays: number[],
+): EarlyArrivalDraftConflict {
+  const covered = new Set<number>();
+  if (Array.isArray(bonuses)) {
+    for (const b of bonuses) for (const d of expandDaysOfWeek(b?.daysOfWeek)) covered.add(d);
+  }
+  const allDaysTaken = covered.size === 7;
+  const draftAsArray = Array.isArray(draftDays) ? draftDays : [];
+  const draftExpanded = new Set(expandDaysOfWeek(draftAsArray));
+  const conflicting = new Set<number>();
+  if (Array.isArray(bonuses)) {
+    for (const existing of bonuses) {
+      const shared = daySetsIntersect(draftAsArray, existing?.daysOfWeek ?? null);
+      for (const d of shared) {
+        if (draftExpanded.has(d)) conflicting.add(d);
+      }
+    }
+  }
+  const days = Array.from(conflicting).sort((a, b) => a - b);
+  if (days.length === 0) {
+    return { conflictingDays: [], allDaysTaken, message: null };
+  }
+  return {
+    conflictingDays: days,
+    allDaysTaken,
+    message: `Day(s) overlap with another rule: ${describeDays(days)}. Edit or remove the conflicting rule first.`,
+  };
+}
