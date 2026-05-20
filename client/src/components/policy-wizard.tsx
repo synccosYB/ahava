@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -239,6 +240,10 @@ function getPayrollRuleGroups(ruleFields: RuleFieldDef[]): PayrollRuleGroup[] {
 // behaving exactly as they did before per-rule toggles existed.
 function isPayrollRuleEnabled(rulesForm: Record<string, any>, enabledKey: string): boolean {
   return rulesForm[enabledKey] !== false;
+}
+
+function slugifyLabel(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 // Field keys whose value is gated by a payroll on/off toggle. Used by
@@ -1878,6 +1883,94 @@ function PayrollRuleGroupCard({
   );
 }
 
+function NonPayrollRuleFieldEditor({
+  field, rulesForm, setRulesForm, errors,
+}: {
+  field: RuleFieldDef;
+  rulesForm: Record<string, any>;
+  setRulesForm: (v: Record<string, any>) => void;
+  errors: Record<string, string>;
+}) {
+  return (
+    <div className="p-3 rounded-lg border bg-card" data-testid={`rule-field-${field.key}`}>
+      {field.type === "boolean" ? (
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1">
+            <Label className="font-medium">{field.label}</Label>
+            <p className="text-xs text-muted-foreground mt-0.5">{field.description}</p>
+          </div>
+          <Switch
+            checked={!!rulesForm[field.key]}
+            onCheckedChange={(v) => setRulesForm({ ...rulesForm, [field.key]: v })}
+            data-testid={`switch-wizard-rule-${field.key}`}
+          />
+        </div>
+      ) : field.type === "select" ? (
+        <div>
+          <Label className="font-medium">{field.label}</Label>
+          <p className="text-xs text-muted-foreground mt-0.5 mb-2">{field.description}</p>
+          <Select
+            value={
+              field.nullable
+                ? (rulesForm[field.key] ? String(rulesForm[field.key]) : PAYDAY_UNSET_VALUE)
+                : (rulesForm[field.key] || field.defaultValue)
+            }
+            onValueChange={(v) =>
+              setRulesForm({
+                ...rulesForm,
+                [field.key]: field.nullable && v === PAYDAY_UNSET_VALUE ? null : v,
+              })
+            }
+          >
+            <SelectTrigger data-testid={`select-wizard-rule-${field.key}`}>
+              <SelectValue placeholder={field.nullable ? "Not set" : undefined} />
+            </SelectTrigger>
+            <SelectContent>
+              {field.nullable && (
+                <SelectItem value={PAYDAY_UNSET_VALUE}>Not set</SelectItem>
+              )}
+              {field.options?.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : (
+        <div>
+          <Label className="font-medium">{field.label}</Label>
+          <p className="text-xs text-muted-foreground mt-0.5 mb-2">{field.description}</p>
+          <Input
+            type={field.type}
+            value={rulesForm[field.key] ?? ""}
+            onChange={(e) => setRulesForm({
+              ...rulesForm,
+              [field.key]: field.type === "number"
+                ? (e.target.value === "" ? "" : parseFloat(e.target.value))
+                : e.target.value,
+            })}
+            min={field.min}
+            max={field.max}
+            data-testid={`input-wizard-rule-${field.key}`}
+          />
+          {errors[field.key] && (
+            <p className="text-sm text-destructive mt-1 flex items-center gap-1" data-testid={`error-rule-${field.key}`}>
+              <AlertCircle className="h-3 w-3" /> {errors[field.key]}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface RuleTabSpec {
+  id: string;
+  label: string;
+  hasError: boolean;
+  isOff?: boolean;
+  content: React.ReactNode;
+}
+
 function StepRules({
   ruleFields, rulesForm, setRulesForm, errors, policyTypeKey, dowOverlaps, earlyOverlaps,
 }: {
@@ -1898,6 +1991,91 @@ function StepRules({
   }
 
   const hasOverlapErrors = dowOverlaps.size > 0 || earlyOverlaps.size > 0;
+
+  const tabs: RuleTabSpec[] = [];
+
+  if (policyTypeKey === "payroll") {
+    for (const group of getPayrollRuleGroups(ruleFields)) {
+      if (group.kind === "static") {
+        const field = group.field;
+        tabs.push({
+          id: slugifyLabel(group.title),
+          label: group.title,
+          hasError: !!errors[field.key],
+          content: (
+            <PayrollRuleGroupCard
+              group={group}
+              rulesForm={rulesForm}
+              setRulesForm={setRulesForm}
+              errors={errors}
+            />
+          ),
+        });
+      } else {
+        const enabled = isPayrollRuleEnabled(rulesForm, group.enabledKey);
+        const hasError = enabled && group.fields.some((f) => !!errors[f.key]);
+        tabs.push({
+          id: slugifyLabel(group.title),
+          label: group.title,
+          hasError,
+          isOff: !enabled,
+          content: (
+            <PayrollRuleGroupCard
+              group={group}
+              rulesForm={rulesForm}
+              setRulesForm={setRulesForm}
+              errors={errors}
+            />
+          ),
+        });
+      }
+    }
+    tabs.push({
+      id: "day-of-week-bonus",
+      label: "Day-of-Week Bonuses",
+      hasError:
+        dowOverlaps.size > 0 ||
+        Object.keys(errors).some((k) => k.startsWith("dayOfWeekBonuses.")),
+      content: (
+        <DayOfWeekBonusEditor
+          bonuses={Array.isArray(rulesForm.dayOfWeekBonuses) ? rulesForm.dayOfWeekBonuses : []}
+          onChange={(next) => setRulesForm({ ...rulesForm, dayOfWeekBonuses: next })}
+          overlaps={dowOverlaps}
+        />
+      ),
+    });
+    tabs.push({
+      id: "early-arrival-bonus",
+      label: "Early-Arrival Bonuses",
+      hasError:
+        earlyOverlaps.size > 0 ||
+        Object.keys(errors).some((k) => k.startsWith("earlyArrivalBonuses.")),
+      content: (
+        <EarlyArrivalBonusEditor
+          bonuses={Array.isArray(rulesForm.earlyArrivalBonuses) ? rulesForm.earlyArrivalBonuses : []}
+          onChange={(next) => setRulesForm({ ...rulesForm, earlyArrivalBonuses: next })}
+          errors={errors}
+          overlaps={earlyOverlaps}
+        />
+      ),
+    });
+  } else {
+    for (const field of ruleFields) {
+      tabs.push({
+        id: slugifyLabel(field.label),
+        label: field.label,
+        hasError: !!errors[field.key],
+        content: (
+          <NonPayrollRuleFieldEditor
+            field={field}
+            rulesForm={rulesForm}
+            setRulesForm={setRulesForm}
+            errors={errors}
+          />
+        ),
+      });
+    }
+  }
 
   return (
     <div className="space-y-6" data-testid="wizard-step-rules">
@@ -1923,103 +2101,45 @@ function StepRules({
         </div>
       )}
 
-      <div className="space-y-4">
-        {policyTypeKey === "payroll" && (
-          <DayOfWeekBonusEditor
-            bonuses={Array.isArray(rulesForm.dayOfWeekBonuses) ? rulesForm.dayOfWeekBonuses : []}
-            onChange={(next) => setRulesForm({ ...rulesForm, dayOfWeekBonuses: next })}
-            overlaps={dowOverlaps}
-          />
-        )}
-        {policyTypeKey === "payroll" && (
-          <EarlyArrivalBonusEditor
-            bonuses={Array.isArray(rulesForm.earlyArrivalBonuses) ? rulesForm.earlyArrivalBonuses : []}
-            onChange={(next) => setRulesForm({ ...rulesForm, earlyArrivalBonuses: next })}
-            errors={errors}
-            overlaps={earlyOverlaps}
-          />
-        )}
-        {policyTypeKey === "payroll"
-          ? getPayrollRuleGroups(ruleFields).map((group) => (
-              <PayrollRuleGroupCard
-                key={group.kind === "static" ? `static-${group.field.key}` : `toggle-${group.enabledKey}`}
-                group={group}
-                rulesForm={rulesForm}
-                setRulesForm={setRulesForm}
-                errors={errors}
-              />
-            ))
-          : ruleFields.map((field) => (
-          <div key={field.key} className="p-3 rounded-lg border bg-card">
-            {field.type === "boolean" ? (
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1">
-                  <Label className="font-medium">{field.label}</Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">{field.description}</p>
-                </div>
-                <Switch
-                  checked={!!rulesForm[field.key]}
-                  onCheckedChange={(v) => setRulesForm({ ...rulesForm, [field.key]: v })}
-                  data-testid={`switch-wizard-rule-${field.key}`}
-                />
-              </div>
-            ) : field.type === "select" ? (
-              <div>
-                <Label className="font-medium">{field.label}</Label>
-                <p className="text-xs text-muted-foreground mt-0.5 mb-2">{field.description}</p>
-                <Select
-                  value={
-                    field.nullable
-                      ? (rulesForm[field.key] ? String(rulesForm[field.key]) : PAYDAY_UNSET_VALUE)
-                      : (rulesForm[field.key] || field.defaultValue)
-                  }
-                  onValueChange={(v) =>
-                    setRulesForm({
-                      ...rulesForm,
-                      [field.key]: field.nullable && v === PAYDAY_UNSET_VALUE ? null : v,
-                    })
-                  }
-                >
-                  <SelectTrigger data-testid={`select-wizard-rule-${field.key}`}>
-                    <SelectValue placeholder={field.nullable ? "Not set" : undefined} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {field.nullable && (
-                      <SelectItem value={PAYDAY_UNSET_VALUE}>Not set</SelectItem>
-                    )}
-                    {field.options?.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : (
-              <div>
-                <Label className="font-medium">{field.label}</Label>
-                <p className="text-xs text-muted-foreground mt-0.5 mb-2">{field.description}</p>
-                <Input
-                  type={field.type}
-                  value={rulesForm[field.key] ?? ""}
-                  onChange={(e) => setRulesForm({
-                    ...rulesForm,
-                    [field.key]: field.type === "number"
-                      ? (e.target.value === "" ? "" : parseFloat(e.target.value))
-                      : e.target.value,
-                  })}
-                  min={field.min}
-                  max={field.max}
-                  data-testid={`input-wizard-rule-${field.key}`}
-                />
-                {errors[field.key] && (
-                  <p className="text-sm text-destructive mt-1 flex items-center gap-1" data-testid={`error-rule-${field.key}`}>
-                    <AlertCircle className="h-3 w-3" /> {errors[field.key]}
-                  </p>
+      {tabs.length === 1 ? (
+        <div className="space-y-4">{tabs[0].content}</div>
+      ) : (
+        <Tabs defaultValue={tabs[0]?.id} className="w-full">
+          <TabsList className="flex flex-wrap h-auto justify-start gap-1 bg-muted/50 p-1">
+            {tabs.map((t) => (
+              <TabsTrigger
+                key={t.id}
+                value={t.id}
+                data-testid={`tab-rule-${t.id}`}
+                className="gap-2"
+              >
+                <span>{t.label}</span>
+                {t.isOff && (
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] px-1 py-0 h-4 leading-none"
+                    data-testid={`badge-rule-off-${t.id}`}
+                  >
+                    Off
+                  </Badge>
                 )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+                {t.hasError && (
+                  <span
+                    className="inline-block h-2 w-2 rounded-full bg-destructive"
+                    data-testid={`indicator-rule-error-${t.id}`}
+                    aria-label="Has validation error"
+                  />
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {tabs.map((t) => (
+            <TabsContent key={t.id} value={t.id} className="mt-4">
+              {t.content}
+            </TabsContent>
+          ))}
+        </Tabs>
+      )}
     </div>
   );
 }
