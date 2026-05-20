@@ -23,7 +23,7 @@ export interface TimesheetEntry {
   // Source attribution: the kiosk the punch came from, when any of the
   // day's punches were captured at a registered kiosk. `null` means a
   // web/manager-entered punch (or no punches at all on that day).
-  sources: Array<{ kioskDeviceId: string | null; kioskName: string | null }>;
+  sources: Array<{ kioskDeviceId: string | null; kioskName: string | null; kiosk: { id: string; name: string } | null }>;
 }
 
 export interface TimesheetTotals {
@@ -145,16 +145,18 @@ export async function buildEmployeeTimesheet(
 
     // Per-day source attribution (dedup by kiosk id; null → manual/web).
     const sourcesForDay = (() => {
-      if (!datePunches.length) return [] as Array<{ kioskDeviceId: string | null; kioskName: string | null }>;
+      if (!datePunches.length) return [] as TimesheetEntry["sources"];
       const seen = new Set<string>();
-      const out: Array<{ kioskDeviceId: string | null; kioskName: string | null }> = [];
+      const out: TimesheetEntry["sources"] = [];
       for (const p of datePunches) {
         const key = p.kioskDeviceId ?? "__manual__";
         if (seen.has(key)) continue;
         seen.add(key);
+        const name = p.kioskDeviceId ? (kioskNameById.get(p.kioskDeviceId) ?? null) : null;
         out.push({
           kioskDeviceId: p.kioskDeviceId ?? null,
-          kioskName: p.kioskDeviceId ? (kioskNameById.get(p.kioskDeviceId) ?? null) : null,
+          kioskName: name,
+          kiosk: p.kioskDeviceId && name ? { id: p.kioskDeviceId, name } : null,
         });
       }
       return out;

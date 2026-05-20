@@ -24,12 +24,16 @@ export type TimesheetEntry = {
   overtimeHours: number;
   status: TimesheetStatus;
   ptoType: string | null;
-  sources?: Array<{ kioskDeviceId: string | null; kioskName: string | null }>;
+  sources?: Array<{
+    kioskDeviceId: string | null;
+    kioskName: string | null;
+    kiosk: { id: string; name: string } | null;
+  }>;
 };
 
 function formatSources(sources: TimesheetEntry["sources"]): string {
   if (!sources || sources.length === 0) return "—";
-  const labels = sources.map((s) => s.kioskName ?? (s.kioskDeviceId ? "Kiosk" : "Web"));
+  const labels = sources.map((s) => s.kiosk?.name ?? s.kioskName ?? (s.kioskDeviceId ? "Kiosk" : "Web"));
   return Array.from(new Set(labels)).join(", ");
 }
 

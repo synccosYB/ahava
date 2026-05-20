@@ -300,6 +300,8 @@ export type AttendanceRecord = PunchLog & {
   date: string;
   totalHours: number | null;
   wasCorrected?: boolean;
+  kioskDeviceName?: string | null;
+  kiosk?: { id: string; name: string } | null;
 };
 
 export const attendanceExceptions = pgTable("attendance_exceptions", {

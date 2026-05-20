@@ -2454,11 +2454,15 @@ export async function registerRoutes(
         if (d) kioskNameById.set(id, d.name);
       }
 
-      res.json(records.map(r => ({
-        ...punchLogToApiResponse(r),
-        wasCorrected: correctedIds.has(r.id),
-        kioskDeviceName: r.kioskDeviceId ? (kioskNameById.get(r.kioskDeviceId) ?? null) : null,
-      })));
+      res.json(records.map(r => {
+        const name = r.kioskDeviceId ? (kioskNameById.get(r.kioskDeviceId) ?? null) : null;
+        return {
+          ...punchLogToApiResponse(r),
+          wasCorrected: correctedIds.has(r.id),
+          kioskDeviceName: name,
+          kiosk: r.kioskDeviceId && name ? { id: r.kioskDeviceId, name } : null,
+        };
+      }));
     } catch (error) {
       console.error("Error fetching records:", error);
       res.status(500).json({ message: "Failed to fetch attendance records" });
@@ -2903,10 +2907,10 @@ export async function registerRoutes(
   // Enrich an exception list with the originating kiosk name (when the
   // exception was raised against a kiosk punch). Batched: one device map
   // lookup per request rather than per row.
-  async function attachKioskNamesToExceptions<T extends { punchLogId?: string | null }>(rows: T[]): Promise<Array<T & { kioskDeviceName: string | null }>> {
+  async function attachKioskNamesToExceptions<T extends { punchLogId?: string | null }>(rows: T[]): Promise<Array<T & { kioskDeviceName: string | null; kiosk: { id: string; name: string } | null }>> {
     const punchIds = Array.from(new Set(rows.map(r => r.punchLogId).filter((x): x is string => !!x)));
     if (punchIds.length === 0) {
-      return rows.map(r => ({ ...r, kioskDeviceName: null }));
+      return rows.map(r => ({ ...r, kioskDeviceName: null, kiosk: null }));
     }
     const punches = await Promise.all(punchIds.map(id => storage.getPunchLog(id)));
     const kioskIdByPunch = new Map<string, string>();
@@ -2924,7 +2928,12 @@ export async function registerRoutes(
     }
     return rows.map(r => {
       const devId = r.punchLogId ? kioskIdByPunch.get(r.punchLogId) : undefined;
-      return { ...r, kioskDeviceName: devId ? (nameByDevice.get(devId) ?? null) : null };
+      const name = devId ? (nameByDevice.get(devId) ?? null) : null;
+      return {
+        ...r,
+        kioskDeviceName: name,
+        kiosk: devId && name ? { id: devId, name } : null,
+      };
     });
   }
 

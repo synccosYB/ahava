@@ -238,12 +238,19 @@ export default function MyAttendance() {
 
   const exportCSV = () => {
     if (!records || records.length === 0) return;
-    const headers = ["Date", "Clock In", "Clock Out", "Break (min)", "Total Hours", "Status"];
+    const headers = ["Date", "Clock In", "Clock Out", "Break (min)", "Source", "Total Hours", "Status"];
     const rows = records.map((r) => [
       r.date,
       r.clockIn ? formatTime12(r.clockIn) : "",
       r.clockOut ? formatTime12(r.clockOut) : "",
       r.breakMinutes || 0,
+      r.kiosk?.name
+        ? `Kiosk — ${r.kiosk.name}`
+        : r.kioskDeviceName
+          ? `Kiosk — ${r.kioskDeviceName}`
+          : r.kioskDeviceId
+            ? "Kiosk"
+            : "Web",
       r.totalHours != null ? formatHoursMinutes(r.totalHours) : "",
       r.status,
     ]);
@@ -419,6 +426,7 @@ export default function MyAttendance() {
                   </TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Clock Out</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Break</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Source</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">
                     <button
                       onClick={() => toggleSort("totalHours")}
@@ -511,6 +519,18 @@ export default function MyAttendance() {
                           )}
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">{record.breakMinutes || 0} min</TableCell>
+                      <TableCell
+                        className="text-xs text-muted-foreground"
+                        data-testid={`text-attendance-source-${record.id}`}
+                      >
+                        {record.kiosk?.name
+                          ? `Kiosk — ${record.kiosk.name}`
+                          : record.kioskDeviceName
+                            ? `Kiosk — ${record.kioskDeviceName}`
+                            : record.kioskDeviceId
+                              ? "Kiosk"
+                              : "Web"}
+                      </TableCell>
                       <TableCell className="text-sm font-semibold tabular-nums">
                         {record.totalHours != null ? formatHoursMinutes(record.totalHours) : "—"}
                       </TableCell>

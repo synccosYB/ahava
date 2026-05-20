@@ -30,6 +30,7 @@ type EnrichedException = AttendanceException & {
   correctionCounts?: CorrectionCountSummary;
   correctionCount90d?: CorrectionCountSummary;
   kioskDeviceName?: string | null;
+  kiosk?: { id: string; name: string } | null;
 };
 
 function CorrectionCountBreakdown({
@@ -279,14 +280,16 @@ function ExceptionRow({
               Date: {formatDate(ex.exceptionDate)}
               {ex.exceptionTime && ` at ${formatTime12(ex.exceptionTime)}`}
             </p>
-            {ex.kioskDeviceName && (
-              <p
-                className="text-xs text-muted-foreground"
-                data-testid={`text-exception-source-${ex.id}`}
-              >
-                Source: via Kiosk — {ex.kioskDeviceName}
-              </p>
-            )}
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid={`text-exception-source-${ex.id}`}
+            >
+              Source: {ex.kiosk?.name
+                ? `via Kiosk — ${ex.kiosk.name}`
+                : ex.kioskDeviceName
+                  ? `via Kiosk — ${ex.kioskDeviceName}`
+                  : "Web"}
+            </p>
             {isHighCorrectionCount(
               (ex.correctionCounts ?? ex.correctionCount90d)?.all.total ?? 0,
             ) && (
