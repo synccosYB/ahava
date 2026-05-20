@@ -1,5 +1,8 @@
 -- Sync DB with shared/schema.ts:
---   * attendance_exceptions.reopen_* columns (Task #231)
+--   * attendance_exceptions.reopen_* columns (Task #231 / recovery for Task #237 —
+--     existing environments that missed this migration crash on
+--     /api/attendance/exceptions/pending with "column reopen_requested_by does not exist";
+--     replaying this migration is safe and restores those endpoints).
 --   * onboarding_templates / onboarding_template_tasks / onboarding_checklists
 --     / onboarding_tasks tables
 --   * offboarding_templates / offboarding_template_tasks /
