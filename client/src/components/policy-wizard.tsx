@@ -644,10 +644,15 @@ export function PolicyWizard({
 
   const saveMutation = useMutation({
     mutationFn: async (targetStatus: "draft" | "active") => {
+      if (!matchingType?.id) {
+        throw new Error(
+          `Policy type "${selectedTypeKey}" is not available yet. Please reload and try again, or pick a different type.`,
+        );
+      }
       const payload = {
         name: name.trim(),
         description: description.trim() || null,
-        policyTypeId: matchingType?.id,
+        policyTypeId: matchingType.id,
         companyId: divisions?.[0]?.id || null,
         status: targetStatus,
       };

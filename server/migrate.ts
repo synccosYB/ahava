@@ -68,10 +68,24 @@ const REQUIRED_COLUMNS: Record<string, string[]> = {
   users: [
     "deactivated_at",
   ],
+  attendance_exceptions: [
+    "reopen_requested_by",
+    "reopen_requested_at",
+    "reopen_message",
+    "reopen_status",
+    "reopen_decided_by",
+    "reopen_decided_at",
+    "reopen_decision_note",
+    "reopen_consumed_at",
+  ],
 };
 
 const REQUIRED_TABLES: string[] = [
   "location_addresses",
+  "onboarding_checklists",
+  "onboarding_tasks",
+  "onboarding_templates",
+  "onboarding_template_tasks",
 ];
 
 export async function runMigrations(): Promise<void> {

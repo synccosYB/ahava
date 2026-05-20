@@ -5062,7 +5062,10 @@ export async function registerRoutes(
     try {
       const parsed = insertPolicySchema.safeParse(req.body);
       if (!parsed.success) {
-        return res.status(400).json({ message: "Invalid policy data", errors: parsed.error.flatten() });
+        const flat = parsed.error.flatten();
+        const firstField = Object.keys(flat.fieldErrors)[0];
+        const firstMsg = firstField ? `${firstField}: ${flat.fieldErrors[firstField]?.[0]}` : "Invalid policy data";
+        return res.status(400).json({ message: firstMsg, errors: flat });
       }
       if (req.body.rules) {
         const overlapError = validateBonusRuleOverlaps(req.body.rules);
@@ -5086,9 +5089,19 @@ export async function registerRoutes(
       });
 
       res.status(201).json(policy);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error creating policy:", error);
-      res.status(500).json({ message: "Failed to create policy" });
+      const pgCode = error?.code;
+      if (pgCode === "23503") {
+        return res.status(400).json({ message: `Invalid reference: ${error?.detail || error?.message || "foreign key violation"}` });
+      }
+      if (pgCode === "23505") {
+        return res.status(409).json({ message: `Duplicate policy: ${error?.detail || error?.message}` });
+      }
+      if (pgCode === "23502") {
+        return res.status(400).json({ message: `Missing required field: ${error?.column || error?.message}` });
+      }
+      res.status(500).json({ message: error?.message ? `Failed to create policy: ${error.message}` : "Failed to create policy" });
     }
   });
 
@@ -5118,9 +5131,19 @@ export async function registerRoutes(
       });
 
       res.json(policy);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating policy:", error);
-      res.status(500).json({ message: "Failed to update policy" });
+      const pgCode = error?.code;
+      if (pgCode === "23503") {
+        return res.status(400).json({ message: `Invalid reference: ${error?.detail || error?.message || "foreign key violation"}` });
+      }
+      if (pgCode === "23505") {
+        return res.status(409).json({ message: `Duplicate policy: ${error?.detail || error?.message}` });
+      }
+      if (pgCode === "23502") {
+        return res.status(400).json({ message: `Missing required field: ${error?.column || error?.message}` });
+      }
+      res.status(500).json({ message: error?.message ? `Failed to update policy: ${error.message}` : "Failed to update policy" });
     }
   });
 
