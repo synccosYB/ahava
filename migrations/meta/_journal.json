@@ -281,6 +281,13 @@
       "when": 1779000000000,
       "tag": "0039_time_off_max_consecutive_flag",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1779100000000,
+      "tag": "0040_reopen_exceptions_and_onboarding",
+      "breakpoints": true
     }
   ]
 }
