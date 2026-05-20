@@ -4946,9 +4946,6 @@ export async function registerRoutes(
     try {
       const policy = await storage.getPolicy(req.params.id);
       if (!policy) return res.status(404).json({ message: "Policy not found" });
-      if (policy.isSystemDefault) {
-        return res.status(400).json({ message: "System default policies cannot be deleted." });
-      }
 
       await storage.deletePolicy(policy.id);
 

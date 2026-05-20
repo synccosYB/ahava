@@ -696,12 +696,11 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="text-destructive hover:text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                          disabled={p.isSystemDefault}
+                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
                           onClick={() => setPolicyToDelete(p)}
                           data-testid={`button-delete-policy-${p.id}`}
-                          title={p.isSystemDefault ? "System default policies cannot be deleted" : "Delete policy"}
-                          aria-label={p.isSystemDefault ? "System default policies cannot be deleted" : "Delete policy"}
+                          title="Delete policy"
+                          aria-label="Delete policy"
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
