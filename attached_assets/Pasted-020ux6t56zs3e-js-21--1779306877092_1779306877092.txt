@@ -1,0 +1,35 @@
+020ux6t56zs3e.js:21 
+      /////////////////////
+   ///////////////////////////
+  ////////@@@@@@@//////////////
+  ////////@@@@@@@//////////////
+  ////////@@@@@@@//////////////        Curious and driven?
+  ///////////////@@@@@@@///////        Work with us!
+  ///////////////@@@@@@@///////
+  ///////////////@@@@@@@///////        https://join.replit.com/hack.with.us
+  ////////@@@@@@@//////////////
+  ////////@@@@@@@//////////////
+  ////////@@@@@@@//////////////
+   ///////////////////////////
+      /////////////////////
+      
+020ux6t56zs3e.js:21 Download the Apollo DevTools for a better development experience: https://chrome.google.com/webstore/detail/apollo-client-developer-t/jdkknkkbebbapilgoeccciglkfbmbnfm
+020ux6t56zs3e.js:21 [LaunchDarkly] LaunchDarkly client initialized
+28Error while parsing the 'sandbox' attribute: 'allow-downloads-without-user-activation' is an invalid sandbox flag.Understand this error
+8Unrecognized feature: 'ambient-light-sensor'.Understand this warning
+8Unrecognized feature: 'battery'.Understand this warning
+8Unrecognized feature: 'execution-while-not-rendered'.Understand this warning
+8Unrecognized feature: 'execution-while-out-of-viewport'.Understand this warning
+8Unrecognized feature: 'layout-animations'.Understand this warning
+8Unrecognized feature: 'legacy-image-formats'.Understand this warning
+8Unrecognized feature: 'navigation-override'.Understand this warning
+8Unrecognized feature: 'oversized-images'.Understand this warning
+8Unrecognized feature: 'publickey-credentials'.Understand this warning
+8Unrecognized feature: 'speaker-selection'.Understand this warning
+8Unrecognized feature: 'unoptimized-images'.Understand this warning
+8Unrecognized feature: 'unsized-media'.Understand this warning
+0i8wy8tbht2ow.js:2 Unrecognized feature: 'pointer-lock'.
+C @ 0i8wy8tbht2ow.js:2Understand this warning
+8Allow attribute will take precedence over 'allowfullscreen'.Understand this warning
+8Allow attribute will take precedence over 'allowpaymentrequest'.Understand this warning
+22Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('<URL>') does not match the recipient window's origin ('<URL>').
