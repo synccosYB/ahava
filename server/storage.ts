@@ -273,7 +273,7 @@ export interface IStorage {
   getTimeOffRequestsByUser(userId: string): Promise<TimeOffRequest[]>;
   getPendingTimeOffRequests(): Promise<TimeOffRequest[]>;
   getAllTimeOffRequests(): Promise<TimeOffRequest[]>;
-  createTimeOffRequest(request: InsertTimeOffRequest): Promise<TimeOffRequest>;
+  createTimeOffRequest(request: InsertTimeOffRequest & { reviewedBy?: string | null; reviewedAt?: Date | null }): Promise<TimeOffRequest>;
   updateTimeOffRequest(id: string, request: Partial<InsertTimeOffRequest & { reviewedBy: string; reviewedAt: Date; editedAt: Date; hoursApproved: number; approvedEndDate: string }>): Promise<TimeOffRequest | undefined>;
 
   getTimeOffBalance(userId: string, type: string, year: number): Promise<TimeOffBalance | undefined>;
@@ -1225,7 +1225,9 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(timeOffRequests).orderBy(desc(timeOffRequests.createdAt));
   }
 
-  async createTimeOffRequest(request: InsertTimeOffRequest): Promise<TimeOffRequest> {
+  async createTimeOffRequest(
+    request: InsertTimeOffRequest & { reviewedBy?: string | null; reviewedAt?: Date | null },
+  ): Promise<TimeOffRequest> {
     const [created] = await db.insert(timeOffRequests).values(request).returning();
     return created;
   }

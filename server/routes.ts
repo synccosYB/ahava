@@ -3802,18 +3802,14 @@ export async function registerRoutes(
         ...parsed,
         status: finalStatus,
         hoursRequested: computedHours,
-        hoursApproved: autoApprove ? computedHours : undefined,
+        hoursApproved: autoApprove ? computedHours : null,
         exceedsBalance,
         balanceAtSubmission: availableBalance ?? null,
         exceedsMaxConsecutive,
         maxConsecutiveAtSubmission: maxConsecutiveHours,
-      } as any);
-      if (autoApprove) {
-        await storage.updateTimeOffRequest(request.id, {
-          reviewedBy: userId,
-          reviewedAt: new Date(),
-        });
-      }
+        reviewedBy: autoApprove ? userId : null,
+        reviewedAt: autoApprove ? new Date() : null,
+      });
 
       if (overBalanceOverridesAutoApprove) {
         try {
@@ -8395,6 +8391,32 @@ export async function registerRoutes(
     },
   );
 
+  // kiosk_devices has no `companyId` column. Resolve via the device's
+  // departmentId → department → (companyId | location → companyId) chain.
+  // Returns null when the device isn't scoped to any company (templates with
+  // a null companyId are then considered, matching legacy behavior).
+  async function resolveKioskDeviceCompanyId(
+    device: { departmentId: string | null },
+  ): Promise<string | null> {
+    if (!device.departmentId) return null;
+    const dept = await storage.getDepartment(device.departmentId);
+    if (!dept) return null;
+    if (dept.companyId) return dept.companyId;
+    if (dept.locationId) {
+      const loc = await storage.getLocation(dept.locationId);
+      if (loc?.companyId) return loc.companyId;
+    }
+    return null;
+  }
+
+  const kioskSupervisorOverrideSchema = z.object({
+    supervisorPin: z.string().min(1),
+    targetEmployeeId: z.string().min(1),
+    reason: z.string().min(1).optional(),
+    attemptId: z.string().optional(),
+    punchType: z.enum(["clock_in", "clock_out"]).default("clock_in"),
+  });
+
   // ---- Kiosk public face flow ----
   app.post("/api/kiosk/face/identify", wrapKiosk(async (req, res) => {
     const device = await requireKioskDevice(req, res);
@@ -8424,8 +8446,9 @@ export async function registerRoutes(
       return kioskError(res, 400, "liveness_failed", "Liveness check failed. Please face the camera and try again.", { outcome: "liveness_failed" });
     }
 
+    const deviceCompanyId = await resolveKioskDeviceCompanyId(device);
     const candidatesRaw = await storage.getBiometricTemplatesByCompanyAndType(
-      (device as any).companyId ?? null,
+      deviceCompanyId,
       "face",
     );
     // Decrypt and project to matcher candidate shape. Skip rows that fail to decrypt
@@ -8497,13 +8520,12 @@ export async function registerRoutes(
   app.post("/api/kiosk/face/supervisor-override", wrapKiosk(async (req, res) => {
     const device = await requireKioskDevice(req, res);
     if (!device) return;
-    const supervisorPin = req.body?.supervisorPin as string | undefined;
-    const targetEmployeeId = req.body?.targetEmployeeId as string | undefined;
-    const reason = (req.body?.reason as string | undefined) ?? "kiosk_override";
-    const attemptId = req.body?.attemptId as string | undefined;
-    if (!supervisorPin || !targetEmployeeId) {
+    const parsedOverride = kioskSupervisorOverrideSchema.safeParse(req.body ?? {});
+    if (!parsedOverride.success) {
       return kioskError(res, 400, "invalid_request", "Supervisor PIN and employee are required.");
     }
+    const { supervisorPin, targetEmployeeId, punchType } = parsedOverride.data;
+    const reason = parsedOverride.data.reason ?? "kiosk_override";
     const supervisor = await storage.getUserByPin(supervisorPin);
     if (!supervisor) {
       return kioskError(res, 403, "invalid_pin", "We didn't recognize that supervisor PIN.");
@@ -8518,9 +8540,9 @@ export async function registerRoutes(
       supervisorUserId: supervisor.id,
       employeeUserId: target.id,
       kioskDeviceId: device.id,
-      punchType: (req.body?.punchType as string) ?? "clock_in",
+      punchType,
       reason,
-    } as any);
+    });
     await writeAuditLog({
       actorUserId: supervisor.id,
       targetType: "biometric_attempt",
