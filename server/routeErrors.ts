@@ -45,19 +45,20 @@ function extractDetail(err: any, key: string): string | undefined {
   return m?.[1];
 }
 
-export function handleRouteError(
-  res: Response,
-  error: unknown,
-  fallback = "Something went wrong",
-): Response {
-  // Zod
+export type MappedRouteError = {
+  status: number;
+  message: string;
+  errors?: unknown;
+};
+
+export function mapRouteError(error: unknown, fallback = "Something went wrong"): MappedRouteError {
   if (error instanceof ZodError) {
-    return res.status(400).json({
+    return {
+      status: 400,
       message: friendlyZodMessage(error),
       errors: error.flatten(),
-    });
+    };
   }
-  // Postgres-style errors (Drizzle + pg surface .code/.detail/.constraint)
   const e = error as any;
   const code: string | undefined = e?.code;
   if (typeof code === "string" && PG_CODE_MESSAGES[code]) {
@@ -67,10 +68,20 @@ export function handleRouteError(
     if (field) message += `: ${field}`;
     else if (constraint) message += `: ${constraint}`;
     if (code === "23514" && e?.message) message = e.message;
-    return res.status(400).json({ message });
+    return { status: 400, message };
   }
-  // Logged for ops, surfaced minimally to client.
   console.error("[route-error]", error);
   const msg = e?.message && typeof e.message === "string" ? e.message : fallback;
-  return res.status(500).json({ message: `${fallback}: ${msg}` });
+  return { status: 500, message: `${fallback}: ${msg}` };
+}
+
+export function handleRouteError(
+  res: Response,
+  error: unknown,
+  fallback = "Something went wrong",
+): Response {
+  const mapped = mapRouteError(error, fallback);
+  const body: Record<string, unknown> = { message: mapped.message };
+  if (mapped.errors !== undefined) body.errors = mapped.errors;
+  return res.status(mapped.status).json(body);
 }

@@ -2,7 +2,7 @@ import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage } from "./storage";
-import { badRequestFromZod, handleRouteError } from "./routeErrors";
+import { badRequestFromZod, handleRouteError, mapRouteError } from "./routeErrors";
 import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
@@ -2202,6 +2202,10 @@ export async function registerRoutes(
   function kioskError(res: any, code: number, errCode: string, message: string, extra: Record<string, any> = {}) {
     return res.status(code).json({ error: message, code: errCode, ...extra });
   }
+  // Kiosk endpoints intentionally do NOT use handleRouteError: the public
+  // kiosk frontend expects the `{ error, code }` schema and must never see
+  // raw Postgres detail strings (PII risk on shared tablets). This wrapper
+  // is the per-route friendly fallback for that surface.
   function wrapKiosk(handler: (req: any, res: any) => Promise<any>) {
     return async (req: any, res: any) => {
       try {
@@ -5106,7 +5110,7 @@ export async function registerRoutes(
       if (pgCode === "23502") {
         return res.status(400).json({ message: `Missing required field: ${error?.column || error?.message}` });
       }
-      res.status(500).json({ message: error?.message ? `Failed to create policy: ${error.message}` : "Failed to create policy" });
+      return handleRouteError(res, error, "Failed to create policy");
     }
   });
 
@@ -5148,7 +5152,7 @@ export async function registerRoutes(
       if (pgCode === "23502") {
         return res.status(400).json({ message: `Missing required field: ${error?.column || error?.message}` });
       }
-      res.status(500).json({ message: error?.message ? `Failed to update policy: ${error.message}` : "Failed to update policy" });
+      return handleRouteError(res, error, "Failed to update policy");
     }
   });
 
@@ -7297,7 +7301,8 @@ export async function registerRoutes(
       return res.json({ ok: true, ...result });
     } catch (err: any) {
       console.error("/internal/jobs/run error:", err);
-      return res.status(500).json({ ok: false, message: String(err?.message || err) });
+      const mapped = mapRouteError(err, "Failed to drain pending jobs");
+      return res.status(mapped.status).json({ ok: false, message: mapped.message });
     }
   });
 
@@ -7885,7 +7890,11 @@ export async function registerRoutes(
     }
     const updatedProfile = await storage.updateEmploymentProfile(cl.employeeId, { terminationDate });
     if (!updatedProfile) {
-      return res.status(500).json({ message: "Failed to write termination date to employment profile" });
+      return handleRouteError(
+        res,
+        new Error("employment profile update returned no row"),
+        "Failed to write termination date to employment profile",
+      );
     }
 
     await storage.setUserDeactivated(cl.employeeId, actor.id);
