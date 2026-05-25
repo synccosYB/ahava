@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { useDebounce } from "@/hooks/use-debounce";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -241,6 +242,7 @@ function PtoBalanceBar({ used, pending, total, color }: { used: number; pending:
 
 function PtoBalancesTab() {
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 300);
   const [deptFilter, setDeptFilter] = useState("all");
 
   const { data: balances, isLoading } = useQuery<PtoBalanceEntry[]>({
@@ -252,7 +254,7 @@ function PtoBalancesTab() {
   });
 
   const filtered = (balances || []).filter(b => {
-    const matchSearch = !search || `${b.firstName} ${b.lastName}`.toLowerCase().includes(search.toLowerCase());
+    const matchSearch = !debouncedSearch || `${b.firstName} ${b.lastName}`.toLowerCase().includes(debouncedSearch.toLowerCase());
     const matchDept = deptFilter === "all" || b.departmentId === deptFilter;
     return matchSearch && matchDept;
   });

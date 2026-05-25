@@ -151,10 +151,10 @@ async function executeNode(
         await storage.createSystemAlert({
           type: "workflow_action",
           severity: "medium",
-          title: `Workflow Action: ${node.data.label}`,
-          message: `Automated action from workflow "${result.workflowName}"`,
+          message: `Workflow Action: ${node.data.label} — Automated action from workflow "${result.workflowName}"`,
           employeeId: context.userId,
           status: "active",
+          details: { workflowName: result.workflowName, label: node.data.label },
         });
       } catch (err) {
         result.logs.push(`Failed to create alert: ${err}`);
@@ -230,9 +230,9 @@ async function executeNode(
         await storage.createSystemAlert({
           type: "workflow_notification",
           severity: "low",
-          title: `Workflow Notification: ${node.data.label}`,
-          message: node.data.customMessage || `Notification from workflow "${result.workflowName}"`,
+          message: node.data.customMessage || `Workflow Notification: ${node.data.label} — Notification from workflow "${result.workflowName}"`,
           employeeId: context.userId,
+          details: { workflowName: result.workflowName, label: node.data.label },
           status: "active",
         });
       } catch (err) {

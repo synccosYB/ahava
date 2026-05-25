@@ -28,7 +28,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { AlertCircle, ShieldCheck, Trash2, Lock, RefreshCw, Plus, Save } from "lucide-react";
+import { AlertCircle, ShieldCheck, Trash2, Lock, RefreshCw, Plus, Save, ScanFace } from "lucide-react";
 
 interface BiometricSettings {
   id: string;
@@ -267,9 +267,16 @@ function EnrollmentsTab() {
     <Card className="mt-4">
       <CardContent className="pt-6">
         {data.length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="text-no-enrollments">
-            No biometric enrollments yet.
-          </p>
+          <div
+            className="flex flex-col items-center justify-center py-16 text-center"
+            data-testid="text-no-enrollments"
+          >
+            <ScanFace className="h-10 w-10 text-muted-foreground/60 mb-3" />
+            <p className="text-base font-semibold text-foreground">No enrollments yet</p>
+            <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+              Employees can enroll from their profile once face login is enabled and they accept the consent.
+            </p>
+          </div>
         ) : (
           <Table>
             <TableHeader>
@@ -372,9 +379,16 @@ function AttemptsTab() {
         {isLoading || !data ? (
           <Skeleton className="h-32" />
         ) : data.length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="text-no-attempts">
-            No attempts in the selected window.
-          </p>
+          <div
+            className="flex flex-col items-center justify-center py-16 text-center"
+            data-testid="text-no-attempts"
+          >
+            <ScanFace className="h-10 w-10 text-muted-foreground/60 mb-3" />
+            <p className="text-base font-semibold text-foreground">No attempts in this window</p>
+            <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+              Try widening the time range or changing the outcome filter.
+            </p>
+          </div>
         ) : (
           <Table>
             <TableHeader>

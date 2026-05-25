@@ -780,8 +780,10 @@ function ApprovalWorkflowsSection() {
 
   const { data: wfList, isLoading: wfLoading } = useQuery<WorkflowType[]>({ queryKey: ["/api/workflows"] });
 
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
+      setPendingDeleteId(id);
       await apiRequest("DELETE", `/api/workflows/${id}`);
     },
     onSuccess: () => {
@@ -791,6 +793,7 @@ function ApprovalWorkflowsSection() {
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
+    onSettled: () => setPendingDeleteId(null),
   });
 
   if (builderOpen || previewWorkflow) {

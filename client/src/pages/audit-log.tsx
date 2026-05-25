@@ -29,7 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { FileText, Search, ChevronLeft, ChevronRight } from "lucide-react";
+import { FileText, Search, ChevronLeft, ChevronRight, FileSearch } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 
 type AuditLogEntry = {
@@ -233,9 +233,16 @@ export default function AuditLogPage() {
               </div>
             </>
           ) : (
-            <p className="text-muted-foreground text-center py-8" data-testid="text-no-logs">
-              No audit log entries found.
-            </p>
+            <div
+              className="flex flex-col items-center justify-center py-16 text-center"
+              data-testid="text-no-logs"
+            >
+              <FileSearch className="h-10 w-10 text-muted-foreground/60 mb-3" />
+              <p className="text-base font-semibold text-foreground">No audit entries match</p>
+              <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+                Try clearing or widening your filters to see recent activity.
+              </p>
+            </div>
           )}
         </CardContent>
       </Card>

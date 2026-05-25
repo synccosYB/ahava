@@ -268,7 +268,6 @@ export interface IStorage {
   ): Promise<Map<string, CorrectionCountSummary>>;
 
   createAuditLog(entry: InsertAuditLog): Promise<AuditLog>;
-  getAuditLogs(targetType?: string, targetId?: string): Promise<AuditLog[]>;
 
   getTimeOffRequest(id: string): Promise<TimeOffRequest | undefined>;
   getTimeOffRequestsByUser(userId: string): Promise<TimeOffRequest[]>;
@@ -690,29 +689,6 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
-  async getCompany(id: string): Promise<Company | undefined> {
-    const [company] = await db.select().from(companies).where(eq(companies.id, id));
-    return company;
-  }
-
-  async getAllCompanies(): Promise<Company[]> {
-    return db.select().from(companies);
-  }
-
-  async createCompany(company: InsertCompany): Promise<Company> {
-    const [created] = await db.insert(companies).values(company).returning();
-    return created;
-  }
-
-  async updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined> {
-    const [updated] = await db.update(companies).set(company).where(eq(companies.id, id)).returning();
-    return updated;
-  }
-
-  async deleteCompany(id: string): Promise<void> {
-    await db.delete(companies).where(eq(companies.id, id));
-  }
-
   async getLocation(id: string): Promise<Location | undefined> {
     const [location] = await db.select().from(locations).where(eq(locations.id, id));
     return location;
@@ -903,10 +879,6 @@ export class DatabaseStorage implements IStorage {
   async getEmploymentProfile(userId: string): Promise<EmploymentProfile | undefined> {
     const [profile] = await db.select().from(userEmploymentProfiles).where(eq(userEmploymentProfiles.userId, userId));
     return profile;
-  }
-
-  async getAllEmploymentProfiles(): Promise<EmploymentProfile[]> {
-    return db.select().from(userEmploymentProfiles);
   }
 
   async createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile> {
@@ -1234,21 +1206,6 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async createAuditLog(entry: InsertAuditLog): Promise<AuditLog> {
-    const [created] = await db.insert(auditLogs).values(entry).returning();
-    return created;
-  }
-
-  async getAuditLogs(targetType?: string, targetId?: string): Promise<AuditLog[]> {
-    const conditions = [];
-    if (targetType) conditions.push(eq(auditLogs.targetType, targetType));
-    if (targetId) conditions.push(eq(auditLogs.targetId, targetId));
-    if (conditions.length > 0) {
-      return db.select().from(auditLogs).where(and(...conditions)).orderBy(desc(auditLogs.createdAt));
-    }
-    return db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(100);
-  }
-
   async getTimeOffRequest(id: string): Promise<TimeOffRequest | undefined> {
     const [request] = await db.select().from(timeOffRequests).where(eq(timeOffRequests.id, id));
     return request;
@@ -1300,58 +1257,6 @@ export class DatabaseStorage implements IStorage {
     const [updated] = await db.update(timeOffBalances).set(balance).where(eq(timeOffBalances.id, id)).returning();
     return updated;
   }
-
-  async computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }> {
-    const detailed = await this.computeTimeOffBalanceDetailed(userId);
-    return {
-      vacation: detailed.vacation.remaining,
-      sick: detailed.sick.remaining,
-      personal: detailed.personal.remaining,
-    };
-  }
-
-  async computeTimeOffBalanceDetailed(userId: string): Promise<TimeOffBalanceDetailed> {
-    const ANNUAL_VACATION = 120;
-    const ANNUAL_SICK = 80;
-    const ANNUAL_PERSONAL = 40;
-    const currentYear = new Date().getFullYear();
-    const yearStart = `${currentYear}-01-01`;
-    const yearEnd = `${currentYear}-12-31`;
-
-    const requests = await db
-      .select()
-      .from(timeOffRequests)
-      .where(and(
-        eq(timeOffRequests.userId, userId),
-        gte(timeOffRequests.startDate, yearStart),
-        lte(timeOffRequests.startDate, yearEnd)
-      ));
-
-    let usedVacation = 0;
-    let usedSick = 0;
-    let usedPersonal = 0;
-
-    for (const r of requests) {
-      if (r.status !== "approved" && r.status !== "partially_approved") continue;
-      const rawHours = r.hoursApproved ?? r.hoursRequested ?? 8;
-      if (!isSaneTimeOffHours(rawHours)) {
-        console.warn(
-          `[time-off balance] skipping corrupt hours value ${rawHours} on request ${r.id} (user ${r.userId}, type ${r.type}). Run the cleanup-invalid-hours job.`,
-        );
-        continue;
-      }
-      if (r.type === "vacation") usedVacation += rawHours;
-      else if (r.type === "sick") usedSick += rawHours;
-      else if (r.type === "personal") usedPersonal += rawHours;
-    }
-
-    return {
-      vacation: { total: ANNUAL_VACATION, used: usedVacation, remaining: ANNUAL_VACATION - usedVacation },
-      sick: { total: ANNUAL_SICK, used: usedSick, remaining: ANNUAL_SICK - usedSick },
-      personal: { total: ANNUAL_PERSONAL, used: usedPersonal, remaining: ANNUAL_PERSONAL - usedPersonal },
-    };
-  }
-
 
   async getOverlappingTimeOffRequests(userId: string, startDate: string, endDate: string): Promise<TimeOffRequest[]> {
     const userRequests = await db

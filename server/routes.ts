@@ -2,6 +2,7 @@ import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage } from "./storage";
+import { badRequestFromZod, handleRouteError } from "./routeErrors";
 import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
@@ -321,14 +322,14 @@ export async function registerRoutes(
   });
 
   app.patch("/api/users/:id/role", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+    if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
     }
     const parsed = roleSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid role", errors: parsed.error.flatten() });
     }
-    const id = req.params.id as string;
+    const id = String(req.params.id) as string;
     const before = await storage.getUser(id);
     if (!before) return res.status(404).json({ message: "User not found" });
     const user = await storage.updateUser(id, {
@@ -353,10 +354,10 @@ export async function registerRoutes(
   });
 
   app.post("/api/users/:id/clear-role-override", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+    if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
     }
-    const id = req.params.id as string;
+    const id = String(req.params.id) as string;
     const existing = await storage.getUser(id);
     if (!existing) return res.status(404).json({ message: "User not found" });
     const previouslyOverridden = existing.roleManuallyOverriddenAt;
@@ -539,7 +540,7 @@ export async function registerRoutes(
   app.post("/api/users/bulk-assign-division", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const parsed = bulkAssignDivisionSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+      return badRequestFromZod(res, parsed, "Invalid bulk-assign request");
     }
     const { companyId, keepCompatible } = parsed.data;
     const userIds = Array.from(new Set(parsed.data.userIds));
@@ -627,7 +628,7 @@ export async function registerRoutes(
   app.post("/api/users/bulk-delete", requireAuth, requireRole("admin"), requirePermission("users.delete"), async (req, res) => {
     const parsed = bulkDeleteUsersSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+      return badRequestFromZod(res, parsed, "Invalid bulk-delete request");
     }
     const actor = (req as any).authUser as User;
     const auditCtx = getAuditContext(req);
@@ -680,14 +681,14 @@ export async function registerRoutes(
   });
 
   app.patch("/api/users/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+    if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
     }
     const parsed = updateUserSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid update data", errors: parsed.error.flatten() });
     }
-    const existing = await storage.getUser(req.params.id);
+    const existing = await storage.getUser(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "User not found" });
 
     const next = {
@@ -722,7 +723,7 @@ export async function registerRoutes(
       }
     }
 
-    const updated = await storage.updateUser(req.params.id, {
+    const updated = await storage.updateUser(String(req.params.id), {
       companyId: next.companyId,
       locationId: next.locationId,
       departmentId: next.departmentId,
@@ -731,7 +732,7 @@ export async function registerRoutes(
 
     try {
       const actor = (req as any).authUser as User | undefined;
-      await applyRoleForUser(req.params.id, {
+      await applyRoleForUser(String(req.params.id), {
         actorUserId: actor?.id || "system",
         reason: "user.update",
       });
@@ -740,16 +741,16 @@ export async function registerRoutes(
     }
 
     invalidateUserCache();
-    const refreshed = await storage.getUser(req.params.id);
+    const refreshed = await storage.getUser(String(req.params.id));
     const { password: _p, passwordHash: _ph, ...safe } = refreshed || updated;
     res.json(safe);
   });
 
   app.post("/api/users/:id/reset-password", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    if (req.params.id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+    if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
     }
-    const user = await storage.getUser(req.params.id);
+    const user = await storage.getUser(String(req.params.id));
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const mode = req.body?.mode === "emailLink" ? "emailLink" : "tempPassword";
@@ -895,12 +896,12 @@ export async function registerRoutes(
   const ALLOWED_DOCUMENT_TYPES = ["w9", "i9", "direct_deposit", "emergency_contact", "handbook_ack"];
 
   app.get("/api/users/:id/documents", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
-    const docs = await storage.getDocumentsByEmployee(req.params.id);
+    const docs = await storage.getDocumentsByEmployee(String(req.params.id));
     res.json(docs);
   });
 
   app.post("/api/users/:id/documents", requireAuth, requireRole("admin"), requirePermission("users.edit"), documentUpload.single("file"), async (req, res) => {
-    const employee = await storage.getUser(req.params.id);
+    const employee = await storage.getUser(String(req.params.id));
     if (!employee) {
       return res.status(404).json({ message: "Employee not found" });
     }
@@ -923,7 +924,7 @@ export async function registerRoutes(
       storagePath = uploaded.storagePath;
 
       const doc = await storage.createDocument({
-        employeeId: req.params.id,
+        employeeId: String(req.params.id),
         documentType,
         fileName: file.originalname,
         filePath: uploaded.storagePath,
@@ -935,12 +936,12 @@ export async function registerRoutes(
 
       try {
         const { resolveMissingDocumentAlertsFor } = await import("./services/lifecycleAlerts");
-        await resolveMissingDocumentAlertsFor(req.params.id, documentType, adminUser.id);
+        await resolveMissingDocumentAlertsFor(String(req.params.id), documentType, adminUser.id);
       } catch (err) {
         console.error("Failed to resolve missing-document alerts after upload:", err);
       }
       try {
-        await autoCompleteDocumentTask(req.params.id, documentType, doc.id, adminUser.id);
+        await autoCompleteDocumentTask(String(req.params.id), documentType, doc.id, adminUser.id);
       } catch (e) {
         console.error("autoCompleteDocumentTask failed:", e);
       }
@@ -953,13 +954,13 @@ export async function registerRoutes(
           console.warn("Failed to clean up stored document after error:", cleanupErr);
         }
       }
-      res.status(500).json({ message: "Failed to save document" });
+      handleRouteError(res, error, "Failed to save document");
     }
   });
 
   app.get("/api/documents/:id/download", requireAuth, async (req, res) => {
     try {
-      const doc = await storage.getDocument(req.params.id);
+      const doc = await storage.getDocument(String(req.params.id));
       if (!doc) return res.status(404).json({ message: "Document not found" });
 
       const requester = (req as unknown as { authUser: User }).authUser;
@@ -997,7 +998,7 @@ export async function registerRoutes(
       return fs.createReadStream(doc.filePath).pipe(res);
     } catch (error) {
       console.error("Failed to download document:", error);
-      res.status(500).json({ message: "Failed to download document" });
+      handleRouteError(res, error, "Failed to download document");
     }
   });
 
@@ -1009,20 +1010,20 @@ export async function registerRoutes(
 
     try {
       const adminUser = (req as any).authUser as User;
-      const doc = await storage.updateDocument(req.params.id, {
+      const doc = await storage.updateDocument(String(req.params.id), {
         status,
         ...(status === "reviewed" ? { reviewedBy: adminUser.id, reviewedAt: new Date() } : {}),
       });
       if (!doc) return res.status(404).json({ message: "Document not found" });
       res.json(doc);
     } catch (error) {
-      res.status(500).json({ message: "Failed to update document" });
+      handleRouteError(res, error, "Failed to update document");
     }
   });
 
   app.delete("/api/documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     try {
-      const doc = await storage.getDocument(req.params.id);
+      const doc = await storage.getDocument(String(req.params.id));
       if (!doc) return res.status(404).json({ message: "Document not found" });
 
       try {
@@ -1034,7 +1035,7 @@ export async function registerRoutes(
       await storage.deleteDocument(doc.id);
       res.status(204).send();
     } catch (error) {
-      res.status(500).json({ message: "Failed to delete document" });
+      handleRouteError(res, error, "Failed to delete document");
     }
   });
 
@@ -1053,7 +1054,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/users/:id/certifications", requireAuth, async (req, res) => {
-    const targetId = req.params.id;
+    const targetId = String(req.params.id);
     const requester = (req as unknown as { authUser: User }).authUser;
     let allowed = requester.id === targetId || requester.role === "admin";
     if (!allowed && requester.role === "manager") {
@@ -1069,7 +1070,7 @@ export async function registerRoutes(
       res.json(certs);
     } catch (err) {
       console.error("Failed to fetch certifications:", err);
-      res.status(500).json({ message: "Failed to fetch certifications" });
+      handleRouteError(res, err, "Failed to fetch certifications");
     }
   });
 
@@ -1080,7 +1081,7 @@ export async function registerRoutes(
       res.json(certs);
     } catch (err) {
       console.error("Failed to fetch certifications:", err);
-      res.status(500).json({ message: "Failed to fetch certifications" });
+      handleRouteError(res, err, "Failed to fetch certifications");
     }
   });
 
@@ -1124,7 +1125,7 @@ export async function registerRoutes(
       res.status(201).json(created);
     } catch (err) {
       console.error("Failed to create certification:", err);
-      res.status(500).json({ message: "Failed to create certification" });
+      handleRouteError(res, err, "Failed to create certification");
     }
   }
 
@@ -1141,16 +1142,16 @@ export async function registerRoutes(
     }
     const adminUser = req.authUser as User;
     try {
-      const existing = await storage.getCertification(req.params.id);
+      const existing = await storage.getCertification(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Certification not found" });
       const expirationChanged = parsed.data.expirationDate !== undefined && parsed.data.expirationDate !== existing.expirationDate;
-      const updated = await storage.updateCertification(req.params.id, parsed.data);
+      const updated = await storage.updateCertification(String(req.params.id), parsed.data);
       const ctx = getAuditContext(req);
       const action = parsed.data.status === "archived" ? "certification.archive" : "certification.update";
       await writeAuditLog({
         actorUserId: adminUser.id,
         targetType: "certification",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         action,
         oldValue: existing,
         newValue: updated,
@@ -1162,7 +1163,7 @@ export async function registerRoutes(
         await syncCertificationStatuses();
         const archivedNow = parsed.data.status === "archived" && existing.status !== "archived";
         if (expirationChanged || archivedNow) {
-          await resolveCertificationAlertsFor(req.params.id, adminUser.id);
+          await resolveCertificationAlertsFor(String(req.params.id), adminUser.id);
         }
       } catch (syncErr) {
         console.warn("certification PATCH alert sync failed:", syncErr);
@@ -1170,7 +1171,7 @@ export async function registerRoutes(
       res.json(updated);
     } catch (err) {
       console.error("Failed to update certification:", err);
-      res.status(500).json({ message: "Failed to update certification" });
+      handleRouteError(res, err, "Failed to update certification");
     }
   });
 
@@ -1184,7 +1185,7 @@ export async function registerRoutes(
       const file = req.file;
       if (!file) return res.status(400).json({ message: "No file uploaded" });
       const adminUser = (req as unknown as { authUser: User }).authUser;
-      const cert = await storage.getCertification(req.params.id);
+      const cert = await storage.getCertification(String(req.params.id));
       if (!cert) return res.status(404).json({ message: "Certification not found" });
 
       let storagePath: string | null = null;
@@ -1201,12 +1202,12 @@ export async function registerRoutes(
           status: "uploaded",
           uploadedBy: adminUser.id,
         });
-        const updated = await storage.updateCertification(req.params.id, { documentId: doc.id });
+        const updated = await storage.updateCertification(String(req.params.id), { documentId: doc.id });
         const ctx = getAuditContext(req);
         await writeAuditLog({
           actorUserId: adminUser.id,
           targetType: "certification",
-          targetId: req.params.id,
+          targetId: String(req.params.id),
           action: "certification.attach_document",
           oldValue: { documentId: cert.documentId },
           newValue: { documentId: doc.id, fileName: file.originalname },
@@ -1221,7 +1222,7 @@ export async function registerRoutes(
             console.warn("Failed to clean up cert document storage after error:", cleanupErr);
           }
         }
-        res.status(500).json({ message: "Failed to attach document" });
+        handleRouteError(res, err, "Failed to attach document");
       }
     },
   );
@@ -1229,20 +1230,20 @@ export async function registerRoutes(
   app.delete("/api/certifications/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
     const adminUser = req.authUser as User;
     try {
-      const existing = await storage.getCertification(req.params.id);
+      const existing = await storage.getCertification(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Certification not found" });
       try {
         const { resolveCertificationAlertsFor } = await import("./services/lifecycleAlerts");
-        await resolveCertificationAlertsFor(req.params.id, adminUser.id);
+        await resolveCertificationAlertsFor(String(req.params.id), adminUser.id);
       } catch (resErr) {
         console.warn("Failed to resolve cert alerts before delete:", resErr);
       }
-      await storage.deleteCertification(req.params.id);
+      await storage.deleteCertification(String(req.params.id));
       const ctx = getAuditContext(req);
       await writeAuditLog({
         actorUserId: adminUser.id,
         targetType: "certification",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         action: "certification.delete",
         oldValue: existing,
         ipAddress: ctx.ipAddress,
@@ -1251,7 +1252,7 @@ export async function registerRoutes(
       res.status(204).send();
     } catch (err) {
       console.error("Failed to delete certification:", err);
-      res.status(500).json({ message: "Failed to delete certification" });
+      handleRouteError(res, err, "Failed to delete certification");
     }
   });
 
@@ -1310,7 +1311,7 @@ export async function registerRoutes(
       res.json(rules);
     } catch (err) {
       console.error("Failed to fetch required document rules:", err);
-      res.status(500).json({ message: "Failed to fetch required document rules" });
+      handleRouteError(res, err, "Failed to fetch required document rules");
     }
   });
 
@@ -1350,7 +1351,7 @@ export async function registerRoutes(
       res.status(201).json(created);
     } catch (err) {
       console.error("Failed to create required document rule:", err);
-      res.status(500).json({ message: "Failed to create required document rule" });
+      handleRouteError(res, err, "Failed to create required document rule");
     }
   });
 
@@ -1361,7 +1362,7 @@ export async function registerRoutes(
     }
     const adminUser = req.authUser as User;
     try {
-      const existing = await storage.getRequiredDocumentRule(req.params.id);
+      const existing = await storage.getRequiredDocumentRule(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Required document rule not found" });
       const merged = {
         scopeType: parsed.data.scopeType ?? existing.scopeType,
@@ -1374,12 +1375,12 @@ export async function registerRoutes(
       if (scopeErr) {
         return res.status(400).json({ message: scopeErr });
       }
-      const updated = await storage.updateRequiredDocumentRule(req.params.id, parsed.data);
+      const updated = await storage.updateRequiredDocumentRule(String(req.params.id), parsed.data);
       const ctx = getAuditContext(req);
       await writeAuditLog({
         actorUserId: adminUser.id,
         targetType: "required_document_rule",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         action: "required_document_rule.update",
         oldValue: existing,
         newValue: updated,
@@ -1397,16 +1398,16 @@ export async function registerRoutes(
       res.json(updated);
     } catch (err) {
       console.error("Failed to update required document rule:", err);
-      res.status(500).json({ message: "Failed to update required document rule" });
+      handleRouteError(res, err, "Failed to update required document rule");
     }
   });
 
   app.delete("/api/required-documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
     const adminUser = req.authUser as User;
     try {
-      const existing = await storage.getRequiredDocumentRule(req.params.id);
+      const existing = await storage.getRequiredDocumentRule(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Required document rule not found" });
-      await storage.deleteRequiredDocumentRule(req.params.id);
+      await storage.deleteRequiredDocumentRule(String(req.params.id));
       try {
         const { auditOpenMissingDocumentAlerts } = await import("./services/lifecycleAlerts");
         await auditOpenMissingDocumentAlerts();
@@ -1417,7 +1418,7 @@ export async function registerRoutes(
       await writeAuditLog({
         actorUserId: adminUser.id,
         targetType: "required_document_rule",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         action: "required_document_rule.delete",
         oldValue: existing,
         ipAddress: ctx.ipAddress,
@@ -1426,7 +1427,7 @@ export async function registerRoutes(
       res.status(204).send();
     } catch (err) {
       console.error("Failed to delete required document rule:", err);
-      res.status(500).json({ message: "Failed to delete required document rule" });
+      handleRouteError(res, err, "Failed to delete required document rule");
     }
   });
 
@@ -1452,12 +1453,12 @@ export async function registerRoutes(
       res.json({ ok: true, generatedAlertCount: generated.length });
     } catch (err) {
       console.error("Failed to evaluate missing documents:", err);
-      res.status(500).json({ message: "Failed to evaluate missing documents" });
+      handleRouteError(res, err, "Failed to evaluate missing documents");
     }
   });
 
   app.post("/api/users/:id/certifications", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
-    return createCertificationHandler(req, res, req.params.id);
+    return createCertificationHandler(req, res, String(req.params.id));
   });
 
   app.get("/api/payroll-documents/my", requireAuth, async (req: any, res) => {
@@ -1470,7 +1471,7 @@ export async function registerRoutes(
       }));
       res.json(enriched);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch payroll documents" });
+      handleRouteError(res, error, "Failed to fetch payroll documents");
     }
   });
 
@@ -1488,7 +1489,7 @@ export async function registerRoutes(
       }));
       res.json(enriched);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch payroll documents" });
+      handleRouteError(res, error, "Failed to fetch payroll documents");
     }
   });
 
@@ -1507,7 +1508,7 @@ export async function registerRoutes(
   app.post("/api/payroll-documents", requireAuth, requireRole("admin"), async (req: any, res) => {
     const parsed = payrollDocSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+      return badRequestFromZod(res, parsed, "Invalid payroll document");
     }
     try {
       const doc = await storage.createPayrollDocument({
@@ -1521,7 +1522,7 @@ export async function registerRoutes(
       });
       res.status(201).json(doc);
     } catch (error) {
-      res.status(500).json({ message: "Failed to create payroll document" });
+      handleRouteError(res, error, "Failed to create payroll document");
     }
   });
 
@@ -1536,7 +1537,7 @@ export async function registerRoutes(
     });
     const parsed = selfUploadSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+      return badRequestFromZod(res, parsed, "Invalid upload data");
     }
     try {
       const doc = await storage.createPayrollDocument({
@@ -1553,18 +1554,18 @@ export async function registerRoutes(
       });
       res.status(201).json(doc);
     } catch (error) {
-      res.status(500).json({ message: "Failed to upload document" });
+      handleRouteError(res, error, "Failed to upload document");
     }
   });
 
   app.delete("/api/payroll-documents/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const doc = await storage.getPayrollDocument(req.params.id);
+      const doc = await storage.getPayrollDocument(String(req.params.id));
       if (!doc) return res.status(404).json({ message: "Document not found" });
       await storage.deletePayrollDocument(doc.id);
       res.status(204).send();
     } catch (error) {
-      res.status(500).json({ message: "Failed to delete payroll document" });
+      handleRouteError(res, error, "Failed to delete payroll document");
     }
   });
 
@@ -1623,7 +1624,7 @@ export async function registerRoutes(
       res.json(balances);
     } catch (error) {
       console.error("Error fetching PTO balances:", error);
-      res.status(500).json({ message: "Failed to fetch PTO balances" });
+      handleRouteError(res, error, "Failed to fetch PTO balances");
     }
   });
 
@@ -1642,7 +1643,7 @@ export async function registerRoutes(
 
   app.get("/api/companies/:id", requireAuth, requirePermission("company.view"), async (req, res) => {
     const user = (req as any).authUser as User;
-    const company = await storage.getCompany(req.params.id);
+    const company = await storage.getCompany(String(req.params.id));
     if (!company) return res.status(404).json({ message: "Company not found" });
     if (user.role !== "admin" && user.companyId !== company.id) {
       return res.status(403).json({ message: "Forbidden" });
@@ -1664,15 +1665,15 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid company data", errors: parsed.error.flatten() });
     }
-    const company = await storage.updateCompany(req.params.id, parsed.data);
+    const company = await storage.updateCompany(String(req.params.id), parsed.data);
     if (!company) return res.status(404).json({ message: "Company not found" });
     res.json(company);
   });
 
   app.delete("/api/companies/:id", requireAuth, requireRole("admin"), requirePermission("company.delete"), async (req, res) => {
-    const company = await storage.getCompany(req.params.id);
+    const company = await storage.getCompany(String(req.params.id));
     if (!company) return res.status(404).json({ message: "Company not found" });
-    await storage.deleteCompany(req.params.id);
+    await storage.deleteCompany(String(req.params.id));
     res.status(204).send();
   });
 
@@ -1722,9 +1723,9 @@ export async function registerRoutes(
 
   app.get("/api/locations/:id", requireAuth, requirePermission("locations.view"), async (req, res) => {
     const user = (req as any).authUser as User;
-    const location = await storage.getLocation(req.params.id);
+    const location = await storage.getLocation(String(req.params.id));
     if (!location) return res.status(404).json({ message: "Location not found" });
-    const companyIds = await storage.getLocationCompanyIds(req.params.id);
+    const companyIds = await storage.getLocationCompanyIds(String(req.params.id));
     const merged = Array.from(new Set([
       ...(location.companyId ? [location.companyId] : []),
       ...companyIds,
@@ -1765,7 +1766,7 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
     }
     const { companyIds, ...locationData } = parsed.data;
-    const location = await storage.updateLocation(req.params.id, locationData);
+    const location = await storage.updateLocation(String(req.params.id), locationData);
     if (!location) return res.status(404).json({ message: "Location not found" });
     if (companyIds !== undefined) {
       await storage.setLocationCompanyIds(location.id, companyIds);
@@ -1774,23 +1775,23 @@ export async function registerRoutes(
   });
 
   app.delete("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
-    const location = await storage.getLocation(req.params.id);
+    const location = await storage.getLocation(String(req.params.id));
     if (!location) return res.status(404).json({ message: "Location not found" });
-    await storage.deleteLocation(req.params.id);
+    await storage.deleteLocation(String(req.params.id));
     res.status(204).send();
   });
 
   app.get("/api/locations/:locationId/addresses", requireAuth, requirePermission("locations.view"), async (req, res) => {
-    const location = await storage.getLocation(req.params.locationId);
+    const location = await storage.getLocation(String(req.params.locationId));
     if (!location) return res.status(404).json({ message: "Location not found" });
-    const addresses = await storage.getLocationAddresses(req.params.locationId);
+    const addresses = await storage.getLocationAddresses(String(req.params.locationId));
     res.json(addresses);
   });
 
   app.post("/api/locations/:locationId/addresses", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
-    const location = await storage.getLocation(req.params.locationId);
+    const location = await storage.getLocation(String(req.params.locationId));
     if (!location) return res.status(404).json({ message: "Location not found" });
-    const parsed = insertLocationAddressSchema.safeParse({ ...req.body, locationId: req.params.locationId });
+    const parsed = insertLocationAddressSchema.safeParse({ ...req.body, locationId: String(req.params.locationId) });
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid address data", errors: parsed.error.flatten() });
     }
@@ -1799,24 +1800,24 @@ export async function registerRoutes(
   });
 
   app.patch("/api/locations/:locationId/addresses/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
-    const existing = await storage.getLocationAddress(req.params.id);
-    if (!existing || existing.locationId !== req.params.locationId) {
+    const existing = await storage.getLocationAddress(String(req.params.id));
+    if (!existing || existing.locationId !== String(req.params.locationId)) {
       return res.status(404).json({ message: "Address not found" });
     }
     const parsed = insertLocationAddressSchema.omit({ locationId: true }).partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid address data", errors: parsed.error.flatten() });
     }
-    const address = await storage.updateLocationAddress(req.params.id, parsed.data);
+    const address = await storage.updateLocationAddress(String(req.params.id), parsed.data);
     res.json(address);
   });
 
   app.delete("/api/locations/:locationId/addresses/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
-    const existing = await storage.getLocationAddress(req.params.id);
-    if (!existing || existing.locationId !== req.params.locationId) {
+    const existing = await storage.getLocationAddress(String(req.params.id));
+    if (!existing || existing.locationId !== String(req.params.locationId)) {
       return res.status(404).json({ message: "Address not found" });
     }
-    await storage.deleteLocationAddress(req.params.id);
+    await storage.deleteLocationAddress(String(req.params.id));
     res.status(204).send();
   });
 
@@ -1899,7 +1900,7 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid department data", errors: parsed.error.flatten() });
     }
-    const dept = await storage.updateDepartment(req.params.id, parsed.data);
+    const dept = await storage.updateDepartment(String(req.params.id), parsed.data);
     if (!dept) return res.status(404).json({ message: "Department not found" });
     if (rawManagerIds !== undefined) {
       const mgrParsed = managerIdsSchema.safeParse(rawManagerIds);
@@ -1913,7 +1914,7 @@ export async function registerRoutes(
   });
 
   app.delete("/api/departments/:id", requireAuth, requireRole("admin"), requirePermission("departments.edit"), async (req, res) => {
-    await storage.deleteDepartment(req.params.id);
+    await storage.deleteDepartment(String(req.params.id));
     res.status(204).send();
   });
 
@@ -1964,7 +1965,7 @@ export async function registerRoutes(
       });
     } catch (err) {
       console.error("[GET /api/profile/details]", err);
-      return res.status(500).json({ message: "Failed to load profile details" });
+      return handleRouteError(res, err, "Failed to load profile details");
     }
   });
 
@@ -1981,7 +1982,7 @@ export async function registerRoutes(
 
   app.get("/api/employment-profiles/:userId", requireAuth, async (req, res) => {
     const authUser = (req as any).authUser as User;
-    const targetUserId = req.params.userId;
+    const targetUserId = String(req.params.userId);
 
     if (authUser.role !== "admin" && authUser.id !== targetUserId) {
       if (authUser.role === "manager") {
@@ -2030,7 +2031,7 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
     }
-    const before = await storage.getEmploymentProfile(req.params.userId);
+    const before = await storage.getEmploymentProfile(String(req.params.userId));
     const data = { ...parsed.data };
     const payTypeChanged = data.payType !== undefined && data.payType !== before?.payType;
     const rateTouched =
@@ -2055,12 +2056,12 @@ export async function registerRoutes(
     if (payTypeChanged && req.body?.overtimeEligible === undefined) {
       data.overtimeEligible = data.payType === "hourly";
     }
-    const profile = await storage.updateEmploymentProfile(req.params.userId, data);
+    const profile = await storage.updateEmploymentProfile(String(req.params.userId), data);
     if (!profile) return res.status(404).json({ message: "Employment profile not found" });
 
     try {
       const actor = (req as any).authUser as User | undefined;
-      await applyRoleForUser(req.params.userId, {
+      await applyRoleForUser(String(req.params.userId), {
         actorUserId: actor?.id || "system",
         reason: "employment_profile.update",
       });
@@ -2072,7 +2073,7 @@ export async function registerRoutes(
 
     if (parsed.data.terminationDate && (!before?.terminationDate || before.terminationDate !== parsed.data.terminationDate)) {
       try {
-        const employee = await storage.getUser(req.params.userId);
+        const employee = await storage.getUser(String(req.params.userId));
         if (employee) {
           const actorId = (req as any).authUser?.id || SUPER_ADMIN_USER_ID;
           const auditCtx = getAuditContext(req);
@@ -2296,7 +2297,7 @@ export async function registerRoutes(
 
   app.get("/api/kiosk/employee/:id", wrapKiosk(async (req, res) => {
     if (!(await requireKioskDevice(req, res))) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     if (!id) {
       return kioskError(res, 400, "invalid_request", "Please choose an employee.");
     }
@@ -2489,7 +2490,7 @@ export async function registerRoutes(
       res.json(response);
     } catch (error) {
       console.error("Error fetching status:", error);
-      res.status(500).json({ message: "Failed to fetch attendance status" });
+      handleRouteError(res, error, "Failed to fetch attendance status");
     }
   });
 
@@ -2527,7 +2528,7 @@ export async function registerRoutes(
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
       console.error("Error clocking in:", error);
-      res.status(500).json({ message: "Failed to clock in" });
+      handleRouteError(res, error, "Failed to clock in");
     }
   });
 
@@ -2571,7 +2572,7 @@ export async function registerRoutes(
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
       console.error("Error clocking out:", error);
-      res.status(500).json({ message: "Failed to clock out" });
+      handleRouteError(res, error, "Failed to clock out");
     }
   });
 
@@ -2589,7 +2590,7 @@ export async function registerRoutes(
       res.json(schedules);
     } catch (error) {
       console.error("Error fetching employee schedules:", error);
-      res.status(500).json({ message: "Failed to fetch schedules" });
+      handleRouteError(res, error, "Failed to fetch schedules");
     }
   });
 
@@ -2637,7 +2638,7 @@ export async function registerRoutes(
       res.json(results);
     } catch (error) {
       console.error("Error saving employee schedules:", error);
-      res.status(500).json({ message: "Failed to save schedules" });
+      handleRouteError(res, error, "Failed to save schedules");
     }
   });
 
@@ -2681,7 +2682,7 @@ export async function registerRoutes(
       }));
     } catch (error) {
       console.error("Error fetching records:", error);
-      res.status(500).json({ message: "Failed to fetch attendance records" });
+      handleRouteError(res, error, "Failed to fetch attendance records");
     }
   });
 
@@ -2733,7 +2734,7 @@ export async function registerRoutes(
       });
     } catch (error) {
       console.error("Error fetching employee timesheet:", error);
-      res.status(500).json({ message: "Failed to fetch employee timesheet" });
+      handleRouteError(res, error, "Failed to fetch employee timesheet");
     }
   });
 
@@ -2761,7 +2762,7 @@ export async function registerRoutes(
       res.json(visible);
     } catch (error) {
       console.error("Error fetching timesheet-eligible employees:", error);
-      res.status(500).json({ message: "Failed to fetch eligible employees" });
+      handleRouteError(res, error, "Failed to fetch eligible employees");
     }
   });
 
@@ -2895,14 +2896,14 @@ export async function registerRoutes(
       res.status(201).json(exception);
     } catch (error) {
       console.error("Error creating attendance exception:", error);
-      res.status(500).json({ message: "Failed to create attendance exception" });
+      handleRouteError(res, error, "Failed to create attendance exception");
     }
   });
 
   app.patch("/api/attendance/exceptions/:id", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
-      const exceptionId = req.params.id as string;
+      const exceptionId = String(req.params.id) as string;
       const { exceptionDate, exceptionTime, type, reason, punchLogId } = req.body;
 
       const existing = await storage.getAttendanceException(exceptionId);
@@ -2955,14 +2956,14 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error updating attendance exception:", error);
-      res.status(500).json({ message: "Failed to update attendance exception" });
+      handleRouteError(res, error, "Failed to update attendance exception");
     }
   });
 
   app.post("/api/attendance/exceptions/:id/cancel", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
-      const exceptionId = req.params.id as string;
+      const exceptionId = String(req.params.id) as string;
 
       const existing = await storage.getAttendanceException(exceptionId);
       if (!existing) {
@@ -2982,14 +2983,14 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error cancelling attendance exception:", error);
-      res.status(500).json({ message: "Failed to cancel attendance exception" });
+      handleRouteError(res, error, "Failed to cancel attendance exception");
     }
   });
 
   app.post("/api/attendance/exceptions/:id/reopen-request", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
-      const exceptionId = req.params.id as string;
+      const exceptionId = String(req.params.id) as string;
       const messageRaw = typeof req.body?.message === "string" ? req.body.message.trim() : "";
 
       if (!messageRaw) {
@@ -3051,14 +3052,14 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error requesting reopen:", error);
-      res.status(500).json({ message: "Failed to submit reopen request" });
+      handleRouteError(res, error, "Failed to submit reopen request");
     }
   });
 
   app.post("/api/attendance/exceptions/:id/reopen-decide", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
     try {
       const reviewer = req.authUser as User;
-      const exceptionId = req.params.id as string;
+      const exceptionId = String(req.params.id) as string;
       const action = req.body?.action;
       const decisionNoteRaw = typeof req.body?.decisionNote === "string" ? req.body.decisionNote.trim() : "";
 
@@ -3116,7 +3117,7 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error deciding reopen:", error);
-      res.status(500).json({ message: "Failed to decide reopen request" });
+      handleRouteError(res, error, "Failed to decide reopen request");
     }
   });
 
@@ -3192,7 +3193,7 @@ export async function registerRoutes(
       res.json(await attachKioskNamesToExceptions(exceptions));
     } catch (error) {
       console.error("Error fetching attendance exceptions:", error);
-      res.status(500).json({ message: "Failed to fetch attendance exceptions" });
+      handleRouteError(res, error, "Failed to fetch attendance exceptions");
     }
   });
 
@@ -3209,7 +3210,7 @@ export async function registerRoutes(
       res.json(summary);
     } catch (error) {
       console.error("Error fetching self correction counts:", error);
-      res.status(500).json({ message: "Failed to fetch correction counts" });
+      handleRouteError(res, error, "Failed to fetch correction counts");
     }
   });
 
@@ -3220,7 +3221,7 @@ export async function registerRoutes(
     async (req: any, res) => {
       try {
         const reviewer = req.authUser as User;
-        const employeeId = req.params.employeeId as string;
+        const employeeId = String(req.params.employeeId) as string;
         const teamIds = await getTeamUserIds(reviewer);
         if (employeeId !== reviewer.id && !teamIds.has(employeeId)) {
           return res.status(403).json({ message: "Not authorized to view this employee's counts" });
@@ -3231,7 +3232,7 @@ export async function registerRoutes(
         res.json(summary);
       } catch (error) {
         console.error("Error fetching correction counts:", error);
-        res.status(500).json({ message: "Failed to fetch correction counts" });
+        handleRouteError(res, error, "Failed to fetch correction counts");
       }
     }
   );
@@ -3291,7 +3292,7 @@ export async function registerRoutes(
       res.json(await attachKioskNamesToExceptions(enriched));
     } catch (error) {
       console.error("Error fetching pending exceptions:", error);
-      res.status(500).json({ message: "Failed to fetch pending exceptions" });
+      handleRouteError(res, error, "Failed to fetch pending exceptions");
     }
   });
 
@@ -3315,7 +3316,7 @@ export async function registerRoutes(
       res.json(enriched);
     } catch (error) {
       console.error("Error fetching reopen-pending exceptions:", error);
-      res.status(500).json({ message: "Failed to fetch reopen requests" });
+      handleRouteError(res, error, "Failed to fetch reopen requests");
     }
   });
 
@@ -3375,7 +3376,7 @@ export async function registerRoutes(
       res.json(enriched);
     } catch (error) {
       console.error("Error fetching recent decided exceptions:", error);
-      res.status(500).json({ message: "Failed to fetch recent decided exceptions" });
+      handleRouteError(res, error, "Failed to fetch recent decided exceptions");
     }
   });
 
@@ -3390,7 +3391,7 @@ export async function registerRoutes(
   app.post("/api/attendance/exceptions/:id/resolve", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
     try {
       const reviewer = req.authUser as User;
-      const exceptionId = req.params.id as string;
+      const exceptionId = String(req.params.id) as string;
       const parsed = exceptionReviewSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ message: "Invalid review data", errors: parsed.error.flatten() });
@@ -3700,7 +3701,7 @@ export async function registerRoutes(
       return res.json(updated.result);
     } catch (error) {
       console.error("Error resolving attendance exception:", error);
-      res.status(500).json({ message: "Failed to resolve attendance exception" });
+      handleRouteError(res, error, "Failed to resolve attendance exception");
     }
   });
 
@@ -3798,13 +3799,17 @@ export async function registerRoutes(
         status: finalStatus,
         hoursRequested: computedHours,
         hoursApproved: autoApprove ? computedHours : undefined,
-        reviewedBy: autoApprove ? userId : undefined,
-        reviewedAt: autoApprove ? new Date() : undefined,
         exceedsBalance,
         balanceAtSubmission: availableBalance ?? null,
         exceedsMaxConsecutive,
         maxConsecutiveAtSubmission: maxConsecutiveHours,
-      });
+      } as any);
+      if (autoApprove) {
+        await storage.updateTimeOffRequest(request.id, {
+          reviewedBy: userId,
+          reviewedAt: new Date(),
+        });
+      }
 
       if (overBalanceOverridesAutoApprove) {
         try {
@@ -3841,7 +3846,7 @@ export async function registerRoutes(
       if (error.name === "ZodError") {
         return res.status(400).json({ message: "Invalid request data", errors: error.errors });
       }
-      res.status(500).json({ message: "Failed to create time off request" });
+      handleRouteError(res, error, "Failed to create time off request");
     }
   });
 
@@ -3893,7 +3898,7 @@ export async function registerRoutes(
       if (error.name === "ZodError") {
         return res.status(400).json({ message: "Invalid cash-out request", errors: error.errors });
       }
-      res.status(500).json({ message: "Failed to create cash-out request" });
+      handleRouteError(res, error, "Failed to create cash-out request");
     }
   });
 
@@ -3901,7 +3906,7 @@ export async function registerRoutes(
     try {
       const userId = req.authUser.id;
       const user = req.authUser as User;
-      const requestId = req.params.id as string;
+      const requestId = String(req.params.id) as string;
 
       const existing = await storage.getTimeOffRequest(requestId);
       if (!existing) return res.status(404).json({ message: "Request not found" });
@@ -4012,7 +4017,7 @@ export async function registerRoutes(
       if (error.name === "ZodError") {
         return res.status(400).json({ message: "Invalid request data", errors: error.errors });
       }
-      res.status(500).json({ message: "Failed to edit time off request" });
+      handleRouteError(res, error, "Failed to edit time off request");
     }
   });
 
@@ -4023,7 +4028,7 @@ export async function registerRoutes(
       res.json(requests);
     } catch (error) {
       console.error("Error fetching time off requests:", error);
-      res.status(500).json({ message: "Failed to fetch time off requests" });
+      handleRouteError(res, error, "Failed to fetch time off requests");
     }
   });
 
@@ -4037,7 +4042,7 @@ export async function registerRoutes(
       res.json(balance);
     } catch (error) {
       console.error("Error fetching balance:", error);
-      res.status(500).json({ message: "Failed to fetch PTO balance" });
+      handleRouteError(res, error, "Failed to fetch PTO balance");
     }
   });
 
@@ -4057,7 +4062,7 @@ export async function registerRoutes(
       res.json(balance);
     } catch (error) {
       console.error("Error fetching balance:", error);
-      res.status(500).json({ message: "Failed to fetch PTO balance" });
+      handleRouteError(res, error, "Failed to fetch PTO balance");
     }
   });
 
@@ -4078,7 +4083,7 @@ export async function registerRoutes(
       res.json(calendarEntries);
     } catch (error) {
       console.error("Error fetching team time off:", error);
-      res.status(500).json({ message: "Failed to fetch team time off" });
+      handleRouteError(res, error, "Failed to fetch team time off");
     }
   });
 
@@ -4207,9 +4212,9 @@ export async function registerRoutes(
     try {
       const user = (req as any).authUser as User;
       const parsed = approvalSchema.safeParse(req.body);
-      if (!parsed.success) return res.status(400).json({ message: "Invalid request body" });
+      if (!parsed.success) return badRequestFromZod(res, parsed, "Invalid approval request");
       const { comment, hoursApproved, approvedEndDate } = parsed.data;
-      const requestId = req.params.id as string;
+      const requestId = String(req.params.id) as string;
       const request = await storage.getTimeOffRequest(requestId);
       if (!request) return res.status(404).json({ message: "Request not found" });
       if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
@@ -4269,7 +4274,7 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error approving time-off request:", error);
-      res.status(500).json({ message: "Failed to approve time-off request" });
+      handleRouteError(res, error, "Failed to approve time-off request");
     }
   });
 
@@ -4278,7 +4283,7 @@ export async function registerRoutes(
       const user = (req as any).authUser as User;
       const parsed = approvalSchema.safeParse(req.body);
       const comment = parsed.success ? parsed.data.comment : undefined;
-      const requestId = req.params.id as string;
+      const requestId = String(req.params.id) as string;
       const request = await storage.getTimeOffRequest(requestId);
       if (!request) return res.status(404).json({ message: "Request not found" });
       if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
@@ -4313,7 +4318,7 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error denying time-off request:", error);
-      res.status(500).json({ message: "Failed to deny time-off request" });
+      handleRouteError(res, error, "Failed to deny time-off request");
     }
   });
 
@@ -4419,7 +4424,7 @@ export async function registerRoutes(
         res.json({ dryRun, scanned: all.length, fixedCount: fixed.length, fixed });
       } catch (err) {
         console.error("Error running time-off hours cleanup:", err);
-        res.status(500).json({ message: "Failed to clean up time-off hours" });
+        handleRouteError(res, err, "Failed to clean up time-off hours");
       }
     },
   );
@@ -4822,18 +4827,18 @@ export async function registerRoutes(
       res.json(policies);
     } catch (error) {
       console.error("Error fetching PTO policies:", error);
-      res.status(500).json({ message: "Failed to fetch PTO policies" });
+      handleRouteError(res, error, "Failed to fetch PTO policies");
     }
   });
 
   app.get("/api/pto-policies/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const policy = await storage.getPtoPolicy(req.params.id);
+      const policy = await storage.getPtoPolicy(String(req.params.id));
       if (!policy) return res.status(404).json({ message: "Policy not found" });
       res.json(policy);
     } catch (error) {
       console.error("Error fetching PTO policy:", error);
-      res.status(500).json({ message: "Failed to fetch PTO policy" });
+      handleRouteError(res, error, "Failed to fetch PTO policy");
     }
   });
 
@@ -4857,7 +4862,7 @@ export async function registerRoutes(
       res.status(201).json(policy);
     } catch (error) {
       console.error("Error creating PTO policy:", error);
-      res.status(500).json({ message: "Failed to create PTO policy" });
+      handleRouteError(res, error, "Failed to create PTO policy");
     }
   });
 
@@ -4880,7 +4885,7 @@ export async function registerRoutes(
           });
         }
       }
-      const policy = await storage.updatePtoPolicy(req.params.id, req.body);
+      const policy = await storage.updatePtoPolicy(String(req.params.id), req.body);
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
       await writeAuditLog({
@@ -4895,18 +4900,18 @@ export async function registerRoutes(
       res.json(policy);
     } catch (error) {
       console.error("Error updating PTO policy:", error);
-      res.status(500).json({ message: "Failed to update PTO policy" });
+      handleRouteError(res, error, "Failed to update PTO policy");
     }
   });
 
   app.get("/api/employee-pto-settings/:userId", requireAuth, requireRole("manager", "admin"), async (req, res) => {
     try {
-      const settings = await storage.getEmployeePtoSettings(req.params.userId);
+      const settings = await storage.getEmployeePtoSettings(String(req.params.userId));
       if (!settings) return res.json(null);
       res.json(settings);
     } catch (error) {
       console.error("Error fetching employee PTO settings:", error);
-      res.status(500).json({ message: "Failed to fetch employee PTO settings" });
+      handleRouteError(res, error, "Failed to fetch employee PTO settings");
     }
   });
 
@@ -4937,19 +4942,19 @@ export async function registerRoutes(
       res.json(settings);
     } catch (error) {
       console.error("Error saving employee PTO settings:", error);
-      res.status(500).json({ message: "Failed to save employee PTO settings" });
+      handleRouteError(res, error, "Failed to save employee PTO settings");
     }
   });
 
   app.patch("/api/employee-pto-settings/:userId", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const settings = await storage.updateEmployeePtoSettings(req.params.userId, req.body);
+      const settings = await storage.updateEmployeePtoSettings(String(req.params.userId), req.body);
       if (!settings) return res.status(404).json({ message: "Employee PTO settings not found" });
 
       await writeAuditLog({
         actorUserId: req.authUser.id,
         action: "employee_pto.balance_adjusted",
-        targetId: req.params.userId,
+        targetId: String(req.params.userId),
         targetType: "employee_pto_settings",
         newValue: { changes: req.body },
         ...getAuditContext(req),
@@ -4958,17 +4963,17 @@ export async function registerRoutes(
       res.json(settings);
     } catch (error) {
       console.error("Error updating employee PTO settings:", error);
-      res.status(500).json({ message: "Failed to update employee PTO settings" });
+      handleRouteError(res, error, "Failed to update employee PTO settings");
     }
   });
 
   app.get("/api/employee-pto-policy/:userId", requireAuth, requireRole("manager", "admin"), async (req, res) => {
     try {
-      const policy = await storage.getEmployeePtoPolicy(req.params.userId);
+      const policy = await storage.getEmployeePtoPolicy(String(req.params.userId));
       res.json(policy || null);
     } catch (error) {
       console.error("Error fetching employee PTO policy:", error);
-      res.status(500).json({ message: "Failed to fetch employee PTO policy" });
+      handleRouteError(res, error, "Failed to fetch employee PTO policy");
     }
   });
 
@@ -4980,7 +4985,7 @@ export async function registerRoutes(
       res.json(logs);
     } catch (error) {
       console.error("Error fetching audit logs:", error);
-      res.status(500).json({ message: "Failed to fetch audit logs" });
+      handleRouteError(res, error, "Failed to fetch audit logs");
     }
   });
 
@@ -5017,7 +5022,7 @@ export async function registerRoutes(
       res.json(result);
     } catch (error) {
       console.error("Error fetching employee audit logs:", error);
-      res.status(500).json({ message: "Failed to fetch employee audit logs" });
+      handleRouteError(res, error, "Failed to fetch employee audit logs");
     }
   });
 
@@ -5027,7 +5032,7 @@ export async function registerRoutes(
       res.json(types);
     } catch (error) {
       console.error("Error fetching policy types:", error);
-      res.status(500).json({ message: "Failed to fetch policy types" });
+      handleRouteError(res, error, "Failed to fetch policy types");
     }
   });
 
@@ -5040,13 +5045,13 @@ export async function registerRoutes(
       res.json(policies);
     } catch (error) {
       console.error("Error fetching policies:", error);
-      res.status(500).json({ message: "Failed to fetch policies" });
+      handleRouteError(res, error, "Failed to fetch policies");
     }
   });
 
   app.get("/api/policies/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const policy = await storage.getPolicy(req.params.id);
+      const policy = await storage.getPolicy(String(req.params.id));
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
       const rules = await storage.getPolicyRulesByPolicy(policy.id);
@@ -5054,7 +5059,7 @@ export async function registerRoutes(
       res.json({ ...policy, rules: rules[0]?.rules || {}, assignments });
     } catch (error) {
       console.error("Error fetching policy:", error);
-      res.status(500).json({ message: "Failed to fetch policy" });
+      handleRouteError(res, error, "Failed to fetch policy");
     }
   });
 
@@ -5064,7 +5069,7 @@ export async function registerRoutes(
       if (!parsed.success) {
         const flat = parsed.error.flatten();
         const firstField = Object.keys(flat.fieldErrors)[0];
-        const firstMsg = firstField ? `${firstField}: ${flat.fieldErrors[firstField]?.[0]}` : "Invalid policy data";
+        const firstMsg = firstField ? `${firstField}: ${(flat.fieldErrors as Record<string, string[] | undefined>)[firstField]?.[0]}` : "Invalid policy data";
         return res.status(400).json({ message: firstMsg, errors: flat });
       }
       if (req.body.rules) {
@@ -5114,7 +5119,7 @@ export async function registerRoutes(
           return res.status(400).json({ message: overlapError });
         }
       }
-      const policy = await storage.updatePolicy(req.params.id, policyData);
+      const policy = await storage.updatePolicy(String(req.params.id), policyData);
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
       if (rules) {
@@ -5149,7 +5154,7 @@ export async function registerRoutes(
 
   app.post("/api/policies/:id/activate", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const policy = await storage.updatePolicy(req.params.id, { status: "active" });
+      const policy = await storage.updatePolicy(String(req.params.id), { status: "active" });
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
       await writeAuditLog({
@@ -5164,13 +5169,13 @@ export async function registerRoutes(
       res.json(policy);
     } catch (error) {
       console.error("Error activating policy:", error);
-      res.status(500).json({ message: "Failed to activate policy" });
+      handleRouteError(res, error, "Failed to activate policy");
     }
   });
 
   app.post("/api/policies/:id/archive", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const policy = await storage.updatePolicy(req.params.id, { status: "archived" });
+      const policy = await storage.updatePolicy(String(req.params.id), { status: "archived" });
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
       await writeAuditLog({
@@ -5185,13 +5190,13 @@ export async function registerRoutes(
       res.json(policy);
     } catch (error) {
       console.error("Error archiving policy:", error);
-      res.status(500).json({ message: "Failed to archive policy" });
+      handleRouteError(res, error, "Failed to archive policy");
     }
   });
 
   app.delete("/api/policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const policy = await storage.getPolicy(req.params.id);
+      const policy = await storage.getPolicy(String(req.params.id));
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
       await storage.deletePolicy(policy.id);
@@ -5208,23 +5213,23 @@ export async function registerRoutes(
       res.status(204).send();
     } catch (error) {
       console.error("Error deleting policy:", error);
-      res.status(500).json({ message: "Failed to delete policy" });
+      handleRouteError(res, error, "Failed to delete policy");
     }
   });
 
   app.get("/api/policies/:id/rules", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const rules = await storage.getPolicyRulesByPolicy(req.params.id);
+      const rules = await storage.getPolicyRulesByPolicy(String(req.params.id));
       res.json(rules[0]?.rules || {});
     } catch (error) {
       console.error("Error fetching policy rules:", error);
-      res.status(500).json({ message: "Failed to fetch policy rules" });
+      handleRouteError(res, error, "Failed to fetch policy rules");
     }
   });
 
   app.put("/api/policies/:id/rules", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const policy = await storage.getPolicy(req.params.id);
+      const policy = await storage.getPolicy(String(req.params.id));
       if (!policy) return res.status(404).json({ message: "Policy not found" });
 
       const body = req.body && typeof req.body === "object" && "rules" in req.body && req.body.rules
@@ -5234,7 +5239,7 @@ export async function registerRoutes(
       if (overlapError) {
         return res.status(400).json({ message: overlapError });
       }
-      const rule = await storage.upsertPolicyRules(req.params.id, body);
+      const rule = await storage.upsertPolicyRules(String(req.params.id), body);
 
       await writeAuditLog({
         actorUserId: req.authUser.id,
@@ -5248,7 +5253,7 @@ export async function registerRoutes(
       res.json(rule);
     } catch (error) {
       console.error("Error updating policy rules:", error);
-      res.status(500).json({ message: "Failed to update policy rules" });
+      handleRouteError(res, error, "Failed to update policy rules");
     }
   });
 
@@ -5267,7 +5272,7 @@ export async function registerRoutes(
       );
     } catch (error) {
       console.error("Error fetching roles summary:", error);
-      res.status(500).json({ message: "Failed to fetch roles" });
+      handleRouteError(res, error, "Failed to fetch roles");
     }
   });
 
@@ -5280,7 +5285,7 @@ export async function registerRoutes(
       res.json(assignments);
     } catch (error) {
       console.error("Error fetching policy assignments:", error);
-      res.status(500).json({ message: "Failed to fetch policy assignments" });
+      handleRouteError(res, error, "Failed to fetch policy assignments");
     }
   });
 
@@ -5359,29 +5364,29 @@ export async function registerRoutes(
       res.status(201).json(created[0]);
     } catch (error) {
       console.error("Error creating policy assignment:", error);
-      res.status(500).json({ message: "Failed to create policy assignment" });
+      handleRouteError(res, error, "Failed to create policy assignment");
     }
   });
 
   app.patch("/api/policy-assignments/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const assignment = await storage.updatePolicyAssignment(req.params.id, req.body);
+      const assignment = await storage.updatePolicyAssignment(String(req.params.id), req.body);
       if (!assignment) return res.status(404).json({ message: "Policy assignment not found" });
       res.json(assignment);
     } catch (error) {
       console.error("Error updating policy assignment:", error);
-      res.status(500).json({ message: "Failed to update policy assignment" });
+      handleRouteError(res, error, "Failed to update policy assignment");
     }
   });
 
   app.delete("/api/policy-assignments/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      await storage.deletePolicyAssignment(req.params.id);
+      await storage.deletePolicyAssignment(String(req.params.id));
 
       await writeAuditLog({
         actorUserId: req.authUser.id,
         action: "policy_assignment.deleted",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         targetType: "policy_assignment",
         ...getAuditContext(req),
       });
@@ -5389,7 +5394,7 @@ export async function registerRoutes(
       res.status(204).send();
     } catch (error) {
       console.error("Error deleting policy assignment:", error);
-      res.status(500).json({ message: "Failed to delete policy assignment" });
+      handleRouteError(res, error, "Failed to delete policy assignment");
     }
   });
 
@@ -5446,20 +5451,20 @@ export async function registerRoutes(
       res.json(effectivePolicy);
     } catch (error) {
       console.error("Error fetching effective policy:", error);
-      res.status(500).json({ message: "Failed to fetch effective policy" });
+      handleRouteError(res, error, "Failed to fetch effective policy");
     }
   });
 
   app.get("/api/policy-defaults/:policyType", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const defaults = getDefaultRulesForType(req.params.policyType);
+      const defaults = getDefaultRulesForType(String(req.params.policyType));
       if (Object.keys(defaults).length === 0) {
         return res.status(404).json({ message: "Unknown policy type" });
       }
       res.json(defaults);
     } catch (error) {
       console.error("Error fetching policy defaults:", error);
-      res.status(500).json({ message: "Failed to fetch policy defaults" });
+      handleRouteError(res, error, "Failed to fetch policy defaults");
     }
   });
 
@@ -5520,18 +5525,18 @@ export async function registerRoutes(
       res.json(enriched);
     } catch (error) {
       console.error("Error fetching payroll exports:", error);
-      res.status(500).json({ message: "Failed to fetch payroll exports" });
+      handleRouteError(res, error, "Failed to fetch payroll exports");
     }
   });
 
   app.get("/api/payroll/exports/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const exp = await storage.getPayrollExport(req.params.id);
+      const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
       res.json(exp);
     } catch (error) {
       console.error("Error fetching payroll export:", error);
-      res.status(500).json({ message: "Failed to fetch payroll export" });
+      handleRouteError(res, error, "Failed to fetch payroll export");
     }
   });
 
@@ -5723,16 +5728,16 @@ export async function registerRoutes(
       });
     } catch (error) {
       console.error("Error creating payroll batch:", error);
-      res.status(500).json({ message: "Failed to create payroll batch" });
+      handleRouteError(res, error, "Failed to create payroll batch");
     }
   });
 
   app.get("/api/payroll/exports/:id/records", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const exp = await storage.getPayrollExport(req.params.id);
+      const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
-      const records = await storage.getPayrollBatchRecords(req.params.id);
+      const records = await storage.getPayrollBatchRecords(String(req.params.id));
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
 
@@ -5747,16 +5752,16 @@ export async function registerRoutes(
       res.json(enriched);
     } catch (error) {
       console.error("Error fetching batch records:", error);
-      res.status(500).json({ message: "Failed to fetch batch records" });
+      handleRouteError(res, error, "Failed to fetch batch records");
     }
   });
 
   app.get("/api/payroll/exports/:id/summary", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const exp = await storage.getPayrollExport(req.params.id);
+      const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
-      const records = await storage.getPayrollBatchRecords(req.params.id);
+      const records = await storage.getPayrollBatchRecords(String(req.params.id));
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
 
@@ -5788,20 +5793,20 @@ export async function registerRoutes(
       res.json(Array.from(summary.values()));
     } catch (error) {
       console.error("Error fetching payroll summary:", error);
-      res.status(500).json({ message: "Failed to fetch payroll summary" });
+      handleRouteError(res, error, "Failed to fetch payroll summary");
     }
   });
 
   app.post("/api/payroll/exports/:id/export-csv", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const exp = await storage.getPayrollExport(req.params.id);
+      const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
       if (exp.status === "locked") {
         return res.status(400).json({ message: "Cannot export a locked payroll batch. Reopen it first." });
       }
 
-      const records = await storage.getPayrollBatchRecords(req.params.id);
+      const records = await storage.getPayrollBatchRecords(String(req.params.id));
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
       const allDepartments = await storage.getAllDepartments();
@@ -5996,13 +6001,13 @@ export async function registerRoutes(
       res.send(csv);
     } catch (error) {
       console.error("Error exporting payroll CSV:", error);
-      res.status(500).json({ message: "Failed to export payroll CSV" });
+      handleRouteError(res, error, "Failed to export payroll CSV");
     }
   });
 
   app.post("/api/payroll/exports/:id/lock", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const exp = await storage.getPayrollExport(req.params.id);
+      const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
       if (exp.status !== "exported") {
@@ -6030,13 +6035,13 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error locking payroll batch:", error);
-      res.status(500).json({ message: "Failed to lock payroll batch" });
+      handleRouteError(res, error, "Failed to lock payroll batch");
     }
   });
 
   app.post("/api/payroll/exports/:id/reopen", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const exp = await storage.getPayrollExport(req.params.id);
+      const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
       if (exp.status !== "locked" && exp.status !== "exported") {
@@ -6064,20 +6069,20 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error reopening payroll batch:", error);
-      res.status(500).json({ message: "Failed to reopen payroll batch" });
+      handleRouteError(res, error, "Failed to reopen payroll batch");
     }
   });
 
   app.get("/api/payroll/exports/:id/adjustments", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const exp = await storage.getPayrollExport(req.params.id);
+      const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
-      const adjustments = await storage.getPayrollAdjustmentsByExport(req.params.id);
+      const adjustments = await storage.getPayrollAdjustmentsByExport(String(req.params.id));
       res.json(adjustments);
     } catch (error) {
       console.error("Error fetching payroll adjustments:", error);
-      res.status(500).json({ message: "Failed to fetch payroll adjustments" });
+      handleRouteError(res, error, "Failed to fetch payroll adjustments");
     }
   });
 
@@ -6087,13 +6092,13 @@ export async function registerRoutes(
       res.json(adjustments);
     } catch (error) {
       console.error("Error fetching pending adjustments:", error);
-      res.status(500).json({ message: "Failed to fetch pending adjustments" });
+      handleRouteError(res, error, "Failed to fetch pending adjustments");
     }
   });
 
   app.post("/api/payroll/adjustments/:id/acknowledge", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const adjustment = await storage.getPayrollAdjustment(req.params.id);
+      const adjustment = await storage.getPayrollAdjustment(String(req.params.id));
       if (!adjustment) return res.status(404).json({ message: "Adjustment not found" });
 
       const adminUser = req.authUser as User;
@@ -6106,7 +6111,7 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error acknowledging adjustment:", error);
-      res.status(500).json({ message: "Failed to acknowledge adjustment" });
+      handleRouteError(res, error, "Failed to acknowledge adjustment");
     }
   });
 
@@ -6127,7 +6132,7 @@ export async function registerRoutes(
       });
     } catch (error) {
       console.error("Error checking overlap:", error);
-      res.status(500).json({ message: "Failed to check overlap" });
+      handleRouteError(res, error, "Failed to check overlap");
     }
   });
 
@@ -6150,7 +6155,7 @@ export async function registerRoutes(
       res.json(enriched);
     } catch (error) {
       console.error("Error fetching alerts:", error);
-      res.status(500).json({ message: "Failed to fetch alerts" });
+      handleRouteError(res, error, "Failed to fetch alerts");
     }
   });
 
@@ -6178,15 +6183,15 @@ export async function registerRoutes(
       res.json({ detected: detected.length, created: created.length, alerts: created });
     } catch (error) {
       console.error("Error running alert detection:", error);
-      res.status(500).json({ message: "Failed to run alert detection" });
+      handleRouteError(res, error, "Failed to run alert detection");
     }
   });
 
   app.post("/api/alerts/:id/acknowledge", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.manage"), async (req: any, res) => {
     try {
-      const alert = await storage.getSystemAlert(req.params.id);
+      const alert = await storage.getSystemAlert(String(req.params.id));
       if (!alert) return res.status(404).json({ message: "Alert not found" });
-      const updated = await storage.updateSystemAlert(req.params.id, {
+      const updated = await storage.updateSystemAlert(String(req.params.id), {
         status: "acknowledged",
         acknowledgedBy: req.authUser.id,
         acknowledgedAt: new Date(),
@@ -6195,7 +6200,7 @@ export async function registerRoutes(
       await writeAuditLog({
         actorUserId: req.authUser.id,
         targetType: "system_alert",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         action: "alert.acknowledged",
         oldValue: { status: alert.status },
         newValue: { status: "acknowledged" },
@@ -6204,15 +6209,15 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error acknowledging alert:", error);
-      res.status(500).json({ message: "Failed to acknowledge alert" });
+      handleRouteError(res, error, "Failed to acknowledge alert");
     }
   });
 
   app.post("/api/alerts/:id/resolve", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.manage"), async (req: any, res) => {
     try {
-      const alert = await storage.getSystemAlert(req.params.id);
+      const alert = await storage.getSystemAlert(String(req.params.id));
       if (!alert) return res.status(404).json({ message: "Alert not found" });
-      const updated = await storage.updateSystemAlert(req.params.id, {
+      const updated = await storage.updateSystemAlert(String(req.params.id), {
         status: "resolved",
         resolvedBy: req.authUser.id,
         resolvedAt: new Date(),
@@ -6221,7 +6226,7 @@ export async function registerRoutes(
       await writeAuditLog({
         actorUserId: req.authUser.id,
         targetType: "system_alert",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         action: "alert.resolved",
         oldValue: { status: alert.status },
         newValue: { status: "resolved" },
@@ -6230,7 +6235,7 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error resolving alert:", error);
-      res.status(500).json({ message: "Failed to resolve alert" });
+      handleRouteError(res, error, "Failed to resolve alert");
     }
   });
 
@@ -6252,14 +6257,14 @@ export async function registerRoutes(
       const enrichedLogs = result.logs.map(log => ({
         ...log,
         actorName: (() => {
-          const u = userMap.get(log.actorUserId);
-          return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown";
+          const u = log.actorUserId ? userMap.get(log.actorUserId) : undefined;
+          return u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "System";
         })(),
       }));
       res.json({ logs: enrichedLogs, total: result.total });
     } catch (error) {
       console.error("Error fetching filtered audit logs:", error);
-      res.status(500).json({ message: "Failed to fetch audit logs" });
+      handleRouteError(res, error, "Failed to fetch audit logs");
     }
   });
 
@@ -6279,7 +6284,7 @@ export async function registerRoutes(
       res.json(filtered);
     } catch (error) {
       console.error("Error fetching roles:", error);
-      res.status(500).json({ message: "Failed to fetch roles" });
+      handleRouteError(res, error, "Failed to fetch roles");
     }
   });
 
@@ -6316,7 +6321,7 @@ export async function registerRoutes(
       res.status(201).json({ ...role, permissions: perms });
     } catch (error) {
       console.error("Error creating role:", error);
-      res.status(500).json({ message: "Failed to create role" });
+      handleRouteError(res, error, "Failed to create role");
     }
   });
 
@@ -6324,7 +6329,7 @@ export async function registerRoutes(
     try {
       const isSuperAdmin = req.userPermissions?.has("system.super_admin");
       if (!isSuperAdmin) {
-        const existingPerms = await storage.getRolePermissions(req.params.id);
+        const existingPerms = await storage.getRolePermissions(String(req.params.id));
         if (existingPerms.some(p => p.key === "system.super_admin")) {
           return res.status(403).json({ message: "Cannot edit a role with super admin privileges" });
         }
@@ -6338,9 +6343,9 @@ export async function registerRoutes(
       }
       let role;
       if (Object.keys(roleData).length > 0) {
-        role = await storage.updateRole(req.params.id, roleData);
+        role = await storage.updateRole(String(req.params.id), roleData);
       } else {
-        role = await storage.getRole(req.params.id);
+        role = await storage.getRole(String(req.params.id));
       }
       if (!role) return res.status(404).json({ message: "Role not found" });
       if (permissionIds && Array.isArray(permissionIds)) {
@@ -6359,13 +6364,13 @@ export async function registerRoutes(
       res.json({ ...role, permissions: perms });
     } catch (error) {
       console.error("Error updating role:", error);
-      res.status(500).json({ message: "Failed to update role" });
+      handleRouteError(res, error, "Failed to update role");
     }
   });
 
   app.post("/api/roles/:id/duplicate", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
     try {
-      const sourceRole = await storage.getRole(req.params.id);
+      const sourceRole = await storage.getRole(String(req.params.id));
       if (!sourceRole) return res.status(404).json({ message: "Role not found" });
       const isSuperAdmin = req.userPermissions?.has("system.super_admin");
       if (!isSuperAdmin) {
@@ -6397,13 +6402,13 @@ export async function registerRoutes(
       res.status(201).json({ ...newRole, permissions: perms });
     } catch (error) {
       console.error("Error duplicating role:", error);
-      res.status(500).json({ message: "Failed to duplicate role" });
+      handleRouteError(res, error, "Failed to duplicate role");
     }
   });
 
   app.delete("/api/roles/:id", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
     try {
-      const role = await storage.getRole(req.params.id);
+      const role = await storage.getRole(String(req.params.id));
       if (!role) return res.status(404).json({ message: "Role not found" });
       if (role.isSystem) return res.status(400).json({ message: "Cannot delete system roles" });
       const isSuperAdmin = req.userPermissions?.has("system.super_admin");
@@ -6413,12 +6418,12 @@ export async function registerRoutes(
           return res.status(403).json({ message: "Cannot delete a role with super admin privileges" });
         }
       }
-      await storage.deleteRole(req.params.id);
+      await storage.deleteRole(String(req.params.id));
       const auditCtx = getAuditContext(req);
       await writeAuditLog({
         actorUserId: req.authUser.id,
         targetType: "role",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         action: "role.deleted",
         oldValue: { name: role.name },
         ...auditCtx,
@@ -6426,7 +6431,7 @@ export async function registerRoutes(
       res.status(204).send();
     } catch (error) {
       console.error("Error deleting role:", error);
-      res.status(500).json({ message: "Failed to delete role" });
+      handleRouteError(res, error, "Failed to delete role");
     }
   });
 
@@ -6438,7 +6443,7 @@ export async function registerRoutes(
       res.json(filteredPerms);
     } catch (error) {
       console.error("Error fetching permissions:", error);
-      res.status(500).json({ message: "Failed to fetch permissions" });
+      handleRouteError(res, error, "Failed to fetch permissions");
     }
   });
 
@@ -6454,7 +6459,7 @@ export async function registerRoutes(
       res.json(enriched);
     } catch (error) {
       console.error("Error fetching kiosk devices:", error);
-      res.status(500).json({ message: "Failed to fetch kiosk devices" });
+      handleRouteError(res, error, "Failed to fetch kiosk devices");
     }
   });
 
@@ -6463,7 +6468,7 @@ export async function registerRoutes(
   // the tablet, short enough that stale codes don't pile up.
   app.post("/api/kiosk-devices/:id/pairing-code", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
-      const device = await storage.getKioskDevice(req.params.id);
+      const device = await storage.getKioskDevice(String(req.params.id));
       if (!device) return res.status(404).json({ message: "Device not found" });
       // Loop a few times to avoid the (very unlikely) collision with another device's
       // current code, since the column is not unique.
@@ -6490,13 +6495,13 @@ export async function registerRoutes(
       });
     } catch (error) {
       console.error("Error generating pairing code:", error);
-      res.status(500).json({ message: "Failed to generate pairing code" });
+      handleRouteError(res, error, "Failed to generate pairing code");
     }
   });
 
   app.post("/api/kiosk-devices/:id/unpair", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
-      const device = await storage.getKioskDevice(req.params.id);
+      const device = await storage.getKioskDevice(String(req.params.id));
       if (!device) return res.status(404).json({ message: "Device not found" });
       const updated = await storage.unpairKioskDevice(device.id);
       await writeAuditLog({
@@ -6510,13 +6515,13 @@ export async function registerRoutes(
       res.json({ ...updated, derivedStatus: deriveDeviceStatus(updated || device) });
     } catch (error) {
       console.error("Error unpairing kiosk device:", error);
-      res.status(500).json({ message: "Failed to unpair device" });
+      handleRouteError(res, error, "Failed to unpair device");
     }
   });
 
   app.get("/api/kiosk-devices/:id/recent-punches", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
-      const device = await storage.getKioskDevice(req.params.id);
+      const device = await storage.getKioskDevice(String(req.params.id));
       if (!device) return res.status(404).json({ message: "Device not found" });
       const limit = Math.min(parseInt(String(req.query.limit || "20"), 10) || 20, 100);
       const [punches, totals] = await Promise.all([
@@ -6539,7 +6544,7 @@ export async function registerRoutes(
       });
     } catch (error) {
       console.error("Error fetching kiosk recent punches:", error);
-      res.status(500).json({ message: "Failed to fetch recent punches" });
+      handleRouteError(res, error, "Failed to fetch recent punches");
     }
   });
 
@@ -6562,13 +6567,13 @@ export async function registerRoutes(
       res.status(201).json(device);
     } catch (error) {
       console.error("Error creating kiosk device:", error);
-      res.status(500).json({ message: "Failed to create kiosk device" });
+      handleRouteError(res, error, "Failed to create kiosk device");
     }
   });
 
   app.patch("/api/kiosk-devices/:id", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
-      const device = await storage.updateKioskDevice(req.params.id, req.body);
+      const device = await storage.updateKioskDevice(String(req.params.id), req.body);
       if (!device) return res.status(404).json({ message: "Device not found" });
       const auditCtx = getAuditContext(req);
       await writeAuditLog({
@@ -6582,20 +6587,20 @@ export async function registerRoutes(
       res.json(device);
     } catch (error) {
       console.error("Error updating kiosk device:", error);
-      res.status(500).json({ message: "Failed to update kiosk device" });
+      handleRouteError(res, error, "Failed to update kiosk device");
     }
   });
 
   app.delete("/api/kiosk-devices/:id", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
-      const device = await storage.getKioskDevice(req.params.id);
+      const device = await storage.getKioskDevice(String(req.params.id));
       if (!device) return res.status(404).json({ message: "Device not found" });
-      await storage.deleteKioskDevice(req.params.id);
+      await storage.deleteKioskDevice(String(req.params.id));
       const auditCtx = getAuditContext(req);
       await writeAuditLog({
         actorUserId: req.authUser.id,
         targetType: "kiosk_device",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         action: "kiosk_device.deleted",
         oldValue: { name: device.name },
         ...auditCtx,
@@ -6603,7 +6608,7 @@ export async function registerRoutes(
       res.status(204).send();
     } catch (error) {
       console.error("Error deleting kiosk device:", error);
-      res.status(500).json({ message: "Failed to delete kiosk device" });
+      handleRouteError(res, error, "Failed to delete kiosk device");
     }
   });
 
@@ -6624,7 +6629,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req, res) => {
-    const rule = await storage.getRoleAssignmentRule(req.params.id);
+    const rule = await storage.getRoleAssignmentRule(String(req.params.id));
     if (!rule) return res.status(404).json({ message: "Rule not found" });
     res.json(rule);
   });
@@ -6660,7 +6665,7 @@ export async function registerRoutes(
   });
 
   app.patch("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
-    const existing = await storage.getRoleAssignmentRule(req.params.id);
+    const existing = await storage.getRoleAssignmentRule(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "Rule not found" });
     const parsed = roleRuleSchema.partial().safeParse(req.body);
     if (!parsed.success) {
@@ -6673,11 +6678,11 @@ export async function registerRoutes(
       const v = validateConditions(parsed.data.conditions);
       if (!v.ok) return res.status(400).json({ message: v.error });
     }
-    const updated = await storage.updateRoleAssignmentRule(req.params.id, parsed.data);
+    const updated = await storage.updateRoleAssignmentRule(String(req.params.id), parsed.data);
     await writeAuditLog({
       actorUserId: req.authUser.id,
       targetType: "role_assignment_rule",
-      targetId: req.params.id,
+      targetId: String(req.params.id),
       action: "role_assignment_rule.update",
       oldValue: existing,
       newValue: updated,
@@ -6687,13 +6692,13 @@ export async function registerRoutes(
   });
 
   app.delete("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
-    const existing = await storage.getRoleAssignmentRule(req.params.id);
+    const existing = await storage.getRoleAssignmentRule(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "Rule not found" });
-    await storage.deleteRoleAssignmentRule(req.params.id);
+    await storage.deleteRoleAssignmentRule(String(req.params.id));
     await writeAuditLog({
       actorUserId: req.authUser.id,
       targetType: "role_assignment_rule",
-      targetId: req.params.id,
+      targetId: String(req.params.id),
       action: "role_assignment_rule.delete",
       oldValue: existing,
       ...getAuditContext(req),
@@ -6826,9 +6831,9 @@ export async function registerRoutes(
   });
 
   app.get("/api/schedule-templates/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
-    const template = await storage.getScheduleTemplate(req.params.id);
+    const template = await storage.getScheduleTemplate(String(req.params.id));
     if (!template) return res.status(404).json({ message: "Template not found" });
-    const days = await storage.getScheduleTemplateDays(req.params.id);
+    const days = await storage.getScheduleTemplateDays(String(req.params.id));
     res.json({ ...template, days });
   });
 
@@ -6864,7 +6869,7 @@ export async function registerRoutes(
   });
 
   app.patch("/api/schedule-templates/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
-    const existing = await storage.getScheduleTemplate(req.params.id);
+    const existing = await storage.getScheduleTemplate(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "Template not found" });
     const parsed = scheduleTemplateSchema.partial().safeParse(req.body);
     if (!parsed.success) {
@@ -6875,15 +6880,15 @@ export async function registerRoutes(
       if (!v.ok) return res.status(400).json({ message: v.error });
     }
     const { days, ...updateFields } = parsed.data;
-    const updated = await storage.updateScheduleTemplate(req.params.id, updateFields);
-    let updatedDays: any[] = await storage.getScheduleTemplateDays(req.params.id);
+    const updated = await storage.updateScheduleTemplate(String(req.params.id), updateFields);
+    let updatedDays: any[] = await storage.getScheduleTemplateDays(String(req.params.id));
     if (days) {
-      updatedDays = await storage.replaceScheduleTemplateDays(req.params.id, days);
+      updatedDays = await storage.replaceScheduleTemplateDays(String(req.params.id), days);
     }
     await writeAuditLog({
       actorUserId: req.authUser.id,
       targetType: "schedule_template",
-      targetId: req.params.id,
+      targetId: String(req.params.id),
       action: "schedule_template.update",
       oldValue: existing,
       newValue: { ...updated, days: updatedDays },
@@ -6893,13 +6898,13 @@ export async function registerRoutes(
   });
 
   app.delete("/api/schedule-templates/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
-    const existing = await storage.getScheduleTemplate(req.params.id);
+    const existing = await storage.getScheduleTemplate(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "Template not found" });
-    await storage.deleteScheduleTemplate(req.params.id);
+    await storage.deleteScheduleTemplate(String(req.params.id));
     await writeAuditLog({
       actorUserId: req.authUser.id,
       targetType: "schedule_template",
-      targetId: req.params.id,
+      targetId: String(req.params.id),
       action: "schedule_template.delete",
       oldValue: existing,
       ...getAuditContext(req),
@@ -6913,19 +6918,19 @@ export async function registerRoutes(
   });
 
   app.post("/api/schedule-templates/:id/apply", requireAuth, requireRole("admin"), async (req: any, res) => {
-    const template = await storage.getScheduleTemplate(req.params.id);
+    const template = await storage.getScheduleTemplate(String(req.params.id));
     if (!template) return res.status(404).json({ message: "Template not found" });
     if (!template.isActive) {
       return res.status(400).json({ message: "Template is inactive and can no longer be applied" });
     }
     const parsed = applyTemplateSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+      return badRequestFromZod(res, parsed, "Invalid apply-template request");
     }
     const employeeIds = Array.from(new Set(parsed.data.employeeIds));
     if (employeeIds.length > 50) {
       const job = await enqueue("apply-schedule-template", {
-        templateId: req.params.id,
+        templateId: String(req.params.id),
         employeeIds,
         mode: parsed.data.mode,
         actorUserId: req.authUser.id,
@@ -6933,7 +6938,7 @@ export async function registerRoutes(
       return res.json({ async: true, jobId: job.id, employeeCount: employeeIds.length });
     }
     const result = await applyScheduleTemplate({
-      templateId: req.params.id,
+      templateId: String(req.params.id),
       employeeIds,
       mode: parsed.data.mode,
       actorUserId: req.authUser.id,
@@ -6947,18 +6952,18 @@ export async function registerRoutes(
       res.json(allWorkflows);
     } catch (error) {
       console.error("Error fetching workflows:", error);
-      res.status(500).json({ message: "Failed to fetch workflows" });
+      handleRouteError(res, error, "Failed to fetch workflows");
     }
   });
 
   app.get("/api/workflows/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const workflow = await storage.getWorkflow(req.params.id);
+      const workflow = await storage.getWorkflow(String(req.params.id));
       if (!workflow) return res.status(404).json({ message: "Workflow not found" });
       res.json(workflow);
     } catch (error) {
       console.error("Error fetching workflow:", error);
-      res.status(500).json({ message: "Failed to fetch workflow" });
+      handleRouteError(res, error, "Failed to fetch workflow");
     }
   });
 
@@ -6986,16 +6991,16 @@ export async function registerRoutes(
       res.status(201).json(workflow);
     } catch (error) {
       console.error("Error creating workflow:", error);
-      res.status(500).json({ message: "Failed to create workflow" });
+      handleRouteError(res, error, "Failed to create workflow");
     }
   });
 
   app.patch("/api/workflows/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const existing = await storage.getWorkflow(req.params.id);
+      const existing = await storage.getWorkflow(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Workflow not found" });
       const { name, triggerType, policyTypeId, status, nodeGraph } = req.body;
-      const updated = await storage.updateWorkflow(req.params.id, {
+      const updated = await storage.updateWorkflow(String(req.params.id), {
         ...(name !== undefined && { name }),
         ...(triggerType !== undefined && { triggerType }),
         ...(policyTypeId !== undefined && { policyTypeId }),
@@ -7005,7 +7010,7 @@ export async function registerRoutes(
       await writeAuditLog({
         actorUserId: req.authUser.id,
         action: "workflow.updated",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         targetType: "workflow",
         oldValue: { name: existing.name, status: existing.status },
         newValue: { name: updated?.name, status: updated?.status },
@@ -7014,19 +7019,19 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       console.error("Error updating workflow:", error);
-      res.status(500).json({ message: "Failed to update workflow" });
+      handleRouteError(res, error, "Failed to update workflow");
     }
   });
 
   app.delete("/api/workflows/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const existing = await storage.getWorkflow(req.params.id);
+      const existing = await storage.getWorkflow(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Workflow not found" });
-      await storage.deleteWorkflow(req.params.id);
+      await storage.deleteWorkflow(String(req.params.id));
       await writeAuditLog({
         actorUserId: req.authUser.id,
         action: "workflow.deleted",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         targetType: "workflow",
         oldValue: { name: existing.name },
         ...getAuditContext(req),
@@ -7034,7 +7039,7 @@ export async function registerRoutes(
       res.status(204).send();
     } catch (error) {
       console.error("Error deleting workflow:", error);
-      res.status(500).json({ message: "Failed to delete workflow" });
+      handleRouteError(res, error, "Failed to delete workflow");
     }
   });
 
@@ -7064,7 +7069,7 @@ export async function registerRoutes(
       res.json(cycles);
     } catch (err) {
       console.error("[GET /api/review-cycles]", err);
-      res.status(500).json({ message: "Failed to fetch review cycles" });
+      handleRouteError(res, err, "Failed to fetch review cycles");
     }
   });
 
@@ -7084,21 +7089,21 @@ export async function registerRoutes(
     } catch (err: any) {
       if (err?.issues) return res.status(400).json({ message: "Invalid review cycle", issues: err.issues });
       console.error("[POST /api/review-cycles]", err);
-      res.status(500).json({ message: "Failed to create review cycle" });
+      handleRouteError(res, err, "Failed to create review cycle");
     }
   });
 
   app.patch("/api/review-cycles/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const existing = await storage.getReviewCycle(req.params.id);
+      const existing = await storage.getReviewCycle(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Review cycle not found" });
       const parsed = insertPerformanceReviewCycleSchema.partial().parse(req.body);
-      const updated = await storage.updateReviewCycle(req.params.id, parsed);
+      const updated = await storage.updateReviewCycle(String(req.params.id), parsed);
       await writeAuditLog({
         actorUserId: req.authUser.id,
         action: "review_cycle.updated",
         targetType: "review_cycle",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         oldValue: { name: existing.name, isActive: existing.isActive },
         newValue: { name: updated?.name, isActive: updated?.isActive },
         ...getAuditContext(req),
@@ -7107,20 +7112,20 @@ export async function registerRoutes(
     } catch (err: any) {
       if (err?.issues) return res.status(400).json({ message: "Invalid review cycle", issues: err.issues });
       console.error("[PATCH /api/review-cycles/:id]", err);
-      res.status(500).json({ message: "Failed to update review cycle" });
+      handleRouteError(res, err, "Failed to update review cycle");
     }
   });
 
   app.delete("/api/review-cycles/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
-      const existing = await storage.getReviewCycle(req.params.id);
+      const existing = await storage.getReviewCycle(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Review cycle not found" });
-      const updated = await storage.updateReviewCycle(req.params.id, { isActive: false });
+      const updated = await storage.updateReviewCycle(String(req.params.id), { isActive: false });
       await writeAuditLog({
         actorUserId: req.authUser.id,
         action: "review_cycle.deactivated",
         targetType: "review_cycle",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         oldValue: { isActive: existing.isActive },
         newValue: { isActive: false },
         ...getAuditContext(req),
@@ -7128,7 +7133,7 @@ export async function registerRoutes(
       res.json(updated);
     } catch (err) {
       console.error("[DELETE /api/review-cycles/:id]", err);
-      res.status(500).json({ message: "Failed to deactivate review cycle" });
+      handleRouteError(res, err, "Failed to deactivate review cycle");
     }
   });
 
@@ -7178,13 +7183,13 @@ export async function registerRoutes(
       res.json(reminders);
     } catch (err) {
       console.error("[GET /api/review-reminders]", err);
-      res.status(500).json({ message: "Failed to fetch review reminders" });
+      handleRouteError(res, err, "Failed to fetch review reminders");
     }
   });
 
   app.patch("/api/review-reminders/:id", requireAuth, requireRole("admin", "manager"), async (req: any, res) => {
     try {
-      const existing = await storage.getReviewReminder(req.params.id);
+      const existing = await storage.getReviewReminder(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Reminder not found" });
       const authUser = req.authUser as User;
       if (authUser.role === "manager") {
@@ -7198,7 +7203,7 @@ export async function registerRoutes(
         notes: z.string().optional(),
       });
       const parsed = bodySchema.parse(req.body);
-      const updated = await storage.updateReviewReminder(req.params.id, {
+      const updated = await storage.updateReviewReminder(String(req.params.id), {
         status: parsed.status,
         completedBy: req.authUser.id,
         notes: parsed.notes,
@@ -7207,26 +7212,26 @@ export async function registerRoutes(
         actorUserId: req.authUser.id,
         action: "review_reminder.updated",
         targetType: "review_reminder",
-        targetId: req.params.id,
+        targetId: String(req.params.id),
         oldValue: { status: existing.status },
         newValue: { status: parsed.status, notes: parsed.notes ?? null },
         ...getAuditContext(req),
       });
       if (parsed.status === "completed" || parsed.status === "skipped") {
-        await storage.resolveReviewDueAlertsFor(req.params.id, req.authUser.id);
+        await storage.resolveReviewDueAlertsFor(String(req.params.id), req.authUser.id);
       }
       res.json(updated);
     } catch (err: any) {
       if (err?.issues) return res.status(400).json({ message: "Invalid update", issues: err.issues });
       console.error("[PATCH /api/review-reminders/:id]", err);
-      res.status(500).json({ message: "Failed to update reminder" });
+      handleRouteError(res, err, "Failed to update reminder");
     }
   });
 
   // ===== PTO anniversary adjustments (read-only) =====
   app.get("/api/users/:id/pto-anniversary-adjustments", requireAuth, async (req: any, res) => {
     try {
-      const targetId = req.params.id;
+      const targetId = String(req.params.id);
       const isSelf = req.authUser.id === targetId;
       const isAdmin = req.authUser.role === "admin";
       if (!isSelf && !isAdmin) {
@@ -7248,7 +7253,7 @@ export async function registerRoutes(
       res.json(enriched);
     } catch (err) {
       console.error("[GET /api/users/:id/pto-anniversary-adjustments]", err);
-      res.status(500).json({ message: "Failed to fetch anniversary adjustments" });
+      handleRouteError(res, err, "Failed to fetch anniversary adjustments");
     }
   });
 
@@ -7336,7 +7341,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/onboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
-    const t = await storage.getOnboardingTemplate(req.params.id);
+    const t = await storage.getOnboardingTemplate(String(req.params.id));
     if (!t) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
     if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) {
@@ -7376,7 +7381,7 @@ export async function registerRoutes(
   app.patch("/api/onboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOnboardingTemplateSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
-    const before = await storage.getOnboardingTemplate(req.params.id);
+    const before = await storage.getOnboardingTemplate(String(req.params.id));
     if (!before) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
     if (!actorCanAccessLifecycleTemplate(actor, before, isSuperAdmin(req))) {
@@ -7390,7 +7395,7 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Forbidden: cannot reassign template scope" });
       }
     }
-    const updated = await storage.updateOnboardingTemplate(req.params.id, parsed.data);
+    const updated = await storage.updateOnboardingTemplate(String(req.params.id), parsed.data);
     if (!updated) return res.status(404).json({ message: "Template not found" });
     const ctx = getAuditContext(req);
     await writeAuditLog({ action: "onboarding_template.update", actorUserId: (req as any).authUser.id, targetType: "onboarding_template", targetId: updated.id, oldValue: before, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
@@ -7408,13 +7413,13 @@ export async function registerRoutes(
   }
 
   app.post("/api/onboarding-templates/:templateId/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    const parent = await storage.getOnboardingTemplate(req.params.templateId);
+    const parent = await storage.getOnboardingTemplate(String(req.params.templateId));
     if (!parent) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
     if (!actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    const parsed = insertOnboardingTemplateTaskSchema.safeParse({ ...req.body, templateId: req.params.templateId });
+    const parsed = insertOnboardingTemplateTaskSchema.safeParse({ ...req.body, templateId: String(req.params.templateId) });
     if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
     const docCheck = validateOnboardingDocumentType(parsed.data.documentType);
     if (!docCheck.ok) return res.status(400).json({ message: docCheck.message });
@@ -7427,7 +7432,7 @@ export async function registerRoutes(
   app.patch("/api/onboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOnboardingTemplateTaskSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
-    const existingTask = await storage.getOnboardingTemplateTask(req.params.id);
+    const existingTask = await storage.getOnboardingTemplateTask(String(req.params.id));
     if (!existingTask) return res.status(404).json({ message: "Task not found" });
     const parent = await storage.getOnboardingTemplate(existingTask.templateId);
     const actor = (req as any).authUser as User;
@@ -7444,7 +7449,7 @@ export async function registerRoutes(
       const docCheck = validateOnboardingDocumentType(parsed.data.documentType);
       if (!docCheck.ok) return res.status(400).json({ message: docCheck.message });
     }
-    const updated = await storage.updateOnboardingTemplateTask(req.params.id, parsed.data);
+    const updated = await storage.updateOnboardingTemplateTask(String(req.params.id), parsed.data);
     if (!updated) return res.status(404).json({ message: "Task not found" });
     const ctx = getAuditContext(req);
     await writeAuditLog({ action: "onboarding_template_task.update", actorUserId: (req as any).authUser.id, targetType: "onboarding_template_task", targetId: updated.id, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
@@ -7452,16 +7457,16 @@ export async function registerRoutes(
   });
 
   app.delete("/api/onboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    const existingTask = await storage.getOnboardingTemplateTask(req.params.id);
+    const existingTask = await storage.getOnboardingTemplateTask(String(req.params.id));
     if (!existingTask) return res.status(204).end();
     const parent = await storage.getOnboardingTemplate(existingTask.templateId);
     const actor = (req as any).authUser as User;
     if (!parent || !actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    await storage.deleteOnboardingTemplateTask(req.params.id);
+    await storage.deleteOnboardingTemplateTask(String(req.params.id));
     const ctx = getAuditContext(req);
-    await writeAuditLog({ action: "onboarding_template_task.delete", actorUserId: (req as any).authUser.id, targetType: "onboarding_template_task", targetId: req.params.id, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    await writeAuditLog({ action: "onboarding_template_task.delete", actorUserId: (req as any).authUser.id, targetType: "onboarding_template_task", targetId: String(req.params.id), ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.status(204).end();
   });
 
@@ -7496,20 +7501,20 @@ export async function registerRoutes(
   app.get("/api/onboarding-checklists/by-employee/:employeeId", requireAuth, async (req, res) => {
     const actor = (req as any).authUser as User;
     let isManagerOnTeam = false;
-    if (actor.role !== "admin" && actor.id !== req.params.employeeId) {
+    if (actor.role !== "admin" && actor.id !== String(req.params.employeeId)) {
       if (actor.role === "manager") {
         const team = await getTeamUserIds(actor);
-        if (!team.has(req.params.employeeId)) return res.status(403).json({ message: "Forbidden" });
+        if (!team.has(String(req.params.employeeId))) return res.status(403).json({ message: "Forbidden" });
         isManagerOnTeam = true;
       } else {
         return res.status(403).json({ message: "Forbidden" });
       }
     }
-    const cl = await storage.getOnboardingChecklistByEmployee(req.params.employeeId);
+    const cl = await storage.getOnboardingChecklistByEmployee(String(req.params.employeeId));
     if (!cl) return res.json(null);
     const tasks = await storage.getOnboardingTasks(cl.id);
     // Self-only viewers (employee, not admin/manager-on-team) see only their own role's tasks.
-    const isSelfOnly = actor.id === req.params.employeeId && actor.role !== "admin" && !isManagerOnTeam;
+    const isSelfOnly = actor.id === String(req.params.employeeId) && actor.role !== "admin" && !isManagerOnTeam;
     const visibleTasks = isSelfOnly
       ? tasks.filter(t => t.ownerRole === "new_hire" || t.ownerRole === "system")
       : tasks;
@@ -7518,7 +7523,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/onboarding-checklists/:id", requireAuth, async (req, res) => {
-    const cl = await storage.getOnboardingChecklist(req.params.id);
+    const cl = await storage.getOnboardingChecklist(String(req.params.id));
     if (!cl) return res.status(404).json({ message: "Checklist not found" });
     const actor = (req as any).authUser as User;
     let isManagerOnTeam = false;
@@ -7546,8 +7551,8 @@ export async function registerRoutes(
   });
   app.post("/api/employees/:id/start-onboarding", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const parsed = startOnboardingSchema.safeParse(req.body ?? {});
-    if (!parsed.success) return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
-    const employee = await storage.getUser(req.params.id);
+    if (!parsed.success) return badRequestFromZod(res, parsed, "Invalid onboarding request");
+    const employee = await storage.getUser(String(req.params.id));
     if (!employee) return res.status(404).json({ message: "Employee not found" });
     const ctx = getAuditContext(req);
     const cl = await materializeOnboardingChecklist(employee, {
@@ -7568,7 +7573,7 @@ export async function registerRoutes(
   app.patch("/api/onboarding-tasks/:id", requireAuth, async (req, res) => {
     const parsed = updateOnboardingTaskSchema.safeParse(req.body ?? {});
     if (!parsed.success) return res.status(400).json({ message: "Invalid task update", errors: parsed.error.flatten() });
-    const task = await storage.getOnboardingTask(req.params.id);
+    const task = await storage.getOnboardingTask(String(req.params.id));
     if (!task) return res.status(404).json({ message: "Task not found" });
     const checklist = await storage.getOnboardingChecklist(task.checklistId);
     if (!checklist) return res.status(404).json({ message: "Checklist not found" });
@@ -7605,7 +7610,7 @@ export async function registerRoutes(
       return res.status(400).json({ message: "skippedReason is required when skipping" });
     }
     const completing = parsed.data.status === "completed";
-    const updated = await storage.updateOnboardingTask(req.params.id, {
+    const updated = await storage.updateOnboardingTask(String(req.params.id), {
       status: parsed.data.status,
       notes: "notes" in parsed.data ? parsed.data.notes : undefined,
       skippedReason: "skippedReason" in parsed.data ? parsed.data.skippedReason : undefined,
@@ -7614,7 +7619,7 @@ export async function registerRoutes(
     });
     const completed = await storage.completeOnboardingChecklistIfFinished(task.checklistId);
     const ctx = getAuditContext(req);
-    await writeAuditLog({ action: "onboarding_task.update", actorUserId: actor.id, targetType: "onboarding_task", targetId: req.params.id, oldValue: task, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    await writeAuditLog({ action: "onboarding_task.update", actorUserId: actor.id, targetType: "onboarding_task", targetId: String(req.params.id), oldValue: task, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     if (completed) {
       await writeAuditLog({ action: "onboarding.complete", actorUserId: actor.id, targetType: "onboarding_checklist", targetId: task.checklistId, newValue: { trigger: "task_update" }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     }
@@ -7623,10 +7628,10 @@ export async function registerRoutes(
 
   app.post("/api/onboarding-checklists/:id/cancel", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const reason = typeof req.body?.reason === "string" ? req.body.reason : "Cancelled by admin";
-    const updated = await storage.cancelOnboardingChecklist(req.params.id, reason, (req as any).authUser.id);
+    const updated = await storage.cancelOnboardingChecklist(String(req.params.id), reason, (req as any).authUser.id);
     if (!updated) return res.status(404).json({ message: "Checklist not found" });
     const ctx = getAuditContext(req);
-    await writeAuditLog({ action: "onboarding.cancel", actorUserId: (req as any).authUser.id, targetType: "onboarding_checklist", targetId: req.params.id, newValue: { reason }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    await writeAuditLog({ action: "onboarding.cancel", actorUserId: (req as any).authUser.id, targetType: "onboarding_checklist", targetId: String(req.params.id), newValue: { reason }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.json(updated);
   });
 
@@ -7643,7 +7648,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/offboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
-    const t = await storage.getOffboardingTemplate(req.params.id);
+    const t = await storage.getOffboardingTemplate(String(req.params.id));
     if (!t) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
     if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) {
@@ -7683,7 +7688,7 @@ export async function registerRoutes(
   app.patch("/api/offboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOffboardingTemplateSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
-    const before = await storage.getOffboardingTemplate(req.params.id);
+    const before = await storage.getOffboardingTemplate(String(req.params.id));
     if (!before) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
     if (!actorCanAccessLifecycleTemplate(actor, before, isSuperAdmin(req))) {
@@ -7697,7 +7702,7 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Forbidden: cannot reassign template scope" });
       }
     }
-    const updated = await storage.updateOffboardingTemplate(req.params.id, parsed.data);
+    const updated = await storage.updateOffboardingTemplate(String(req.params.id), parsed.data);
     if (!updated) return res.status(404).json({ message: "Template not found" });
     const ctx = getAuditContext(req);
     await writeAuditLog({ action: "offboarding_template.update", actorUserId: (req as any).authUser.id, targetType: "offboarding_template", targetId: updated.id, oldValue: before, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
@@ -7705,13 +7710,13 @@ export async function registerRoutes(
   });
 
   app.post("/api/offboarding-templates/:templateId/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    const parent = await storage.getOffboardingTemplate(req.params.templateId);
+    const parent = await storage.getOffboardingTemplate(String(req.params.templateId));
     if (!parent) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
     if (!actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    const parsed = insertOffboardingTemplateTaskSchema.safeParse({ ...req.body, templateId: req.params.templateId });
+    const parsed = insertOffboardingTemplateTaskSchema.safeParse({ ...req.body, templateId: String(req.params.templateId) });
     if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
     const created = await storage.createOffboardingTemplateTask(parsed.data);
     const ctx = getAuditContext(req);
@@ -7722,7 +7727,7 @@ export async function registerRoutes(
   app.patch("/api/offboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOffboardingTemplateTaskSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
-    const existingTask = await storage.getOffboardingTemplateTask(req.params.id);
+    const existingTask = await storage.getOffboardingTemplateTask(String(req.params.id));
     if (!existingTask) return res.status(404).json({ message: "Task not found" });
     const parent = await storage.getOffboardingTemplate(existingTask.templateId);
     const actor = (req as any).authUser as User;
@@ -7735,7 +7740,7 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Cannot change templateId of a template task" });
     }
     delete (parsed.data as Record<string, unknown>).templateId;
-    const updated = await storage.updateOffboardingTemplateTask(req.params.id, parsed.data);
+    const updated = await storage.updateOffboardingTemplateTask(String(req.params.id), parsed.data);
     if (!updated) return res.status(404).json({ message: "Task not found" });
     const ctx = getAuditContext(req);
     await writeAuditLog({ action: "offboarding_template_task.update", actorUserId: (req as any).authUser.id, targetType: "offboarding_template_task", targetId: updated.id, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
@@ -7743,16 +7748,16 @@ export async function registerRoutes(
   });
 
   app.delete("/api/offboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    const existingTask = await storage.getOffboardingTemplateTask(req.params.id);
+    const existingTask = await storage.getOffboardingTemplateTask(String(req.params.id));
     if (!existingTask) return res.status(204).end();
     const parent = await storage.getOffboardingTemplate(existingTask.templateId);
     const actor = (req as any).authUser as User;
     if (!parent || !actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    await storage.deleteOffboardingTemplateTask(req.params.id);
+    await storage.deleteOffboardingTemplateTask(String(req.params.id));
     const ctx = getAuditContext(req);
-    await writeAuditLog({ action: "offboarding_template_task.delete", actorUserId: (req as any).authUser.id, targetType: "offboarding_template_task", targetId: req.params.id, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    await writeAuditLog({ action: "offboarding_template_task.delete", actorUserId: (req as any).authUser.id, targetType: "offboarding_template_task", targetId: String(req.params.id), ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.status(204).end();
   });
 
@@ -7772,9 +7777,9 @@ export async function registerRoutes(
     const actor = (req as any).authUser as User;
     if (actor.role === "manager") {
       const team = await getTeamUserIds(actor);
-      if (!team.has(req.params.employeeId)) return res.status(403).json({ message: "Forbidden" });
+      if (!team.has(String(req.params.employeeId))) return res.status(403).json({ message: "Forbidden" });
     }
-    const cl = await storage.getOffboardingChecklistByEmployee(req.params.employeeId);
+    const cl = await storage.getOffboardingChecklistByEmployee(String(req.params.employeeId));
     if (!cl) return res.json(null);
     const tasks = await storage.getOffboardingTasks(cl.id);
     const gate = await evaluateDeactivationGate(cl.id);
@@ -7783,7 +7788,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/offboarding-checklists/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
-    const cl = await storage.getOffboardingChecklist(req.params.id);
+    const cl = await storage.getOffboardingChecklist(String(req.params.id));
     if (!cl) return res.status(404).json({ message: "Checklist not found" });
     const actor = (req as any).authUser as User;
     if (actor.role === "manager") {
@@ -7803,7 +7808,7 @@ export async function registerRoutes(
   });
   app.post("/api/offboarding/start", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
     const parsed = startOffboardingSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ message: "Invalid request", errors: parsed.error.flatten() });
+    if (!parsed.success) return badRequestFromZod(res, parsed, "Invalid offboarding request");
     const employee = await storage.getUser(parsed.data.employeeId);
     if (!employee) return res.status(404).json({ message: "Employee not found" });
     const ctx = getAuditContext(req);
@@ -7825,7 +7830,7 @@ export async function registerRoutes(
   app.patch("/api/offboarding-tasks/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
     const parsed = updateOffboardingTaskSchema.safeParse(req.body ?? {});
     if (!parsed.success) return res.status(400).json({ message: "Invalid task update", errors: parsed.error.flatten() });
-    const task = await storage.getOffboardingTask(req.params.id);
+    const task = await storage.getOffboardingTask(String(req.params.id));
     if (!task) return res.status(404).json({ message: "Task not found" });
     const checklist = await storage.getOffboardingChecklist(task.checklistId);
     if (!checklist) return res.status(404).json({ message: "Checklist not found" });
@@ -7845,7 +7850,7 @@ export async function registerRoutes(
       return res.status(400).json({ message: "skippedReason is required when skipping" });
     }
     const completing = parsed.data.status === "completed";
-    const updated = await storage.updateOffboardingTask(req.params.id, {
+    const updated = await storage.updateOffboardingTask(String(req.params.id), {
       status: parsed.data.status,
       notes: "notes" in parsed.data ? parsed.data.notes : undefined,
       skippedReason: "skippedReason" in parsed.data ? parsed.data.skippedReason : undefined,
@@ -7853,17 +7858,17 @@ export async function registerRoutes(
       completedBy: completing ? actor.id : (parsed.data.status && parsed.data.status !== "completed" ? null : undefined),
     });
     const ctx = getAuditContext(req);
-    await writeAuditLog({ action: "offboarding_task.update", actorUserId: actor.id, targetType: "offboarding_task", targetId: req.params.id, oldValue: task, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    await writeAuditLog({ action: "offboarding_task.update", actorUserId: actor.id, targetType: "offboarding_task", targetId: String(req.params.id), oldValue: task, newValue: updated, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.json(updated);
   });
 
   app.post("/api/offboarding-checklists/:id/deactivate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
-    const cl = await storage.getOffboardingChecklist(req.params.id);
+    const cl = await storage.getOffboardingChecklist(String(req.params.id));
     if (!cl) return res.status(404).json({ message: "Checklist not found" });
     if (cl.employeeId === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    const gate = await evaluateDeactivationGate(req.params.id);
+    const gate = await evaluateDeactivationGate(String(req.params.id));
     if (!gate.ok) {
       return res.status(409).json({ message: "Cannot deactivate: blocking tasks remain", blocking: gate.blocking });
     }
@@ -7884,7 +7889,7 @@ export async function registerRoutes(
     }
 
     await storage.setUserDeactivated(cl.employeeId, actor.id);
-    const updated = await storage.setOffboardingChecklistDeactivation(req.params.id, actor.id);
+    const updated = await storage.setOffboardingChecklistDeactivation(String(req.params.id), actor.id);
 
     await writeAuditLog({ action: "user.deactivate", actorUserId: actor.id, targetType: "user", targetId: cl.employeeId, newValue: { checklistId: cl.id, terminationDate }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     // Per arch §6: explicit checklist state-transition audit alongside the
@@ -7904,11 +7909,11 @@ export async function registerRoutes(
 
   app.post("/api/users/:id/reactivate", requireAuth, async (req, res) => {
     if (!isSuperAdmin(req)) return res.status(403).json({ message: "Only super admin can reactivate users" });
-    const u = await storage.getUser(req.params.id);
+    const u = await storage.getUser(String(req.params.id));
     if (!u) return res.status(404).json({ message: "User not found" });
-    const updated = await storage.clearUserDeactivated(req.params.id);
+    const updated = await storage.clearUserDeactivated(String(req.params.id));
     const ctx = getAuditContext(req);
-    await writeAuditLog({ action: "user.reactivate", actorUserId: (req as any).authUser.id, targetType: "user", targetId: req.params.id, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    await writeAuditLog({ action: "user.reactivate", actorUserId: (req as any).authUser.id, targetType: "user", targetId: String(req.params.id), ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.json(updated);
   });
 
@@ -8049,7 +8054,7 @@ export async function registerRoutes(
     requireAuth,
     requirePermission("biometrics.manage"),
     async (req: any, res) => {
-      const id = req.params.id;
+      const id = String(req.params.id);
       const before = await storage.getBiometricLegalProfile(id);
       if (!before) return res.status(404).json({ error: "Not found" });
       const allowed = ["name", "description", "consentText", "consentVersion", "retentionDays", "isEnabled"] as const;
@@ -8080,7 +8085,7 @@ export async function registerRoutes(
     requireAuth,
     requirePermission("biometrics.manage"),
     async (req: any, res) => {
-      const id = req.params.id;
+      const id = String(req.params.id);
       const before = await storage.getBiometricLegalProfile(id);
       if (!before) return res.status(404).json({ error: "Not found" });
       if (before.isDefault) {
@@ -8104,7 +8109,7 @@ export async function registerRoutes(
     requireAuth,
     requirePermission("biometrics.manage"),
     async (req: any, res) => {
-      const id = req.params.id;
+      const id = String(req.params.id);
       const profile = await storage.getBiometricLegalProfile(id);
       if (!profile) return res.status(404).json({ error: "Not found" });
       const scopes = Array.isArray(req.body?.scopes) ? req.body.scopes : [];
@@ -8176,8 +8181,8 @@ export async function registerRoutes(
       legalProfileId: profile.id,
       consentVersion: profile.consentVersion,
       consentTextSnapshot: profile.consentText,
-      ipAddress: ctx.ipAddress ?? null,
-      userAgent: ctx.userAgent ?? null,
+      acceptedIp: ctx.ipAddress ?? null,
+      acceptedUserAgent: ctx.userAgent ?? null,
     });
     await writeAuditLog({
       actorUserId: userId,
@@ -8328,7 +8333,7 @@ export async function registerRoutes(
     requireAuth,
     requirePermission("biometrics.manage"),
     async (req: any, res) => {
-      const userId = req.params.id;
+      const userId = String(req.params.id);
       const reason = (req.body?.reason as string) || "admin_revoke";
       await storage.revokeBiometricConsent(userId, (req as any).authUser.id, reason);
       await storage.deleteBiometricTemplate(userId, "face");
@@ -8349,7 +8354,7 @@ export async function registerRoutes(
     requireAuth,
     requirePermission("biometrics.manage"),
     async (req: any, res) => {
-      const userId = req.params.id;
+      const userId = String(req.params.id);
       const hold = !!req.body?.hold;
       await storage.setBiometricLegalHold(userId, hold);
       await writeAuditLog({
@@ -8411,7 +8416,7 @@ export async function registerRoutes(
     }
 
     const candidatesRaw = await storage.getBiometricTemplatesByCompanyAndType(
-      device.companyId ?? null,
+      (device as any).companyId ?? null,
       "face",
     );
     // Decrypt and project to matcher candidate shape. Skip rows that fail to decrypt
@@ -8502,11 +8507,11 @@ export async function registerRoutes(
 
     const override = await storage.recordBiometricSupervisorOverride({
       supervisorUserId: supervisor.id,
-      targetUserId: target.id,
+      employeeUserId: target.id,
       kioskDeviceId: device.id,
-      attemptId: attemptId ?? null,
+      punchType: (req.body?.punchType as string) ?? "clock_in",
       reason,
-    });
+    } as any);
     await writeAuditLog({
       actorUserId: supervisor.id,
       targetType: "biometric_attempt",

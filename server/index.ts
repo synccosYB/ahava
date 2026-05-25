@@ -86,15 +86,32 @@ app.use((req, res, next) => {
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+    if (res.headersSent) return next(err);
 
-    console.error("Internal Server Error:", err);
-
-    if (res.headersSent) {
-      return next(err);
+    const pgMap: Record<string, string> = {
+      "23502": "Missing required field",
+      "23503": "Invalid reference",
+      "23505": "Already exists",
+      "23514": "Value violates a constraint",
+    };
+    if (err?.name === "ZodError" && Array.isArray(err?.issues)) {
+      const issue = err.issues[0];
+      const field = (issue?.path ?? []).join(".") || "field";
+      return res
+        .status(400)
+        .json({ message: `${field}: ${issue?.message ?? "invalid"}`, errors: err.flatten?.() });
+    }
+    if (typeof err?.code === "string" && pgMap[err.code]) {
+      const detail: string = err.detail ?? err.message ?? "";
+      const match = detail.match(/\(([^)]+)\)/);
+      const suffix = match?.[1] ?? err.constraint ?? "";
+      const msg = suffix ? `${pgMap[err.code]}: ${suffix}` : pgMap[err.code];
+      return res.status(400).json({ message: msg });
     }
 
+    const status = err.status || err.statusCode || 500;
+    const message = err.message || "Internal Server Error";
+    console.error("Internal Server Error:", err);
     return res.status(status).json({ message });
   });
 
