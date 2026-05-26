@@ -1190,67 +1190,367 @@ function ApprovalWorkflowsSection() {
   );
 }
 
-type RoleSummary = {
+type RoleWithPermissions = {
   id: string;
   name: string;
   description: string | null;
   isSystem: boolean;
   isActive: boolean;
+  permissions: { id: string; key: string }[];
+  userCount: number;
 };
 
 function RolesSection() {
-  const { data: roles, isLoading } = useQuery<RoleSummary[]>({ queryKey: ["/api/roles-summary"] });
-  const activeRoles = (roles || []).filter((r) => r.isActive);
-  const systemCount = activeRoles.filter((r) => r.isSystem).length;
-  const customCount = activeRoles.length - systemCount;
+  const { toast } = useToast();
+  const perms = usePermissions();
+  const canManage = perms.has("roles.manage");
+
+  const { data: roles, isLoading, isError } = useQuery<RoleWithPermissions[]>({
+    queryKey: ["/api/roles"],
+    enabled: canManage,
+  });
+
+  // Read-only fallback for admins without roles.manage: /api/roles-summary is
+  // available to any admin and returns name/description/system flag, so the
+  // list still renders (without user counts) and the "Ask a Super Admin" hint
+  // is shown above it.
+  type RoleSummaryRow = { id: string; name: string; description: string | null; isSystem: boolean; isActive: boolean };
+  const { data: readOnlyRoles, isLoading: readOnlyLoading, isError: readOnlyError } = useQuery<RoleSummaryRow[]>({
+    queryKey: ["/api/roles-summary"],
+    enabled: !perms.isLoading && !canManage,
+  });
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingRole, setEditingRole] = useState<RoleWithPermissions | null>(null);
+  const [formName, setFormName] = useState("");
+  const [formDesc, setFormDesc] = useState("");
+
+  const createMutation = useMutation({
+    mutationFn: (data: { name: string; description: string | null }) =>
+      apiRequest("POST", "/api/roles", { ...data, permissionIds: [] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/roles-summary"] });
+      setDialogOpen(false);
+      toast({ title: "Role created" });
+    },
+    onError: (e: Error) => toast({ title: "Failed to create role", description: e.message, variant: "destructive" }),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { name: string; description: string | null } }) =>
+      apiRequest("PATCH", `/api/roles/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/roles-summary"] });
+      setDialogOpen(false);
+      toast({ title: "Role updated" });
+    },
+    onError: (e: Error) => toast({ title: "Failed to update role", description: e.message, variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/roles/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/roles-summary"] });
+      toast({ title: "Role deleted" });
+    },
+    onError: (e: Error) => {
+      const raw = e.message || "";
+      const stripped = raw.replace(/^\d+:\s*/, "").trim();
+      let description = stripped || "Failed to delete role";
+      try {
+        const parsed = JSON.parse(stripped);
+        if (parsed && typeof parsed.message === "string") description = parsed.message;
+      } catch {
+        // keep stripped
+      }
+      toast({ title: "Failed to delete role", description, variant: "destructive" });
+    },
+  });
+
+  function openCreate() {
+    setEditingRole(null);
+    setFormName("");
+    setFormDesc("");
+    setDialogOpen(true);
+  }
+
+  function openEdit(role: RoleWithPermissions) {
+    setEditingRole(role);
+    setFormName(role.name);
+    setFormDesc(role.description || "");
+    setDialogOpen(true);
+  }
+
+  function handleSubmit() {
+    const payload = { name: formName.trim(), description: formDesc.trim() || null };
+    if (!payload.name) return;
+    if (editingRole) {
+      updateMutation.mutate({ id: editingRole.id, data: payload });
+    } else {
+      createMutation.mutate(payload);
+    }
+  }
+
+  if (!perms.isLoading && !canManage) {
+    const list = readOnlyRoles || [];
+    return (
+      <Card data-testid="card-roles-permissions">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Shield className="h-5 w-5" /> Roles & Permissions
+          </CardTitle>
+          <Link href="/permissions">
+            <Button variant="outline" size="sm" data-testid="button-open-permission-matrix">
+              Permission matrix <ArrowRight className="h-4 w-4 ml-1" />
+            </Button>
+          </Link>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground" data-testid="text-roles-readonly-hint">
+            You don&apos;t have permission to manage roles. Ask a Super Admin to grant you the
+            &quot;roles.manage&quot; permission on Roles &amp; Permissions.
+          </div>
+          {readOnlyLoading ? (
+            <div className="space-y-2" data-testid="loading-roles">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : readOnlyError ? (
+            <p className="text-sm text-destructive" data-testid="text-roles-error">
+              Failed to load roles.
+            </p>
+          ) : list.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-6" data-testid="text-no-roles">
+              No roles found.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {list.map((role) => (
+                  <TableRow key={role.id} data-testid={`row-role-${role.id}`}>
+                    <TableCell className="font-medium" data-testid={`text-role-name-${role.id}`}>
+                      {role.name}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground" data-testid={`text-role-desc-${role.id}`}>
+                      {role.description || "—"}
+                    </TableCell>
+                    <TableCell>
+                      {role.isSystem ? (
+                        <Badge variant="outline" data-testid={`badge-role-type-${role.id}`}>System</Badge>
+                      ) : (
+                        <Badge variant="secondary" data-testid={`badge-role-type-${role.id}`}>Custom</Badge>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const isMutating = createMutation.isPending || updateMutation.isPending;
+  const rolesList = roles || [];
 
   return (
     <Card data-testid="card-roles-permissions">
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Roles & Permissions</CardTitle>
-        <Link href="/permissions">
-          <Button variant="outline" size="sm" data-testid="button-go-to-roles">
-            Manage roles <ArrowRight className="h-4 w-4 ml-1" />
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <CardTitle className="flex items-center gap-2">
+          <Shield className="h-5 w-5" /> Roles & Permissions
+        </CardTitle>
+        <div className="flex items-center gap-2">
+          <Link href="/permissions">
+            <Button variant="outline" size="sm" data-testid="button-open-permission-matrix">
+              Permission matrix <ArrowRight className="h-4 w-4 ml-1" />
+            </Button>
+          </Link>
+          <Button size="sm" onClick={openCreate} data-testid="button-create-role">
+            <Plus className="h-4 w-4 mr-1" /> New role
           </Button>
-        </Link>
+        </div>
       </CardHeader>
       <CardContent>
-        {isLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-6 w-40" />
-            <Skeleton className="h-20 w-full" />
+        {isLoading || perms.isLoading ? (
+          <div className="space-y-2" data-testid="loading-roles">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
           </div>
+        ) : isError ? (
+          <p className="text-sm text-destructive" data-testid="text-roles-error">
+            Failed to load roles. Try refreshing the page.
+          </p>
+        ) : rolesList.length === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-6" data-testid="text-no-roles">
+            No roles found.
+          </p>
         ) : (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="border rounded-md p-3" data-testid="stat-roles-total">
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Active roles</p>
-                <p className="text-2xl font-semibold">{activeRoles.length}</p>
-                <p className="text-xs text-muted-foreground">{systemCount} system · {customCount} custom</p>
-              </div>
-              <div className="border rounded-md p-3 flex flex-col gap-1">
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Top roles</p>
-                <div className="flex flex-wrap gap-1">
-                  {activeRoles.slice(0, 4).map((r) => (
-                    <Badge key={r.id} variant="secondary" className="font-normal" data-testid={`badge-role-${r.id}`}>
-                      {r.name}
-                    </Badge>
-                  ))}
-                  {activeRoles.length > 4 && (
-                    <Badge variant="outline" className="font-normal">+{activeRoles.length - 4} more</Badge>
-                  )}
-                  {activeRoles.length === 0 && (
-                    <span className="text-xs text-muted-foreground">No roles configured.</span>
-                  )}
-                </div>
-              </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Description</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Users</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rolesList.map((role) => {
+                const userCount = role.userCount ?? 0;
+                const canEdit = !role.isSystem;
+                const canDelete = !role.isSystem && userCount === 0;
+                return (
+                  <TableRow key={role.id} data-testid={`row-role-${role.id}`}>
+                    <TableCell className="font-medium" data-testid={`text-role-name-${role.id}`}>
+                      {role.name}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground" data-testid={`text-role-desc-${role.id}`}>
+                      {role.description || "—"}
+                    </TableCell>
+                    <TableCell>
+                      {role.isSystem ? (
+                        <Badge variant="outline" data-testid={`badge-role-type-${role.id}`}>System</Badge>
+                      ) : (
+                        <Badge variant="secondary" data-testid={`badge-role-type-${role.id}`}>Custom</Badge>
+                      )}
+                    </TableCell>
+                    <TableCell data-testid={`text-role-users-${role.id}`}>
+                      <Badge variant="secondary" className="font-normal">
+                        {userCount}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Link href={`/permissions?role=${role.id}`}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            data-testid={`button-manage-permissions-${role.id}`}
+                            title="Manage permissions for this role"
+                          >
+                            <Shield className="h-3 w-3 mr-1" /> Permissions
+                          </Button>
+                        </Link>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => openEdit(role)}
+                          disabled={!canEdit}
+                          data-testid={`button-edit-role-${role.id}`}
+                          title={canEdit ? "Edit role" : "System roles cannot be edited"}
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-destructive"
+                              disabled={!canDelete || deleteMutation.isPending}
+                              data-testid={`button-delete-role-${role.id}`}
+                              title={
+                                role.isSystem
+                                  ? "System roles cannot be deleted"
+                                  : userCount > 0
+                                  ? "Reassign users before deleting"
+                                  : "Delete role"
+                              }
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent data-testid={`dialog-confirm-delete-role-${role.id}`}>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Delete role &quot;{role.name}&quot;?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This permanently removes the role. This action cannot be undone.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel data-testid={`button-cancel-delete-role-${role.id}`}>
+                                Cancel
+                              </AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => deleteMutation.mutate(role.id)}
+                                data-testid={`button-confirm-delete-role-${role.id}`}
+                              >
+                                Delete
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+        <p className="text-xs text-muted-foreground mt-4" data-testid="text-roles-info">
+          Need to compare permissions side-by-side across roles? Open the{" "}
+          <Link href="/permissions" className="underline" data-testid="link-permission-matrix-inline">
+            full permission matrix
+          </Link>
+          .
+        </p>
+      </CardContent>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent data-testid="dialog-role-form">
+          <DialogHeader>
+            <DialogTitle>{editingRole ? "Edit role" : "New role"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="role-name-input">Name</Label>
+              <Input
+                id="role-name-input"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g. Shift Lead"
+                data-testid="input-role-name"
+              />
             </div>
-            <p className="text-xs text-muted-foreground" data-testid="text-roles-info">
-              Visit the Roles &amp; Permissions page to assign permissions, create custom roles, or review the permission matrix.
+            <div className="space-y-2">
+              <Label htmlFor="role-desc-input">Description</Label>
+              <Textarea
+                id="role-desc-input"
+                value={formDesc}
+                onChange={(e) => setFormDesc(e.target.value)}
+                placeholder="What does this role do?"
+                rows={3}
+                data-testid="input-role-description"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              After saving, use the &quot;Permissions&quot; action on the role row to grant access.
             </p>
           </div>
-        )}
-      </CardContent>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialogOpen(false)} data-testid="button-cancel-role-form">
+              Cancel
+            </Button>
+            <Button onClick={handleSubmit} disabled={!formName.trim() || isMutating} data-testid="button-submit-role">
+              {editingRole ? "Save changes" : "Create role"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

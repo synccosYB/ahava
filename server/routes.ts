@@ -4,7 +4,7 @@ import { z } from "zod";
 import { storage } from "./storage";
 import { badRequestFromZod, handleRouteError, mapRouteError } from "./routeErrors";
 import { db } from "./db";
-import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable } from "@shared/schema";
+import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
@@ -6360,10 +6360,16 @@ export async function registerRoutes(
     try {
       const isSuperAdmin = req.userPermissions?.has("system.super_admin");
       const allRoles = await storage.getAllRoles();
+      const { sql: drizzleSql } = await import("drizzle-orm");
+      const counts = await db
+        .select({ roleId: userRolesTable.roleId, count: drizzleSql<number>`count(*)::int` })
+        .from(userRolesTable)
+        .groupBy(userRolesTable.roleId);
+      const countMap = new Map(counts.map((c) => [c.roleId, Number(c.count)]));
       const rolesWithPermissions = await Promise.all(
         allRoles.map(async (role) => {
           const perms = await storage.getRolePermissions(role.id);
-          return { ...role, permissions: perms };
+          return { ...role, permissions: perms, userCount: countMap.get(role.id) ?? 0 };
         })
       );
       const filtered = isSuperAdmin
@@ -6505,6 +6511,16 @@ export async function registerRoutes(
         if (rolePerms.some(p => p.key === "system.super_admin")) {
           return res.status(403).json({ message: "Cannot delete a role with super admin privileges" });
         }
+      }
+      const { sql: drizzleSql } = await import("drizzle-orm");
+      const [{ count }] = await db
+        .select({ count: drizzleSql<number>`count(*)::int` })
+        .from(userRolesTable)
+        .where(eq(userRolesTable.roleId, role.id));
+      if (Number(count) > 0) {
+        return res.status(400).json({
+          message: `Cannot delete a role with ${count} assigned user${Number(count) === 1 ? "" : "s"}. Reassign users first.`,
+        });
       }
       await storage.deleteRole(String(req.params.id));
       const auditCtx = getAuditContext(req);

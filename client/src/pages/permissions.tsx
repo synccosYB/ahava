@@ -1,4 +1,4 @@
-import { useState, Fragment } from "react";
+import { useState, Fragment, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,10 +27,22 @@ type Role = {
 export default function PermissionsPage() {
   const { toast } = useToast();
   const [pendingChanges, setPendingChanges] = useState<Map<string, Set<string>>>(new Map());
+  const focusRoleId = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("role")
+    : null;
+  const focusedHeaderRef = useRef<HTMLTableCellElement | null>(null);
 
   const { data: roles, isLoading: rolesLoading } = useQuery<Role[]>({
     queryKey: ["/api/roles"],
   });
+
+  useEffect(() => {
+    if (!focusRoleId || !roles) return;
+    const t = setTimeout(() => {
+      focusedHeaderRef.current?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+    }, 50);
+    return () => clearTimeout(t);
+  }, [focusRoleId, roles]);
 
   const { data: permissions, isLoading: permsLoading } = useQuery<Permission[]>({
     queryKey: ["/api/permissions"],
@@ -127,8 +139,17 @@ export default function PermissionsPage() {
               <thead>
                 <tr className="border-b">
                   <th className="text-left py-3 px-2 text-xs font-medium uppercase tracking-wider sticky left-0 bg-background min-w-[200px]">Permission</th>
-                  {(roles || []).map(role => (
-                    <th key={role.id} className="text-center py-3 px-4 text-xs font-medium uppercase tracking-wider min-w-[120px]">
+                  {(roles || []).map(role => {
+                    const isFocused = focusRoleId === role.id;
+                    return (
+                    <th
+                      key={role.id}
+                      ref={isFocused ? focusedHeaderRef : undefined}
+                      className={`text-center py-3 px-4 text-xs font-medium uppercase tracking-wider min-w-[120px] ${
+                        isFocused ? "bg-primary/10 ring-2 ring-primary rounded-t-md" : ""
+                      }`}
+                      data-testid={isFocused ? `header-focused-role-${role.id}` : undefined}
+                    >
                       <div className="flex flex-col items-center gap-1">
                         <span data-testid={`text-role-name-${role.id}`}>{role.name}</span>
                         {role.isSystem && <Badge variant="outline" className="text-xs">System</Badge>}
@@ -147,7 +168,8 @@ export default function PermissionsPage() {
                         )}
                       </div>
                     </th>
-                  ))}
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
