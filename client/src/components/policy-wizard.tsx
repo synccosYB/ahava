@@ -2299,11 +2299,6 @@ function StepAssignments({
                           value={`${opt.label} ${opt.id}`}
                           disabled={alreadyAssigned}
                           onSelect={() => toggleSelected(opt.id)}
-                          onMouseDown={(e) => {
-                            if (alreadyAssigned) return;
-                            e.preventDefault();
-                            toggleSelected(opt.id);
-                          }}
                           data-testid={`option-wizard-target-${opt.id}`}
                           className={alreadyAssigned ? "opacity-60" : "cursor-pointer"}
                         >
