@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocation, Link } from "wouter";
 import {
@@ -6,8 +7,6 @@ import {
   CalendarDays,
   UserCircle,
   Users,
-  CheckSquare,
-  Building2,
   Settings2,
   BarChart3,
   LogOut,
@@ -21,6 +20,8 @@ import {
   Monitor,
   BookOpen,
   ScanFace,
+  Settings,
+  ChevronRight,
 } from "lucide-react";
 import {
   Sidebar,
@@ -33,10 +34,22 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuBadge,
+  useSidebar,
 } from "@/components/ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import type { TimeOffRequest, AttendanceException } from "@shared/schema";
 
@@ -44,40 +57,50 @@ type NavItem = {
   title: string;
   href: string;
   icon: typeof LayoutDashboard;
-  roles: string[];
-  badge?: number;
 };
 
-const employeeItems: NavItem[] = [
-  { title: "Dashboard", href: "/", icon: LayoutDashboard, roles: ["employee", "manager", "admin"] },
-  { title: "My Attendance", href: "/attendance", icon: Clock, roles: ["employee", "manager", "admin"] },
-  { title: "Time Off", href: "/time-off", icon: CalendarDays, roles: ["employee", "manager", "admin"] },
-  { title: "My Pay Docs", href: "/my-pay-docs", icon: DollarSign, roles: ["employee", "manager", "admin"] },
-  { title: "Profile", href: "/profile", icon: UserCircle, roles: ["employee", "manager", "admin"] },
-  { title: "User Manual", href: "/manual", icon: BookOpen, roles: ["employee", "manager", "admin"] },
+const youItemsCommon: NavItem[] = [
+  { title: "Dashboard", href: "/", icon: LayoutDashboard },
+  { title: "My Attendance", href: "/attendance", icon: Clock },
+  { title: "Time Off", href: "/time-off", icon: CalendarDays },
+  { title: "My Pay Docs", href: "/my-pay-docs", icon: DollarSign },
+  { title: "Profile", href: "/profile", icon: UserCircle },
 ];
 
-const managerItems: NavItem[] = [
-  { title: "Team View", href: "/team", icon: Users, roles: ["manager", "admin"] },
-  { title: "Requests & Approvals", href: "/requests-approvals", icon: ClipboardList, roles: ["manager", "admin"] },
-  { title: "Alerts", href: "/alerts", icon: Bell, roles: ["manager", "admin"] },
+const userManualItem: NavItem = { title: "User Manual", href: "/manual", icon: BookOpen };
+
+const teamItems: NavItem[] = [
+  { title: "Team View", href: "/team", icon: Users },
+  { title: "Requests & Approvals", href: "/requests-approvals", icon: ClipboardList },
+  { title: "Alerts", href: "/alerts", icon: Bell },
 ];
 
 const adminItems: NavItem[] = [
-  { title: "Admin Dashboard", href: "/company", icon: LayoutDashboard, roles: ["admin"] },
-  { title: "Employees", href: "/employees", icon: Users, roles: ["admin"] },
-  { title: "Locations", href: "/locations", icon: MapPin, roles: ["admin"] },
-  { title: "Time Clock Rules", href: "/rules-controls", icon: Settings2, roles: ["admin"] },
-  { title: "PTO & Leave", href: "/pto-leave", icon: CalendarDays, roles: ["admin"] },
-  { title: "Payroll Prep", href: "/payroll-prep", icon: DollarSign, roles: ["admin"] },
-  { title: "Payroll Documents", href: "/payroll-documents", icon: FileText, roles: ["admin"] },
-  { title: "Reports", href: "/reports", icon: BarChart3, roles: ["manager", "admin"] },
-  { title: "Permissions", href: "/permissions", icon: ShieldCheck, roles: ["admin"] },
-  { title: "Roles", href: "/role-management", icon: Shield, roles: ["admin"] },
-  { title: "Kiosks", href: "/kiosk-management", icon: Monitor, roles: ["admin"] },
-  { title: "Biometrics", href: "/biometrics", icon: ScanFace, roles: ["admin"] },
-  { title: "Audit Log", href: "/audit-log", icon: FileText, roles: ["admin"] },
+  { title: "Admin Dashboard", href: "/company", icon: LayoutDashboard },
+  { title: "Employees", href: "/employees", icon: Users },
+  { title: "Locations", href: "/locations", icon: MapPin },
+  { title: "Reports", href: "/reports", icon: BarChart3 },
 ];
+
+const payrollItems: NavItem[] = [
+  { title: "Payroll Prep", href: "/payroll-prep", icon: DollarSign },
+  { title: "Payroll Documents", href: "/payroll-documents", icon: FileText },
+];
+
+const settingsItems: NavItem[] = [
+  { title: "Time Clock Rules", href: "/rules-controls", icon: Settings2 },
+  { title: "PTO & Leave", href: "/pto-leave", icon: CalendarDays },
+  { title: "Roles", href: "/role-management", icon: Shield },
+  { title: "Permissions", href: "/permissions", icon: ShieldCheck },
+  { title: "Kiosks", href: "/kiosk-management", icon: Monitor },
+  { title: "Biometrics", href: "/biometrics", icon: ScanFace },
+  { title: "Audit Log", href: "/audit-log", icon: FileText },
+  { title: "User Manual", href: "/manual", icon: BookOpen },
+];
+
+function testIdFor(title: string) {
+  return `link-nav-${title.toLowerCase().replace(/\s+/g, "-")}`;
+}
 
 function getInitials(firstName?: string | null, lastName?: string | null) {
   const f = firstName?.[0] || "";
@@ -85,33 +108,170 @@ function getInitials(firstName?: string | null, lastName?: string | null) {
   return (f + l).toUpperCase() || "?";
 }
 
+function NavLinkItem({
+  item,
+  badge,
+  badgeTestId,
+}: {
+  item: NavItem;
+  badge?: number;
+  badgeTestId?: string;
+}) {
+  const [location] = useLocation();
+  const isActive =
+    location === item.href || (item.href !== "/" && location.startsWith(item.href));
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        asChild
+        isActive={isActive}
+        tooltip={item.title}
+        data-testid={testIdFor(item.title)}
+      >
+        <Link href={item.href}>
+          <item.icon className="h-4 w-4" />
+          <span>{item.title}</span>
+        </Link>
+      </SidebarMenuButton>
+      {badge !== undefined && badge > 0 && (
+        <SidebarMenuBadge data-testid={badgeTestId}>{badge}</SidebarMenuBadge>
+      )}
+    </SidebarMenuItem>
+  );
+}
+
+function SettingsGroup({ exceptionCount }: { exceptionCount: number }) {
+  const [open, setOpen] = useState(false);
+  const { state, isMobile } = useSidebar();
+  const [location] = useLocation();
+  const isIconCollapsed = state === "collapsed" && !isMobile;
+  const isAnyChildActive = settingsItems.some(
+    (i) => location === i.href || (i.href !== "/" && location.startsWith(i.href)),
+  );
+
+  const triggerButton = (
+    <SidebarMenuButton
+      tooltip="Settings"
+      isActive={isAnyChildActive}
+      data-testid="button-nav-settings-toggle"
+      className="justify-between"
+    >
+      <span className="flex items-center gap-2">
+        <Settings className="h-4 w-4" />
+        <span>Settings</span>
+      </span>
+      <ChevronRight
+        className={cn(
+          "h-4 w-4 transition-transform duration-200",
+          !isIconCollapsed && open && "rotate-90",
+          "group-data-[collapsible=icon]:hidden",
+        )}
+      />
+    </SidebarMenuButton>
+  );
+
+  const childrenList = (
+    <ul className="flex flex-col gap-1">
+      {settingsItems.map((item) => {
+        const isActive =
+          location === item.href ||
+          (item.href !== "/" && location.startsWith(item.href));
+        return (
+          <li key={item.href} className="relative">
+            <SidebarMenuButton
+              asChild
+              isActive={isActive}
+              data-testid={testIdFor(item.title)}
+            >
+              <Link href={item.href}>
+                <item.icon className="h-4 w-4" />
+                <span>{item.title}</span>
+              </Link>
+            </SidebarMenuButton>
+            {item.title === "PTO & Leave" && exceptionCount > 0 && (
+              <SidebarMenuBadge data-testid="badge-pending-exceptions">
+                {exceptionCount}
+              </SidebarMenuBadge>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
+  const showSettingsDot =
+    exceptionCount > 0 && (isIconCollapsed || !open);
+
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Settings</SidebarGroupLabel>
+      <SidebarMenu>
+        <SidebarMenuItem>
+          {isIconCollapsed ? (
+            <Popover>
+              <PopoverTrigger asChild>{triggerButton}</PopoverTrigger>
+              <PopoverContent
+                side="right"
+                align="start"
+                className="w-56 p-2"
+                data-testid="popover-settings-flyout"
+              >
+                <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                  Settings
+                </div>
+                {childrenList}
+              </PopoverContent>
+            </Popover>
+          ) : (
+            <Collapsible open={open} onOpenChange={setOpen}>
+              <CollapsibleTrigger asChild>{triggerButton}</CollapsibleTrigger>
+              <CollapsibleContent className="pt-1 pl-4">
+                {childrenList}
+              </CollapsibleContent>
+            </Collapsible>
+          )}
+          {showSettingsDot && (
+            <SidebarMenuBadge
+              data-testid="badge-settings-pending-dot"
+              className="group-data-[collapsible=icon]:flex"
+            >
+              {exceptionCount}
+            </SidebarMenuBadge>
+          )}
+        </SidebarMenuItem>
+      </SidebarMenu>
+    </SidebarGroup>
+  );
+}
+
 export function AppSidebar() {
   const { user, logout } = useAuth();
-  const [location] = useLocation();
   const role = user?.role ?? "employee";
+  const isManager = role === "manager" || role === "admin";
+  const isAdmin = role === "admin";
 
   const { data: pendingRequests } = useQuery<TimeOffRequest[]>({
     queryKey: ["/api/time-off/pending"],
-    enabled: role === "manager" || role === "admin",
+    enabled: isManager,
   });
 
-  const { data: pendingExceptions } = useQuery<(AttendanceException & { employeeName?: string })[]>({
+  const { data: pendingExceptions } = useQuery<
+    (AttendanceException & { employeeName?: string })[]
+  >({
     queryKey: ["/api/attendance/exceptions/pending"],
-    enabled: role === "manager" || role === "admin",
+    enabled: isManager,
   });
 
-  const pendingCount = (pendingRequests?.length || 0) + (pendingExceptions?.length || 0);
+  const pendingCount =
+    (pendingRequests?.length || 0) + (pendingExceptions?.length || 0);
   const exceptionCount = pendingExceptions?.length || 0;
 
-  const filterByRole = (items: NavItem[]) =>
-    items.filter((item) => item.roles.includes(role));
-
-  const visibleEmployee = filterByRole(employeeItems);
-  const visibleManager = filterByRole(managerItems);
-  const visibleAdmin = filterByRole(adminItems);
+  const youItems: NavItem[] = isAdmin
+    ? youItemsCommon
+    : [...youItemsCommon, userManualItem];
 
   return (
-    <Sidebar data-testid="app-sidebar">
+    <Sidebar data-testid="app-sidebar" collapsible="icon">
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-3">
           <img
@@ -120,11 +280,17 @@ export function AppSidebar() {
             className="h-8 w-8 rounded object-contain"
             data-testid="img-sidebar-logo"
           />
-          <div className="flex flex-col">
-            <span className="text-sm font-semibold text-sidebar-foreground" data-testid="text-sidebar-title">
+          <div className="flex flex-col group-data-[collapsible=icon]:hidden">
+            <span
+              className="text-sm font-semibold text-sidebar-foreground"
+              data-testid="text-sidebar-title"
+            >
               Ahava Medical
             </span>
-            <span className="text-xs text-sidebar-foreground/60" data-testid="text-sidebar-subtitle">
+            <span
+              className="text-xs text-sidebar-foreground/60"
+              data-testid="text-sidebar-subtitle"
+            >
               Time & Attendance
             </span>
           </div>
@@ -133,62 +299,59 @@ export function AppSidebar() {
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Menu</SidebarGroupLabel>
+          <SidebarGroupLabel>You</SidebarGroupLabel>
           <SidebarMenu>
-            {visibleEmployee.map((item) => (
-              <SidebarMenuItem key={item.href}>
-                <SidebarMenuButton asChild isActive={location === item.href} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
-                  <Link href={item.href}>
-                    <item.icon className="h-4 w-4" />
-                    <span>{item.title}</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+            {youItems.map((item) => (
+              <NavLinkItem key={item.href} item={item} />
             ))}
           </SidebarMenu>
         </SidebarGroup>
 
-        {visibleManager.length > 0 && (
+        {isManager && (
           <SidebarGroup>
-            <SidebarGroupLabel>Management</SidebarGroupLabel>
+            <SidebarGroupLabel>Team</SidebarGroupLabel>
             <SidebarMenu>
-              {visibleManager.map((item) => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton asChild isActive={location === item.href} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
-                    <Link href={item.href}>
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                  {item.title === "Requests & Approvals" && pendingCount > 0 && (
-                    <SidebarMenuBadge data-testid="badge-pending-approvals">{pendingCount}</SidebarMenuBadge>
-                  )}
-                </SidebarMenuItem>
+              {teamItems.map((item) => (
+                <NavLinkItem
+                  key={item.href}
+                  item={item}
+                  badge={
+                    item.title === "Requests & Approvals" ? pendingCount : undefined
+                  }
+                  badgeTestId={
+                    item.title === "Requests & Approvals"
+                      ? "badge-pending-approvals"
+                      : undefined
+                  }
+                />
               ))}
             </SidebarMenu>
           </SidebarGroup>
         )}
 
-        {visibleAdmin.length > 0 && (
+        {isAdmin && (
           <SidebarGroup>
-            <SidebarGroupLabel>Administration</SidebarGroupLabel>
+            <SidebarGroupLabel>Admin</SidebarGroupLabel>
             <SidebarMenu>
-              {visibleAdmin.map((item) => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton asChild isActive={location === item.href || (item.href !== "/" && location.startsWith(item.href))} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
-                    <Link href={item.href}>
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                  {item.title === "PTO & Leave" && exceptionCount > 0 && (
-                    <SidebarMenuBadge data-testid="badge-pending-exceptions">{exceptionCount}</SidebarMenuBadge>
-                  )}
-                </SidebarMenuItem>
+              {adminItems.map((item) => (
+                <NavLinkItem key={item.href} item={item} />
               ))}
             </SidebarMenu>
           </SidebarGroup>
         )}
+
+        {isAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Payroll</SidebarGroupLabel>
+            <SidebarMenu>
+              {payrollItems.map((item) => (
+                <NavLinkItem key={item.href} item={item} />
+              ))}
+            </SidebarMenu>
+          </SidebarGroup>
+        )}
+
+        {isAdmin && <SettingsGroup exceptionCount={exceptionCount} />}
       </SidebarContent>
 
       <SidebarFooter className="p-4">
@@ -200,17 +363,24 @@ export function AppSidebar() {
                 {getInitials(user?.firstName, user?.lastName)}
               </AvatarFallback>
             </Avatar>
-            <div className="flex flex-col flex-1 min-w-0">
-              <span className="text-sm font-medium text-sidebar-foreground truncate" data-testid="text-user-name">
+            <div className="flex flex-col flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
+              <span
+                className="text-sm font-medium text-sidebar-foreground truncate"
+                data-testid="text-user-name"
+              >
                 {user?.firstName} {user?.lastName}
               </span>
-              <Badge variant="outline" className="w-fit text-[10px] px-1.5 py-0 text-sidebar-foreground/60 border-sidebar-foreground/20" data-testid="badge-user-role">
+              <Badge
+                variant="outline"
+                className="w-fit text-[10px] px-1.5 py-0 text-sidebar-foreground/60 border-sidebar-foreground/20"
+                data-testid="badge-user-role"
+              >
                 {role}
               </Badge>
             </div>
             <button
               onClick={() => logout()}
-              className="text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
+              className="text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors group-data-[collapsible=icon]:hidden"
               title="Sign out"
               data-testid="button-logout"
             >
@@ -219,7 +389,9 @@ export function AppSidebar() {
           </div>
         ) : (
           <a href="/api/login" data-testid="link-login">
-            <Button variant="outline" className="w-full">Sign In</Button>
+            <Button variant="outline" className="w-full">
+              Sign In
+            </Button>
           </a>
         )}
       </SidebarFooter>
