@@ -26,9 +26,19 @@ export default function Dashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  const { data: status, isLoading: statusLoading, isError: statusError, dataUpdatedAt } = useQuery<DashboardStatus>({
+  const {
+    data: status,
+    isLoading: statusLoading,
+    isError: statusError,
+    dataUpdatedAt,
+    refetch: refetchStatus,
+    isFetching: statusFetching,
+  } = useQuery<DashboardStatus>({
     queryKey: ["/api/attendance/status"],
     refetchInterval: 60000,
+    refetchOnWindowFocus: true,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
   });
 
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -53,8 +63,17 @@ export default function Dashboard() {
     ? addLiveElapsedHours(status?.weekHours, dataUpdatedAt, nowMs)
     : status?.weekHours ?? 0;
 
-  const { data: recentRecords, isLoading: recordsLoading, isError: recordsError } = useQuery<AttendanceRecord[]>({
+  const {
+    data: recentRecords,
+    isLoading: recordsLoading,
+    isError: recordsError,
+    refetch: refetchRecords,
+    isFetching: recordsFetching,
+  } = useQuery<AttendanceRecord[]>({
     queryKey: ["/api/attendance/records"],
+    refetchOnWindowFocus: true,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
   });
 
   const clockInMutation = useMutation({
@@ -100,8 +119,17 @@ export default function Dashboard() {
         <Skeleton className="h-36 w-full rounded-xl" data-testid="skeleton-clock-status" />
       ) : statusError ? (
         <Card className="border-destructive/50" data-testid="card-clock-error">
-          <CardContent className="pt-6 text-center text-destructive text-sm">
-            Failed to load dashboard status. Please refresh the page.
+          <CardContent className="pt-6 pb-6 flex flex-col items-center gap-3 text-center text-destructive text-sm">
+            <p>Failed to load dashboard status.</p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refetchStatus()}
+              disabled={statusFetching}
+              data-testid="button-retry-dashboard-status"
+            >
+              {statusFetching ? "Retrying..." : "Try again"}
+            </Button>
           </CardContent>
         </Card>
       ) : (
@@ -209,9 +237,20 @@ export default function Dashboard() {
               ))}
             </div>
           ) : recordsError ? (
-            <p className="text-destructive text-center py-4 text-sm" data-testid="text-records-error">
-              Failed to load recent activity.
-            </p>
+            <div className="flex flex-col items-center gap-3 py-4">
+              <p className="text-destructive text-center text-sm" data-testid="text-records-error">
+                Failed to load recent activity.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => refetchRecords()}
+                disabled={recordsFetching}
+                data-testid="button-retry-recent-activity"
+              >
+                {recordsFetching ? "Retrying..." : "Try again"}
+              </Button>
+            </div>
           ) : recentActivity.length === 0 ? (
             <p className="text-muted-foreground text-center py-8 text-sm" data-testid="text-no-activity">
               No recent activity
