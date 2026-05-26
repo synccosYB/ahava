@@ -24,7 +24,7 @@ import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building } 
 import { PageHeader } from "@/components/page-header";
 import { useAuth } from "@/hooks/use-auth";
 import type { Location, Department, Division, User, LocationAddress } from "@shared/schema";
-import { buildGoogleMapsUrl, GoogleMapsIconLink } from "@/lib/googleMaps";
+import { buildGoogleMapsUrl, GoogleMapsIconLink, AddressAutocompleteInput } from "@/lib/googleMaps";
 
 const NO_COMPANY_MESSAGE =
   "No company is set up yet — please set one up in Rules & Controls → General.";
@@ -465,11 +465,26 @@ function LocationsTab() {
                         </div>
                         <div>
                           <Label className="text-xs">Address</Label>
-                          <Input
+                          <AddressAutocompleteInput
                             value={addr.address}
-                            onChange={(e) => updateAddress(idx, "address", e.target.value)}
+                            onChange={(v) => updateAddress(idx, "address", v)}
+                            onSelect={(sel) => {
+                              setAddresses((prev) =>
+                                prev.map((a, i) =>
+                                  i === idx
+                                    ? {
+                                        ...a,
+                                        address: sel.address || sel.formatted,
+                                        city: sel.city || a.city,
+                                        state: sel.state || a.state,
+                                        zip: sel.zip || a.zip,
+                                      }
+                                    : a,
+                                ),
+                              );
+                            }}
                             className="h-8 text-sm"
-                            data-testid={`input-address-address-${idx}`}
+                            testId={`input-address-address-${idx}`}
                           />
                         </div>
                         <div className="grid grid-cols-3 gap-2">

@@ -25,7 +25,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
-import { buildGoogleMapsUrl, GoogleMapsIconLink } from "@/lib/googleMaps";
+import { buildGoogleMapsUrl, GoogleMapsIconLink, AddressAutocompleteInput } from "@/lib/googleMaps";
 import { Link } from "wouter";
 import { PolicyWizard } from "@/components/policy-wizard";
 import { WorkflowBuilder } from "@/components/workflow-builder";
@@ -216,7 +216,17 @@ function GeneralSection() {
                     testId="link-map-address-division-edit"
                   />
                 </div>
-                <Input value={editForm.address} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} data-testid="input-edit-address" />
+                <AddressAutocompleteInput
+                  value={editForm.address}
+                  onChange={(v) => setEditForm({ ...editForm, address: v })}
+                  onSelect={(sel) =>
+                    setEditForm({
+                      ...editForm,
+                      address: sel.formatted || sel.address,
+                    })
+                  }
+                  testId="input-edit-address"
+                />
               </div>
             </div>
             <div className="flex gap-2 justify-end">
