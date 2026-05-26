@@ -2145,6 +2145,7 @@ function StepAssignments({
   const [addLevel, setAddLevel] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const lastToggleRef = useRef<Record<string, number>>({});
 
   const getOptions = (): { id: string; label: string }[] => {
     switch (addLevel) {
@@ -2186,6 +2187,10 @@ function StepAssignments({
 
   const toggleSelected = (id: string) => {
     if (isAlreadyAssigned(id)) return;
+    const now = Date.now();
+    const last = lastToggleRef.current[id] || 0;
+    if (now - last < 250) return;
+    lastToggleRef.current[id] = now;
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
@@ -2301,15 +2306,25 @@ function StepAssignments({
                           onSelect={() => toggleSelected(opt.id)}
                           data-testid={`option-wizard-target-${opt.id}`}
                           className={alreadyAssigned ? "opacity-60" : "cursor-pointer"}
+                          onMouseDown={(e) => {
+                            if (alreadyAssigned) return;
+                            e.preventDefault();
+                            toggleSelected(opt.id);
+                          }}
+                          onTouchEnd={(e) => {
+                            if (alreadyAssigned) return;
+                            e.preventDefault();
+                            toggleSelected(opt.id);
+                          }}
                         >
                           <Checkbox
                             checked={isChecked}
                             disabled={alreadyAssigned}
                             className="mr-2 pointer-events-none"
                           />
-                          <span className="flex-1">{opt.label}</span>
+                          <span className="flex-1 pointer-events-none">{opt.label}</span>
                           {alreadyAssigned && (
-                            <span className="text-xs text-muted-foreground ml-2">Added</span>
+                            <span className="text-xs text-muted-foreground ml-2 pointer-events-none">Added</span>
                           )}
                         </CommandItem>
                       );
