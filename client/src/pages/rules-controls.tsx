@@ -21,7 +21,14 @@ import {
   Settings2, Shield, MapPin, Clock, CalendarDays, DollarSign,
   GitBranch, Users, Bell, Tablet, FileSearch, Plus, Pencil, Link2, X, Workflow, Eye, Trash2, ClipboardCheck,
   UserCog, CalendarRange, RefreshCw, Send, FileCheck, UserPlus, UserMinus, AlertCircle,
+  ArrowRight, Check, ChevronsUpDown,
 } from "lucide-react";
+import { usePermissions } from "@/hooks/use-permissions";
+import {
+  Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/page-header";
@@ -285,35 +292,291 @@ function GeneralSection() {
   );
 }
 
+const COMMON_TIMEZONES = [
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Phoenix",
+  "America/Los_Angeles",
+  "America/Anchorage",
+  "Pacific/Honolulu",
+  "America/Toronto",
+  "America/Mexico_City",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Asia/Jerusalem",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Singapore",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+  "UTC",
+];
+
+function getAllTimezones(): string[] {
+  try {
+    const supported = (Intl as any).supportedValuesOf?.("timeZone");
+    if (Array.isArray(supported) && supported.length > 0) return supported;
+  } catch { /* ignore */ }
+  return COMMON_TIMEZONES;
+}
+
+function getTimezoneAbbreviation(tz: string): string | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      timeZoneName: "short",
+    }).formatToParts(new Date());
+    return parts.find((p) => p.type === "timeZoneName")?.value || null;
+  } catch {
+    return null;
+  }
+}
+
+function formatTimezoneLabel(tz: string | null | undefined): string | null {
+  if (!tz) return null;
+  const abbr = getTimezoneAbbreviation(tz);
+  return abbr ? `${tz} (${abbr})` : tz;
+}
+
+function TimezoneCombobox({ value, onChange, testId }: { value: string; onChange: (v: string) => void; testId?: string }) {
+  const [open, setOpen] = useState(false);
+  const zones = getAllTimezones();
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          className="w-full justify-between font-normal"
+          data-testid={testId}
+        >
+          <span className={cn("truncate", !value && "text-muted-foreground")}>
+            {value ? formatTimezoneLabel(value) : "Select timezone…"}
+          </span>
+          <ChevronsUpDown className="h-4 w-4 opacity-50 shrink-0" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="p-0 w-[320px]" align="start">
+        <Command>
+          <CommandInput placeholder="Search timezones…" />
+          <CommandList>
+            <CommandEmpty>No matching timezone.</CommandEmpty>
+            <CommandGroup>
+              {zones.map((tz) => (
+                <CommandItem
+                  key={tz}
+                  value={tz}
+                  onSelect={(v) => { onChange(v); setOpen(false); }}
+                  data-testid={`option-timezone-${tz}`}
+                >
+                  <Check className={cn("mr-2 h-4 w-4", value === tz ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate">{formatTimezoneLabel(tz)}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function LocationRow({ loc, canEdit }: { loc: Location; canEdit: boolean }) {
+  const { toast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    name: loc.name || "",
+    code: loc.code || "",
+    timezone: loc.timezone || "",
+    isActive: loc.isActive,
+  });
+
+  useEffect(() => {
+    if (!editing) {
+      setForm({
+        name: loc.name || "",
+        code: loc.code || "",
+        timezone: loc.timezone || "",
+        isActive: loc.isActive,
+      });
+    }
+  }, [loc, editing]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PATCH", `/api/locations/${loc.id}`, {
+        name: form.name.trim(),
+        code: form.code.trim() || null,
+        timezone: form.timezone || null,
+        isActive: form.isActive,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/locations"] });
+      toast({ title: "Location updated" });
+      setEditing(false);
+    },
+    onError: (err: Error) => {
+      const msg = err?.message?.replace(/^\d+:\s*/, "") || "Couldn't save location";
+      let description = msg;
+      try {
+        const body = JSON.parse(msg);
+        description = body?.message || msg;
+      } catch { /* ignore */ }
+      toast({ title: "Could not update location", description, variant: "destructive" });
+    },
+  });
+
+  const tzLabel = formatTimezoneLabel(loc.timezone);
+
+  if (editing) {
+    return (
+      <TableRow data-testid={`row-loc-setting-${loc.id}`} className="bg-muted/30">
+        <TableCell>
+          <Input
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            className="h-9"
+            data-testid={`input-edit-location-name-${loc.id}`}
+          />
+        </TableCell>
+        <TableCell>
+          <Input
+            value={form.code}
+            onChange={(e) => setForm({ ...form, code: e.target.value })}
+            className="h-9"
+            data-testid={`input-edit-location-code-${loc.id}`}
+          />
+        </TableCell>
+        <TableCell>
+          <TimezoneCombobox
+            value={form.timezone}
+            onChange={(v) => setForm({ ...form, timezone: v })}
+            testId={`combobox-edit-location-timezone-${loc.id}`}
+          />
+        </TableCell>
+        <TableCell>
+          <div className="flex items-center gap-2">
+            <Switch
+              checked={form.isActive}
+              onCheckedChange={(v) => setForm({ ...form, isActive: v })}
+              data-testid={`switch-edit-location-active-${loc.id}`}
+            />
+            <span className="text-xs text-muted-foreground">
+              {form.isActive ? "Active" : "Inactive"}
+            </span>
+          </div>
+        </TableCell>
+        <TableCell className="text-right">
+          <div className="flex justify-end gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setEditing(false)}
+              disabled={saveMutation.isPending}
+              data-testid={`button-cancel-location-${loc.id}`}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => saveMutation.mutate()}
+              disabled={!form.name.trim() || saveMutation.isPending}
+              data-testid={`button-save-location-${loc.id}`}
+            >
+              {saveMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </TableCell>
+      </TableRow>
+    );
+  }
+
+  return (
+    <TableRow
+      data-testid={`row-loc-setting-${loc.id}`}
+      className={canEdit ? "hover-elevate cursor-pointer" : ""}
+      onClick={canEdit ? () => setEditing(true) : undefined}
+    >
+      <TableCell className="font-medium">{loc.name}</TableCell>
+      <TableCell className="text-muted-foreground">{loc.code || "—"}</TableCell>
+      <TableCell>
+        {tzLabel ? (
+          <span data-testid={`text-location-timezone-${loc.id}`}>{tzLabel}</span>
+        ) : (
+          <Badge variant="outline" className="text-muted-foreground font-normal" data-testid={`badge-tz-not-set-${loc.id}`}>
+            Not set
+          </Badge>
+        )}
+      </TableCell>
+      <TableCell>
+        <Badge variant={loc.isActive ? "default" : "secondary"}>
+          {loc.isActive ? "Active" : "Inactive"}
+        </Badge>
+      </TableCell>
+      <TableCell className="text-right">
+        {canEdit && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+            data-testid={`button-edit-location-${loc.id}`}
+          >
+            <Pencil className="h-4 w-4 mr-1" /> Edit
+          </Button>
+        )}
+      </TableCell>
+    </TableRow>
+  );
+}
+
 function LocationsSection() {
   const { data: locations, isLoading } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { has } = usePermissions();
+  const canEdit = has("locations.manage");
 
   return (
     <Card data-testid="card-locations-settings">
-      <CardHeader><CardTitle>Location Settings</CardTitle></CardHeader>
+      <CardHeader>
+        <CardTitle>Location Settings</CardTitle>
+      </CardHeader>
       <CardContent>
-        {isLoading ? <Skeleton className="h-40" /> : (
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        ) : !locations || locations.length === 0 ? (
+          <div className="flex flex-col items-center justify-center text-center py-10 gap-3" data-testid="empty-locations-settings">
+            <MapPin className="h-10 w-10 text-muted-foreground" />
+            <div>
+              <p className="font-medium">No locations yet</p>
+              <p className="text-sm text-muted-foreground">
+                Add your first location to start tracking attendance by site.
+              </p>
+            </div>
+            <Link href="/locations">
+              <Button variant="outline" size="sm" data-testid="button-go-to-locations">
+                Manage Locations <ArrowRight className="h-4 w-4 ml-1" />
+              </Button>
+            </Link>
+          </div>
+        ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
-                <TableHead className="text-xs font-medium uppercase tracking-wider">Code</TableHead>
-                <TableHead className="text-xs font-medium uppercase tracking-wider">Timezone</TableHead>
-                <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider w-[28%]">Name</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider w-[14%]">Code</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider w-[28%]">Timezone</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider w-[14%]">Status</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider w-[16%] text-right" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(locations || []).map((loc) => (
-                <TableRow key={loc.id} data-testid={`row-loc-setting-${loc.id}`}>
-                  <TableCell className="font-medium">{loc.name}</TableCell>
-                  <TableCell>{loc.code || "—"}</TableCell>
-                  <TableCell>{loc.timezone || "—"}</TableCell>
-                  <TableCell>
-                    <Badge variant={loc.isActive ? "default" : "secondary"}>
-                      {loc.isActive ? "Active" : "Inactive"}
-                    </Badge>
-                  </TableCell>
-                </TableRow>
+              {locations.map((loc) => (
+                <LocationRow key={loc.id} loc={loc} canEdit={canEdit} />
               ))}
             </TableBody>
           </Table>
@@ -927,69 +1190,170 @@ function ApprovalWorkflowsSection() {
   );
 }
 
+type RoleSummary = {
+  id: string;
+  name: string;
+  description: string | null;
+  isSystem: boolean;
+  isActive: boolean;
+};
+
 function RolesSection() {
+  const { data: roles, isLoading } = useQuery<RoleSummary[]>({ queryKey: ["/api/roles-summary"] });
+  const activeRoles = (roles || []).filter((r) => r.isActive);
+  const systemCount = activeRoles.filter((r) => r.isSystem).length;
+  const customCount = activeRoles.length - systemCount;
+
   return (
     <Card data-testid="card-roles-permissions">
-      <CardHeader><CardTitle>Roles & Permissions</CardTitle></CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>Roles & Permissions</CardTitle>
+        <Link href="/permissions">
+          <Button variant="outline" size="sm" data-testid="button-go-to-roles">
+            Manage roles <ArrowRight className="h-4 w-4 ml-1" />
+          </Button>
+        </Link>
+      </CardHeader>
       <CardContent>
-        <p className="text-muted-foreground" data-testid="text-roles-info">
-          Role management and permission matrix will be available in the next milestone.
-          Currently, users have one of three roles: Employee, Manager, or Admin.
-        </p>
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-40" />
+            <Skeleton className="h-20 w-full" />
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="border rounded-md p-3" data-testid="stat-roles-total">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Active roles</p>
+                <p className="text-2xl font-semibold">{activeRoles.length}</p>
+                <p className="text-xs text-muted-foreground">{systemCount} system · {customCount} custom</p>
+              </div>
+              <div className="border rounded-md p-3 flex flex-col gap-1">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Top roles</p>
+                <div className="flex flex-wrap gap-1">
+                  {activeRoles.slice(0, 4).map((r) => (
+                    <Badge key={r.id} variant="secondary" className="font-normal" data-testid={`badge-role-${r.id}`}>
+                      {r.name}
+                    </Badge>
+                  ))}
+                  {activeRoles.length > 4 && (
+                    <Badge variant="outline" className="font-normal">+{activeRoles.length - 4} more</Badge>
+                  )}
+                  {activeRoles.length === 0 && (
+                    <span className="text-xs text-muted-foreground">No roles configured.</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground" data-testid="text-roles-info">
+              Visit the Roles &amp; Permissions page to assign permissions, create custom roles, or review the permission matrix.
+            </p>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
 }
+
+const ALERT_PREVIEWS: { key: string; title: string; description: string }[] = [
+  { key: "missing-clockout", title: "Missing Clock-Out Alert", description: "Notify managers when employees miss clock-out" },
+  { key: "overtime", title: "Overtime Alert", description: "Alert when employees approach overtime threshold" },
+  { key: "pto-request", title: "PTO Request Notification", description: "Notify managers of new PTO requests" },
+  { key: "late-arrival", title: "Late Arrival Alert", description: "Alert on late arrivals past grace period" },
+];
 
 function AlertsSection() {
   return (
     <Card data-testid="card-alerts-settings">
-      <CardHeader><CardTitle>Alerts & Notifications</CardTitle></CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>Alerts & Notifications</CardTitle>
+        <Badge variant="outline" className="font-normal" data-testid="badge-alerts-preview">Preview</Badge>
+      </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex items-center justify-between p-3 bg-muted/50 rounded-md">
-          <div>
-            <p className="font-medium text-sm">Missing Clock-Out Alert</p>
-            <p className="text-xs text-muted-foreground">Notify managers when employees miss clock-out</p>
+        <p className="text-xs text-muted-foreground" data-testid="text-alerts-preview-info">
+          These toggles are a preview — they don't persist yet. Alerts are currently emitted by the
+          system automatically based on attendance and PTO policies.
+        </p>
+        {ALERT_PREVIEWS.map((a) => (
+          <div
+            key={a.key}
+            className="flex items-center justify-between p-3 bg-muted/30 rounded-md opacity-75"
+          >
+            <div>
+              <p className="font-medium text-sm">{a.title}</p>
+              <p className="text-xs text-muted-foreground">{a.description}</p>
+            </div>
+            <Switch disabled defaultChecked data-testid={`switch-alert-${a.key}`} />
           </div>
-          <Switch defaultChecked data-testid="switch-alert-missing-clockout" />
-        </div>
-        <div className="flex items-center justify-between p-3 bg-muted/50 rounded-md">
-          <div>
-            <p className="font-medium text-sm">Overtime Alert</p>
-            <p className="text-xs text-muted-foreground">Alert when employees approach overtime threshold</p>
-          </div>
-          <Switch defaultChecked data-testid="switch-alert-overtime" />
-        </div>
-        <div className="flex items-center justify-between p-3 bg-muted/50 rounded-md">
-          <div>
-            <p className="font-medium text-sm">PTO Request Notification</p>
-            <p className="text-xs text-muted-foreground">Notify managers of new PTO requests</p>
-          </div>
-          <Switch defaultChecked data-testid="switch-alert-pto-request" />
-        </div>
-        <div className="flex items-center justify-between p-3 bg-muted/50 rounded-md">
-          <div>
-            <p className="font-medium text-sm">Late Arrival Alert</p>
-            <p className="text-xs text-muted-foreground">Alert on late arrivals past grace period</p>
-          </div>
-          <Switch defaultChecked data-testid="switch-alert-late-arrival" />
-        </div>
+        ))}
       </CardContent>
     </Card>
   );
 }
 
+type KioskDeviceSummary = {
+  id: string;
+  name: string;
+  isActive: boolean;
+  derivedStatus?: string;
+  pairingCode?: string | null;
+  lastHeartbeat?: string | null;
+};
+
 function KioskSection() {
-  const { data: devices, isLoading } = useQuery<any[]>({ queryKey: ["/api/kiosk/devices"] });
+  const { data: devices, isLoading } = useQuery<KioskDeviceSummary[]>({ queryKey: ["/api/kiosk-devices"] });
+  const list = devices || [];
+  // A device is "paired" once it has actually been claimed by a tablet — i.e.
+  // its derivedStatus is anything other than "unpaired" (online / idle /
+  // offline / inactive). Newly created rows default to "unpaired", so we
+  // must NOT count them.
+  const paired = list.filter((d) => d.derivedStatus && d.derivedStatus !== "unpaired").length;
+  const active = list.filter((d) => d.isActive).length;
+  const online = list.filter((d) => d.derivedStatus === "online").length;
 
   return (
     <Card data-testid="card-kiosk-settings">
-      <CardHeader><CardTitle>Kiosk & Devices</CardTitle></CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>Kiosk & Devices</CardTitle>
+        <Link href="/kiosk-management">
+          <Button variant="outline" size="sm" data-testid="button-go-to-kiosks">
+            Manage kiosks <ArrowRight className="h-4 w-4 ml-1" />
+          </Button>
+        </Link>
+      </CardHeader>
       <CardContent>
-        {isLoading ? <Skeleton className="h-20" /> : (
-          <p className="text-muted-foreground" data-testid="text-kiosk-info">
-            Kiosk devices are managed through the kiosk endpoint. The kiosk interface is available at /kiosk.
-          </p>
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-20 w-full" />
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="border rounded-md p-3" data-testid="stat-kiosk-total">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Devices</p>
+                <p className="text-2xl font-semibold">{list.length}</p>
+              </div>
+              <div className="border rounded-md p-3" data-testid="stat-kiosk-paired">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Paired</p>
+                <p className="text-2xl font-semibold">{paired}</p>
+                <p className="text-xs text-muted-foreground">{active} active</p>
+              </div>
+              <div className="border rounded-md p-3" data-testid="stat-kiosk-online">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Online now</p>
+                <p className="text-2xl font-semibold">{online}</p>
+              </div>
+            </div>
+            {list.length === 0 ? (
+              <p className="text-xs text-muted-foreground" data-testid="text-kiosk-info">
+                No kiosk devices have been paired yet. Go to Kiosk Management to add one. The public
+                kiosk interface lives at <code className="text-xs">/kiosk</code>.
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground" data-testid="text-kiosk-info">
+                Manage pairing codes, location assignments, and recent punches from the Kiosk Management page.
+              </p>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>

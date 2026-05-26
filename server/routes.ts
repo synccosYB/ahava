@@ -1766,10 +1766,34 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
     }
     const { companyIds, ...locationData } = parsed.data;
+    const before = await storage.getLocation(String(req.params.id));
+    if (!before) return res.status(404).json({ message: "Location not found" });
     const location = await storage.updateLocation(String(req.params.id), locationData);
     if (!location) return res.status(404).json({ message: "Location not found" });
     if (companyIds !== undefined) {
       await storage.setLocationCompanyIds(location.id, companyIds);
+    }
+    const actor = (req as any).authUser as User | undefined;
+    if (actor) {
+      await writeAuditLog({
+        actorUserId: actor.id,
+        targetType: "location",
+        targetId: location.id,
+        action: "location.update",
+        oldValue: {
+          name: before.name,
+          code: before.code,
+          timezone: before.timezone,
+          isActive: before.isActive,
+        },
+        newValue: {
+          name: location.name,
+          code: location.code,
+          timezone: location.timezone,
+          isActive: location.isActive,
+        },
+        context: getAuditContext(req),
+      });
     }
     res.json(await enrichLocation(location));
   });
