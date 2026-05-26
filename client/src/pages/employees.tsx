@@ -617,6 +617,60 @@ function BulkDeleteEmployeesDialog({
   );
 }
 
+const ADD_EMPLOYEE_FIELD_LABELS: Record<string, string> = {
+  email: "Email",
+  firstName: "First name",
+  lastName: "Last name",
+  role: "Role",
+  companyId: "Company",
+  locationId: "Location",
+  departmentId: "Department",
+  employmentType: "Employment type",
+  taxClassification: "Tax classification",
+  hireDate: "Hire date",
+  payType: "Pay type",
+  hourlyRate: "Hourly rate",
+  weeklySalary: "Weekly salary",
+  dailySalary: "Daily rate",
+  onboardingTemplateId: "Onboarding template",
+};
+
+function prettyFieldLabel(field: string): string {
+  return ADD_EMPLOYEE_FIELD_LABELS[field] ?? field;
+}
+
+function formatValidationError(
+  payload: unknown,
+): { field?: string; message: string } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as {
+    errors?: {
+      fieldErrors?: Record<string, string[] | undefined>;
+      formErrors?: string[];
+    };
+    message?: string;
+  };
+  const fieldErrors = p.errors?.fieldErrors;
+  if (fieldErrors) {
+    for (const [field, msgs] of Object.entries(fieldErrors)) {
+      const msg = msgs?.[0];
+      if (msg) {
+        const friendly =
+          msg.toLowerCase() === "required" || msg.toLowerCase().includes("required")
+            ? "Required"
+            : msg.charAt(0).toUpperCase() + msg.slice(1);
+        return { field, message: friendly };
+      }
+    }
+  }
+  const formMsg = p.errors?.formErrors?.[0];
+  if (formMsg) return { message: formMsg };
+  if (typeof p.message === "string" && p.message && p.message !== "Invalid user data") {
+    return { message: p.message };
+  }
+  return null;
+}
+
 function AddEmployeeDialog({
   open,
   onOpenChange,
@@ -731,6 +785,23 @@ function AddEmployeeDialog({
         toast({ title: "Duplicate email", description: msg, variant: "destructive" });
         return;
       }
+      if (isApiError(err) && err.status === 400) {
+        const detail = formatValidationError(err.payload);
+        if (detail) {
+          if (detail.field === "email") {
+            setEmailError(detail.message);
+            setStep(1);
+          }
+          toast({
+            title: "Please fix the highlighted field",
+            description: detail.field
+              ? `${prettyFieldLabel(detail.field)}: ${detail.message}`
+              : detail.message,
+            variant: "destructive",
+          });
+          return;
+        }
+      }
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
@@ -757,15 +828,16 @@ function AddEmployeeDialog({
   };
 
   const canProceedStep1 = !!(formData.firstName && formData.lastName && formData.email && formData.companyId);
-  const canProceedStep2 = true;
+  const canProceedStep2 = !!(formData.hireDate && formData.taxClassification && formData.employmentType);
   const ratePositive = (v: string) => {
     const n = parseFloat(v);
     return Number.isFinite(n) && n > 0;
   };
-  const canProceedStep3 =
+  const payRateValid =
     (formData.payType === "hourly" && ratePositive(formData.hourlyRate)) ||
     (formData.payType === "daily" && ratePositive(formData.dailySalary)) ||
     (formData.payType === "salary" && ratePositive(formData.weeklySalary));
+  const canProceedStep3 = canProceedStep1 && canProceedStep2 && payRateValid;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(v); }}>
