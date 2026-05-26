@@ -70,6 +70,7 @@ export default function TimeOff() {
   });
 
   const canViewBalance = user?.role === "admin";
+  const canViewPolicyExplanation = user?.role === "admin" || user?.role === "manager";
   const { data: balance, isLoading: balanceLoading } = useQuery<TimeOffBalanceDetailed>({
     queryKey: ["/api/time-off/my-balance"],
     enabled: isAuthenticated && canViewBalance,
@@ -77,7 +78,7 @@ export default function TimeOff() {
 
   const { data: policyInfo, isLoading: policyInfoLoading } = useQuery<PtoPolicyInfo>({
     queryKey: ["/api/time-off/my-pto-policy-info"],
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && canViewPolicyExplanation,
   });
 
   const submitMutation = useMutation({
@@ -216,7 +217,9 @@ export default function TimeOff() {
         subtitle="Request time off and view your upcoming schedule"
       />
 
-      <PtoPolicyExplanationCard info={policyInfo} isLoading={policyInfoLoading} />
+      {canViewPolicyExplanation && (
+        <PtoPolicyExplanationCard info={policyInfo} isLoading={policyInfoLoading} />
+      )}
 
       {!canViewBalance ? (
         <Card data-testid="card-balance-notice">
