@@ -14,9 +14,11 @@ import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { formatDate, formatDateRange } from "@/lib/utils";
-import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle, Wallet } from "lucide-react";
-import type { TimeOffRequest, TimeOffBalanceDetailed } from "@shared/schema";
+import { Progress } from "@/components/ui/progress";
+import { Calendar, ChevronLeft, ChevronRight, Pencil, AlertTriangle, Wallet, Info } from "lucide-react";
+import type { TimeOffRequest, TimeOffBalanceDetailed, PtoPolicyInfo } from "@shared/schema";
 import { isBalanceTrackedTimeOffType, MAX_TIME_OFF_HOURS_PER_REQUEST } from "@shared/schema";
+import { explainPtoPolicy } from "@shared/ptoExplanation";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
   vacation: "Vacation",
@@ -71,6 +73,11 @@ export default function TimeOff() {
   const { data: balance, isLoading: balanceLoading } = useQuery<TimeOffBalanceDetailed>({
     queryKey: ["/api/time-off/my-balance"],
     enabled: isAuthenticated && canViewBalance,
+  });
+
+  const { data: policyInfo, isLoading: policyInfoLoading } = useQuery<PtoPolicyInfo>({
+    queryKey: ["/api/time-off/my-pto-policy-info"],
+    enabled: isAuthenticated,
   });
 
   const submitMutation = useMutation({
@@ -208,6 +215,8 @@ export default function TimeOff() {
         title="Time Off"
         subtitle="Request time off and view your upcoming schedule"
       />
+
+      <PtoPolicyExplanationCard info={policyInfo} isLoading={policyInfoLoading} />
 
       {!canViewBalance ? (
         <Card data-testid="card-balance-notice">
@@ -557,6 +566,153 @@ export default function TimeOff() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function PtoPolicyExplanationCard({
+  info,
+  isLoading,
+}: {
+  info: PtoPolicyInfo | undefined;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <Card data-testid="card-pto-explanation">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Info className="h-4 w-4 text-muted-foreground" />
+            How your PTO is earned
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-16 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!info || !info.hasPolicy) {
+    return (
+      <Card data-testid="card-pto-explanation">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Info className="h-4 w-4 text-muted-foreground" />
+            How your PTO is earned
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground" data-testid="text-pto-explanation-none">
+            No PTO policy is currently assigned to you. Please contact HR if this seems wrong.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const sentence = explainPtoPolicy(info);
+  const waiting = info.waitingPeriod?.active;
+  const hasOverride = info.hasOverride;
+
+  const isPerHoursWorked = info.accrualType === "per_hours_worked";
+  const threshold = info.vacationAccrualPerHoursWorked && info.vacationAccrualPerHoursWorked > 0
+    ? info.vacationAccrualPerHoursWorked
+    : 30;
+  const hoursThisYear = info.hoursWorkedThisYear ?? 0;
+  const earned = info.earnedThisYear ?? 0;
+  const cap = info.yearlyCapHours;
+
+  const progressIntoThreshold = isPerHoursWorked
+    ? Math.min(threshold, hoursThisYear % threshold)
+    : 0;
+  const progressToNextPct = isPerHoursWorked
+    ? Math.round((progressIntoThreshold / threshold) * 100)
+    : 0;
+  const yearlyCapPct = isPerHoursWorked && cap != null && cap > 0
+    ? Math.min(100, Math.round((earned / cap) * 100))
+    : null;
+
+  const atCap = isPerHoursWorked && cap != null && earned >= cap;
+
+  return (
+    <Card data-testid="card-pto-explanation">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Info className="h-4 w-4 text-muted-foreground" />
+          How your PTO is earned
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm" data-testid="text-pto-explanation-sentence">
+          {sentence}
+        </p>
+
+        {info.policyName && (
+          <p className="text-xs text-muted-foreground" data-testid="text-pto-policy-name">
+            Policy: <span className="font-medium text-foreground">{info.policyName}</span>
+          </p>
+        )}
+
+        {waiting && (
+          <div
+            className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 p-3 text-sm flex items-start gap-2"
+            data-testid="notice-waiting-period"
+          >
+            <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-700 dark:text-amber-400" />
+            <span>
+              You're still in your waiting period
+              {info.waitingPeriod?.daysRemaining != null
+                ? ` (${info.waitingPeriod.daysRemaining} day${info.waitingPeriod.daysRemaining === 1 ? "" : "s"} left)`
+                : ""}
+              {info.waitingPeriod?.endDate ? ` until ${formatDate(info.waitingPeriod.endDate)}` : ""}.
+              You'll start earning PTO once it ends.
+            </span>
+          </div>
+        )}
+
+        {hasOverride && (
+          <div
+            className="rounded-md border bg-muted/30 p-3 text-sm flex items-start gap-2"
+            data-testid="notice-pto-override"
+          >
+            <Info className="h-4 w-4 mt-0.5 text-muted-foreground" />
+            <span>
+              Your manager has set a custom vacation total
+              {info.vacationHoursOverride != null
+                ? ` of ${info.vacationHoursOverride} hours`
+                : ""}
+              {" "}for this year, so the rule above may not apply to you.
+            </span>
+          </div>
+        )}
+
+        {isPerHoursWorked && !waiting && !hasOverride && (
+          <div className="space-y-3 pt-1">
+            <div className="space-y-1" data-testid="progress-next-pto-hour">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>Progress toward your next PTO hour</span>
+                <span className="tabular-nums">
+                  {progressIntoThreshold} of {threshold} hours
+                </span>
+              </div>
+              <Progress value={progressToNextPct} />
+            </div>
+
+            {cap != null && cap > 0 && (
+              <div className="space-y-1" data-testid="progress-yearly-cap">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>Earned this year{atCap ? " — yearly cap reached" : ""}</span>
+                  <span className="tabular-nums">
+                    {earned} of {cap} hours
+                  </span>
+                </div>
+                <Progress value={yearlyCapPct ?? 0} />
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

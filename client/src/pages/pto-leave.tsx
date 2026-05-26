@@ -26,6 +26,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { formatDate } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
 import type { PtoPolicy, User, Division, Department, Location, AttendanceException, PtoAnniversaryAdjustment } from "@shared/schema";
+import { explainPtoPolicy } from "@shared/ptoExplanation";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
 import { useAuth } from "@/hooks/use-auth";
 import { formatTime12 } from "@/lib/utils";
@@ -484,42 +485,79 @@ function PoliciesTab() {
                     <SelectItem value="per_hours_worked">Per Hours Worked</SelectItem>
                   </SelectContent>
                 </Select>
-                {form.accrualType === "per_hours_worked" && (
-                  <p className="text-xs text-muted-foreground mt-1" data-testid="text-per-hours-worked-help">
-                    Vacation PTO is earned from clocked time:
-                    floor(hours worked / "Hours worked per accrual") × "PTO hours earned per threshold",
-                    capped by the Yearly Cap. Hours clocked before the waiting period ends do not count.
-                  </p>
-                )}
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Accrual Rate (hours/year)</Label><Input type="number" value={form.accrualHoursPerYear} onChange={(e) => setForm({ ...form, accrualHoursPerYear: e.target.value })} data-testid="input-accrual-rate" /></div>
-                <div><Label>Yearly Cap (hours)</Label><Input type="number" value={form.yearlyCapHours} onChange={(e) => setForm({ ...form, yearlyCapHours: e.target.value })} data-testid="input-yearly-cap" /></div>
-              </div>
-              {form.accrualType === "per_hours_worked" && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>Hours worked per accrual</Label>
-                    <Input
-                      type="number"
-                      min="1"
-                      step="0.1"
-                      value={form.vacationAccrualPerHoursWorked}
-                      onChange={(e) => setForm({ ...form, vacationAccrualPerHoursWorked: e.target.value })}
-                      data-testid="input-vacation-hours-per-accrual"
-                    />
-                  </div>
-                  <div>
-                    <Label>PTO hours earned per threshold</Label>
+              {form.accrualType === "per_hours_worked" ? (
+                <div className="rounded-md border bg-muted/20 p-3 space-y-2" data-testid="group-per-hours-worked">
+                  <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    Vacation Accrual Rule
+                  </Label>
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span>Earn</span>
                     <Input
                       type="number"
                       min="0"
                       step="0.1"
+                      className="w-20 h-9"
                       value={form.vacationAccrualHoursPerThreshold}
                       onChange={(e) => setForm({ ...form, vacationAccrualHoursPerThreshold: e.target.value })}
                       data-testid="input-vacation-hours-earned"
                     />
+                    <span>hour(s) of PTO for every</span>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      className="w-20 h-9"
+                      value={form.vacationAccrualPerHoursWorked}
+                      onChange={(e) => setForm({ ...form, vacationAccrualPerHoursWorked: e.target.value })}
+                      data-testid="input-vacation-hours-per-accrual"
+                    />
+                    <span>hours worked, up to</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="1"
+                      className="w-24 h-9"
+                      value={form.yearlyCapHours}
+                      onChange={(e) => setForm({ ...form, yearlyCapHours: e.target.value })}
+                      placeholder="no cap"
+                      data-testid="input-yearly-cap"
+                    />
+                    <span>hours per year.</span>
                   </div>
+                  <p
+                    className="text-xs text-muted-foreground italic pt-1 border-t"
+                    data-testid="text-policy-live-preview"
+                  >
+                    Employees will see: "{explainPtoPolicy({
+                      accrualType: form.accrualType,
+                      accrualHoursPerYear: parseFloat(form.accrualHoursPerYear) || 0,
+                      vacationAccrualPerHoursWorked: parseFloat(form.vacationAccrualPerHoursWorked) || 0,
+                      vacationAccrualHoursPerThreshold: parseFloat(form.vacationAccrualHoursPerThreshold) || 0,
+                      yearlyCapHours: form.yearlyCapHours ? parseFloat(form.yearlyCapHours) : null,
+                      carryoverCapHours: parseFloat(form.carryoverCapHours) || 0,
+                    })}"
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-md border bg-muted/20 p-3 space-y-2" data-testid="group-annual-accrual">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><Label>Accrual Rate (hours/year)</Label><Input type="number" value={form.accrualHoursPerYear} onChange={(e) => setForm({ ...form, accrualHoursPerYear: e.target.value })} data-testid="input-accrual-rate" /></div>
+                    <div><Label>Yearly Cap (hours)</Label><Input type="number" value={form.yearlyCapHours} onChange={(e) => setForm({ ...form, yearlyCapHours: e.target.value })} placeholder="no cap" data-testid="input-yearly-cap" /></div>
+                  </div>
+                  <p
+                    className="text-xs text-muted-foreground italic pt-1 border-t"
+                    data-testid="text-policy-live-preview"
+                  >
+                    Employees will see: "{explainPtoPolicy({
+                      accrualType: form.accrualType,
+                      accrualHoursPerYear: parseFloat(form.accrualHoursPerYear) || 0,
+                      vacationAccrualPerHoursWorked: parseFloat(form.vacationAccrualPerHoursWorked) || 0,
+                      vacationAccrualHoursPerThreshold: parseFloat(form.vacationAccrualHoursPerThreshold) || 0,
+                      yearlyCapHours: form.yearlyCapHours ? parseFloat(form.yearlyCapHours) : null,
+                      carryoverCapHours: parseFloat(form.carryoverCapHours) || 0,
+                    })}"
+                  </p>
                 </div>
               )}
               <div className="grid grid-cols-2 gap-3">

@@ -4070,6 +4070,70 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/time-off/my-pto-policy-info", requireAuth, async (req: any, res) => {
+    try {
+      const user = req.authUser as User;
+      const policy = await storage.getEmployeePtoPolicy(user.id);
+      const settings = await storage.getEmployeePtoSettings(user.id);
+
+      if (!policy) {
+        return res.json({ hasPolicy: false });
+      }
+
+      const currentYear = new Date().getFullYear();
+      let waitingEndIso: string | undefined;
+      let waitingPeriod: { active: boolean; daysRemaining?: number; endDate?: string | null } | null = null;
+
+      if (settings?.hireDate && policy.waitingPeriodDays > 0) {
+        const hireMs = new Date(settings.hireDate).getTime();
+        const waitingEndMs = hireMs + policy.waitingPeriodDays * 24 * 60 * 60 * 1000;
+        const waitingEndDate = new Date(waitingEndMs);
+        waitingEndIso = `${waitingEndDate.getUTCFullYear()}-${String(waitingEndDate.getUTCMonth() + 1).padStart(2, "0")}-${String(waitingEndDate.getUTCDate()).padStart(2, "0")}`;
+        const active = Date.now() < waitingEndMs;
+        waitingPeriod = {
+          active,
+          daysRemaining: active ? Math.ceil((waitingEndMs - Date.now()) / (24 * 60 * 60 * 1000)) : 0,
+          endDate: waitingEndIso,
+        };
+      }
+
+      const yearStart = `${currentYear}-01-01`;
+      const fromDate = waitingEndIso && waitingEndIso > yearStart ? waitingEndIso : undefined;
+      const hoursWorkedThisYear = await storage.computeTotalHoursWorked(user.id, currentYear, fromDate);
+
+      let earnedThisYear = 0;
+      if (policy.accrualType === "per_hours_worked") {
+        const threshold = policy.vacationAccrualPerHoursWorked > 0 ? policy.vacationAccrualPerHoursWorked : 30;
+        const earnedPer = policy.vacationAccrualHoursPerThreshold ?? 1;
+        const accrued = Math.floor(hoursWorkedThisYear / threshold) * earnedPer;
+        earnedThisYear = policy.yearlyCapHours != null ? Math.min(accrued, policy.yearlyCapHours) : accrued;
+      } else {
+        earnedThisYear = policy.accrualHoursPerYear;
+      }
+
+      const round2 = (n: number) => Math.round(n * 100) / 100;
+
+      res.json({
+        hasPolicy: true,
+        policyName: policy.name,
+        accrualType: policy.accrualType,
+        accrualHoursPerYear: policy.accrualHoursPerYear,
+        vacationAccrualPerHoursWorked: policy.vacationAccrualPerHoursWorked,
+        vacationAccrualHoursPerThreshold: policy.vacationAccrualHoursPerThreshold,
+        yearlyCapHours: policy.yearlyCapHours,
+        carryoverCapHours: policy.carryoverCapHours,
+        hoursWorkedThisYear: round2(hoursWorkedThisYear),
+        earnedThisYear: round2(earnedThisYear),
+        hasOverride: settings?.vacationHoursOverride != null,
+        vacationHoursOverride: settings?.vacationHoursOverride ?? null,
+        waitingPeriod,
+      });
+    } catch (error) {
+      console.error("Error fetching PTO policy info:", error);
+      handleRouteError(res, error, "Failed to fetch PTO policy info");
+    }
+  });
+
   app.get("/api/time-off/balance", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
     try {
       const user = req.authUser as User;

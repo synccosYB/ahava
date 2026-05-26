@@ -468,6 +468,26 @@ export type TimeOffBalanceDetailed = {
   personal: TimeOffBalanceBucket;
 };
 
+export type PtoPolicyInfo = {
+  hasPolicy: boolean;
+  policyName?: string | null;
+  accrualType?: "annual" | "per_pay_period" | "per_hours_worked" | null;
+  accrualHoursPerYear?: number | null;
+  vacationAccrualPerHoursWorked?: number | null;
+  vacationAccrualHoursPerThreshold?: number | null;
+  yearlyCapHours?: number | null;
+  carryoverCapHours?: number | null;
+  hoursWorkedThisYear?: number;
+  earnedThisYear?: number;
+  hasOverride?: boolean;
+  vacationHoursOverride?: number | null;
+  waitingPeriod?: {
+    active: boolean;
+    daysRemaining?: number;
+    endDate?: string | null;
+  } | null;
+};
+
 export const BALANCE_TRACKED_TIME_OFF_TYPES = ["vacation", "sick", "personal"] as const;
 export type BalanceTrackedTimeOffType = (typeof BALANCE_TRACKED_TIME_OFF_TYPES)[number];
 
