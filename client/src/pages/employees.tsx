@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -1323,14 +1324,73 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
   });
 
   const updateMutation = useMutation({
-    mutationFn: async (data: { companyId?: string | null; departmentId?: string | null; locationId?: string | null }) => {
+    mutationFn: async (data: {
+      companyId?: string | null;
+      departmentId?: string | null;
+      locationId?: string | null;
+      firstName?: string;
+      lastName?: string;
+      email?: string;
+    }) => {
       await apiRequest("PATCH", `/api/users/${userId}`, data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
       toast({ title: "Updated" });
     },
     onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const [editBasic, setEditBasic] = useState(false);
+  const [basicForm, setBasicForm] = useState({ firstName: "", lastName: "", email: "" });
+  const [basicEmailError, setBasicEmailError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (user && !editBasic) {
+      setBasicForm({
+        firstName: user.firstName || "",
+        lastName: user.lastName || "",
+        email: user.email || "",
+      });
+    }
+  }, [user, editBasic]);
+
+  const basicInfoMutation = useMutation({
+    mutationFn: async (data: { firstName: string; lastName: string; email: string }) => {
+      await apiRequest("PATCH", `/api/users/${userId}`, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      setEditBasic(false);
+      setBasicEmailError(null);
+      toast({ title: "Basic info updated" });
+    },
+    onError: (err: Error) => {
+      if (isApiError(err) && err.status === 409 && err.code === "EMAIL_ALREADY_EXISTS") {
+        setBasicEmailError("An employee with this email already exists.");
+        toast({ title: "Duplicate email", description: "Another user already has this email.", variant: "destructive" });
+        return;
+      }
+      if (isApiError(err) && err.status === 400) {
+        const detail = formatValidationError(err.payload);
+        if (detail?.field === "email") {
+          setBasicEmailError(detail.message);
+        }
+        toast({
+          title: "Please fix the highlighted field",
+          description: detail?.field
+            ? `${prettyFieldLabel(detail.field)}: ${detail.message}`
+            : detail?.message || err.message,
+          variant: "destructive",
+        });
+        return;
+      }
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
@@ -1343,6 +1403,46 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
       toast({ title: "Tax classification updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const [editEmployment, setEditEmployment] = useState(false);
+  const [employmentForm, setEmploymentForm] = useState({
+    employmentType: "full_time",
+    hireDate: "",
+    terminationDate: "",
+    overtimeEligible: false,
+  });
+
+  useEffect(() => {
+    if (profile && !editEmployment) {
+      setEmploymentForm({
+        employmentType: profile.employmentType || "full_time",
+        hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
+        terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
+        overtimeEligible: !!profile.overtimeEligible,
+      });
+    }
+  }, [profile, editEmployment]);
+
+  const employmentMutation = useMutation({
+    mutationFn: async (data: {
+      employmentType: string;
+      hireDate: string | null;
+      terminationDate: string | null;
+      overtimeEligible: boolean;
+    }) => {
+      await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setEditEmployment(false);
+      toast({ title: "Employment details updated" });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -1393,19 +1493,101 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
 
         <TabsContent value="basic">
           <Card data-testid="card-basic-info">
-            <CardHeader><CardTitle>Basic Information</CardTitle></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Basic Information</CardTitle>
+              {editBasic ? (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setEditBasic(false);
+                      setBasicEmailError(null);
+                      setBasicForm({
+                        firstName: user?.firstName || "",
+                        lastName: user?.lastName || "",
+                        email: user?.email || "",
+                      });
+                    }}
+                    data-testid="button-cancel-basic-info"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setBasicEmailError(null);
+                      basicInfoMutation.mutate({
+                        firstName: basicForm.firstName.trim(),
+                        lastName: basicForm.lastName.trim(),
+                        email: basicForm.email.trim().toLowerCase(),
+                      });
+                    }}
+                    disabled={basicInfoMutation.isPending}
+                    data-testid="button-save-basic-info"
+                  >
+                    {basicInfoMutation.isPending ? "Saving…" : "Save"}
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditBasic(true)}
+                  data-testid="button-edit-basic-info"
+                >
+                  Edit
+                </Button>
+              )}
+            </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <Label className="text-muted-foreground text-xs">First Name</Label>
-                <p className="font-medium" data-testid="text-profile-first-name">{user?.firstName || "—"}</p>
+                {editBasic ? (
+                  <Input
+                    value={basicForm.firstName}
+                    onChange={(e) => setBasicForm((f) => ({ ...f, firstName: e.target.value }))}
+                    data-testid="input-profile-first-name"
+                  />
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-first-name">{user?.firstName || "—"}</p>
+                )}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Last Name</Label>
-                <p className="font-medium" data-testid="text-profile-last-name">{user?.lastName || "—"}</p>
+                {editBasic ? (
+                  <Input
+                    value={basicForm.lastName}
+                    onChange={(e) => setBasicForm((f) => ({ ...f, lastName: e.target.value }))}
+                    data-testid="input-profile-last-name"
+                  />
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-last-name">{user?.lastName || "—"}</p>
+                )}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Email</Label>
-                <p className="font-medium" data-testid="text-profile-email">{user?.email || "—"}</p>
+                {editBasic ? (
+                  <>
+                    <Input
+                      type="email"
+                      value={basicForm.email}
+                      onChange={(e) => {
+                        setBasicForm((f) => ({ ...f, email: e.target.value }));
+                        if (basicEmailError) setBasicEmailError(null);
+                      }}
+                      aria-invalid={!!basicEmailError}
+                      data-testid="input-profile-email"
+                    />
+                    {basicEmailError && (
+                      <p className="text-xs text-destructive mt-1" data-testid="text-profile-email-error">
+                        {basicEmailError}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-email">{user?.email || "—"}</p>
+                )}
               </div>
               <div>
                 <div className="flex items-center justify-between mb-1">
@@ -1583,7 +1765,56 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
 
         <TabsContent value="employment">
           <Card data-testid="card-employment">
-            <CardHeader><CardTitle>Employment Details</CardTitle></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Employment Details</CardTitle>
+              {editEmployment ? (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setEditEmployment(false);
+                      if (profile) {
+                        setEmploymentForm({
+                          employmentType: profile.employmentType || "full_time",
+                          hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
+                          terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
+                          overtimeEligible: !!profile.overtimeEligible,
+                        });
+                      }
+                    }}
+                    data-testid="button-cancel-employment"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      employmentMutation.mutate({
+                        employmentType: employmentForm.employmentType,
+                        hireDate: employmentForm.hireDate ? employmentForm.hireDate : null,
+                        terminationDate: employmentForm.terminationDate ? employmentForm.terminationDate : null,
+                        overtimeEligible: employmentForm.overtimeEligible,
+                      })
+                    }
+                    disabled={employmentMutation.isPending || !profile}
+                    data-testid="button-save-employment"
+                  >
+                    {employmentMutation.isPending ? "Saving…" : "Save"}
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditEmployment(true)}
+                  disabled={!profile}
+                  data-testid="button-edit-employment"
+                >
+                  Edit
+                </Button>
+              )}
+            </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <Label className="text-muted-foreground text-xs">Department</Label>
@@ -1595,7 +1826,24 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Employment Type</Label>
-                <p className="font-medium" data-testid="text-profile-employment-type">{profile?.employmentType || "—"}</p>
+                {editEmployment ? (
+                  <Select
+                    value={employmentForm.employmentType}
+                    onValueChange={(v) => setEmploymentForm((f) => ({ ...f, employmentType: v }))}
+                  >
+                    <SelectTrigger data-testid="select-profile-employment-type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="full_time">Full Time</SelectItem>
+                      <SelectItem value="part_time">Part Time</SelectItem>
+                      <SelectItem value="contractor">Contractor</SelectItem>
+                      <SelectItem value="per_diem">Per Diem</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-employment-type">{profile?.employmentType || "—"}</p>
+                )}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Tax Classification</Label>
@@ -1615,13 +1863,48 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Hire Date</Label>
-                <p className="font-medium" data-testid="text-profile-hire-date">{formatDate(profile?.hireDate) || "—"}</p>
+                {editEmployment ? (
+                  <Input
+                    type="date"
+                    value={employmentForm.hireDate}
+                    onChange={(e) => setEmploymentForm((f) => ({ ...f, hireDate: e.target.value }))}
+                    data-testid="input-profile-hire-date"
+                  />
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-hire-date">{formatDate(profile?.hireDate) || "—"}</p>
+                )}
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Termination Date</Label>
+                {editEmployment ? (
+                  <Input
+                    type="date"
+                    value={employmentForm.terminationDate}
+                    onChange={(e) => setEmploymentForm((f) => ({ ...f, terminationDate: e.target.value }))}
+                    data-testid="input-profile-termination-date"
+                  />
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-termination-date">{formatDate(profile?.terminationDate) || "—"}</p>
+                )}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Overtime Eligible</Label>
-                <p className="font-medium" data-testid="text-profile-overtime">
-                  {profile?.overtimeEligible ? "Yes" : "No"}
-                </p>
+                {editEmployment ? (
+                  <div className="flex items-center gap-2 h-10">
+                    <Switch
+                      checked={employmentForm.overtimeEligible}
+                      onCheckedChange={(v) => setEmploymentForm((f) => ({ ...f, overtimeEligible: v }))}
+                      data-testid="switch-profile-overtime"
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      {employmentForm.overtimeEligible ? "Yes" : "No"}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-overtime">
+                    {profile?.overtimeEligible ? "Yes" : "No"}
+                  </p>
+                )}
               </div>
               <NextReviewIndicator userId={userId} />
               <CorrectionRequestStat userId={userId} />

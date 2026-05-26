@@ -8,7 +8,7 @@ import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBa
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
-import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
+import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
@@ -529,6 +529,14 @@ export async function registerRoutes(
     companyId: z.string().nullable().optional(),
     departmentId: z.string().nullable().optional(),
     locationId: z.string().nullable().optional(),
+    firstName: z.string().trim().min(1).optional(),
+    lastName: z.string().trim().min(1).optional(),
+    email: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .pipe(z.string().email())
+      .optional(),
   });
 
   const bulkAssignDivisionSchema = z.object({
@@ -691,6 +699,17 @@ export async function registerRoutes(
     const existing = await storage.getUser(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "User not found" });
 
+    if (parsed.data.email !== undefined && parsed.data.email !== existing.email) {
+      const dup = await storage.getUserByEmail(parsed.data.email);
+      if (dup && dup.id !== existing.id) {
+        return res.status(409).json({
+          message: "A user with this email already exists",
+          code: "EMAIL_ALREADY_EXISTS",
+          field: "email",
+        });
+      }
+    }
+
     const next = {
       companyId: parsed.data.companyId !== undefined ? parsed.data.companyId : existing.companyId,
       locationId: parsed.data.locationId !== undefined ? parsed.data.locationId : existing.locationId,
@@ -723,12 +742,49 @@ export async function registerRoutes(
       }
     }
 
+    const identityPatch: Partial<UpsertUser> = {};
+    if (parsed.data.firstName !== undefined) identityPatch.firstName = parsed.data.firstName;
+    if (parsed.data.lastName !== undefined) identityPatch.lastName = parsed.data.lastName;
+    if (parsed.data.email !== undefined) identityPatch.email = parsed.data.email;
+
     const updated = await storage.updateUser(String(req.params.id), {
       companyId: next.companyId,
       locationId: next.locationId,
       departmentId: next.departmentId,
+      ...identityPatch,
     });
     if (!updated) return res.status(404).json({ message: "User not found" });
+
+    try {
+      const actor = (req as any).authUser as User | undefined;
+      const identityChanges: Record<string, { from: unknown; to: unknown }> = {};
+      if (identityPatch.firstName !== undefined && identityPatch.firstName !== existing.firstName) {
+        identityChanges.firstName = { from: existing.firstName, to: identityPatch.firstName };
+      }
+      if (identityPatch.lastName !== undefined && identityPatch.lastName !== existing.lastName) {
+        identityChanges.lastName = { from: existing.lastName, to: identityPatch.lastName };
+      }
+      if (identityPatch.email !== undefined && identityPatch.email !== existing.email) {
+        identityChanges.email = { from: existing.email, to: identityPatch.email };
+      }
+      if (Object.keys(identityChanges).length > 0) {
+        await writeAuditLog({
+          actorUserId: actor?.id || "system",
+          targetType: "user",
+          targetId: String(req.params.id),
+          action: "user.identity_change",
+          oldValue: Object.fromEntries(
+            Object.entries(identityChanges).map(([k, v]) => [k, v.from]),
+          ),
+          newValue: Object.fromEntries(
+            Object.entries(identityChanges).map(([k, v]) => [k, v.to]),
+          ),
+          ...getAuditContext(req),
+        });
+      }
+    } catch (err) {
+      console.error("Failed to write identity-change audit log:", err);
+    }
 
     try {
       const actor = (req as any).authUser as User | undefined;
@@ -2082,6 +2138,47 @@ export async function registerRoutes(
     }
     const profile = await storage.updateEmploymentProfile(String(req.params.userId), data);
     if (!profile) return res.status(404).json({ message: "Employment profile not found" });
+
+    try {
+      const actor = (req as any).authUser as User | undefined;
+      const auditableFields = [
+        "employmentType",
+        "payType",
+        "hourlyRate",
+        "weeklySalary",
+        "dailySalary",
+        "overtimeEligible",
+        "holidayPayEnabled",
+        "voluntaryPayEnabled",
+        "taxClassification",
+        "hireDate",
+        "terminationDate",
+      ] as const;
+      const oldValue: Record<string, unknown> = {};
+      const newValue: Record<string, unknown> = {};
+      for (const key of auditableFields) {
+        if ((data as any)[key] === undefined) continue;
+        const beforeVal = (before as any)?.[key] ?? null;
+        const afterVal = (profile as any)?.[key] ?? null;
+        if (beforeVal !== afterVal) {
+          oldValue[key] = beforeVal;
+          newValue[key] = afterVal;
+        }
+      }
+      if (Object.keys(newValue).length > 0) {
+        await writeAuditLog({
+          actorUserId: actor?.id || "system",
+          targetType: "employment_profile",
+          targetId: String(req.params.userId),
+          action: "employment_profile.update",
+          oldValue,
+          newValue,
+          ...getAuditContext(req),
+        });
+      }
+    } catch (err) {
+      console.error("Failed to write employment profile audit log:", err);
+    }
 
     try {
       const actor = (req as any).authUser as User | undefined;
