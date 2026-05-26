@@ -309,6 +309,13 @@
       "when": 1779400000000,
       "tag": "0043_location_companies",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1779500000000,
+      "tag": "0044_repair_kiosk_pairing_drift",
+      "breakpoints": true
     }
   ]
 }

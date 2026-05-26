@@ -78,6 +78,21 @@ const REQUIRED_COLUMNS: Record<string, string[]> = {
     "reopen_decision_note",
     "reopen_consumed_at",
   ],
+  // 0035_kiosk_pairing_heartbeat — the migration runner executes each .sql
+  // file as one multi-statement query (there are no `--> statement-breakpoint`
+  // markers in this file), so a mid-statement failure could leave the file
+  // half-applied while still being recorded in _migration_log. Verifying
+  // these columns at boot turns that silent drift into a clear startup error
+  // instead of a 500 on the Reports / Time page.
+  punch_logs: [
+    "kiosk_device_id",
+  ],
+  kiosk_devices: [
+    "pairing_code",
+    "pairing_code_expires_at",
+    "paired_at",
+    "status",
+  ],
 };
 
 const REQUIRED_TABLES: string[] = [
