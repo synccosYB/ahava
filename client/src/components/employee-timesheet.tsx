@@ -117,7 +117,7 @@ export function EmployeeTimesheetTable({
   showExport?: boolean;
   exportFileName?: string;
 }) {
-  const { data, isLoading, isError, error } = useQuery<TimesheetResponse>({
+  const { data, isLoading, isError } = useQuery<TimesheetResponse>({
     queryKey: ["/api/attendance/timesheet", employeeId, startDate, endDate],
     queryFn: async () => {
       const params = new URLSearchParams({ startDate, endDate });
@@ -138,18 +138,16 @@ export function EmployeeTimesheetTable({
     );
   }
 
-  if (isError) {
-    return (
-      <p className="text-sm text-destructive py-4" data-testid="text-timesheet-error">
-        Couldn't load this timesheet.{error instanceof Error && error.message ? ` ${error.message}` : ""}
-      </p>
-    );
-  }
+  const hasNoPunches =
+    !data ||
+    !data.entries ||
+    data.entries.length === 0 ||
+    data.entries.every((e) => e.status === "none");
 
-  if (!data) {
+  if (isError || hasNoPunches) {
     return (
       <p className="text-sm text-muted-foreground py-4" data-testid="text-timesheet-empty">
-        No timesheet data available.
+        No punches have been recorded for this employee in the selected date range.
       </p>
     );
   }
