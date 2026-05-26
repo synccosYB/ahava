@@ -31,6 +31,13 @@ import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, D
 import { CertificationsCard } from "@/components/certifications-card";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
+  INLINE_ADD_NEW_VALUE,
+  PermissionedAddNewItem,
+  CreateCompanyDialog,
+  CreateDepartmentDialog,
+  CreateLocationDialog,
+} from "@/components/inline-entity-create";
+import {
   type CorrectionCountSummary,
   isHighCorrectionCount,
   HIGH_CORRECTION_THRESHOLD,
@@ -707,6 +714,11 @@ function AddEmployeeDialog({
     onboardingTemplateId: "",
   });
 
+  const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
+  const [createDepartmentOpen, setCreateDepartmentOpen] = useState(false);
+  const [createLocationOpen, setCreateLocationOpen] = useState(false);
+  const selectedCompanyName = divisions.find((d) => d.id === formData.companyId)?.name;
+
   const { data: onboardingTemplates = [] } = useQuery<Array<{ id: string; name: string; isDefault: boolean; companyId: string | null; isActive: boolean }>>({
     queryKey: ["/api/onboarding-templates", { companyId: formData.companyId }],
     queryFn: async () => {
@@ -922,7 +934,13 @@ function AddEmployeeDialog({
               <Label>Company *</Label>
               <Select
                 value={formData.companyId}
-                onValueChange={(v) => setFormData({ ...formData, companyId: v, departmentId: "", locationId: "" })}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    setCreateCompanyOpen(true);
+                    return;
+                  }
+                  setFormData({ ...formData, companyId: v, departmentId: "", locationId: "" });
+                }}
               >
                 <SelectTrigger data-testid="select-add-division">
                   <SelectValue placeholder="Select company" />
@@ -931,6 +949,11 @@ function AddEmployeeDialog({
                   {divisions.map((d) => (
                     <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                   ))}
+                  <PermissionedAddNewItem
+                    permission="company.create"
+                    label="Add new company"
+                    testId="option-add-new-company"
+                  />
                 </SelectContent>
               </Select>
             </div>
@@ -941,7 +964,24 @@ function AddEmployeeDialog({
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Department</Label>
-              <Select value={formData.departmentId || "none"} onValueChange={(v) => setFormData({ ...formData, departmentId: v === "none" ? "" : v })}>
+              <Select
+                value={formData.departmentId || "none"}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    if (!formData.companyId) {
+                      toast({
+                        title: "Select a company first",
+                        description: "Choose a company in Step 1 before adding a department.",
+                        variant: "destructive",
+                      });
+                      return;
+                    }
+                    setCreateDepartmentOpen(true);
+                    return;
+                  }
+                  setFormData({ ...formData, departmentId: v === "none" ? "" : v });
+                }}
+              >
                 <SelectTrigger data-testid="select-add-department">
                   <SelectValue placeholder="Select department" />
                 </SelectTrigger>
@@ -950,12 +990,34 @@ function AddEmployeeDialog({
                   {scopedDepartments.map((d) => (
                     <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                   ))}
+                  <PermissionedAddNewItem
+                    permission="departments.create"
+                    label="Add new department"
+                    testId="option-add-new-department"
+                  />
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
               <Label>Location</Label>
-              <Select value={formData.locationId || "none"} onValueChange={(v) => setFormData({ ...formData, locationId: v === "none" ? "" : v })}>
+              <Select
+                value={formData.locationId || "none"}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    if (!formData.companyId) {
+                      toast({
+                        title: "Select a company first",
+                        description: "Choose a company in Step 1 before adding a location.",
+                        variant: "destructive",
+                      });
+                      return;
+                    }
+                    setCreateLocationOpen(true);
+                    return;
+                  }
+                  setFormData({ ...formData, locationId: v === "none" ? "" : v });
+                }}
+              >
                 <SelectTrigger data-testid="select-add-location">
                   <SelectValue placeholder="Select location" />
                 </SelectTrigger>
@@ -964,6 +1026,11 @@ function AddEmployeeDialog({
                   {scopedLocations.map((l) => (
                     <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
                   ))}
+                  <PermissionedAddNewItem
+                    permission="locations.manage"
+                    label="Add new location"
+                    testId="option-add-new-location"
+                  />
                 </SelectContent>
               </Select>
             </div>
@@ -1144,6 +1211,36 @@ function AddEmployeeDialog({
           )}
         </DialogFooter>
       </DialogContent>
+      <CreateCompanyDialog
+        open={createCompanyOpen}
+        onOpenChange={setCreateCompanyOpen}
+        onCreated={(company) => {
+          setFormData((prev) => ({
+            ...prev,
+            companyId: company.id,
+            departmentId: "",
+            locationId: "",
+          }));
+        }}
+      />
+      <CreateDepartmentDialog
+        open={createDepartmentOpen}
+        onOpenChange={setCreateDepartmentOpen}
+        companyId={formData.companyId}
+        companyName={selectedCompanyName}
+        onCreated={(dept) => {
+          setFormData((prev) => ({ ...prev, departmentId: dept.id }));
+        }}
+      />
+      <CreateLocationDialog
+        open={createLocationOpen}
+        onOpenChange={setCreateLocationOpen}
+        companyId={formData.companyId}
+        companyName={selectedCompanyName}
+        onCreated={(location) => {
+          setFormData((prev) => ({ ...prev, locationId: location.id }));
+        }}
+      />
     </Dialog>
   );
 }
@@ -1256,6 +1353,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
   const loc = locations?.find((l) => l.id === user?.locationId);
   const div = divisions?.find((d) => d.id === user?.companyId);
 
+  const [profileCreateCompanyOpen, setProfileCreateCompanyOpen] = useState(false);
+  const [profileCreateDepartmentOpen, setProfileCreateDepartmentOpen] = useState(false);
+  const [profileCreateLocationOpen, setProfileCreateLocationOpen] = useState(false);
+
   return (
     <div className="max-w-6xl space-y-6" data-testid="employee-profile-page">
       <PageHeader
@@ -1351,7 +1452,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 <Label className="text-muted-foreground text-xs">Company</Label>
                 <Select
                   value={user?.companyId || ""}
-                  onValueChange={(v) => updateMutation.mutate({ companyId: v, departmentId: null, locationId: null })}
+                  onValueChange={(v) => {
+                    if (v === INLINE_ADD_NEW_VALUE) {
+                      setProfileCreateCompanyOpen(true);
+                      return;
+                    }
+                    updateMutation.mutate({ companyId: v, departmentId: null, locationId: null });
+                  }}
                 >
                   <SelectTrigger data-testid="select-profile-division">
                     <SelectValue placeholder="Select company" />
@@ -1360,6 +1467,11 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     {(divisions || []).map((d) => (
                       <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                     ))}
+                    <PermissionedAddNewItem
+                      permission="company.create"
+                      label="Add new company"
+                      testId="option-profile-add-new-company"
+                    />
                   </SelectContent>
                 </Select>
               </div>
@@ -1367,7 +1479,21 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 <Label className="text-muted-foreground text-xs">Department</Label>
                 <Select
                   value={user?.departmentId || "none"}
-                  onValueChange={(v) => updateMutation.mutate({ departmentId: v === "none" ? null : v })}
+                  onValueChange={(v) => {
+                    if (v === INLINE_ADD_NEW_VALUE) {
+                      if (!user?.companyId) {
+                        toast({
+                          title: "Select a company first",
+                          description: "Set a company before adding a department.",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+                      setProfileCreateDepartmentOpen(true);
+                      return;
+                    }
+                    updateMutation.mutate({ departmentId: v === "none" ? null : v });
+                  }}
                   disabled={!user?.companyId}
                 >
                   <SelectTrigger data-testid="select-profile-department">
@@ -1378,6 +1504,11 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     {scopedDepartments.map((d) => (
                       <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                     ))}
+                    <PermissionedAddNewItem
+                      permission="departments.create"
+                      label="Add new department"
+                      testId="option-profile-add-new-department"
+                    />
                   </SelectContent>
                 </Select>
               </div>
@@ -1385,7 +1516,21 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 <Label className="text-muted-foreground text-xs">Location</Label>
                 <Select
                   value={user?.locationId || "none"}
-                  onValueChange={(v) => updateMutation.mutate({ locationId: v === "none" ? null : v })}
+                  onValueChange={(v) => {
+                    if (v === INLINE_ADD_NEW_VALUE) {
+                      if (!user?.companyId) {
+                        toast({
+                          title: "Select a company first",
+                          description: "Set a company before adding a location.",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+                      setProfileCreateLocationOpen(true);
+                      return;
+                    }
+                    updateMutation.mutate({ locationId: v === "none" ? null : v });
+                  }}
                   disabled={!user?.companyId}
                 >
                   <SelectTrigger data-testid="select-profile-location">
@@ -1396,11 +1541,41 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     {scopedLocations.map((l) => (
                       <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
                     ))}
+                    <PermissionedAddNewItem
+                      permission="locations.manage"
+                      label="Add new location"
+                      testId="option-profile-add-new-location"
+                    />
                   </SelectContent>
                 </Select>
               </div>
             </CardContent>
           </Card>
+          <CreateCompanyDialog
+            open={profileCreateCompanyOpen}
+            onOpenChange={setProfileCreateCompanyOpen}
+            onCreated={(company) => {
+              updateMutation.mutate({ companyId: company.id, departmentId: null, locationId: null });
+            }}
+          />
+          <CreateDepartmentDialog
+            open={profileCreateDepartmentOpen}
+            onOpenChange={setProfileCreateDepartmentOpen}
+            companyId={user?.companyId || ""}
+            companyName={div?.name}
+            onCreated={(dept) => {
+              updateMutation.mutate({ departmentId: dept.id });
+            }}
+          />
+          <CreateLocationDialog
+            open={profileCreateLocationOpen}
+            onOpenChange={setProfileCreateLocationOpen}
+            companyId={user?.companyId || ""}
+            companyName={div?.name}
+            onCreated={(location) => {
+              updateMutation.mutate({ locationId: location.id });
+            }}
+          />
           <div className="mt-4">
             <CertificationsCard employeeId={userId} canEdit={true} highlightCertId={certIdFromUrl} />
           </div>
