@@ -124,6 +124,12 @@ import {
   onboardingTemplates,
   type OnboardingTemplate,
   type InsertOnboardingTemplate,
+  onboardingTemplateSections,
+  type OnboardingTemplateSection,
+  type InsertOnboardingTemplateSection,
+  onboardingTemplateScopes,
+  type OnboardingTemplateScope,
+  type InsertOnboardingTemplateScope,
   onboardingTemplateTasks,
   type OnboardingTemplateTask,
   type InsertOnboardingTemplateTask,
@@ -136,6 +142,12 @@ import {
   offboardingTemplates,
   type OffboardingTemplate,
   type InsertOffboardingTemplate,
+  offboardingTemplateSections,
+  type OffboardingTemplateSection,
+  type InsertOffboardingTemplateSection,
+  offboardingTemplateScopes,
+  type OffboardingTemplateScope,
+  type InsertOffboardingTemplateScope,
   offboardingTemplateTasks,
   type OffboardingTemplateTask,
   type InsertOffboardingTemplateTask,
@@ -515,6 +527,17 @@ export interface IStorage {
   createOnboardingTemplateTask(data: InsertOnboardingTemplateTask): Promise<OnboardingTemplateTask>;
   updateOnboardingTemplateTask(id: string, data: Partial<InsertOnboardingTemplateTask>): Promise<OnboardingTemplateTask | undefined>;
   deleteOnboardingTemplateTask(id: string): Promise<void>;
+  deleteOnboardingTemplate(id: string): Promise<void>;
+  duplicateOnboardingTemplate(id: string, actorUserId: string): Promise<OnboardingTemplate | undefined>;
+  getOnboardingTemplateSections(templateId: string): Promise<OnboardingTemplateSection[]>;
+  createOnboardingTemplateSection(data: InsertOnboardingTemplateSection): Promise<OnboardingTemplateSection>;
+  updateOnboardingTemplateSection(id: string, data: Partial<InsertOnboardingTemplateSection>): Promise<OnboardingTemplateSection | undefined>;
+  deleteOnboardingTemplateSection(id: string): Promise<void>;
+  getOnboardingTemplateScopes(templateId: string): Promise<OnboardingTemplateScope[]>;
+  setOnboardingTemplateScopes(templateId: string, scopes: { scopeKind: string; scopeRef: string }[]): Promise<OnboardingTemplateScope[]>;
+  suggestOnboardingTemplatesForEmployee(employee: User): Promise<Array<OnboardingTemplate & { matchScore: number; matchReasons: string[] }>>;
+  addTaskToOnboardingChecklist(checklistId: string, data: Partial<InsertOnboardingTask> & { title: string }): Promise<OnboardingTask>;
+  deleteOnboardingTaskRow(id: string): Promise<void>;
 
   getOnboardingChecklist(id: string): Promise<OnboardingChecklist | undefined>;
   getOnboardingChecklistByEmployee(employeeId: string): Promise<OnboardingChecklist | undefined>;
@@ -539,6 +562,17 @@ export interface IStorage {
   createOffboardingTemplateTask(data: InsertOffboardingTemplateTask): Promise<OffboardingTemplateTask>;
   updateOffboardingTemplateTask(id: string, data: Partial<InsertOffboardingTemplateTask>): Promise<OffboardingTemplateTask | undefined>;
   deleteOffboardingTemplateTask(id: string): Promise<void>;
+  deleteOffboardingTemplate(id: string): Promise<void>;
+  duplicateOffboardingTemplate(id: string, actorUserId: string): Promise<OffboardingTemplate | undefined>;
+  getOffboardingTemplateSections(templateId: string): Promise<OffboardingTemplateSection[]>;
+  createOffboardingTemplateSection(data: InsertOffboardingTemplateSection): Promise<OffboardingTemplateSection>;
+  updateOffboardingTemplateSection(id: string, data: Partial<InsertOffboardingTemplateSection>): Promise<OffboardingTemplateSection | undefined>;
+  deleteOffboardingTemplateSection(id: string): Promise<void>;
+  getOffboardingTemplateScopes(templateId: string): Promise<OffboardingTemplateScope[]>;
+  setOffboardingTemplateScopes(templateId: string, scopes: { scopeKind: string; scopeRef: string }[]): Promise<OffboardingTemplateScope[]>;
+  suggestOffboardingTemplatesForEmployee(employee: User): Promise<Array<OffboardingTemplate & { matchScore: number; matchReasons: string[] }>>;
+  addTaskToOffboardingChecklist(checklistId: string, data: Partial<InsertOffboardingTask> & { title: string }): Promise<OffboardingTask>;
+  deleteOffboardingTaskRow(id: string): Promise<void>;
 
   getOffboardingChecklist(id: string): Promise<OffboardingChecklist | undefined>;
   getOffboardingChecklistByEmployee(employeeId: string): Promise<OffboardingChecklist | undefined>;
@@ -2920,12 +2954,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createOnboardingTemplateTask(data: InsertOnboardingTemplateTask): Promise<OnboardingTemplateTask> {
-    const [created] = await db.insert(onboardingTemplateTasks).values(data).returning();
+    const [created] = await db.insert(onboardingTemplateTasks).values(data as any).returning();
     return created;
   }
 
   async updateOnboardingTemplateTask(id: string, data: Partial<InsertOnboardingTemplateTask>): Promise<OnboardingTemplateTask | undefined> {
-    const [updated] = await db.update(onboardingTemplateTasks).set(data).where(eq(onboardingTemplateTasks.id, id)).returning();
+    const [updated] = await db.update(onboardingTemplateTasks).set(data as any).where(eq(onboardingTemplateTasks.id, id)).returning();
     return updated;
   }
 
@@ -2961,7 +2995,7 @@ export class DatabaseStorage implements IStorage {
 
   async createOnboardingTaskRow(data: InsertOnboardingTask & { completedBy?: string | null; completedAt?: Date | null }): Promise<OnboardingTask> {
     const { completedBy, completedAt, ...rest } = data;
-    const [created] = await db.insert(onboardingTasks).values({ ...rest, completedBy: completedBy ?? null, completedAt: completedAt ?? null }).returning();
+    const [created] = await db.insert(onboardingTasks).values({ ...rest, completedBy: completedBy ?? null, completedAt: completedAt ?? null } as any).returning();
     return created;
   }
 
@@ -3057,12 +3091,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createOffboardingTemplateTask(data: InsertOffboardingTemplateTask): Promise<OffboardingTemplateTask> {
-    const [created] = await db.insert(offboardingTemplateTasks).values(data).returning();
+    const [created] = await db.insert(offboardingTemplateTasks).values(data as any).returning();
     return created;
   }
 
   async updateOffboardingTemplateTask(id: string, data: Partial<InsertOffboardingTemplateTask>): Promise<OffboardingTemplateTask | undefined> {
-    const [updated] = await db.update(offboardingTemplateTasks).set(data).where(eq(offboardingTemplateTasks.id, id)).returning();
+    const [updated] = await db.update(offboardingTemplateTasks).set(data as any).where(eq(offboardingTemplateTasks.id, id)).returning();
     return updated;
   }
 
@@ -3098,7 +3132,7 @@ export class DatabaseStorage implements IStorage {
 
   async createOffboardingTaskRow(data: InsertOffboardingTask & { completedBy?: string | null; completedAt?: Date | null }): Promise<OffboardingTask> {
     const { completedBy, completedAt, ...rest } = data;
-    const [created] = await db.insert(offboardingTasks).values({ ...rest, completedBy: completedBy ?? null, completedAt: completedAt ?? null }).returning();
+    const [created] = await db.insert(offboardingTasks).values({ ...rest, completedBy: completedBy ?? null, completedAt: completedAt ?? null } as any).returning();
     return created;
   }
 
@@ -3141,6 +3175,259 @@ export class DatabaseStorage implements IStorage {
     const totalRequired = required.length;
     const progressPct = totalRequired === 0 ? 100 : Math.round((completedRequired / totalRequired) * 100);
     return { progressPct, completedRequired, totalRequired, optionalCompleted, optionalTotal: optional.length };
+  }
+
+  // ===== Flexible lifecycle (sections / scopes / suggest / propagate) =====
+
+  async deleteOnboardingTemplate(id: string): Promise<void> {
+    await db.update(onboardingChecklists).set({ templateId: null }).where(eq(onboardingChecklists.templateId, id));
+    await db.delete(onboardingTemplates).where(eq(onboardingTemplates.id, id));
+  }
+
+  async duplicateOnboardingTemplate(id: string, actorUserId: string): Promise<OnboardingTemplate | undefined> {
+    const src = await this.getOnboardingTemplate(id);
+    if (!src) return undefined;
+    const [created] = await db.insert(onboardingTemplates).values({
+      companyId: src.companyId,
+      name: `${src.name} (copy)`,
+      description: src.description,
+      isDefault: false,
+      isActive: src.isActive,
+      createdBy: actorUserId,
+    }).returning();
+    const sections = await this.getOnboardingTemplateSections(id);
+    const sectionIdMap = new Map<string, string>();
+    for (const s of sections) {
+      const [ns] = await db.insert(onboardingTemplateSections).values({
+        templateId: created.id, title: s.title, description: s.description, sortOrder: s.sortOrder,
+      }).returning();
+      sectionIdMap.set(s.id, ns.id);
+    }
+    const tasks = await this.getOnboardingTemplateTasks(id);
+    for (const t of tasks) {
+      const { id: _id, createdAt: _ca, templateId: _tid, ...rest } = t as any;
+      await db.insert(onboardingTemplateTasks).values({
+        ...rest,
+        templateId: created.id,
+        sectionId: t.sectionId ? sectionIdMap.get(t.sectionId) ?? null : null,
+      });
+    }
+    const scopes = await this.getOnboardingTemplateScopes(id);
+    if (scopes.length > 0) {
+      await db.insert(onboardingTemplateScopes).values(
+        scopes.map(s => ({ templateId: created.id, scopeKind: s.scopeKind, scopeRef: s.scopeRef })),
+      );
+    }
+    return created;
+  }
+
+  async getOnboardingTemplateSections(templateId: string): Promise<OnboardingTemplateSection[]> {
+    return await db.select().from(onboardingTemplateSections).where(eq(onboardingTemplateSections.templateId, templateId)).orderBy(onboardingTemplateSections.sortOrder, onboardingTemplateSections.createdAt);
+  }
+  async createOnboardingTemplateSection(data: InsertOnboardingTemplateSection): Promise<OnboardingTemplateSection> {
+    const [created] = await db.insert(onboardingTemplateSections).values(data).returning();
+    return created;
+  }
+  async updateOnboardingTemplateSection(id: string, data: Partial<InsertOnboardingTemplateSection>): Promise<OnboardingTemplateSection | undefined> {
+    const [updated] = await db.update(onboardingTemplateSections).set(data).where(eq(onboardingTemplateSections.id, id)).returning();
+    return updated;
+  }
+  async deleteOnboardingTemplateSection(id: string): Promise<void> {
+    await db.delete(onboardingTemplateSections).where(eq(onboardingTemplateSections.id, id));
+  }
+
+  async getOnboardingTemplateScopes(templateId: string): Promise<OnboardingTemplateScope[]> {
+    return await db.select().from(onboardingTemplateScopes).where(eq(onboardingTemplateScopes.templateId, templateId));
+  }
+  async setOnboardingTemplateScopes(templateId: string, scopes: { scopeKind: string; scopeRef: string }[]): Promise<OnboardingTemplateScope[]> {
+    await db.delete(onboardingTemplateScopes).where(eq(onboardingTemplateScopes.templateId, templateId));
+    if (scopes.length === 0) return [];
+    return await db.insert(onboardingTemplateScopes).values(scopes.map(s => ({ templateId, scopeKind: s.scopeKind, scopeRef: s.scopeRef }))).returning();
+  }
+
+  async suggestOnboardingTemplatesForEmployee(employee: User): Promise<Array<OnboardingTemplate & { matchScore: number; matchReasons: string[] }>> {
+    const candidates = await this.getOnboardingTemplates({ companyId: employee.companyId ?? null, isActive: true });
+    const profile = await this.getEmploymentProfile?.(employee.id).catch(() => undefined);
+    const employmentType = (profile as any)?.employmentType ?? null;
+    const out: Array<OnboardingTemplate & { matchScore: number; matchReasons: string[] }> = [];
+    for (const t of candidates) {
+      const scopes = await this.getOnboardingTemplateScopes(t.id);
+      const reasons: string[] = [];
+      let score = 0;
+      if (scopes.length === 0) {
+        if (t.isDefault) { score += 1; reasons.push("Default template"); }
+      } else {
+        for (const s of scopes) {
+          if (s.scopeKind === "company" && employee.companyId && s.scopeRef === employee.companyId) { score += 4; reasons.push("Company match"); }
+          if (s.scopeKind === "location" && employee.locationId && s.scopeRef === employee.locationId) { score += 3; reasons.push("Location match"); }
+          if (s.scopeKind === "department" && employee.departmentId && s.scopeRef === employee.departmentId) { score += 3; reasons.push("Department match"); }
+          if (s.scopeKind === "role" && employee.role && s.scopeRef === employee.role) { score += 2; reasons.push("Role match"); }
+          if (s.scopeKind === "employment_type" && employmentType && s.scopeRef === employmentType) { score += 2; reasons.push("Employment type match"); }
+        }
+      }
+      if (score > 0 || t.isDefault) {
+        if (t.isDefault && score === 0) { score = 1; reasons.push("Default template"); }
+        out.push({ ...t, matchScore: score, matchReasons: Array.from(new Set(reasons)) });
+      }
+    }
+    out.sort((a, b) => b.matchScore - a.matchScore);
+    return out;
+  }
+
+  async addTaskToOnboardingChecklist(checklistId: string, data: Partial<InsertOnboardingTask> & { title: string }): Promise<OnboardingTask> {
+    const [created] = await db.insert(onboardingTasks).values({
+      checklistId,
+      templateTaskId: null,
+      title: data.title,
+      description: data.description ?? null,
+      instructions: data.instructions ?? null,
+      category: data.category ?? "paperwork",
+      sectionTitle: data.sectionTitle ?? null,
+      sectionSortOrder: data.sectionSortOrder ?? 0,
+      taskType: data.taskType ?? "checkbox",
+      ownerKind: data.ownerKind ?? "role",
+      ownerRole: data.ownerRole ?? "hr",
+      ownerUserId: data.ownerUserId ?? null,
+      ownerDepartmentId: data.ownerDepartmentId ?? null,
+      isRequired: data.isRequired ?? false,
+      documentType: data.documentType ?? null,
+      linkUrl: data.linkUrl ?? null,
+      customFields: data.customFields ?? null,
+      dueDate: data.dueDate ?? null,
+      sortOrder: data.sortOrder ?? 0,
+      status: "pending",
+    } as any).returning();
+    return created;
+  }
+
+  async deleteOnboardingTaskRow(id: string): Promise<void> {
+    await db.delete(onboardingTasks).where(eq(onboardingTasks.id, id));
+  }
+
+  // Offboarding parallels
+  async deleteOffboardingTemplate(id: string): Promise<void> {
+    await db.update(offboardingChecklists).set({ templateId: null }).where(eq(offboardingChecklists.templateId, id));
+    await db.delete(offboardingTemplates).where(eq(offboardingTemplates.id, id));
+  }
+
+  async duplicateOffboardingTemplate(id: string, actorUserId: string): Promise<OffboardingTemplate | undefined> {
+    const src = await this.getOffboardingTemplate(id);
+    if (!src) return undefined;
+    const [created] = await db.insert(offboardingTemplates).values({
+      companyId: src.companyId,
+      name: `${src.name} (copy)`,
+      description: src.description,
+      isDefault: false,
+      isActive: src.isActive,
+      createdBy: actorUserId,
+    }).returning();
+    const sections = await this.getOffboardingTemplateSections(id);
+    const sectionIdMap = new Map<string, string>();
+    for (const s of sections) {
+      const [ns] = await db.insert(offboardingTemplateSections).values({
+        templateId: created.id, title: s.title, description: s.description, sortOrder: s.sortOrder,
+      }).returning();
+      sectionIdMap.set(s.id, ns.id);
+    }
+    const tasks = await this.getOffboardingTemplateTasks(id);
+    for (const t of tasks) {
+      const { id: _id, createdAt: _ca, templateId: _tid, ...rest } = t as any;
+      await db.insert(offboardingTemplateTasks).values({
+        ...rest,
+        templateId: created.id,
+        sectionId: t.sectionId ? sectionIdMap.get(t.sectionId) ?? null : null,
+      });
+    }
+    const scopes = await this.getOffboardingTemplateScopes(id);
+    if (scopes.length > 0) {
+      await db.insert(offboardingTemplateScopes).values(
+        scopes.map(s => ({ templateId: created.id, scopeKind: s.scopeKind, scopeRef: s.scopeRef })),
+      );
+    }
+    return created;
+  }
+
+  async getOffboardingTemplateSections(templateId: string): Promise<OffboardingTemplateSection[]> {
+    return await db.select().from(offboardingTemplateSections).where(eq(offboardingTemplateSections.templateId, templateId)).orderBy(offboardingTemplateSections.sortOrder, offboardingTemplateSections.createdAt);
+  }
+  async createOffboardingTemplateSection(data: InsertOffboardingTemplateSection): Promise<OffboardingTemplateSection> {
+    const [created] = await db.insert(offboardingTemplateSections).values(data).returning();
+    return created;
+  }
+  async updateOffboardingTemplateSection(id: string, data: Partial<InsertOffboardingTemplateSection>): Promise<OffboardingTemplateSection | undefined> {
+    const [updated] = await db.update(offboardingTemplateSections).set(data).where(eq(offboardingTemplateSections.id, id)).returning();
+    return updated;
+  }
+  async deleteOffboardingTemplateSection(id: string): Promise<void> {
+    await db.delete(offboardingTemplateSections).where(eq(offboardingTemplateSections.id, id));
+  }
+
+  async getOffboardingTemplateScopes(templateId: string): Promise<OffboardingTemplateScope[]> {
+    return await db.select().from(offboardingTemplateScopes).where(eq(offboardingTemplateScopes.templateId, templateId));
+  }
+  async setOffboardingTemplateScopes(templateId: string, scopes: { scopeKind: string; scopeRef: string }[]): Promise<OffboardingTemplateScope[]> {
+    await db.delete(offboardingTemplateScopes).where(eq(offboardingTemplateScopes.templateId, templateId));
+    if (scopes.length === 0) return [];
+    return await db.insert(offboardingTemplateScopes).values(scopes.map(s => ({ templateId, scopeKind: s.scopeKind, scopeRef: s.scopeRef }))).returning();
+  }
+
+  async suggestOffboardingTemplatesForEmployee(employee: User): Promise<Array<OffboardingTemplate & { matchScore: number; matchReasons: string[] }>> {
+    const candidates = await this.getOffboardingTemplates({ companyId: employee.companyId ?? null, isActive: true });
+    const profile = await this.getEmploymentProfile?.(employee.id).catch(() => undefined);
+    const employmentType = (profile as any)?.employmentType ?? null;
+    const out: Array<OffboardingTemplate & { matchScore: number; matchReasons: string[] }> = [];
+    for (const t of candidates) {
+      const scopes = await this.getOffboardingTemplateScopes(t.id);
+      const reasons: string[] = [];
+      let score = 0;
+      if (scopes.length === 0) {
+        if (t.isDefault) { score += 1; reasons.push("Default template"); }
+      } else {
+        for (const s of scopes) {
+          if (s.scopeKind === "company" && employee.companyId && s.scopeRef === employee.companyId) { score += 4; reasons.push("Company match"); }
+          if (s.scopeKind === "location" && employee.locationId && s.scopeRef === employee.locationId) { score += 3; reasons.push("Location match"); }
+          if (s.scopeKind === "department" && employee.departmentId && s.scopeRef === employee.departmentId) { score += 3; reasons.push("Department match"); }
+          if (s.scopeKind === "role" && employee.role && s.scopeRef === employee.role) { score += 2; reasons.push("Role match"); }
+          if (s.scopeKind === "employment_type" && employmentType && s.scopeRef === employmentType) { score += 2; reasons.push("Employment type match"); }
+        }
+      }
+      if (score > 0 || t.isDefault) {
+        if (t.isDefault && score === 0) { score = 1; reasons.push("Default template"); }
+        out.push({ ...t, matchScore: score, matchReasons: Array.from(new Set(reasons)) });
+      }
+    }
+    out.sort((a, b) => b.matchScore - a.matchScore);
+    return out;
+  }
+
+  async addTaskToOffboardingChecklist(checklistId: string, data: Partial<InsertOffboardingTask> & { title: string }): Promise<OffboardingTask> {
+    const [created] = await db.insert(offboardingTasks).values({
+      checklistId,
+      templateTaskId: null,
+      title: data.title,
+      description: data.description ?? null,
+      instructions: data.instructions ?? null,
+      category: data.category ?? "access",
+      sectionTitle: data.sectionTitle ?? null,
+      sectionSortOrder: data.sectionSortOrder ?? 0,
+      taskType: data.taskType ?? "checkbox",
+      ownerKind: data.ownerKind ?? "role",
+      ownerRole: data.ownerRole ?? "hr",
+      ownerUserId: data.ownerUserId ?? null,
+      ownerDepartmentId: data.ownerDepartmentId ?? null,
+      isRequired: data.isRequired ?? false,
+      blocksDeactivation: data.blocksDeactivation ?? false,
+      linkUrl: data.linkUrl ?? null,
+      customFields: data.customFields ?? null,
+      dueDate: data.dueDate ?? null,
+      sortOrder: data.sortOrder ?? 0,
+      status: "pending",
+    } as any).returning();
+    return created;
+  }
+
+  async deleteOffboardingTaskRow(id: string): Promise<void> {
+    await db.delete(offboardingTasks).where(eq(offboardingTasks.id, id));
   }
 
   // ===== Biometric kiosk =====

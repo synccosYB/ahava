@@ -2359,54 +2359,40 @@ interface LifecycleTemplate {
   isDefault: boolean;
   isActive: boolean;
 }
+type DueRuleUI =
+  | { kind: "none" }
+  | { kind: "relative"; days: number; anchor?: "hire_date" | "start_date" | "termination_date" }
+  | { kind: "absolute"; date: string }
+  | { kind: "end_of_section"; days?: number };
+type CustomFieldUI = { key: string; label: string; type: "text" | "textarea" | "number" | "date" | "select" | "checkbox"; required?: boolean; options?: string[]; placeholder?: string };
+interface LifecycleSection { id: string; templateId: string; title: string; description: string | null; sortOrder: number }
+interface LifecycleScope { id: string; templateId: string; scopeKind: "company" | "location" | "department" | "role" | "employment_type"; scopeRef: string }
 interface LifecycleTask {
   id: string;
   templateId: string;
+  sectionId?: string | null;
   title: string;
   description: string | null;
+  instructions?: string | null;
   category: string;
+  taskType?: string;
+  ownerKind?: string;
   ownerRole: string;
+  ownerUserId?: string | null;
+  ownerDepartmentId?: string | null;
   isRequired: boolean;
   documentType?: string | null;
+  linkUrl?: string | null;
   blocksDeactivation?: boolean;
   dueOffsetDays: number;
+  dueRule?: DueRuleUI | null;
+  customFields?: CustomFieldUI[] | null;
   sortOrder: number;
 }
-
-interface LifecycleTaskForm {
-  title: string;
-  description: string;
-  category: string;
-  ownerRole: string;
-  isRequired: boolean;
-  documentType: string;
-  blocksDeactivation: boolean;
-  dueOffsetDays: number;
-  sortOrder: number;
-}
-
-type LifecycleTaskPatch = Partial<{
-  title: string;
-  description: string | null;
-  category: string;
-  ownerRole: string;
-  isRequired: boolean;
-  documentType: string | null;
-  blocksDeactivation: boolean;
-  dueOffsetDays: number;
-  sortOrder: number;
-}>;
-
-interface LifecycleTaskCreatePayload {
-  title: string;
-  description: string;
-  category: string;
-  ownerRole: string;
-  isRequired: boolean;
-  dueOffsetDays: number;
-  sortOrder: number;
-  documentType?: string | null;
-  blocksDeactivation?: boolean;
+interface LifecycleTemplateFull extends LifecycleTemplate {
+  sections: LifecycleSection[];
+  tasks: LifecycleTask[];
+  scopes: LifecycleScope[];
 }
 
 function getMutationErrorMessage(e: unknown): string {
@@ -2467,14 +2453,20 @@ function LifecycleTemplatesSection({ kind }: { kind: "onboarding" | "offboarding
     onError: (e: unknown) => toast({ title: "Failed to create template", description: getMutationErrorMessage(e), variant: "destructive" }),
   });
 
-  const setDefaultMut = useMutation({
-    mutationFn: async (id: string) => apiRequest("PATCH", `${baseUrl}/${id}`, { isDefault: true }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: [baseUrl] }); toast({ title: "Default template updated" }); },
+  const duplicateMut = useMutation({
+    mutationFn: async (id: string) => apiRequest("POST", `${baseUrl}/${id}/duplicate`, {}),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: [baseUrl] }); toast({ title: "Template duplicated" }); },
+    onError: (e: unknown) => toast({ title: "Failed to duplicate", description: getMutationErrorMessage(e), variant: "destructive" }),
   });
 
-  const toggleActiveMut = useMutation({
-    mutationFn: async ({ id, isActive }: { id: string; isActive: boolean }) => apiRequest("PATCH", `${baseUrl}/${id}`, { isActive }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [baseUrl] }),
+  const deleteMut = useMutation({
+    mutationFn: async (id: string) => apiRequest("DELETE", `${baseUrl}/${id}`),
+    onSuccess: (_d, id) => {
+      queryClient.invalidateQueries({ queryKey: [baseUrl] });
+      if (selectedId === id) setSelectedId(null);
+      toast({ title: "Template deleted" });
+    },
+    onError: (e: unknown) => toast({ title: "Failed to delete", description: getMutationErrorMessage(e), variant: "destructive" }),
   });
 
   const selected = templates?.find(t => t.id === selectedId);
@@ -2519,38 +2511,608 @@ function LifecycleTemplatesSection({ kind }: { kind: "onboarding" | "offboarding
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{t.name}</span>
-                    {t.isDefault && <Badge variant="secondary">Default</Badge>}
+                    <div className="flex gap-1 items-center">
+                      {t.isDefault && <Badge variant="secondary">Default</Badge>}
+                      <Badge variant={t.isActive ? "default" : "outline"}>{t.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
                   </div>
                   <div className="mt-2">
                     <LifecycleTemplateSummary templateId={t.id} kind={kind} userDescription={t.description} />
                   </div>
-                  <div className="flex gap-2 mt-2">
-                    <Badge variant={t.isActive ? "default" : "outline"}>{t.isActive ? "Active" : "Inactive"}</Badge>
+                  <div className="flex gap-1 mt-2">
+                    <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); duplicateMut.mutate(t.id); }} data-testid={`button-duplicate-${kind}-template-${t.id}`}>Duplicate</Button>
+                    <Button size="sm" variant="ghost" className="text-destructive" onClick={(e) => { e.stopPropagation(); if (confirm(`Delete template "${t.name}"? In-progress checklists will be detached.`)) deleteMut.mutate(t.id); }} data-testid={`button-delete-${kind}-template-${t.id}`}>Delete</Button>
                   </div>
                 </div>
               ))}
             </div>
             <div className="md:col-span-2">
               {selected ? (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    {!selected.isDefault && (
-                      <Button size="sm" variant="outline" onClick={() => setDefaultMut.mutate(selected.id)} data-testid={`button-set-default-${selected.id}`}>Set as default</Button>
-                    )}
-                    <Button size="sm" variant="outline" onClick={() => toggleActiveMut.mutate({ id: selected.id, isActive: !selected.isActive })}>
-                      {selected.isActive ? "Deactivate" : "Activate"}
-                    </Button>
-                  </div>
-                  <LifecycleTemplateTaskEditor kind={kind} templateId={selected.id} />
-                </div>
+                <LifecycleTemplateBuilder kind={kind} template={selected} />
               ) : (
-                <p className="text-sm text-muted-foreground">Select a template to edit its tasks.</p>
+                <p className="text-sm text-muted-foreground">Select a template to edit it.</p>
               )}
             </div>
           </div>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function LifecycleTemplateBuilder({ kind, template }: { kind: "onboarding" | "offboarding"; template: LifecycleTemplate }) {
+  const { toast } = useToast();
+  const baseUrl = `/api/${kind}-templates`;
+  const fullKey = [`${baseUrl}/${template.id}/full`];
+  const { data: full, isLoading } = useQuery<LifecycleTemplateFull>({ queryKey: fullKey });
+  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
+  const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
+  const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { data: companies } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+  const { data: roles } = useQuery<{ id: string; name: string }[]>({ queryKey: ["/api/roles"] });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: fullKey });
+    queryClient.invalidateQueries({ queryKey: [baseUrl] });
+    queryClient.invalidateQueries({ queryKey: [`${baseUrl}/${template.id}`] });
+  };
+
+  const patchTemplate = useMutation({
+    mutationFn: async (patch: Record<string, unknown>) => apiRequest("PATCH", `${baseUrl}/${template.id}`, patch),
+    onSuccess: () => invalidate(),
+  });
+
+  const addSection = useMutation({
+    mutationFn: async (title: string) => apiRequest("POST", `${baseUrl}/${template.id}/sections`, { title, sortOrder: (full?.sections.length ?? 0) }),
+    onSuccess: () => invalidate(),
+  });
+  const patchSection = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: Record<string, unknown> }) => apiRequest("PATCH", `/api/${kind}-template-sections/${id}`, patch),
+    onSuccess: () => invalidate(),
+  });
+  const deleteSection = useMutation({
+    mutationFn: async (id: string) => apiRequest("DELETE", `/api/${kind}-template-sections/${id}`),
+    onSuccess: () => invalidate(),
+  });
+
+  const addTask = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => apiRequest("POST", `${baseUrl}/${template.id}/tasks`, data),
+    onSuccess: () => { invalidate(); toast({ title: "Task added" }); },
+    onError: (e: unknown) => toast({ title: "Failed to add task", description: getMutationErrorMessage(e), variant: "destructive" }),
+  });
+  const patchTask = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: Record<string, unknown> }) => apiRequest("PATCH", `/api/${kind}-template-tasks/${id}`, patch),
+    onSuccess: () => invalidate(),
+  });
+  const deleteTask = useMutation({
+    mutationFn: async (id: string) => apiRequest("DELETE", `/api/${kind}-template-tasks/${id}`),
+    onSuccess: () => invalidate(),
+  });
+
+  const setScopes = useMutation({
+    mutationFn: async (scopes: { scopeKind: string; scopeRef: string }[]) => apiRequest("PUT", `${baseUrl}/${template.id}/scopes`, { scopes }),
+    onSuccess: () => { invalidate(); toast({ title: "Scopes updated" }); },
+  });
+
+  const propagateMut = useMutation({
+    mutationFn: async () => apiRequest("POST", `/api/lifecycle-templates/${template.id}/propagate`, { kind }),
+    onSuccess: async (res: Response) => {
+      const body = await res.json().catch(() => ({ propagated: 0 }));
+      toast({ title: `Propagated to in-progress checklists`, description: `${body.propagated ?? 0} tasks added.` });
+    },
+    onError: (e: unknown) => toast({ title: "Propagate failed", description: getMutationErrorMessage(e), variant: "destructive" }),
+  });
+
+  const [sectionTitle, setSectionTitle] = useState("");
+  const grouped = (() => {
+    const sections = full?.sections ?? [];
+    const tasks = full?.tasks ?? [];
+    const bySection = new Map<string | null, LifecycleTask[]>();
+    bySection.set(null, []);
+    sections.forEach(s => bySection.set(s.id, []));
+    for (const t of tasks) {
+      const key = t.sectionId ?? null;
+      if (!bySection.has(key)) bySection.set(null, [...(bySection.get(null) ?? []), t]);
+      else bySection.get(key)!.push(t);
+    }
+    return { sections, bySection };
+  })();
+
+  if (isLoading || !full) return <Skeleton className="h-48 w-full" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 flex-wrap">
+        {!template.isDefault && (
+          <Button size="sm" variant="outline" onClick={() => patchTemplate.mutate({ isDefault: true })} data-testid={`button-set-default-${template.id}`}>Set as default</Button>
+        )}
+        <Button size="sm" variant="outline" onClick={() => patchTemplate.mutate({ isActive: !template.isActive })}>
+          {template.isActive ? "Deactivate" : "Activate"}
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => {
+          if (confirm("Push this template's tasks to all in-progress checklists using it? New tasks will be added; existing ones won't be modified.")) {
+            propagateMut.mutate();
+          }
+        }} data-testid={`button-propagate-${template.id}`}>Propagate to in-progress</Button>
+      </div>
+
+      {/* Scopes */}
+      <div className="rounded-md border p-3 space-y-2">
+        <div className="text-sm font-medium">Scopes (who gets this template)</div>
+        <ScopeChipsEditor
+          scopes={full.scopes}
+          companies={companies ?? []}
+          locations={locations ?? []}
+          departments={departments ?? []}
+          roles={roles ?? []}
+          onSave={(scopes) => setScopes.mutate(scopes)}
+        />
+        {full.scopes.length === 0 && (
+          <p className="text-xs text-muted-foreground">No scopes set — this template will only be suggested if marked default.</p>
+        )}
+      </div>
+
+      {/* Sections + tasks */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Input value={sectionTitle} onChange={e => setSectionTitle(e.target.value)} placeholder="New section title (e.g. Week 1)" className="max-w-xs" data-testid={`input-new-section-${kind}`} />
+          <Button size="sm" variant="outline" onClick={() => { if (sectionTitle.trim()) { addSection.mutate(sectionTitle.trim()); setSectionTitle(""); } }} data-testid={`button-add-section-${kind}`}>
+            <Plus className="h-4 w-4 mr-1" /> Add section
+          </Button>
+        </div>
+
+        {[...grouped.sections, null as unknown as LifecycleSection].map((s, idx) => {
+          const sectionId = s ? s.id : null;
+          const sectionTasks = grouped.bySection.get(sectionId) ?? [];
+          if (sectionId === null && sectionTasks.length === 0 && grouped.sections.length > 0) return null;
+          return (
+            <div key={s ? s.id : "__unsec__"} className="rounded-md border" data-testid={`section-block-${sectionId ?? "unsectioned"}`}>
+              <div className="flex items-center justify-between p-3 border-b bg-muted/40">
+                {s ? (
+                  <Input
+                    defaultValue={s.title}
+                    onBlur={e => { if (e.target.value !== s.title) patchSection.mutate({ id: s.id, patch: { title: e.target.value } }); }}
+                    className="font-medium max-w-md"
+                    data-testid={`input-section-title-${s.id}`}
+                  />
+                ) : (
+                  <div className="font-medium text-sm text-muted-foreground">Unsectioned</div>
+                )}
+                {s && (
+                  <Button size="sm" variant="ghost" className="text-destructive" onClick={() => { if (confirm("Delete this section? Tasks in it will be moved to Unsectioned.")) deleteSection.mutate(s.id); }} data-testid={`button-delete-section-${s.id}`}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+              <div className="p-3 space-y-2">
+                {sectionTasks.map(t => (
+                  <TaskRow
+                    key={t.id}
+                    kind={kind}
+                    task={t}
+                    sections={full.sections}
+                    users={users ?? []}
+                    departments={departments ?? []}
+                    onPatch={(patch) => patchTask.mutate({ id: t.id, patch })}
+                    onDelete={() => deleteTask.mutate(t.id)}
+                  />
+                ))}
+                <TaskAddRow
+                  kind={kind}
+                  sectionId={sectionId}
+                  onAdd={(data) => addTask.mutate({ ...data, sectionId })}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ScopeChipsEditor({
+  scopes, companies, locations, departments, roles, onSave,
+}: {
+  scopes: LifecycleScope[];
+  companies: Division[];
+  locations: Location[];
+  departments: Department[];
+  roles: { id: string; name: string }[];
+  onSave: (scopes: { scopeKind: string; scopeRef: string }[]) => void;
+}) {
+  const [draft, setDraft] = useState<{ scopeKind: string; scopeRef: string }[]>(
+    scopes.map(s => ({ scopeKind: s.scopeKind, scopeRef: s.scopeRef })),
+  );
+  useEffect(() => {
+    setDraft(scopes.map(s => ({ scopeKind: s.scopeKind, scopeRef: s.scopeRef })));
+  }, [scopes]);
+  const [newKind, setNewKind] = useState<string>("department");
+  const [newRef, setNewRef] = useState<string>("");
+
+  const labelFor = (kind: string, ref: string): string => {
+    if (kind === "company") return companies.find(c => c.id === ref)?.name ?? ref;
+    if (kind === "location") return locations.find(l => l.id === ref)?.name ?? ref;
+    if (kind === "department") return departments.find(d => d.id === ref)?.name ?? ref;
+    if (kind === "role") return roles.find(r => r.id === ref)?.name ?? ref;
+    if (kind === "employment_type") return ref;
+    return ref;
+  };
+
+  const options = (() => {
+    if (newKind === "company") return companies.map(c => ({ value: c.id, label: c.name }));
+    if (newKind === "location") return locations.map(l => ({ value: l.id, label: l.name }));
+    if (newKind === "department") return departments.map(d => ({ value: d.id, label: d.name }));
+    if (newKind === "role") return roles.map(r => ({ value: r.id, label: r.name }));
+    if (newKind === "employment_type") return [
+      { value: "full_time", label: "Full Time" },
+      { value: "part_time", label: "Part Time" },
+      { value: "contractor", label: "Contractor" },
+      { value: "intern", label: "Intern" },
+      { value: "per_diem", label: "Per Diem" },
+    ];
+    return [];
+  })();
+
+  const add = () => {
+    if (!newRef) return;
+    if (draft.some(d => d.scopeKind === newKind && d.scopeRef === newRef)) return;
+    const next = [...draft, { scopeKind: newKind, scopeRef: newRef }];
+    setDraft(next);
+    setNewRef("");
+    onSave(next);
+  };
+  const remove = (i: number) => {
+    const next = draft.filter((_, idx) => idx !== i);
+    setDraft(next);
+    onSave(next);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {draft.map((s, i) => (
+          <Badge key={`${s.scopeKind}:${s.scopeRef}`} variant="secondary" className="gap-1" data-testid={`badge-scope-${s.scopeKind}-${s.scopeRef}`}>
+            <span className="text-xs uppercase opacity-70">{s.scopeKind}</span>
+            <span>{labelFor(s.scopeKind, s.scopeRef)}</span>
+            <button type="button" onClick={() => remove(i)} className="ml-1 hover:text-destructive"><X className="h-3 w-3" /></button>
+          </Badge>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2 items-end">
+        <div>
+          <Label className="text-xs">Scope</Label>
+          <Select value={newKind} onValueChange={(v) => { setNewKind(v); setNewRef(""); }}>
+            <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="company">Company</SelectItem>
+              <SelectItem value="location">Location</SelectItem>
+              <SelectItem value="department">Department</SelectItem>
+              <SelectItem value="role">Role</SelectItem>
+              <SelectItem value="employment_type">Employment Type</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="min-w-[200px]">
+          <Label className="text-xs">Value</Label>
+          <Select value={newRef} onValueChange={setNewRef}>
+            <SelectTrigger><SelectValue placeholder="Pick…" /></SelectTrigger>
+            <SelectContent>
+              {options.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button size="sm" onClick={add} disabled={!newRef}>Add scope</Button>
+      </div>
+    </div>
+  );
+}
+
+function TaskAddRow({ kind, sectionId, onAdd }: {
+  kind: "onboarding" | "offboarding";
+  sectionId: string | null;
+  onAdd: (data: Record<string, unknown>) => void;
+}) {
+  const [title, setTitle] = useState("");
+  return (
+    <div className="flex gap-2 items-center pt-1">
+      <Input
+        placeholder="Add a task…"
+        value={title}
+        onChange={e => setTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && title.trim()) {
+            onAdd({
+              title: title.trim(),
+              category: kind === "onboarding" ? "paperwork" : "access",
+              ownerKind: "role",
+              ownerRole: kind === "onboarding" ? "new_hire" : "manager",
+              taskType: "checkbox",
+              dueRule: { kind: "none" },
+              isRequired: false,
+              sortOrder: 0,
+            });
+            setTitle("");
+          }
+        }}
+        className="max-w-md"
+        data-testid={`input-add-task-${sectionId ?? "unsec"}`}
+      />
+      <Button size="sm" variant="outline" onClick={() => {
+        if (!title.trim()) return;
+        onAdd({
+          title: title.trim(),
+          category: kind === "onboarding" ? "paperwork" : "access",
+          ownerKind: "role",
+          ownerRole: kind === "onboarding" ? "new_hire" : "manager",
+          taskType: "checkbox",
+          dueRule: { kind: "none" },
+          isRequired: false,
+          sortOrder: 0,
+        });
+        setTitle("");
+      }} data-testid={`button-add-task-${sectionId ?? "unsec"}`}><Plus className="h-4 w-4" /></Button>
+    </div>
+  );
+}
+
+function TaskRow({ kind, task, sections, users, departments, onPatch, onDelete }: {
+  kind: "onboarding" | "offboarding";
+  task: LifecycleTask;
+  sections: LifecycleSection[];
+  users: User[];
+  departments: Department[];
+  onPatch: (patch: Record<string, unknown>) => void;
+  onDelete: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const due: DueRuleUI = task.dueRule ?? { kind: "relative", days: task.dueOffsetDays };
+
+  return (
+    <div className="rounded border bg-card" data-testid={`row-task-${task.id}`}>
+      <div className="flex items-center gap-2 p-2">
+        <Input
+          defaultValue={task.title}
+          onBlur={(e) => { if (e.target.value !== task.title) onPatch({ title: e.target.value }); }}
+          className="font-medium"
+          data-testid={`input-task-title-${task.id}`}
+        />
+        <Select value={task.taskType ?? "checkbox"} onValueChange={(v) => onPatch({ taskType: v })}>
+          <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="checkbox">Checkbox</SelectItem>
+            <SelectItem value="document">Document upload</SelectItem>
+            <SelectItem value="signature">Signature</SelectItem>
+            <SelectItem value="link">External link</SelectItem>
+            <SelectItem value="free_text">Free text</SelectItem>
+            <SelectItem value="file">File upload</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className="flex items-center gap-1">
+          <Checkbox checked={task.isRequired} onCheckedChange={(v) => onPatch({ isRequired: !!v })} id={`req-${task.id}`} />
+          <Label htmlFor={`req-${task.id}`} className="text-xs m-0">Required</Label>
+        </div>
+        <Button size="sm" variant="ghost" onClick={() => setExpanded(v => !v)} data-testid={`button-expand-task-${task.id}`}>
+          <Pencil className="h-4 w-4" />
+        </Button>
+        <Button size="sm" variant="ghost" className="text-destructive" onClick={onDelete} data-testid={`button-delete-task-${task.id}`}>
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
+      {expanded && (
+        <div className="border-t p-3 space-y-3 bg-muted/20">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Category</Label>
+              <Input defaultValue={task.category} onBlur={e => { if (e.target.value !== task.category) onPatch({ category: e.target.value }); }} />
+            </div>
+            <div>
+              <Label className="text-xs">Section</Label>
+              <Select value={task.sectionId ?? "__none__"} onValueChange={(v) => onPatch({ sectionId: v === "__none__" ? null : v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Unsectioned</SelectItem>
+                  {sections.map(s => <SelectItem key={s.id} value={s.id}>{s.title}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Owner</Label>
+              <OwnerEditor
+                kind={kind}
+                ownerKind={task.ownerKind ?? "role"}
+                ownerRole={task.ownerRole}
+                ownerUserId={task.ownerUserId ?? null}
+                ownerDepartmentId={task.ownerDepartmentId ?? null}
+                users={users}
+                departments={departments}
+                onChange={(patch) => onPatch(patch)}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Due rule</Label>
+              <DueRuleEditor kind={kind} value={due} onChange={(v) => onPatch({ dueRule: v })} />
+            </div>
+          </div>
+
+          <div>
+            <Label className="text-xs">Instructions (optional)</Label>
+            <Textarea defaultValue={task.instructions ?? ""} onBlur={(e) => { if ((e.target.value || null) !== task.instructions) onPatch({ instructions: e.target.value || null }); }} rows={2} />
+          </div>
+
+          {task.taskType === "link" && (
+            <div>
+              <Label className="text-xs">Link URL</Label>
+              <Input defaultValue={task.linkUrl ?? ""} onBlur={(e) => { if ((e.target.value || null) !== task.linkUrl) onPatch({ linkUrl: e.target.value || null }); }} placeholder="https://…" />
+            </div>
+          )}
+
+          {kind === "onboarding" && task.taskType === "document" && (
+            <div>
+              <Label className="text-xs">Document type (auto-completes when uploaded)</Label>
+              <Select value={task.documentType || "_none"} onValueChange={(v) => onPatch({ documentType: v === "_none" ? null : v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ONBOARDING_DOCUMENT_TYPES.map(d => <SelectItem key={d.value || "none"} value={d.value || "_none"}>{d.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {kind === "offboarding" && (
+            <div className="flex items-center gap-2">
+              <Checkbox checked={!!task.blocksDeactivation} onCheckedChange={(v) => onPatch({ blocksDeactivation: !!v })} id={`blk-${task.id}`} />
+              <Label htmlFor={`blk-${task.id}`} className="text-xs m-0">Blocks account deactivation until complete</Label>
+            </div>
+          )}
+
+          <CustomFieldsEditor value={task.customFields ?? []} onChange={(v) => onPatch({ customFields: v })} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OwnerEditor({ kind, ownerKind, ownerRole, ownerUserId, ownerDepartmentId, users, departments, onChange }: {
+  kind: "onboarding" | "offboarding";
+  ownerKind: string;
+  ownerRole: string;
+  ownerUserId: string | null;
+  ownerDepartmentId: string | null;
+  users: User[];
+  departments: Department[];
+  onChange: (patch: Record<string, unknown>) => void;
+}) {
+  return (
+    <div className="flex gap-2">
+      <Select value={ownerKind} onValueChange={(v) => onChange({ ownerKind: v, ownerUserId: null, ownerDepartmentId: null })}>
+        <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="role">Role</SelectItem>
+          <SelectItem value="user">Specific user</SelectItem>
+          <SelectItem value="department">Department</SelectItem>
+          {kind === "onboarding" && <SelectItem value="new_hire">New hire</SelectItem>}
+          {kind === "offboarding" && <SelectItem value="departing_employee">Departing employee</SelectItem>}
+        </SelectContent>
+      </Select>
+      {ownerKind === "role" && (
+        <Select value={ownerRole} onValueChange={(v) => onChange({ ownerRole: v })}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="hr">HR</SelectItem>
+            <SelectItem value="manager">Manager</SelectItem>
+            <SelectItem value="it">IT</SelectItem>
+            <SelectItem value="finance">Finance</SelectItem>
+            {kind === "onboarding" && <SelectItem value="new_hire">New Hire</SelectItem>}
+            <SelectItem value="system">System (auto)</SelectItem>
+          </SelectContent>
+        </Select>
+      )}
+      {ownerKind === "user" && (
+        <Select value={ownerUserId ?? ""} onValueChange={(v) => onChange({ ownerUserId: v, ownerRole: "hr" })}>
+          <SelectTrigger><SelectValue placeholder="Pick user…" /></SelectTrigger>
+          <SelectContent>
+            {users.map(u => <SelectItem key={u.id} value={u.id}>{[u.firstName, u.lastName].filter(Boolean).join(" ") || u.email || u.id}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      )}
+      {ownerKind === "department" && (
+        <Select value={ownerDepartmentId ?? ""} onValueChange={(v) => onChange({ ownerDepartmentId: v, ownerRole: "hr" })}>
+          <SelectTrigger><SelectValue placeholder="Pick dept…" /></SelectTrigger>
+          <SelectContent>
+            {departments.map(d => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      )}
+    </div>
+  );
+}
+
+function DueRuleEditor({ kind, value, onChange }: {
+  kind: "onboarding" | "offboarding";
+  value: DueRuleUI;
+  onChange: (v: DueRuleUI) => void;
+}) {
+  const defaultAnchor = kind === "onboarding" ? "hire_date" : "termination_date";
+  return (
+    <div className="flex gap-2 flex-wrap">
+      <Select value={value.kind} onValueChange={(k) => {
+        if (k === "none") onChange({ kind: "none" });
+        else if (k === "relative") onChange({ kind: "relative", days: 0, anchor: defaultAnchor as any });
+        else if (k === "absolute") onChange({ kind: "absolute", date: new Date().toISOString().slice(0, 10) });
+        else if (k === "end_of_section") onChange({ kind: "end_of_section", days: 0 });
+      }}>
+        <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">No due date</SelectItem>
+          <SelectItem value="relative">Relative to date</SelectItem>
+          <SelectItem value="absolute">Specific date</SelectItem>
+          <SelectItem value="end_of_section">End of section</SelectItem>
+        </SelectContent>
+      </Select>
+      {value.kind === "relative" && (
+        <>
+          <Input type="number" value={value.days} onChange={(e) => onChange({ ...value, days: Number(e.target.value) })} className="w-20" />
+          <span className="self-center text-xs text-muted-foreground">days from</span>
+          <Select value={value.anchor ?? defaultAnchor} onValueChange={(v) => onChange({ ...value, anchor: v as any })}>
+            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="hire_date">Hire date</SelectItem>
+              <SelectItem value="start_date">Start date</SelectItem>
+              <SelectItem value="termination_date">Termination date</SelectItem>
+            </SelectContent>
+          </Select>
+        </>
+      )}
+      {value.kind === "absolute" && (
+        <Input type="date" value={value.date} onChange={(e) => onChange({ kind: "absolute", date: e.target.value })} className="w-40" />
+      )}
+      {value.kind === "end_of_section" && (
+        <>
+          <Input type="number" value={value.days ?? 0} onChange={(e) => onChange({ kind: "end_of_section", days: Number(e.target.value) })} className="w-20" />
+          <span className="self-center text-xs text-muted-foreground">days after last in section</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+function CustomFieldsEditor({ value, onChange }: { value: CustomFieldUI[]; onChange: (v: CustomFieldUI[]) => void }) {
+  const [draft, setDraft] = useState<CustomFieldUI[]>(value);
+  useEffect(() => { setDraft(value); }, [value]);
+  const save = (next: CustomFieldUI[]) => { setDraft(next); onChange(next); };
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium">Custom fields (collected when completing this task)</div>
+      {draft.map((f, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <Input placeholder="key" value={f.key} onChange={(e) => save(draft.map((d, idx) => idx === i ? { ...d, key: e.target.value } : d))} className="w-32" />
+          <Input placeholder="Label" value={f.label} onChange={(e) => save(draft.map((d, idx) => idx === i ? { ...d, label: e.target.value } : d))} />
+          <Select value={f.type} onValueChange={(v) => save(draft.map((d, idx) => idx === i ? { ...d, type: v as any } : d))}>
+            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="text">Text</SelectItem>
+              <SelectItem value="textarea">Long text</SelectItem>
+              <SelectItem value="number">Number</SelectItem>
+              <SelectItem value="date">Date</SelectItem>
+              <SelectItem value="select">Select</SelectItem>
+              <SelectItem value="checkbox">Checkbox</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="flex items-center gap-1">
+            <Checkbox checked={!!f.required} onCheckedChange={(v) => save(draft.map((d, idx) => idx === i ? { ...d, required: !!v } : d))} id={`cf-req-${i}`} />
+            <Label htmlFor={`cf-req-${i}`} className="text-xs m-0">Req</Label>
+          </div>
+          <Button size="sm" variant="ghost" className="text-destructive" onClick={() => save(draft.filter((_, idx) => idx !== i))}><X className="h-4 w-4" /></Button>
+        </div>
+      ))}
+      <Button size="sm" variant="outline" onClick={() => save([...draft, { key: `field_${draft.length + 1}`, label: "", type: "text" }])}>
+        <Plus className="h-4 w-4 mr-1" /> Add custom field
+      </Button>
+    </div>
   );
 }
 
@@ -3126,160 +3688,3 @@ function RequiredDocDialog({
   );
 }
 
-function LifecycleTemplateTaskEditor({ kind, templateId }: { kind: "onboarding" | "offboarding"; templateId: string }) {
-  const { toast } = useToast();
-  const detailUrl = `/api/${kind}-templates/${templateId}`;
-  const tasksCreateUrl = `/api/${kind}-templates/${templateId}/tasks`;
-  const { data: detail, isLoading } = useQuery<LifecycleTemplate & { tasks: LifecycleTask[] }>({ queryKey: [detailUrl] });
-  const [openAdd, setOpenAdd] = useState(false);
-  const [form, setForm] = useState<LifecycleTaskForm>({
-    title: "",
-    description: "",
-    category: kind === "onboarding" ? "paperwork" : "access",
-    ownerRole: kind === "onboarding" ? "new_hire" : "manager",
-    isRequired: true,
-    documentType: "",
-    blocksDeactivation: false,
-    dueOffsetDays: 0,
-    sortOrder: 0,
-  });
-
-  const addMut = useMutation({
-    mutationFn: async () => {
-      const payload: LifecycleTaskCreatePayload = {
-        title: form.title,
-        description: form.description,
-        category: form.category,
-        ownerRole: form.ownerRole,
-        isRequired: form.isRequired,
-        dueOffsetDays: form.dueOffsetDays,
-        sortOrder: form.sortOrder,
-      };
-      if (kind === "onboarding") {
-        payload.documentType = !form.documentType || form.documentType === "_none" ? null : form.documentType;
-      } else {
-        payload.blocksDeactivation = form.blocksDeactivation;
-      }
-      return apiRequest("POST", tasksCreateUrl, payload);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [detailUrl] });
-      setOpenAdd(false);
-      setForm({ ...form, title: "", description: "" });
-      toast({ title: "Task added" });
-    },
-    onError: (e: unknown) => toast({ title: "Failed to add task", description: getMutationErrorMessage(e), variant: "destructive" }),
-  });
-
-  const deleteMut = useMutation({
-    mutationFn: async (id: string) => apiRequest("DELETE", `/api/${kind}-template-tasks/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [detailUrl] }),
-  });
-
-  const updateMut = useMutation({
-    mutationFn: async ({ id, patch }: { id: string; patch: LifecycleTaskPatch }) => apiRequest("PATCH", `/api/${kind}-template-tasks/${id}`, patch),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [detailUrl] }),
-  });
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium">Tasks</h4>
-        <Dialog open={openAdd} onOpenChange={setOpenAdd}>
-          <DialogTrigger asChild><Button size="sm" variant="outline" data-testid={`button-add-${kind}-task`}><Plus className="h-4 w-4 mr-1" /> Add task</Button></DialogTrigger>
-          <DialogContent>
-            <DialogHeader><DialogTitle>Add {kind} task</DialogTitle></DialogHeader>
-            <div className="space-y-3 py-2">
-              <div><Label>Title</Label><Input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} data-testid={`input-${kind}-task-title`} /></div>
-              <div><Label>Description</Label><Textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} /></div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label>Owner role</Label>
-                  <Select value={form.ownerRole} onValueChange={(v) => setForm({ ...form, ownerRole: v })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="hr">HR</SelectItem>
-                      <SelectItem value="manager">Manager</SelectItem>
-                      {kind === "onboarding" && <SelectItem value="new_hire">New Hire</SelectItem>}
-                      <SelectItem value="it">IT</SelectItem>
-                      {kind === "offboarding" && <SelectItem value="finance">Finance</SelectItem>}
-                      <SelectItem value="system">System (auto)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Category</Label>
-                  <Input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Due offset (days)</Label><Input type="number" value={form.dueOffsetDays} onChange={e => setForm({ ...form, dueOffsetDays: Number(e.target.value) })} /></div>
-                <div><Label>Sort order</Label><Input type="number" value={form.sortOrder} onChange={e => setForm({ ...form, sortOrder: Number(e.target.value) })} /></div>
-              </div>
-              {kind === "onboarding" ? (
-                <div>
-                  <Label>Document type (auto-completes when uploaded)</Label>
-                  <Select value={form.documentType || ""} onValueChange={(v) => setForm({ ...form, documentType: v })}>
-                    <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-                    <SelectContent>
-                      {ONBOARDING_DOCUMENT_TYPES.map(d => <SelectItem key={d.value || "none"} value={d.value || "_none"}>{d.label}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2"><Checkbox checked={form.blocksDeactivation} onCheckedChange={(v) => setForm({ ...form, blocksDeactivation: !!v })} /><Label className="m-0">Blocks account deactivation until complete</Label></div>
-              )}
-              <div className="flex items-center gap-2"><Checkbox checked={form.isRequired} onCheckedChange={(v) => setForm({ ...form, isRequired: !!v })} /><Label className="m-0">Required</Label></div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setOpenAdd(false)}>Cancel</Button>
-              <Button onClick={() => addMut.mutate()} disabled={!form.title || addMut.isPending} data-testid={`button-save-${kind}-task`}>Add</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-      {isLoading ? <Skeleton className="h-24 w-full" /> : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Title</TableHead>
-              <TableHead>Owner</TableHead>
-              <TableHead>Required</TableHead>
-              {kind === "onboarding" ? <TableHead>Document</TableHead> : <TableHead>Blocks Deact.</TableHead>}
-              <TableHead>Due</TableHead>
-              <TableHead></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(detail?.tasks ?? []).map(t => (
-              <TableRow key={t.id} data-testid={`row-task-${t.id}`}>
-                <TableCell>
-                  <div className="font-medium">{t.title}</div>
-                  {t.description && <div className="text-xs text-muted-foreground">{t.description}</div>}
-                </TableCell>
-                <TableCell><Badge variant="outline">{t.ownerRole}</Badge></TableCell>
-                <TableCell>
-                  <Switch checked={t.isRequired} onCheckedChange={(v) => updateMut.mutate({ id: t.id, patch: { isRequired: v } })} />
-                </TableCell>
-                {kind === "onboarding" ? (
-                  <TableCell className="text-xs">{t.documentType || "—"}</TableCell>
-                ) : (
-                  <TableCell>
-                    <Switch checked={!!t.blocksDeactivation} onCheckedChange={(v) => updateMut.mutate({ id: t.id, patch: { blocksDeactivation: v } })} />
-                  </TableCell>
-                )}
-                <TableCell className="text-xs">+{t.dueOffsetDays}d</TableCell>
-                <TableCell>
-                  <Button size="sm" variant="ghost" onClick={() => deleteMut.mutate(t.id)} data-testid={`button-delete-task-${t.id}`}><Trash2 className="h-4 w-4" /></Button>
-                </TableCell>
-              </TableRow>
-            ))}
-            {(detail?.tasks ?? []).length === 0 && (
-              <TableRow><TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-6">No tasks yet.</TableCell></TableRow>
-            )}
-          </TableBody>
-        </Table>
-      )}
-    </div>
-  );
-}

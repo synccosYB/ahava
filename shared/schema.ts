@@ -993,6 +993,38 @@ export const insertRoleAssignmentRuleSchema = createInsertSchema(roleAssignmentR
 export type InsertRoleAssignmentRule = z.infer<typeof insertRoleAssignmentRuleSchema>;
 export type RoleAssignmentRule = typeof roleAssignmentRules.$inferSelect;
 
+// ===== Flexible lifecycle template helper types =====
+export type DueRule =
+  | { kind: "none" }
+  | { kind: "relative"; days: number; anchor?: "hire_date" | "start_date" | "termination_date" }
+  | { kind: "absolute"; date: string }
+  | { kind: "end_of_section"; days?: number };
+
+export type CustomFieldDef = {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "number" | "date" | "select" | "checkbox";
+  required?: boolean;
+  options?: string[];
+  placeholder?: string;
+};
+
+export const dueRuleSchema: z.ZodType<DueRule> = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({ kind: z.literal("relative"), days: z.number().int(), anchor: z.enum(["hire_date", "start_date", "termination_date"]).optional() }),
+  z.object({ kind: z.literal("absolute"), date: z.string() }),
+  z.object({ kind: z.literal("end_of_section"), days: z.number().int().optional() }),
+]);
+
+export const customFieldDefSchema: z.ZodType<CustomFieldDef> = z.object({
+  key: z.string().min(1),
+  label: z.string().min(1),
+  type: z.enum(["text", "textarea", "number", "date", "select", "checkbox"]),
+  required: z.boolean().optional(),
+  options: z.array(z.string()).optional(),
+  placeholder: z.string().optional(),
+});
+
 export const onboardingTemplates = pgTable("onboarding_templates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").references(() => companies.id),
@@ -1013,16 +1045,48 @@ export const insertOnboardingTemplateSchema = createInsertSchema(onboardingTempl
 export type InsertOnboardingTemplate = z.infer<typeof insertOnboardingTemplateSchema>;
 export type OnboardingTemplate = typeof onboardingTemplates.$inferSelect;
 
-export const onboardingTemplateTasks = pgTable("onboarding_template_tasks", {
+export const onboardingTemplateSections = pgTable("onboarding_template_sections", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   templateId: varchar("template_id").notNull().references(() => onboardingTemplates.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 200 }).notNull(),
   description: text("description"),
-  category: varchar("category", { length: 30 }).default("paperwork").notNull(),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertOnboardingTemplateSectionSchema = createInsertSchema(onboardingTemplateSections).omit({ id: true, createdAt: true });
+export type InsertOnboardingTemplateSection = z.infer<typeof insertOnboardingTemplateSectionSchema>;
+export type OnboardingTemplateSection = typeof onboardingTemplateSections.$inferSelect;
+
+export const onboardingTemplateScopes = pgTable("onboarding_template_scopes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull().references(() => onboardingTemplates.id, { onDelete: "cascade" }),
+  scopeKind: varchar("scope_kind", { length: 30 }).notNull(),
+  scopeRef: varchar("scope_ref", { length: 100 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertOnboardingTemplateScopeSchema = createInsertSchema(onboardingTemplateScopes).omit({ id: true, createdAt: true });
+export type InsertOnboardingTemplateScope = z.infer<typeof insertOnboardingTemplateScopeSchema>;
+export type OnboardingTemplateScope = typeof onboardingTemplateScopes.$inferSelect;
+
+export const onboardingTemplateTasks = pgTable("onboarding_template_tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull().references(() => onboardingTemplates.id, { onDelete: "cascade" }),
+  sectionId: varchar("section_id").references(() => onboardingTemplateSections.id, { onDelete: "set null" }),
+  title: varchar("title", { length: 200 }).notNull(),
+  description: text("description"),
+  instructions: text("instructions"),
+  category: varchar("category", { length: 100 }).default("paperwork").notNull(),
+  taskType: varchar("task_type", { length: 30 }).default("checkbox").notNull(),
+  ownerKind: varchar("owner_kind", { length: 20 }).default("role").notNull(),
   ownerRole: varchar("owner_role", { length: 30 }).default("hr").notNull(),
+  ownerUserId: varchar("owner_user_id").references(() => users.id),
+  ownerDepartmentId: varchar("owner_department_id").references(() => departments.id),
   isRequired: boolean("is_required").default(true).notNull(),
   documentType: varchar("document_type", { length: 50 }),
+  linkUrl: varchar("link_url", { length: 500 }),
   dueOffsetDays: integer("due_offset_days").default(0).notNull(),
+  dueRule: jsonb("due_rule").$type<DueRule | null>(),
+  customFields: jsonb("custom_fields").$type<CustomFieldDef[] | null>(),
   sortOrder: integer("sort_order").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -1072,10 +1136,21 @@ export const onboardingTasks = pgTable("onboarding_tasks", {
   templateTaskId: varchar("template_task_id").references(() => onboardingTemplateTasks.id),
   title: varchar("title", { length: 200 }).notNull(),
   description: text("description"),
-  category: varchar("category", { length: 30 }).default("paperwork").notNull(),
+  instructions: text("instructions"),
+  category: varchar("category", { length: 100 }).default("paperwork").notNull(),
+  sectionTitle: varchar("section_title", { length: 200 }),
+  sectionSortOrder: integer("section_sort_order").default(0).notNull(),
+  taskType: varchar("task_type", { length: 30 }).default("checkbox").notNull(),
+  ownerKind: varchar("owner_kind", { length: 20 }).default("role").notNull(),
   ownerRole: varchar("owner_role", { length: 30 }).default("hr").notNull(),
+  ownerUserId: varchar("owner_user_id").references(() => users.id),
+  ownerDepartmentId: varchar("owner_department_id").references(() => departments.id),
   isRequired: boolean("is_required").default(true).notNull(),
   documentType: varchar("document_type", { length: 50 }),
+  linkUrl: varchar("link_url", { length: 500 }),
+  attachmentUrl: varchar("attachment_url", { length: 500 }),
+  customFields: jsonb("custom_fields").$type<CustomFieldDef[] | null>(),
+  responseValue: jsonb("response_value").$type<Record<string, unknown> | null>(),
   dueDate: date("due_date"),
   sortOrder: integer("sort_order").default(0).notNull(),
   status: varchar("status", { length: 20 }).default("pending").notNull(),
@@ -1105,6 +1180,14 @@ export const onboardingTemplatesRelations = relations(onboardingTemplates, ({ ma
 
 export const onboardingTemplateTasksRelations = relations(onboardingTemplateTasks, ({ one }) => ({
   template: one(onboardingTemplates, { fields: [onboardingTemplateTasks.templateId], references: [onboardingTemplates.id] }),
+  section: one(onboardingTemplateSections, { fields: [onboardingTemplateTasks.sectionId], references: [onboardingTemplateSections.id] }),
+}));
+export const onboardingTemplateSectionsRelations = relations(onboardingTemplateSections, ({ one, many }) => ({
+  template: one(onboardingTemplates, { fields: [onboardingTemplateSections.templateId], references: [onboardingTemplates.id] }),
+  tasks: many(onboardingTemplateTasks),
+}));
+export const onboardingTemplateScopesRelations = relations(onboardingTemplateScopes, ({ one }) => ({
+  template: one(onboardingTemplates, { fields: [onboardingTemplateScopes.templateId], references: [onboardingTemplates.id] }),
 }));
 
 export const onboardingChecklistsRelations = relations(onboardingChecklists, ({ one, many }) => ({
@@ -1137,16 +1220,48 @@ export const insertOffboardingTemplateSchema = createInsertSchema(offboardingTem
 export type InsertOffboardingTemplate = z.infer<typeof insertOffboardingTemplateSchema>;
 export type OffboardingTemplate = typeof offboardingTemplates.$inferSelect;
 
-export const offboardingTemplateTasks = pgTable("offboarding_template_tasks", {
+export const offboardingTemplateSections = pgTable("offboarding_template_sections", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   templateId: varchar("template_id").notNull().references(() => offboardingTemplates.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 200 }).notNull(),
   description: text("description"),
-  category: varchar("category", { length: 30 }).default("access").notNull(),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertOffboardingTemplateSectionSchema = createInsertSchema(offboardingTemplateSections).omit({ id: true, createdAt: true });
+export type InsertOffboardingTemplateSection = z.infer<typeof insertOffboardingTemplateSectionSchema>;
+export type OffboardingTemplateSection = typeof offboardingTemplateSections.$inferSelect;
+
+export const offboardingTemplateScopes = pgTable("offboarding_template_scopes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull().references(() => offboardingTemplates.id, { onDelete: "cascade" }),
+  scopeKind: varchar("scope_kind", { length: 30 }).notNull(),
+  scopeRef: varchar("scope_ref", { length: 100 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertOffboardingTemplateScopeSchema = createInsertSchema(offboardingTemplateScopes).omit({ id: true, createdAt: true });
+export type InsertOffboardingTemplateScope = z.infer<typeof insertOffboardingTemplateScopeSchema>;
+export type OffboardingTemplateScope = typeof offboardingTemplateScopes.$inferSelect;
+
+export const offboardingTemplateTasks = pgTable("offboarding_template_tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull().references(() => offboardingTemplates.id, { onDelete: "cascade" }),
+  sectionId: varchar("section_id").references(() => offboardingTemplateSections.id, { onDelete: "set null" }),
+  title: varchar("title", { length: 200 }).notNull(),
+  description: text("description"),
+  instructions: text("instructions"),
+  category: varchar("category", { length: 100 }).default("access").notNull(),
+  taskType: varchar("task_type", { length: 30 }).default("checkbox").notNull(),
+  ownerKind: varchar("owner_kind", { length: 20 }).default("role").notNull(),
   ownerRole: varchar("owner_role", { length: 30 }).default("hr").notNull(),
+  ownerUserId: varchar("owner_user_id").references(() => users.id),
+  ownerDepartmentId: varchar("owner_department_id").references(() => departments.id),
   isRequired: boolean("is_required").default(true).notNull(),
   blocksDeactivation: boolean("blocks_deactivation").default(false).notNull(),
+  linkUrl: varchar("link_url", { length: 500 }),
   dueOffsetDays: integer("due_offset_days").default(0).notNull(),
+  dueRule: jsonb("due_rule").$type<DueRule | null>(),
+  customFields: jsonb("custom_fields").$type<CustomFieldDef[] | null>(),
   sortOrder: integer("sort_order").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -1194,10 +1309,21 @@ export const offboardingTasks = pgTable("offboarding_tasks", {
   templateTaskId: varchar("template_task_id").references(() => offboardingTemplateTasks.id),
   title: varchar("title", { length: 200 }).notNull(),
   description: text("description"),
-  category: varchar("category", { length: 30 }).default("access").notNull(),
+  instructions: text("instructions"),
+  category: varchar("category", { length: 100 }).default("access").notNull(),
+  sectionTitle: varchar("section_title", { length: 200 }),
+  sectionSortOrder: integer("section_sort_order").default(0).notNull(),
+  taskType: varchar("task_type", { length: 30 }).default("checkbox").notNull(),
+  ownerKind: varchar("owner_kind", { length: 20 }).default("role").notNull(),
   ownerRole: varchar("owner_role", { length: 30 }).default("hr").notNull(),
+  ownerUserId: varchar("owner_user_id").references(() => users.id),
+  ownerDepartmentId: varchar("owner_department_id").references(() => departments.id),
   isRequired: boolean("is_required").default(true).notNull(),
   blocksDeactivation: boolean("blocks_deactivation").default(false).notNull(),
+  linkUrl: varchar("link_url", { length: 500 }),
+  attachmentUrl: varchar("attachment_url", { length: 500 }),
+  customFields: jsonb("custom_fields").$type<CustomFieldDef[] | null>(),
+  responseValue: jsonb("response_value").$type<Record<string, unknown> | null>(),
   dueDate: date("due_date"),
   sortOrder: integer("sort_order").default(0).notNull(),
   status: varchar("status", { length: 20 }).default("pending").notNull(),
@@ -1226,6 +1352,14 @@ export const offboardingTemplatesRelations = relations(offboardingTemplates, ({ 
 
 export const offboardingTemplateTasksRelations = relations(offboardingTemplateTasks, ({ one }) => ({
   template: one(offboardingTemplates, { fields: [offboardingTemplateTasks.templateId], references: [offboardingTemplates.id] }),
+  section: one(offboardingTemplateSections, { fields: [offboardingTemplateTasks.sectionId], references: [offboardingTemplateSections.id] }),
+}));
+export const offboardingTemplateSectionsRelations = relations(offboardingTemplateSections, ({ one, many }) => ({
+  template: one(offboardingTemplates, { fields: [offboardingTemplateSections.templateId], references: [offboardingTemplates.id] }),
+  tasks: many(offboardingTemplateTasks),
+}));
+export const offboardingTemplateScopesRelations = relations(offboardingTemplateScopes, ({ one }) => ({
+  template: one(offboardingTemplates, { fields: [offboardingTemplateScopes.templateId], references: [offboardingTemplates.id] }),
 }));
 
 export const offboardingChecklistsRelations = relations(offboardingChecklists, ({ one, many }) => ({

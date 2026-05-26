@@ -316,6 +316,13 @@
       "when": 1779500000000,
       "tag": "0044_repair_kiosk_pairing_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1779600000000,
+      "tag": "0045_flexible_lifecycle_templates",
+      "breakpoints": true
     }
   ]
 }

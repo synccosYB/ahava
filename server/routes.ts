@@ -7,7 +7,7 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
 import type { User, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
@@ -7738,6 +7738,320 @@ export async function registerRoutes(
     const ctx = getAuditContext(req);
     await writeAuditLog({ action: "onboarding.cancel", actorUserId: (req as any).authUser.id, targetType: "onboarding_checklist", targetId: String(req.params.id), newValue: { reason }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.json(updated);
+  });
+
+  // ===== Flexible lifecycle: sections / scopes / suggest / duplicate / delete / propagate =====
+
+  async function loadFlexibleOnboardingTemplate(id: string) {
+    const t = await storage.getOnboardingTemplate(id);
+    if (!t) return null;
+    const [sections, tasks, scopes] = await Promise.all([
+      storage.getOnboardingTemplateSections(id),
+      storage.getOnboardingTemplateTasks(id),
+      storage.getOnboardingTemplateScopes(id),
+    ]);
+    return { ...t, sections, tasks, scopes };
+  }
+
+  async function loadFlexibleOffboardingTemplate(id: string) {
+    const t = await storage.getOffboardingTemplate(id);
+    if (!t) return null;
+    const [sections, tasks, scopes] = await Promise.all([
+      storage.getOffboardingTemplateSections(id),
+      storage.getOffboardingTemplateTasks(id),
+      storage.getOffboardingTemplateScopes(id),
+    ]);
+    return { ...t, sections, tasks, scopes };
+  }
+
+  app.get("/api/onboarding-templates/:id/full", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    const t = await loadFlexibleOnboardingTemplate(String(req.params.id));
+    if (!t) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    res.json(t);
+  });
+  app.get("/api/offboarding-templates/:id/full", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    const t = await loadFlexibleOffboardingTemplate(String(req.params.id));
+    if (!t) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    res.json(t);
+  });
+
+  // Sections (onboarding)
+  app.post("/api/onboarding-templates/:templateId/sections", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parent = await storage.getOnboardingTemplate(String(req.params.templateId));
+    if (!parent) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    const parsed = insertOnboardingTemplateSectionSchema.safeParse({ ...req.body, templateId: parent.id });
+    if (!parsed.success) return res.status(400).json({ message: "Invalid section", errors: parsed.error.flatten() });
+    const created = await storage.createOnboardingTemplateSection(parsed.data);
+    res.status(201).json(created);
+  });
+  app.patch("/api/onboarding-template-sections/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertOnboardingTemplateSectionSchema.partial().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid section", errors: parsed.error.flatten() });
+    delete (parsed.data as any).templateId;
+    const updated = await storage.updateOnboardingTemplateSection(String(req.params.id), parsed.data);
+    if (!updated) return res.status(404).json({ message: "Section not found" });
+    res.json(updated);
+  });
+  app.delete("/api/onboarding-template-sections/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    await storage.deleteOnboardingTemplateSection(String(req.params.id));
+    res.status(204).end();
+  });
+
+  // Sections (offboarding)
+  app.post("/api/offboarding-templates/:templateId/sections", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parent = await storage.getOffboardingTemplate(String(req.params.templateId));
+    if (!parent) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    const parsed = insertOffboardingTemplateSectionSchema.safeParse({ ...req.body, templateId: parent.id });
+    if (!parsed.success) return res.status(400).json({ message: "Invalid section", errors: parsed.error.flatten() });
+    const created = await storage.createOffboardingTemplateSection(parsed.data);
+    res.status(201).json(created);
+  });
+  app.patch("/api/offboarding-template-sections/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = insertOffboardingTemplateSectionSchema.partial().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid section", errors: parsed.error.flatten() });
+    delete (parsed.data as any).templateId;
+    const updated = await storage.updateOffboardingTemplateSection(String(req.params.id), parsed.data);
+    if (!updated) return res.status(404).json({ message: "Section not found" });
+    res.json(updated);
+  });
+  app.delete("/api/offboarding-template-sections/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    await storage.deleteOffboardingTemplateSection(String(req.params.id));
+    res.status(204).end();
+  });
+
+  // Scopes
+  const scopeListSchema = z.object({
+    scopes: z.array(z.object({
+      scopeKind: z.enum(["company", "location", "department", "role", "employment_type"]),
+      scopeRef: z.string().min(1),
+    })),
+  });
+  app.put("/api/onboarding-templates/:templateId/scopes", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parent = await storage.getOnboardingTemplate(String(req.params.templateId));
+    if (!parent) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    const parsed = scopeListSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid scopes", errors: parsed.error.flatten() });
+    const out = await storage.setOnboardingTemplateScopes(parent.id, parsed.data.scopes);
+    res.json(out);
+  });
+  app.put("/api/offboarding-templates/:templateId/scopes", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parent = await storage.getOffboardingTemplate(String(req.params.templateId));
+    if (!parent) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, parent, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    const parsed = scopeListSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid scopes", errors: parsed.error.flatten() });
+    const out = await storage.setOffboardingTemplateScopes(parent.id, parsed.data.scopes);
+    res.json(out);
+  });
+
+  // Suggestions for a hire
+  app.get("/api/lifecycle/suggest-templates/:employeeId", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+    const employee = await storage.getUser(String(req.params.employeeId));
+    if (!employee) return res.status(404).json({ message: "Employee not found" });
+    const [onboarding, offboarding] = await Promise.all([
+      storage.suggestOnboardingTemplatesForEmployee(employee),
+      storage.suggestOffboardingTemplatesForEmployee(employee),
+    ]);
+    res.json({ onboarding, offboarding });
+  });
+
+  // Duplicate
+  app.post("/api/onboarding-templates/:id/duplicate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const src = await storage.getOnboardingTemplate(String(req.params.id));
+    if (!src) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, src, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    const dup = await storage.duplicateOnboardingTemplate(src.id, actor.id);
+    res.status(201).json(dup);
+  });
+  app.post("/api/offboarding-templates/:id/duplicate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const src = await storage.getOffboardingTemplate(String(req.params.id));
+    if (!src) return res.status(404).json({ message: "Template not found" });
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, src, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    const dup = await storage.duplicateOffboardingTemplate(src.id, actor.id);
+    res.status(201).json(dup);
+  });
+
+  // Delete template
+  app.delete("/api/onboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const t = await storage.getOnboardingTemplate(String(req.params.id));
+    if (!t) return res.status(204).end();
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    await storage.deleteOnboardingTemplate(t.id);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_template.delete", actorUserId: actor.id, targetType: "onboarding_template", targetId: t.id, oldValue: t, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(204).end();
+  });
+  app.delete("/api/offboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const t = await storage.getOffboardingTemplate(String(req.params.id));
+    if (!t) return res.status(204).end();
+    const actor = (req as any).authUser as User;
+    if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+    await storage.deleteOffboardingTemplate(t.id);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_template.delete", actorUserId: actor.id, targetType: "offboarding_template", targetId: t.id, oldValue: t, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(204).end();
+  });
+
+  // Per-checklist add/remove tasks
+  const checklistAddTaskSchema = z.object({
+    title: z.string().min(1),
+    description: z.string().nullable().optional(),
+    instructions: z.string().nullable().optional(),
+    category: z.string().min(1).optional(),
+    sectionTitle: z.string().nullable().optional(),
+    sectionSortOrder: z.number().int().optional(),
+    taskType: z.enum(["checkbox", "document", "signature", "link", "free_text", "file"]).optional(),
+    ownerKind: z.enum(["role", "user", "department", "new_hire", "departing_employee"]).optional(),
+    ownerRole: z.string().optional(),
+    ownerUserId: z.string().nullable().optional(),
+    ownerDepartmentId: z.string().nullable().optional(),
+    isRequired: z.boolean().optional(),
+    blocksDeactivation: z.boolean().optional(),
+    documentType: z.string().nullable().optional(),
+    linkUrl: z.string().nullable().optional(),
+    customFields: z.any().nullable().optional(),
+    dueDate: z.string().nullable().optional(),
+    sortOrder: z.number().int().optional(),
+  });
+  app.post("/api/onboarding-checklists/:id/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const cl = await storage.getOnboardingChecklist(String(req.params.id));
+    if (!cl) return res.status(404).json({ message: "Checklist not found" });
+    const parsed = checklistAddTaskSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
+    const created = await storage.addTaskToOnboardingChecklist(cl.id, parsed.data as any);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_checklist.task.add", actorUserId: (req as any).authUser.id, targetType: "onboarding_task", targetId: created.id, newValue: created, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(201).json(created);
+  });
+  app.delete("/api/onboarding-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const t = await storage.getOnboardingTask(String(req.params.id));
+    if (!t) return res.status(204).end();
+    await storage.deleteOnboardingTaskRow(t.id);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "onboarding_checklist.task.delete", actorUserId: (req as any).authUser.id, targetType: "onboarding_task", targetId: t.id, oldValue: t, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(204).end();
+  });
+  app.post("/api/offboarding-checklists/:id/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const cl = await storage.getOffboardingChecklist(String(req.params.id));
+    if (!cl) return res.status(404).json({ message: "Checklist not found" });
+    const parsed = checklistAddTaskSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
+    const created = await storage.addTaskToOffboardingChecklist(cl.id, parsed.data as any);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_checklist.task.add", actorUserId: (req as any).authUser.id, targetType: "offboarding_task", targetId: created.id, newValue: created, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(201).json(created);
+  });
+  app.delete("/api/offboarding-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const t = await storage.getOffboardingTask(String(req.params.id));
+    if (!t) return res.status(204).end();
+    await storage.deleteOffboardingTaskRow(t.id);
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "offboarding_checklist.task.delete", actorUserId: (req as any).authUser.id, targetType: "offboarding_task", targetId: t.id, oldValue: t, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.status(204).end();
+  });
+
+  // Propagate template task changes to in-progress checklists
+  const propagateSchema = z.object({ kind: z.enum(["onboarding", "offboarding"]) });
+  app.post("/api/lifecycle-templates/:id/propagate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+    const parsed = propagateSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid propagate request" });
+    const actor = (req as any).authUser as User;
+    const tid = String(req.params.id);
+    let propagated = 0;
+    if (parsed.data.kind === "onboarding") {
+      const tpl = await storage.getOnboardingTemplate(tid);
+      if (!tpl) return res.status(404).json({ message: "Template not found" });
+      if (!actorCanAccessLifecycleTemplate(actor, tpl, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+      const checklists = await storage.listOnboardingChecklists({ status: "in_progress" });
+      const ours = checklists.filter(c => c.templateId === tid);
+      const [tpls, sections] = await Promise.all([
+        storage.getOnboardingTemplateTasks(tid),
+        storage.getOnboardingTemplateSections(tid),
+      ]);
+      const sectionMap = new Map(sections.map(s => [s.id, s]));
+      for (const cl of ours) {
+        const existing = await storage.getOnboardingTasks(cl.id);
+        const existingTplIds = new Set(existing.map(e => e.templateTaskId).filter(Boolean));
+        for (const t of tpls) {
+          if (existingTplIds.has(t.id)) continue;
+          const section = t.sectionId ? sectionMap.get(t.sectionId) : null;
+          await storage.addTaskToOnboardingChecklist(cl.id, {
+            title: t.title,
+            description: t.description,
+            instructions: t.instructions ?? null,
+            category: t.category,
+            sectionTitle: section?.title ?? null,
+            sectionSortOrder: section?.sortOrder ?? 0,
+            taskType: t.taskType ?? "checkbox",
+            ownerKind: t.ownerKind ?? "role",
+            ownerRole: t.ownerRole,
+            ownerUserId: t.ownerUserId ?? null,
+            ownerDepartmentId: t.ownerDepartmentId ?? null,
+            isRequired: t.isRequired,
+            documentType: t.documentType,
+            linkUrl: t.linkUrl ?? null,
+            customFields: (t.customFields ?? null) as any,
+            sortOrder: t.sortOrder,
+          } as any);
+          propagated++;
+        }
+      }
+    } else {
+      const tpl = await storage.getOffboardingTemplate(tid);
+      if (!tpl) return res.status(404).json({ message: "Template not found" });
+      if (!actorCanAccessLifecycleTemplate(actor, tpl, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
+      const checklists = await storage.listOffboardingChecklists({ status: "in_progress" });
+      const ours = checklists.filter(c => c.templateId === tid);
+      const [tpls, sections] = await Promise.all([
+        storage.getOffboardingTemplateTasks(tid),
+        storage.getOffboardingTemplateSections(tid),
+      ]);
+      const sectionMap = new Map(sections.map(s => [s.id, s]));
+      for (const cl of ours) {
+        const existing = await storage.getOffboardingTasks(cl.id);
+        const existingTplIds = new Set(existing.map(e => e.templateTaskId).filter(Boolean));
+        for (const t of tpls) {
+          if (existingTplIds.has(t.id)) continue;
+          const section = t.sectionId ? sectionMap.get(t.sectionId) : null;
+          await storage.addTaskToOffboardingChecklist(cl.id, {
+            title: t.title,
+            description: t.description,
+            instructions: t.instructions ?? null,
+            category: t.category,
+            sectionTitle: section?.title ?? null,
+            sectionSortOrder: section?.sortOrder ?? 0,
+            taskType: t.taskType ?? "checkbox",
+            ownerKind: t.ownerKind ?? "role",
+            ownerRole: t.ownerRole,
+            ownerUserId: t.ownerUserId ?? null,
+            ownerDepartmentId: t.ownerDepartmentId ?? null,
+            isRequired: t.isRequired,
+            blocksDeactivation: t.blocksDeactivation,
+            linkUrl: t.linkUrl ?? null,
+            customFields: (t.customFields ?? null) as any,
+            sortOrder: t.sortOrder,
+          } as any);
+          propagated++;
+        }
+      }
+    }
+    const ctx = getAuditContext(req);
+    await writeAuditLog({ action: "lifecycle_template.propagate", actorUserId: actor.id, targetType: `${parsed.data.kind}_template`, targetId: tid, newValue: { propagated }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    res.json({ propagated });
   });
 
   // ===================== Lifecycle Wizards: Offboarding =====================

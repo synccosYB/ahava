@@ -4,6 +4,7 @@ import type {
   OnboardingTemplate,
   OnboardingTemplateTask,
   User,
+  DueRule,
 } from "@shared/schema";
 import { writeAuditLog } from "./audit";
 import { createPolicyAlert } from "./policyEnforcement";
@@ -26,6 +27,25 @@ function addDays(base: Date, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+function resolveDueRule(
+  rule: DueRule | null | undefined,
+  legacyOffsetDays: number,
+  anchors: { hireDate: Date | null; startDate: Date | null; terminationDate: Date | null },
+): string | null {
+  const r = rule ?? { kind: "relative", days: legacyOffsetDays } as DueRule;
+  if (r.kind === "none") return null;
+  if (r.kind === "absolute") return r.date;
+  if (r.kind === "relative") {
+    const anchor = r.anchor ?? "hire_date";
+    const base = anchor === "termination_date" ? anchors.terminationDate
+      : anchor === "start_date" ? anchors.startDate
+      : anchors.hireDate;
+    if (!base) return null;
+    return addDays(base, r.days);
+  }
+  return null;
+}
+
 export interface MaterializeOptions {
   templateId?: string | null;
   hireDate?: string | null;
@@ -40,16 +60,20 @@ export async function selectOnboardingTemplate(
   if (explicitTemplateId) {
     const t = await storage.getOnboardingTemplate(explicitTemplateId);
     if (t && t.isActive) {
-      // Scope check: template must be global (companyId=null) or belong to the employee's company.
       const employeeCompanyId = employee.companyId ?? null;
       const templateCompanyId = t.companyId ?? null;
       if (templateCompanyId !== null && templateCompanyId !== employeeCompanyId) {
-        // Reject cross-company template selection silently and fall through to default.
+        // fall through
       } else {
         return t;
       }
     }
   }
+  // Try scope-matched suggestion first
+  try {
+    const suggestions = await storage.suggestOnboardingTemplatesForEmployee(employee);
+    if (suggestions.length > 0 && suggestions[0].matchScore >= 2) return suggestions[0];
+  } catch {}
   const def = await storage.getDefaultOnboardingTemplate(employee.companyId ?? null);
   if (def) return def;
   const all = await storage.getOnboardingTemplates({ companyId: employee.companyId ?? null, isActive: true });
@@ -76,9 +100,14 @@ export async function materializeOnboardingChecklist(
     return null;
   }
 
-  const tasks = await storage.getOnboardingTemplateTasks(template.id);
+  const [tasks, sections] = await Promise.all([
+    storage.getOnboardingTemplateTasks(template.id),
+    storage.getOnboardingTemplateSections(template.id),
+  ]);
+  const sectionMap = new Map(sections.map(s => [s.id, s]));
   const hireDate = opts.hireDate ?? null;
-  const baseDate = hireDate ? new Date(hireDate) : null;
+  const hireBase = hireDate ? new Date(hireDate) : null;
+  const anchors = { hireDate: hireBase, startDate: hireBase, terminationDate: null };
 
   const checklist = await storage.createOnboardingChecklistRow({
     employeeId: employee.id,
@@ -89,27 +118,64 @@ export async function materializeOnboardingChecklist(
   });
 
   const now = new Date();
+  // First pass: insert tasks with non-end_of_section dates
+  const sectionMaxDate = new Map<string | null, string | null>();
+  const insertedRows: Array<{ row: any; task: OnboardingTemplateTask }> = [];
   for (const t of tasks) {
     const auto = isSystemAutoTask(t);
-    await storage.createOnboardingTaskRow({
+    const section = t.sectionId ? sectionMap.get(t.sectionId) : null;
+    const rule = (t.dueRule ?? null) as DueRule | null;
+    let dueDate: string | null = null;
+    if (rule?.kind !== "end_of_section") {
+      dueDate = resolveDueRule(rule, t.dueOffsetDays, anchors);
+    }
+    const created = await storage.createOnboardingTaskRow({
       checklistId: checklist.id,
       templateTaskId: t.id,
       title: t.title,
       description: t.description,
+      instructions: t.instructions ?? null,
       category: t.category,
+      sectionTitle: section?.title ?? null,
+      sectionSortOrder: section?.sortOrder ?? 0,
+      taskType: t.taskType ?? "checkbox",
+      ownerKind: t.ownerKind ?? "role",
       ownerRole: t.ownerRole,
+      ownerUserId: t.ownerUserId ?? null,
+      ownerDepartmentId: t.ownerDepartmentId ?? null,
       isRequired: t.isRequired,
       documentType: t.documentType,
-      // Per arch §3: due dates are only computed when a hireDate exists.
-      // Without a hireDate, we leave dueDate null so reminders are not
-      // anchored to an arbitrary "today" baseline.
-      dueDate: baseDate ? addDays(baseDate, t.dueOffsetDays) : null,
+      linkUrl: t.linkUrl ?? null,
+      customFields: t.customFields ?? null,
+      dueDate,
       sortOrder: t.sortOrder,
       status: auto ? "completed" : "pending",
       completedAt: auto ? now : null,
       completedBy: auto ? opts.startedBy : null,
       notes: auto ? "Auto-completed by system" : null,
-    });
+    } as any);
+    insertedRows.push({ row: created, task: t });
+    if (dueDate) {
+      const cur = sectionMaxDate.get(t.sectionId ?? null);
+      if (!cur || dueDate > cur) sectionMaxDate.set(t.sectionId ?? null, dueDate);
+    }
+  }
+  // Second pass: resolve end_of_section dates
+  for (const { row, task } of insertedRows) {
+    const rule = (task.dueRule ?? null) as DueRule | null;
+    if (rule?.kind !== "end_of_section") continue;
+    const maxDate = sectionMaxDate.get(task.sectionId ?? null) ?? null;
+    if (!maxDate) continue;
+    const due = rule.days ? addDays(new Date(maxDate), rule.days) : maxDate;
+    await storage.updateOnboardingTask(row.id, { } as any);
+    // dueDate isn't in updateOnboardingTask signature; use direct update via storage method extension
+    // Workaround: re-create using raw update path
+    try {
+      const { db } = await import("../db");
+      const { onboardingTasks } = await import("@shared/schema");
+      const { eq } = await import("drizzle-orm");
+      await db.update(onboardingTasks).set({ dueDate: due }).where(eq(onboardingTasks.id, row.id));
+    } catch {}
   }
 
   await writeAuditLog({

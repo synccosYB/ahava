@@ -2331,8 +2331,19 @@ function OnboardingTab({ userId }: { userId: string }) {
   const { data: templates } = useQuery<Array<{ id: string; name: string; isDefault: boolean }>>({
     queryKey: ["/api/onboarding-templates"],
   });
+  const { data: suggestions } = useQuery<Array<{ templateId: string; templateName: string; score: number; reasons: string[] }>>({
+    queryKey: ["/api/lifecycle/suggest-templates", userId, "onboarding"],
+    queryFn: async () => {
+      const r = await fetch(`/api/lifecycle/suggest-templates/${userId}?kind=onboarding`, { credentials: "include" });
+      if (!r.ok) return [];
+      return r.json();
+    },
+  });
   const [templateId, setTemplateId] = useState<string>("");
   const [hireDate, setHireDate] = useState<string>("");
+  useEffect(() => {
+    if (!templateId && suggestions && suggestions.length > 0) setTemplateId(suggestions[0].templateId);
+  }, [suggestions, templateId]);
   const [skipReasonByTask, setSkipReasonByTask] = useState<Record<string, string>>({});
   const [notesByTask, setNotesByTask] = useState<Record<string, string>>({});
 
