@@ -100,7 +100,7 @@ const SYSTEM_ROLES = [
     name: "HR Admin",
     description: "Human resources management",
     permissions: [
-      "company.view",
+      "company.view", "company.create",
       "users.create", "users.view", "users.edit", "users.delete",
       "departments.view", "departments.edit",
       "attendance.view_all", "attendance.edit", "attendance.approve_corrections",
