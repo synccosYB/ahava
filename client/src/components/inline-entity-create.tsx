@@ -97,18 +97,30 @@ export function CreateCompanyDialog({
 }) {
   const { toast } = useToast();
   const [name, setName] = useState("");
+  const [legalName, setLegalName] = useState("");
+  const [timezone, setTimezone] = useState("");
+  const [address, setAddress] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     if (!open) {
       setName("");
+      setLegalName("");
+      setTimezone("");
+      setAddress("");
       setError(null);
+      setFieldErrors({});
     }
   }, [open]);
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/companies", { name: name.trim() });
+      const payload: Record<string, string> = { name: name.trim() };
+      if (legalName.trim()) payload.legalName = legalName.trim();
+      if (timezone.trim()) payload.timezone = timezone.trim();
+      if (address.trim()) payload.address = address.trim();
+      const res = await apiRequest("POST", "/api/companies", payload);
       return (await res.json()) as Company;
     },
     onSuccess: (company) => {
@@ -118,7 +130,15 @@ export function CreateCompanyDialog({
       onOpenChange(false);
     },
     onError: (err) => {
-      setError(extractFieldError(err, "name") || genericError(err));
+      const perField: Record<string, string | null> = {
+        name: extractFieldError(err, "name"),
+        legalName: extractFieldError(err, "legalName"),
+        timezone: extractFieldError(err, "timezone"),
+        address: extractFieldError(err, "address"),
+      };
+      setFieldErrors(perField);
+      const anyFieldError = Object.values(perField).some(Boolean);
+      setError(anyFieldError ? null : genericError(err));
     },
   });
 
@@ -131,19 +151,87 @@ export function CreateCompanyDialog({
             Create a new company. You can configure its details later from the Companies admin page.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2">
-          <Label htmlFor="inline-company-name">Company name</Label>
-          <Input
-            id="inline-company-name"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (error) setError(null);
-            }}
-            placeholder="Acme Health Group"
-            data-testid="input-inline-company-name"
-            autoFocus
-          />
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="inline-company-name">Company name</Label>
+            <Input
+              id="inline-company-name"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                if (fieldErrors.name) setFieldErrors((p) => ({ ...p, name: null }));
+                if (error) setError(null);
+              }}
+              placeholder="Acme Health Group"
+              data-testid="input-inline-company-name"
+              autoFocus
+            />
+            {fieldErrors.name && (
+              <p className="text-sm text-destructive" data-testid="text-inline-company-name-error">
+                {fieldErrors.name}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="inline-company-legal-name">
+              Legal name <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="inline-company-legal-name"
+              value={legalName}
+              onChange={(e) => {
+                setLegalName(e.target.value);
+                if (fieldErrors.legalName) setFieldErrors((p) => ({ ...p, legalName: null }));
+              }}
+              placeholder="Acme Health Group, Inc."
+              data-testid="input-inline-company-legal-name"
+            />
+            {fieldErrors.legalName && (
+              <p className="text-sm text-destructive" data-testid="text-inline-company-legal-name-error">
+                {fieldErrors.legalName}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="inline-company-timezone">
+              Timezone <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="inline-company-timezone"
+              value={timezone}
+              onChange={(e) => {
+                setTimezone(e.target.value);
+                if (fieldErrors.timezone) setFieldErrors((p) => ({ ...p, timezone: null }));
+              }}
+              placeholder="America/New_York"
+              data-testid="input-inline-company-timezone"
+            />
+            {fieldErrors.timezone && (
+              <p className="text-sm text-destructive" data-testid="text-inline-company-timezone-error">
+                {fieldErrors.timezone}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="inline-company-address">
+              Address <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="inline-company-address"
+              value={address}
+              onChange={(e) => {
+                setAddress(e.target.value);
+                if (fieldErrors.address) setFieldErrors((p) => ({ ...p, address: null }));
+              }}
+              placeholder="123 Main St, City, ST 00000"
+              data-testid="input-inline-company-address"
+            />
+            {fieldErrors.address && (
+              <p className="text-sm text-destructive" data-testid="text-inline-company-address-error">
+                {fieldErrors.address}
+              </p>
+            )}
+          </div>
           {error && (
             <p className="text-sm text-destructive" data-testid="text-inline-company-error">
               {error}
@@ -161,7 +249,7 @@ export function CreateCompanyDialog({
           <Button
             onClick={() => {
               if (!name.trim()) {
-                setError("Required");
+                setFieldErrors((p) => ({ ...p, name: "Required" }));
                 return;
               }
               mutation.mutate();
@@ -300,21 +388,27 @@ export function CreateLocationDialog({
 }) {
   const { toast } = useToast();
   const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [timezone, setTimezone] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     if (!open) {
       setName("");
+      setCode("");
+      setTimezone("");
       setError(null);
+      setFieldErrors({});
     }
   }, [open]);
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/locations", {
-        name: name.trim(),
-        companyId,
-      });
+      const payload: Record<string, string> = { name: name.trim(), companyId };
+      if (code.trim()) payload.code = code.trim();
+      if (timezone.trim()) payload.timezone = timezone.trim();
+      const res = await apiRequest("POST", "/api/locations", payload);
       return (await res.json()) as Location;
     },
     onSuccess: (location) => {
@@ -324,7 +418,14 @@ export function CreateLocationDialog({
       onOpenChange(false);
     },
     onError: (err) => {
-      setError(extractFieldError(err, "name") || genericError(err));
+      const perField: Record<string, string | null> = {
+        name: extractFieldError(err, "name"),
+        code: extractFieldError(err, "code"),
+        timezone: extractFieldError(err, "timezone"),
+      };
+      setFieldErrors(perField);
+      const anyFieldError = Object.values(perField).some(Boolean);
+      setError(anyFieldError ? null : genericError(err));
     },
   });
 
@@ -339,19 +440,67 @@ export function CreateLocationDialog({
               : "Create a new location under the selected company."}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2">
-          <Label htmlFor="inline-location-name">Location name</Label>
-          <Input
-            id="inline-location-name"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (error) setError(null);
-            }}
-            placeholder="Main Campus"
-            data-testid="input-inline-location-name"
-            autoFocus
-          />
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="inline-location-name">Location name</Label>
+            <Input
+              id="inline-location-name"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                if (fieldErrors.name) setFieldErrors((p) => ({ ...p, name: null }));
+                if (error) setError(null);
+              }}
+              placeholder="Main Campus"
+              data-testid="input-inline-location-name"
+              autoFocus
+            />
+            {fieldErrors.name && (
+              <p className="text-sm text-destructive" data-testid="text-inline-location-name-error">
+                {fieldErrors.name}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="inline-location-code">
+              Code <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="inline-location-code"
+              value={code}
+              onChange={(e) => {
+                setCode(e.target.value);
+                if (fieldErrors.code) setFieldErrors((p) => ({ ...p, code: null }));
+              }}
+              placeholder="MAIN"
+              data-testid="input-inline-location-code"
+            />
+            {fieldErrors.code && (
+              <p className="text-sm text-destructive" data-testid="text-inline-location-code-error">
+                {fieldErrors.code}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="inline-location-timezone">
+              Timezone <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="inline-location-timezone"
+              value={timezone}
+              onChange={(e) => {
+                setTimezone(e.target.value);
+                if (fieldErrors.timezone) setFieldErrors((p) => ({ ...p, timezone: null }));
+              }}
+              placeholder="America/New_York"
+              data-testid="input-inline-location-timezone"
+            />
+            {fieldErrors.timezone && (
+              <p className="text-sm text-destructive" data-testid="text-inline-location-timezone-error">
+                {fieldErrors.timezone}
+              </p>
+            )}
+          </div>
           {error && (
             <p className="text-sm text-destructive" data-testid="text-inline-location-error">
               {error}
@@ -369,7 +518,7 @@ export function CreateLocationDialog({
           <Button
             onClick={() => {
               if (!name.trim()) {
-                setError("Required");
+                setFieldErrors((p) => ({ ...p, name: "Required" }));
                 return;
               }
               if (!companyId) {
