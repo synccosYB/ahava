@@ -3167,14 +3167,119 @@ interface AuditLogEntry {
   targetId: string;
   targetType: string;
   createdAt: string;
+  oldValue?: Record<string, unknown> | null;
+  newValue?: Record<string, unknown> | null;
 }
 
 function EmployeeAuditHistory({ userId }: { userId: string }) {
   return (
     <div className="space-y-6" data-testid="employee-history-tab">
       <EmployeeTimesheetCard userId={userId} />
+      <IdentityHistoryCard userId={userId} />
       <EmployeeAuditLogTable userId={userId} />
     </div>
+  );
+}
+
+const IDENTITY_FIELD_LABELS: Record<string, string> = {
+  firstName: "First name",
+  lastName: "Last name",
+  email: "Email",
+};
+
+function formatIdentityValue(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "—";
+  return String(v);
+}
+
+function describeIdentityChange(log: AuditLogEntry): {
+  fields: string[];
+  rows: { field: string; from: string; to: string }[];
+} {
+  const oldV = (log.oldValue || {}) as Record<string, unknown>;
+  const newV = (log.newValue || {}) as Record<string, unknown>;
+  const keys = Array.from(new Set([...Object.keys(oldV), ...Object.keys(newV)]));
+  const rows = keys.map((k) => ({
+    field: IDENTITY_FIELD_LABELS[k] || k,
+    from: formatIdentityValue(oldV[k]),
+    to: formatIdentityValue(newV[k]),
+  }));
+  return { fields: rows.map((r) => r.field), rows };
+}
+
+function IdentityHistoryCard({ userId }: { userId: string }) {
+  const { data, isLoading } = useQuery<EmployeeAuditResponse>({
+    queryKey: ["/api/audit-logs/employee", userId, "identity"],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/audit-logs/employee/${userId}?limit=200&offset=0`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Failed to load identity history");
+      return res.json();
+    },
+  });
+
+  const identityLogs = (data?.logs || [])
+    .filter((l) => l.action === "user.identity_change")
+    .slice(0, 5);
+
+  if (isLoading) {
+    return (
+      <Card data-testid="card-identity-history">
+        <CardHeader><CardTitle>Identity history</CardTitle></CardHeader>
+        <CardContent>
+          <Skeleton className="h-16 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (identityLogs.length === 0) {
+    return (
+      <Card data-testid="card-identity-history">
+        <CardHeader><CardTitle>Identity history</CardTitle></CardHeader>
+        <CardContent>
+          <p className="text-muted-foreground text-sm" data-testid="text-no-identity-changes">
+            No name or email changes recorded.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card data-testid="card-identity-history">
+      <CardHeader><CardTitle>Identity history</CardTitle></CardHeader>
+      <CardContent>
+        <ul className="space-y-3">
+          {identityLogs.map((log) => {
+            const { rows } = describeIdentityChange(log);
+            return (
+              <li
+                key={log.id}
+                className="border-l-2 border-primary/40 pl-3"
+                data-testid={`identity-change-${log.id}`}
+              >
+                <div className="text-xs text-muted-foreground mb-1">
+                  {log.createdAt ? new Date(log.createdAt).toLocaleString() : "—"}
+                </div>
+                <div className="space-y-1 text-sm">
+                  {rows.map((r) => (
+                    <div key={r.field} data-testid={`identity-change-row-${log.id}-${r.field}`}>
+                      <span className="font-medium">{r.field}:</span>{" "}
+                      <span className="text-muted-foreground line-through">{r.from}</span>
+                      <span className="mx-2">→</span>
+                      <span>{r.to}</span>
+                    </div>
+                  ))}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -3221,13 +3326,45 @@ function EmployeeAuditLogTable({ userId }: { userId: string }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {logs.map((log) => (
-                  <TableRow key={log.id} data-testid={`row-audit-${log.id}`}>
-                    <TableCell className="font-medium">{log.action}</TableCell>
-                    <TableCell>{log.targetType}</TableCell>
-                    <TableCell>{log.createdAt ? new Date(log.createdAt).toLocaleString() : "—"}</TableCell>
-                  </TableRow>
-                ))}
+                {logs.map((log) => {
+                  const isIdentity = log.action === "user.identity_change";
+                  const identity = isIdentity ? describeIdentityChange(log) : null;
+                  const onlyEmail =
+                    identity &&
+                    identity.fields.length === 1 &&
+                    identity.fields[0] === "Email";
+                  const onlyName =
+                    identity &&
+                    identity.fields.every((f) => f === "First name" || f === "Last name");
+                  const label = isIdentity
+                    ? onlyEmail
+                      ? "Email changed"
+                      : onlyName
+                        ? "Name changed"
+                        : "Name & email changed"
+                    : log.action;
+                  return (
+                    <TableRow key={log.id} data-testid={`row-audit-${log.id}`}>
+                      <TableCell className="font-medium align-top">
+                        <div>{label}</div>
+                        {identity && (
+                          <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                            {identity.rows.map((r) => (
+                              <div key={r.field}>
+                                {r.field}:{" "}
+                                <span className="line-through">{r.from}</span>
+                                <span className="mx-1">→</span>
+                                <span className="text-foreground">{r.to}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="align-top">{log.targetType}</TableCell>
+                      <TableCell className="align-top">{log.createdAt ? new Date(log.createdAt).toLocaleString() : "—"}</TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
             <div className="flex items-center justify-between text-xs text-muted-foreground mt-3">
