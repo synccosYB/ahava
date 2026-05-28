@@ -22,6 +22,8 @@ import {
   ScanFace,
   Settings,
   ChevronRight,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import {
   Sidebar,
@@ -34,8 +36,15 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuBadge,
+  SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Collapsible,
   CollapsibleContent,
@@ -97,6 +106,55 @@ const settingsItems: NavItem[] = [
   { title: "Audit Log", href: "/audit-log", icon: FileText },
   { title: "User Manual", href: "/manual", icon: BookOpen },
 ];
+
+function useShortcutLabel() {
+  if (typeof navigator === "undefined") return "Ctrl + B";
+  const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
+  return isMac ? "⌘ B" : "Ctrl + B";
+}
+
+function SidebarCollapseToggle() {
+  const { state, isMobile, toggleSidebar, openMobile } = useSidebar();
+  const shortcut = useShortcutLabel();
+  const isCollapsed = !isMobile && state === "collapsed";
+  const Icon = isMobile
+    ? openMobile
+      ? PanelLeftClose
+      : PanelLeftOpen
+    : isCollapsed
+      ? PanelLeftOpen
+      : PanelLeftClose;
+  const label = isCollapsed || (isMobile && !openMobile) ? "Expand sidebar" : "Collapse sidebar";
+
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={label}
+            data-testid="button-sidebar-collapse-toggle"
+            className={cn(
+              "inline-flex items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors",
+              "h-7 w-7 shrink-0",
+            )}
+          >
+            <Icon className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side={isCollapsed ? "right" : "bottom"}>
+          <div className="flex items-center gap-2">
+            <span>{label}</span>
+            <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium">
+              {shortcut}
+            </kbd>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
 
 function testIdFor(title: string) {
   return `link-nav-${title.toLowerCase().replace(/\s+/g, "-")}`;
@@ -280,7 +338,7 @@ export function AppSidebar() {
             className="h-8 w-8 rounded object-contain"
             data-testid="img-sidebar-logo"
           />
-          <div className="flex flex-col group-data-[collapsible=icon]:hidden">
+          <div className="flex flex-col flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
             <span
               className="text-sm font-semibold text-sidebar-foreground"
               data-testid="text-sidebar-title"
@@ -294,6 +352,12 @@ export function AppSidebar() {
               Time & Attendance
             </span>
           </div>
+          <div className="ml-auto group-data-[collapsible=icon]:hidden">
+            <SidebarCollapseToggle />
+          </div>
+        </div>
+        <div className="mt-2 hidden justify-center group-data-[collapsible=icon]:flex">
+          <SidebarCollapseToggle />
         </div>
       </SidebarHeader>
 
@@ -395,6 +459,7 @@ export function AppSidebar() {
           </a>
         )}
       </SidebarFooter>
+      <SidebarRail data-testid="sidebar-rail" />
     </Sidebar>
   );
 }
