@@ -25,6 +25,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  INLINE_ADD_NEW_VALUE,
+  PermissionedAddNewItem,
+  CreateDepartmentDialog,
+} from "@/components/inline-entity-create";
+import {
   Table,
   TableBody,
   TableCell,
@@ -94,6 +99,7 @@ export default function KioskManagementPage() {
   const [formName, setFormName] = useState("");
   const [formLocation, setFormLocation] = useState("");
   const [formDeptId, setFormDeptId] = useState("none");
+  const [createDeptOpen, setCreateDeptOpen] = useState(false);
   const [formActive, setFormActive] = useState(true);
   const [pairingFor, setPairingFor] = useState<KioskDevice | null>(null);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
@@ -393,7 +399,16 @@ export default function KioskManagementPage() {
             </div>
             <div className="space-y-2">
               <Label>Department</Label>
-              <Select value={formDeptId} onValueChange={setFormDeptId}>
+              <Select
+                value={formDeptId}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    setCreateDeptOpen(true);
+                    return;
+                  }
+                  setFormDeptId(v);
+                }}
+              >
                 <SelectTrigger data-testid="select-trigger-department">
                   <SelectValue />
                 </SelectTrigger>
@@ -402,6 +417,11 @@ export default function KioskManagementPage() {
                   {(departments || []).map(dept => (
                     <SelectItem key={dept.id} value={dept.id}>{dept.name}</SelectItem>
                   ))}
+                  <PermissionedAddNewItem
+                    permission="departments.create"
+                    label="Add new department"
+                    testId="option-kiosk-add-new-department"
+                  />
                 </SelectContent>
               </Select>
             </div>
@@ -418,6 +438,13 @@ export default function KioskManagementPage() {
             </Button>
           </DialogFooter>
         </DialogContent>
+        <CreateDepartmentDialog
+          open={createDeptOpen}
+          onOpenChange={setCreateDeptOpen}
+          onCreated={(dept) => {
+            setFormDeptId(dept.id);
+          }}
+        />
       </Dialog>
 
       <Dialog open={!!pairingFor} onOpenChange={(open) => !open && closePairing()}>

@@ -50,6 +50,13 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger
 } from "@/components/ui/alert-dialog";
 import { ReviewCyclesSection } from "@/components/review-cycles/review-cycles-section";
+import {
+  INLINE_ADD_NEW_VALUE,
+  PermissionedAddNewItem,
+  CreateCompanyDialog,
+  CreateLocationDialog,
+  CreateDepartmentDialog,
+} from "@/components/inline-entity-create";
 import type {
   Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User,
   Workflow as WorkflowType, RoleAssignmentRule, ScheduleTemplate, ScheduleTemplateDay,
@@ -591,6 +598,9 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
   const [open, setOpen] = useState(false);
   const [level, setLevel] = useState<string>("");
   const [selectedId, setSelectedId] = useState<string>("");
+  const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
+  const [createLocationOpen, setCreateLocationOpen] = useState(false);
+  const [createDepartmentOpen, setCreateDepartmentOpen] = useState(false);
 
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"], enabled: level === "location" });
   const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"], enabled: level === "department" });
@@ -667,7 +677,18 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
           {level && (
             <div>
               <Label>Select {level === "division" ? "Company" : level === "location" ? "Location" : level === "department" ? "Department" : "Employee"}</Label>
-              <Select value={selectedId} onValueChange={setSelectedId}>
+              <Select
+                value={selectedId}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    if (level === "division") setCreateCompanyOpen(true);
+                    else if (level === "location") setCreateLocationOpen(true);
+                    else if (level === "department") setCreateDepartmentOpen(true);
+                    return;
+                  }
+                  setSelectedId(v);
+                }}
+              >
                 <SelectTrigger data-testid={`select-assignment-target-${policy.id}`}>
                   <SelectValue placeholder={`Select ${level}...`} />
                 </SelectTrigger>
@@ -675,6 +696,27 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
                   {getOptions().map((opt) => (
                     <SelectItem key={opt.id} value={opt.id}>{opt.label}</SelectItem>
                   ))}
+                  {level === "division" && (
+                    <PermissionedAddNewItem
+                      permission="company.create"
+                      label="Add new company"
+                      testId={`option-assignment-add-new-company-${policy.id}`}
+                    />
+                  )}
+                  {level === "location" && (
+                    <PermissionedAddNewItem
+                      permission="locations.manage"
+                      label="Add new location"
+                      testId={`option-assignment-add-new-location-${policy.id}`}
+                    />
+                  )}
+                  {level === "department" && (
+                    <PermissionedAddNewItem
+                      permission="departments.create"
+                      label="Add new department"
+                      testId={`option-assignment-add-new-department-${policy.id}`}
+                    />
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -686,6 +728,27 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
           </Button>
         </DialogFooter>
       </DialogContent>
+      <CreateCompanyDialog
+        open={createCompanyOpen}
+        onOpenChange={setCreateCompanyOpen}
+        onCreated={(company) => {
+          setSelectedId(company.id);
+        }}
+      />
+      <CreateLocationDialog
+        open={createLocationOpen}
+        onOpenChange={setCreateLocationOpen}
+        onCreated={(location) => {
+          setSelectedId(location.id);
+        }}
+      />
+      <CreateDepartmentDialog
+        open={createDepartmentOpen}
+        onOpenChange={setCreateDepartmentOpen}
+        onCreated={(dept) => {
+          setSelectedId(dept.id);
+        }}
+      />
     </Dialog>
   );
 }
@@ -3129,6 +3192,7 @@ function ScheduleTemplateDialog({ template, onClose }: { template: ScheduleTempl
   const [description, setDescription] = useState(template?.description || "");
   const [companyId, setCompanyId] = useState<string>(template?.companyId || "");
   const [isActive, setIsActive] = useState(template?.isActive ?? true);
+  const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
   const [days, setDays] = useState<{ dayOfWeek: number; isWorkDay: boolean; startTime: string; endTime: string }[]>(
     Array.from({ length: 7 }, (_, i) => ({ dayOfWeek: i, isWorkDay: i >= 1 && i <= 5, startTime: "09:00", endTime: "17:00" }))
   );
@@ -3186,11 +3250,25 @@ function ScheduleTemplateDialog({ template, onClose }: { template: ScheduleTempl
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label>Company (optional)</Label>
-              <Select value={companyId || "all"} onValueChange={(v) => setCompanyId(v === "all" ? "" : v)}>
+              <Select
+                value={companyId || "all"}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    setCreateCompanyOpen(true);
+                    return;
+                  }
+                  setCompanyId(v === "all" ? "" : v);
+                }}
+              >
                 <SelectTrigger data-testid="select-template-division"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All companies</SelectItem>
                   {divisions?.map(d => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
+                  <PermissionedAddNewItem
+                    permission="company.create"
+                    label="Add new company"
+                    testId="option-template-add-new-company"
+                  />
                 </SelectContent>
               </Select>
             </div>
@@ -3231,6 +3309,13 @@ function ScheduleTemplateDialog({ template, onClose }: { template: ScheduleTempl
           </Button>
         </DialogFooter>
       </DialogContent>
+      <CreateCompanyDialog
+        open={createCompanyOpen}
+        onOpenChange={setCreateCompanyOpen}
+        onCreated={(company) => {
+          setCompanyId(company.id);
+        }}
+      />
     </Dialog>
   );
 }
@@ -3548,6 +3633,9 @@ function RequiredDocDialog({
     dueOffsetDays: rule?.dueOffsetDays ?? 0,
     isActive: rule?.isActive ?? true,
   });
+  const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
+  const [createLocationOpen, setCreateLocationOpen] = useState(false);
+  const [createDepartmentOpen, setCreateDepartmentOpen] = useState(false);
 
   type RequiredDocPayload = {
     documentType: string;
@@ -3624,27 +3712,75 @@ function RequiredDocDialog({
           {form.scopeType === "company" && (
             <div className="space-y-1">
               <Label>Company</Label>
-              <Select value={form.companyId} onValueChange={(v) => setForm((f) => ({ ...f, companyId: v }))}>
+              <Select
+                value={form.companyId}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    setCreateCompanyOpen(true);
+                    return;
+                  }
+                  setForm((f) => ({ ...f, companyId: v }));
+                }}
+              >
                 <SelectTrigger data-testid="select-trigger-required-doc-company"><SelectValue placeholder="Select company" /></SelectTrigger>
-                <SelectContent>{divisions.map((d) => (<SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>))}</SelectContent>
+                <SelectContent>
+                  {divisions.map((d) => (<SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>))}
+                  <PermissionedAddNewItem
+                    permission="company.create"
+                    label="Add new company"
+                    testId="option-required-doc-add-new-company"
+                  />
+                </SelectContent>
               </Select>
             </div>
           )}
           {form.scopeType === "location" && (
             <div className="space-y-1">
               <Label>Location</Label>
-              <Select value={form.locationId} onValueChange={(v) => setForm((f) => ({ ...f, locationId: v }))}>
+              <Select
+                value={form.locationId}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    setCreateLocationOpen(true);
+                    return;
+                  }
+                  setForm((f) => ({ ...f, locationId: v }));
+                }}
+              >
                 <SelectTrigger data-testid="select-trigger-required-doc-location"><SelectValue placeholder="Select location" /></SelectTrigger>
-                <SelectContent>{locations.map((l) => (<SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>))}</SelectContent>
+                <SelectContent>
+                  {locations.map((l) => (<SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>))}
+                  <PermissionedAddNewItem
+                    permission="locations.manage"
+                    label="Add new location"
+                    testId="option-required-doc-add-new-location"
+                  />
+                </SelectContent>
               </Select>
             </div>
           )}
           {form.scopeType === "department" && (
             <div className="space-y-1">
               <Label>Department</Label>
-              <Select value={form.departmentId} onValueChange={(v) => setForm((f) => ({ ...f, departmentId: v }))}>
+              <Select
+                value={form.departmentId}
+                onValueChange={(v) => {
+                  if (v === INLINE_ADD_NEW_VALUE) {
+                    setCreateDepartmentOpen(true);
+                    return;
+                  }
+                  setForm((f) => ({ ...f, departmentId: v }));
+                }}
+              >
                 <SelectTrigger data-testid="select-trigger-required-doc-department"><SelectValue placeholder="Select department" /></SelectTrigger>
-                <SelectContent>{departments.map((d) => (<SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>))}</SelectContent>
+                <SelectContent>
+                  {departments.map((d) => (<SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>))}
+                  <PermissionedAddNewItem
+                    permission="departments.create"
+                    label="Add new department"
+                    testId="option-required-doc-add-new-department"
+                  />
+                </SelectContent>
               </Select>
             </div>
           )}
@@ -3684,6 +3820,27 @@ function RequiredDocDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <CreateCompanyDialog
+        open={createCompanyOpen}
+        onOpenChange={setCreateCompanyOpen}
+        onCreated={(company) => {
+          setForm((f) => ({ ...f, companyId: company.id }));
+        }}
+      />
+      <CreateLocationDialog
+        open={createLocationOpen}
+        onOpenChange={setCreateLocationOpen}
+        onCreated={(location) => {
+          setForm((f) => ({ ...f, locationId: location.id }));
+        }}
+      />
+      <CreateDepartmentDialog
+        open={createDepartmentOpen}
+        onOpenChange={setCreateDepartmentOpen}
+        onCreated={(dept) => {
+          setForm((f) => ({ ...f, departmentId: dept.id }));
+        }}
+      />
     </Dialog>
   );
 }

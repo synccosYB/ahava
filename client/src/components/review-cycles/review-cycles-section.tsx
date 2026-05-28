@@ -19,6 +19,11 @@ import { useToast } from "@/hooks/use-toast";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import type { Company, PerformanceReviewCycle } from "@shared/schema";
 import { useAuth } from "@/hooks/use-auth";
+import {
+  INLINE_ADD_NEW_VALUE,
+  PermissionedAddNewItem,
+  CreateCompanyDialog,
+} from "@/components/inline-entity-create";
 
 const cadenceLabels: Record<string, string> = {
   annual: "Annual",
@@ -70,6 +75,8 @@ export function ReviewCyclesSection() {
   const [editing, setEditing] = useState<PerformanceReviewCycle | null>(null);
   const [form, setForm] = useState<CycleFormState>(emptyForm);
   const [companyFilter, setCompanyFilter] = useState<string>(ALL_COMPANIES);
+  const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
+  const [createCompanyTarget, setCreateCompanyTarget] = useState<"form" | "filter">("form");
 
   const { data: companies } = useQuery<Company[]>({
     queryKey: ["/api/companies"],
@@ -232,7 +239,14 @@ export function ReviewCyclesSection() {
                   <Label>Company scope</Label>
                   <Select
                     value={form.companyId}
-                    onValueChange={(v) => setForm({ ...form, companyId: v })}
+                    onValueChange={(v) => {
+                      if (v === INLINE_ADD_NEW_VALUE) {
+                        setCreateCompanyTarget("form");
+                        setCreateCompanyOpen(true);
+                        return;
+                      }
+                      setForm({ ...form, companyId: v });
+                    }}
                   >
                     <SelectTrigger data-testid="select-review-cycle-company">
                       <SelectValue />
@@ -248,6 +262,11 @@ export function ReviewCyclesSection() {
                           {c.name}
                         </SelectItem>
                       ))}
+                      <PermissionedAddNewItem
+                        permission="company.create"
+                        label="Add new company"
+                        testId="option-cycle-add-new-company"
+                      />
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground mt-1">
@@ -295,7 +314,17 @@ export function ReviewCyclesSection() {
             Company
           </Label>
           <div className="w-64">
-            <Select value={companyFilter} onValueChange={setCompanyFilter}>
+            <Select
+              value={companyFilter}
+              onValueChange={(v) => {
+                if (v === INLINE_ADD_NEW_VALUE) {
+                  setCreateCompanyTarget("filter");
+                  setCreateCompanyOpen(true);
+                  return;
+                }
+                setCompanyFilter(v);
+              }}
+            >
               <SelectTrigger data-testid="select-cycles-company-filter">
                 <SelectValue />
               </SelectTrigger>
@@ -311,6 +340,11 @@ export function ReviewCyclesSection() {
                     {c.name}
                   </SelectItem>
                 ))}
+                <PermissionedAddNewItem
+                  permission="company.create"
+                  label="Add new company"
+                  testId="option-cycle-filter-add-new-company"
+                />
               </SelectContent>
             </Select>
           </div>
@@ -378,6 +412,17 @@ export function ReviewCyclesSection() {
           )}
         </CardContent>
       </Card>
+      <CreateCompanyDialog
+        open={createCompanyOpen}
+        onOpenChange={setCreateCompanyOpen}
+        onCreated={(company) => {
+          if (createCompanyTarget === "form") {
+            setForm((prev) => ({ ...prev, companyId: company.id }));
+          } else {
+            setCompanyFilter(company.id);
+          }
+        }}
+      />
     </div>
   );
 }

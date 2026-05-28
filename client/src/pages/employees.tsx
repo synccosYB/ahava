@@ -418,6 +418,7 @@ function BulkAssignDivisionDialog({
   const { toast } = useToast();
   const [companyId, setCompanyId] = useState("");
   const [keepCompatible, setKeepCompatible] = useState(false);
+  const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -463,7 +464,16 @@ function BulkAssignDivisionDialog({
         <div className="space-y-4">
           <div className="space-y-2">
             <Label>Company</Label>
-            <Select value={companyId} onValueChange={setCompanyId}>
+            <Select
+              value={companyId}
+              onValueChange={(v) => {
+                if (v === INLINE_ADD_NEW_VALUE) {
+                  setCreateCompanyOpen(true);
+                  return;
+                }
+                setCompanyId(v);
+              }}
+            >
               <SelectTrigger data-testid="select-bulk-division">
                 <SelectValue placeholder="Select a company" />
               </SelectTrigger>
@@ -471,6 +481,11 @@ function BulkAssignDivisionDialog({
                 {divisions.map((d) => (
                   <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                 ))}
+                <PermissionedAddNewItem
+                  permission="company.create"
+                  label="Add new company"
+                  testId="option-bulk-add-new-company"
+                />
               </SelectContent>
             </Select>
           </div>
@@ -504,6 +519,13 @@ function BulkAssignDivisionDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <CreateCompanyDialog
+        open={createCompanyOpen}
+        onOpenChange={setCreateCompanyOpen}
+        onCreated={(company) => {
+          setCompanyId(company.id);
+        }}
+      />
     </Dialog>
   );
 }

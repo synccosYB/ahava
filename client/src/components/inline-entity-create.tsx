@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -7,7 +7,13 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { SelectItem } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -276,18 +282,31 @@ export function CreateDepartmentDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  companyId: string;
+  /**
+   * Optional parent company. When omitted (e.g. the surface has no
+   * company in scope), the dialog renders its own Company picker so
+   * admins can still create a department inline.
+   */
+  companyId?: string;
   companyName?: string;
   onCreated: (dept: Department) => void;
 }) {
   const { toast } = useToast();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const needsCompanyPicker = !companyId;
+  const [internalCompanyId, setInternalCompanyId] = useState("");
+  const { data: companies } = useQuery<Company[]>({
+    queryKey: ["/api/companies"],
+    enabled: open && needsCompanyPicker,
+  });
+  const effectiveCompanyId = companyId || internalCompanyId;
 
   useEffect(() => {
     if (!open) {
       setName("");
       setError(null);
+      setInternalCompanyId("");
     }
   }, [open]);
 
@@ -295,7 +314,7 @@ export function CreateDepartmentDialog({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/departments", {
         name: name.trim(),
-        companyId,
+        companyId: effectiveCompanyId,
       });
       return (await res.json()) as Department;
     },
@@ -318,27 +337,61 @@ export function CreateDepartmentDialog({
           <DialogDescription>
             {companyName
               ? `Create a new department under ${companyName}.`
+              : needsCompanyPicker
+              ? "Pick a company and create a new department under it."
               : "Create a new department under the selected company."}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2">
-          <Label htmlFor="inline-department-name">Department name</Label>
-          <Input
-            id="inline-department-name"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (error) setError(null);
-            }}
-            placeholder="Nursing"
-            data-testid="input-inline-department-name"
-            autoFocus
-          />
-          {error && (
-            <p className="text-sm text-destructive" data-testid="text-inline-department-error">
-              {error}
-            </p>
+        <div className="space-y-3">
+          {needsCompanyPicker && (
+            <div className="space-y-2">
+              <Label htmlFor="inline-department-company">Company</Label>
+              <Select
+                value={internalCompanyId}
+                onValueChange={(v) => {
+                  setInternalCompanyId(v);
+                  if (error === "Select a company first") setError(null);
+                }}
+              >
+                <SelectTrigger
+                  id="inline-department-company"
+                  data-testid="select-inline-department-company"
+                >
+                  <SelectValue placeholder="Select company" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(companies ?? []).map((c) => (
+                    <SelectItem
+                      key={c.id}
+                      value={c.id}
+                      data-testid={`option-inline-department-company-${c.id}`}
+                    >
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           )}
+          <div className="space-y-2">
+            <Label htmlFor="inline-department-name">Department name</Label>
+            <Input
+              id="inline-department-name"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                if (error) setError(null);
+              }}
+              placeholder="Nursing"
+              data-testid="input-inline-department-name"
+              autoFocus={!needsCompanyPicker}
+            />
+            {error && (
+              <p className="text-sm text-destructive" data-testid="text-inline-department-error">
+                {error}
+              </p>
+            )}
+          </div>
         </div>
         <DialogFooter>
           <Button
@@ -354,13 +407,13 @@ export function CreateDepartmentDialog({
                 setError("Required");
                 return;
               }
-              if (!companyId) {
+              if (!effectiveCompanyId) {
                 setError("Select a company first");
                 return;
               }
               mutation.mutate();
             }}
-            disabled={mutation.isPending || !companyId}
+            disabled={mutation.isPending || !effectiveCompanyId}
             data-testid="button-inline-department-save"
           >
             {mutation.isPending ? "Creating..." : "Create department"}
@@ -382,7 +435,12 @@ export function CreateLocationDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  companyId: string;
+  /**
+   * Optional parent company. When omitted, the dialog renders its own
+   * Company picker so admins can create a location inline from surfaces
+   * that don't have a company already selected.
+   */
+  companyId?: string;
   companyName?: string;
   onCreated: (location: Location) => void;
 }) {
@@ -392,6 +450,13 @@ export function CreateLocationDialog({
   const [timezone, setTimezone] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string | null>>({});
+  const needsCompanyPicker = !companyId;
+  const [internalCompanyId, setInternalCompanyId] = useState("");
+  const { data: companies } = useQuery<Company[]>({
+    queryKey: ["/api/companies"],
+    enabled: open && needsCompanyPicker,
+  });
+  const effectiveCompanyId = companyId || internalCompanyId;
 
   useEffect(() => {
     if (!open) {
@@ -400,12 +465,13 @@ export function CreateLocationDialog({
       setTimezone("");
       setError(null);
       setFieldErrors({});
+      setInternalCompanyId("");
     }
   }, [open]);
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload: Record<string, string> = { name: name.trim(), companyId };
+      const payload: Record<string, string> = { name: name.trim(), companyId: effectiveCompanyId };
       if (code.trim()) payload.code = code.trim();
       if (timezone.trim()) payload.timezone = timezone.trim();
       const res = await apiRequest("POST", "/api/locations", payload);
@@ -437,10 +503,42 @@ export function CreateLocationDialog({
           <DialogDescription>
             {companyName
               ? `Create a new location under ${companyName}.`
+              : needsCompanyPicker
+              ? "Pick a company and create a new location under it."
               : "Create a new location under the selected company."}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          {needsCompanyPicker && (
+            <div className="space-y-2">
+              <Label htmlFor="inline-location-company">Company</Label>
+              <Select
+                value={internalCompanyId}
+                onValueChange={(v) => {
+                  setInternalCompanyId(v);
+                  if (error === "Select a company first") setError(null);
+                }}
+              >
+                <SelectTrigger
+                  id="inline-location-company"
+                  data-testid="select-inline-location-company"
+                >
+                  <SelectValue placeholder="Select company" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(companies ?? []).map((c) => (
+                    <SelectItem
+                      key={c.id}
+                      value={c.id}
+                      data-testid={`option-inline-location-company-${c.id}`}
+                    >
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="inline-location-name">Location name</Label>
             <Input
@@ -521,13 +619,13 @@ export function CreateLocationDialog({
                 setFieldErrors((p) => ({ ...p, name: "Required" }));
                 return;
               }
-              if (!companyId) {
+              if (!effectiveCompanyId) {
                 setError("Select a company first");
                 return;
               }
               mutation.mutate();
             }}
-            disabled={mutation.isPending || !companyId}
+            disabled={mutation.isPending || !effectiveCompanyId}
             data-testid="button-inline-location-save"
           >
             {mutation.isPending ? "Creating..." : "Create location"}
