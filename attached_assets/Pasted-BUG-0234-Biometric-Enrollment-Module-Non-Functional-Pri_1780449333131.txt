@@ -1,0 +1,188 @@
+BUG-0234 – Biometric Enrollment Module Non-Functional
+Priority
+
+High
+
+Type
+
+Bug / Missing Functionality / API Validation Error
+
+What & Why
+
+The Biometric Governance → Enrollments screen is currently unusable for administrators.
+
+The page displays three enrollment-related records but does not provide any way to create, edit, or manage enrollments. The records contain only a Status value ("Consent only") while all other important fields are blank. Additionally, toggling the Hold switch generates a server-side validation error.
+
+This prevents administrators from enrolling employees into the biometric system and makes the entire enrollment workflow inaccessible.
+
+Current Behavior
+Missing Enrollment Creation
+
+There is no visible:
+
+Create button
+New Enrollment button
+Enrollment wizard
+Add Employee action
+
+Administrators have no way to create biometric enrollments.
+
+Incomplete Enrollment Records
+
+The Enrollments table currently displays:
+
+Employee	Status	Samples	Enrolled	Last Used	Hold	Actions
+Blank	Consent only	—	—	—	Toggle	Blank
+
+Observed issues:
+
+Employee name missing
+Sample count missing
+Enrollment date missing
+Last used date missing
+Actions column empty
+No Edit functionality
+Hold Toggle Failure
+
+When Hold is enabled:
+
+API returns:
+
+400: invalid reference: revoked_by
+
+User receives:
+
+Update failed
+400: invalid reference: revoked_by
+
+The operation does not complete.
+
+Expected Behavior
+Enrollment Creation
+
+Administrators should be able to:
+
+Create biometric enrollments
+Select employee
+Select biometric type(s)
+Complete enrollment workflow
+Save enrollment
+
+A visible Create Enrollment button must exist.
+
+Enrollment Grid
+
+The grid should display meaningful information:
+
+Employee Name
+Employee Number
+Enrollment Status
+Sample Count
+Enrollment Date
+Last Used Date
+Hold Status
+Actions
+Enrollment Editing
+
+Each enrollment should support:
+
+Edit
+View
+Place Hold
+Remove Hold
+Delete (if permitted)
+Hold Toggle
+
+Hold operations should:
+
+Successfully update the record
+Persist changes
+Refresh UI state
+Create audit entry
+Return HTTP 200
+
+No validation errors should occur.
+
+Developer Investigation
+1. Verify Data Source
+
+Determine whether the grid is currently loading:
+
+biometric_consents
+
+instead of:
+
+biometric_enrollments
+
+The "Consent only" status suggests consent records may be incorrectly appearing in the Enrollment view.
+
+2. Verify Missing UI Actions
+
+Investigate:
+
+Feature flags
+Permissions
+Conditional rendering
+Missing implementation
+
+Determine why Create/Edit actions are not visible.
+
+3. Fix Hold API
+
+Investigate endpoint:
+
+PATCH /api/biometrics/.../legal-hold
+
+or equivalent route.
+
+Determine why:
+
+revoked_by
+
+validation is occurring during Hold activation.
+
+Likely causes:
+
+Incorrect payload field
+Required foreign key not supplied
+Hold/release logic sharing the same validator
+4. Handle Consent-Only Records Properly
+
+If records only contain consent and no enrollment:
+
+Display:
+
+Status: Consent Received
+Enrollment Status: Not Enrolled
+
+Do not display blank enrollment fields.
+
+Acceptance Criteria
+Creation
+ Create Enrollment button visible
+ Enrollment wizard opens
+ Enrollment can be saved
+ Enrollment appears immediately in grid
+Grid
+ Employee name displays
+ Sample count displays
+ Enrollment date displays
+ Last used date displays
+ Actions column populated
+Editing
+ Existing enrollments can be edited
+ Changes persist after refresh
+Hold
+ Hold toggle succeeds
+ No 400 errors
+ Audit log created
+ UI refreshes correctly
+Validation
+ Consent-only records render correctly
+ No blank enrollment rows
+ No console errors during normal operation
+Severity
+
+High
+
+The current implementation prevents administrators from performing biometric enrollment, editing enrollment records, or managing legal holds, effectively making the Biometric Enrollment module non-functional.
