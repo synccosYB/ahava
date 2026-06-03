@@ -1,0 +1,104 @@
+This is a much stronger task than the original bug report. It now contains:
+
+What is already well defined
+
+✅ Confirmed root cause path instead of speculation
+
+✅ Exact UI gating identified:
+
+disabled={!addLevel}
+
+✅ Exact dependency chain identified:
+
+Target Dropdown
+   ↓
+Level Selection
+   ↓
+Companies / Locations / Departments / Users / Roles APIs
+   ↓
+403 Permission Error
+   ↓
+Empty Arrays
+   ↓
+All Levels Disabled
+   ↓
+Target Unusable
+
+✅ Clear distinction between:
+
+Super Admin (works)
+Policy Manager/Admin (fails)
+
+✅ Concrete runtime verification requirement before closure
+
+✅ Exact files identified
+
+✅ Permission drift test explicitly called out
+
+One thing I would add
+
+The current task says:
+
+Ensure any role allowed to manage policies can load assignment-target data.
+
+I would make that more explicit:
+
+Acceptance Criteria (additional)
+
+✓ A role possessing policy.create, policy.edit, or policy.manage
+  can successfully retrieve assignment target data required by
+  the Policy Wizard regardless of whether it separately has:
+
+  - company.view
+  - locations.view
+  - departments.view
+  - users.view
+  - roles.view
+
+OR
+
+✓ The system automatically grants the required view permissions
+  to any role with policy-management permissions.
+
+The permission model chosen must be documented in the task notes.
+
+Otherwise a developer may "fix" only one endpoint and leave the others failing.
+
+Another edge case worth adding
+
+Currently:
+
+When no assignment targets of any kind exist...
+
+Add:
+
+✓ If a selected Level contains zero records
+  (e.g. no departments exist),
+  show a contextual message:
+
+  "No departments are available."
+
+  rather than a disabled dropdown with no explanation.
+
+This prevents confusion when:
+
+Company exists
+Departments do not
+User chooses Department level
+
+and the Target dropdown simply appears empty.
+
+My assessment
+
+Task Quality: 9.5/10
+
+This is implementation-ready and significantly better than the original BUG-0233 ticket because it:
+
+Identifies the actual defect.
+Defines the security/permission implications.
+Defines the expected behavior.
+Defines regression testing.
+Identifies impacted files.
+Requires root-cause documentation.
+
+A developer should be able to complete this without needing additional clarification.

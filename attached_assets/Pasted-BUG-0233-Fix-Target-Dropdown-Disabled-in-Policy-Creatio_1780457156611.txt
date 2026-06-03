@@ -1,0 +1,106 @@
+BUG-0233 – Fix "Target" Dropdown Disabled in Policy Creation Wizard
+
+Priority: Critical
+
+Problem Summary
+
+The "Target" dropdown in the Assignment step of the Create New Policy wizard is disabled for all policy types, preventing users from assigning the policy and blocking completion of the policy creation workflow.
+
+Affected Area
+
+Rules & Controls → Create New Policy → Assignment Step
+
+Current Behavior
+
+* User creates a new policy.
+* User reaches the Assignment step.
+* The Target dropdown is disabled.
+* No target can be selected.
+* User cannot proceed with policy setup or testing.
+
+Expected Behavior
+
+* The Target dropdown should be enabled whenever valid assignment targets are available.
+* Users should be able to select assignment targets regardless of policy type (PTO, Leave, Attendance, Scheduling, etc.).
+* Users should be able to continue through the wizard after selecting a target.
+
+Required Investigation
+
+1. Frontend
+
+   * Inspect the enable/disable conditions for the Target dropdown.
+   * Determine whether the component is incorrectly waiting for:
+
+     * a policy type flag
+     * assignment data
+     * organization data
+     * user permissions
+     * validation state from previous steps
+   * Verify state updates when entering the Assignment step.
+
+2. API/Data Loading
+
+   * Verify all assignment-target API calls are firing successfully.
+   * Confirm the API returns valid assignment targets.
+   * Confirm empty responses are handled gracefully.
+
+3. Permissions
+
+   * Verify users with policy-management permissions can interact with the dropdown.
+   * Ensure no unintended RBAC restriction disables the control.
+
+4. Wizard Flow
+
+   * Verify Assignment step initialization runs correctly for every policy type.
+   * Ensure changing policy types does not leave the dropdown in a disabled state.
+
+Required Fix
+
+* Remove any incorrect gating condition that permanently disables the dropdown.
+* Ensure assignment targets load automatically when the Assignment step opens.
+* Enable selection once data is available.
+* Display an informative empty-state message if no targets exist rather than disabling the control without explanation.
+
+Suggested UX Improvement
+
+If no assignment targets are available, display:
+
+"No assignment targets are currently available. Create a department, location, role, or employee group before assigning this policy."
+
+instead of showing a disabled dropdown.
+
+Acceptance Criteria
+
+✓ PTO policies can select a target.
+✓ Leave policies can select a target.
+✓ Attendance policies can select a target.
+✓ Scheduling policies can select a target.
+✓ Assignment dropdown becomes enabled after data loads.
+✓ Users can continue to the next wizard step.
+✓ Empty-state message appears when no targets exist.
+✓ No console errors.
+✓ No API failures.
+✓ Works for Company Admin and Super Admin roles.
+
+Regression Testing
+
+Test policy creation for:
+
+* PTO
+* Leave
+* Attendance
+* Scheduling
+* Overtime
+* Holiday
+
+Verify target assignment works for:
+
+* Individual Employee
+* Department
+* Location
+* Role
+* Company-wide Assignment
+
+Root Cause Required
+
+Developer must document the exact reason the dropdown was disabled (frontend state bug, API failure, validation issue, RBAC issue, etc.) before closing the ticket.
