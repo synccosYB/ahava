@@ -614,6 +614,8 @@ export default function MyAttendance() {
         myExceptions={myExceptions}
         exceptionsLoading={exceptionsLoading}
         pendingDates={pendingUnboundDates}
+        pendingPunchIds={pendingByPunchId}
+        records={records}
         onEdit={openEditDialog}
       />
 
@@ -678,6 +680,7 @@ type CorrectionFormBodyProps = {
   pendingPunchIds?: Map<string, AttendanceException>;
   punchLogId?: string | null;
   editingExceptionId?: string;
+  records?: AttendanceRecord[];
   onSuccess?: () => void;
 };
 
@@ -694,26 +697,46 @@ function CorrectionFormBody({
   pendingPunchIds,
   punchLogId,
   editingExceptionId,
+  records,
   onSuccess,
 }: CorrectionFormBodyProps) {
   const { toast } = useToast();
   const isEditing = !!editingExceptionId;
   const defaultReason = initialReason ?? (missingPunch ? "I forgot to clock out at the end of my shift." : "");
   const [date, setDate] = useState(initialDate);
-  const origIn = initialOrigIn;
-  const origOut = initialOrigOut;
   const [reqIn, setReqIn] = useState(initialReqIn);
   const [reqOut, setReqOut] = useState(initialReqOut);
   const [reason, setReason] = useState(defaultReason);
+
+  // In the standalone "New Correction Request" card we receive the loaded
+  // attendance records and look up the punch for the selected date so the
+  // read-only Original Punch fields auto-fill (mirroring the Request Fix
+  // dialog). When no record matches, treat it as a missing-punch request with
+  // empty originals so the user can still submit corrected times.
+  const isLookupMode = !!records && !lockDate;
+  const matchedRecord = isLookupMode && date ? records!.find((r) => r.date === date) : undefined;
+  const effectiveMissingPunch = isLookupMode
+    ? (matchedRecord ? (matchedRecord.status === "in-progress" || !matchedRecord.clockOut) : true)
+    : missingPunch;
+  const origIn = isLookupMode
+    ? (matchedRecord ? toTimeInputValue(matchedRecord.clockIn) : "")
+    : initialOrigIn;
+  const origOut = isLookupMode
+    ? (matchedRecord ? toTimeInputValue(matchedRecord.clockOut) : "")
+    : initialOrigOut;
+  const effectivePunchLogId = isLookupMode
+    ? (matchedRecord && !effectiveMissingPunch ? matchedRecord.id : null)
+    : (punchLogId ?? null);
+  const noPunchForDate = isLookupMode && !!date && !matchedRecord;
 
   // Block duplicates on a per-punch basis when a punch is linked, otherwise
   // fall back to the legacy per-date check (which now only counts pending
   // requests with no punch reference — see `pendingUnboundDates`).
   const hasPendingForPunch =
-    !isEditing && !!punchLogId && !!pendingPunchIds && pendingPunchIds.has(punchLogId);
+    !isEditing && !!effectivePunchLogId && !!pendingPunchIds && pendingPunchIds.has(effectivePunchLogId);
   const hasPendingForDate =
     !isEditing &&
-    !punchLogId &&
+    !effectivePunchLogId &&
     !!(date && pendingDates && pendingDates.has(date));
   const blockDuplicate = hasPendingForPunch || hasPendingForDate;
   const duplicateMessage = hasPendingForPunch
@@ -757,19 +780,19 @@ function CorrectionFormBody({
       const fullReason = `${reason}${timeInfo.length > 0 ? ` [${timeInfo.join(", ")}]` : ""}`;
       const payload: Record<string, unknown> = {
         exceptionDate: date,
-        type: missingPunch ? "missing_punch" : "time_correction",
+        type: effectiveMissingPunch ? "missing_punch" : "time_correction",
         reason: fullReason,
       };
       if (isEditing) {
         // Allow callers to clear or change the punch target on edit by
         // explicitly sending punchLogId (null clears it).
-        if (!missingPunch) {
-          payload.punchLogId = punchLogId ?? null;
+        if (!effectiveMissingPunch) {
+          payload.punchLogId = effectivePunchLogId;
         }
         return apiRequest("PATCH", `/api/attendance/exceptions/${editingExceptionId}`, payload);
       }
-      if (punchLogId) {
-        payload.punchLogId = punchLogId;
+      if (effectivePunchLogId) {
+        payload.punchLogId = effectivePunchLogId;
       }
       return apiRequest("POST", "/api/attendance/exceptions", payload);
     },
@@ -811,29 +834,42 @@ function CorrectionFormBody({
       </div>
 
       <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4" data-testid="section-original-punch">
-        <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">Original Punch (what was recorded)</div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Clock In</Label>
-            <div
-              className="flex h-10 items-center rounded-md border border-input bg-muted/40 px-3 text-sm font-mono text-foreground select-text cursor-default"
-              aria-readonly="true"
-              data-testid="display-orig-clock-in"
-            >
-              {origIn ? formatTime12FromHHmm(origIn) : <span className="text-muted-foreground">—</span>}
+        <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Original Punch (what was recorded)</div>
+        <p className="text-xs text-muted-foreground mb-3" data-testid="text-original-punch-help">
+          These times come from your recorded attendance and can't be edited.
+        </p>
+        {noPunchForDate ? (
+          <div
+            className="flex items-start gap-2 rounded-md border border-dashed border-gray-300 dark:border-gray-700 bg-muted/30 px-3 py-3 text-sm text-muted-foreground"
+            data-testid="text-no-punch-recorded"
+          >
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span>No punch recorded for this date. Enter the times you actually worked below and submit it as a missing-punch request.</span>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Clock In</Label>
+              <div
+                className="flex h-10 items-center rounded-md border border-input bg-muted/40 px-3 text-sm font-mono text-foreground select-text cursor-default"
+                aria-readonly="true"
+                data-testid="display-orig-clock-in"
+              >
+                {origIn ? formatTime12FromHHmm(origIn) : <span className="text-muted-foreground">—</span>}
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Clock Out</Label>
+              <div
+                className="flex h-10 items-center rounded-md border border-input bg-muted/40 px-3 text-sm font-mono text-foreground select-text cursor-default"
+                aria-readonly="true"
+                data-testid="display-orig-clock-out"
+              >
+                {origOut ? formatTime12FromHHmm(origOut) : <span className="text-muted-foreground">{effectiveMissingPunch ? "missing" : "—"}</span>}
+              </div>
             </div>
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Clock Out</Label>
-            <div
-              className="flex h-10 items-center rounded-md border border-input bg-muted/40 px-3 text-sm font-mono text-foreground select-text cursor-default"
-              aria-readonly="true"
-              data-testid="display-orig-clock-out"
-            >
-              {origOut ? formatTime12FromHHmm(origOut) : <span className="text-muted-foreground">{missingPunch ? "missing" : "—"}</span>}
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
       <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="section-corrected-punch">
@@ -852,7 +888,7 @@ function CorrectionFormBody({
           </div>
           <div className="space-y-1">
             <Label className="text-xs text-blue-700 dark:text-blue-300">
-              Clock Out{missingPunch ? " (required)" : ""}
+              Clock Out{effectiveMissingPunch ? " (required)" : ""}
             </Label>
             <Input
               type="time"
@@ -869,7 +905,7 @@ function CorrectionFormBody({
         <Textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
-          placeholder={missingPunch ? "Explain why a clock-out is missing..." : "Explain what happened..."}
+          placeholder={effectiveMissingPunch ? "Explain why a clock-out is missing..." : "Explain what happened..."}
           data-testid="input-correction-reason"
         />
       </div>
@@ -904,7 +940,7 @@ function CorrectionFormBody({
       )}
       <Button
         onClick={() => submitMutation.mutate()}
-        disabled={!date || !reason || submitMutation.isPending || (missingPunch && !reqOut) || blockDuplicate}
+        disabled={!date || !reason || submitMutation.isPending || (effectiveMissingPunch && !reqOut) || blockDuplicate}
         className="w-full"
         data-testid="button-submit-correction"
       >
@@ -1097,10 +1133,12 @@ type PunchCorrectionFormProps = {
   myExceptions?: AttendanceException[];
   exceptionsLoading: boolean;
   pendingDates?: Set<string>;
+  pendingPunchIds?: Map<string, AttendanceException>;
+  records?: AttendanceRecord[];
   onEdit?: (ex: AttendanceException) => void;
 };
 
-function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, onEdit }: PunchCorrectionFormProps) {
+function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, pendingPunchIds, records, onEdit }: PunchCorrectionFormProps) {
   const { toast } = useToast();
   const getStatusBadgeForException = (status: string) => {
     switch (status) {
@@ -1142,7 +1180,7 @@ function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, on
             <CardTitle className="text-base">New Correction Request</CardTitle>
           </CardHeader>
           <CardContent>
-            <CorrectionFormBody pendingDates={pendingDates} />
+            <CorrectionFormBody pendingDates={pendingDates} pendingPunchIds={pendingPunchIds} records={records} />
           </CardContent>
         </Card>
 
