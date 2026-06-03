@@ -327,11 +327,21 @@ export function PolicyWizard({
   const currentStepKey = wizardSteps[currentStep]?.key ?? "basics";
 
   const { data: policyTypes } = useQuery<PolicyType[]>({ queryKey: ["/api/policy-types"] });
-  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
-  const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
-  const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
-  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
-  const { data: roles } = useQuery<Role[]>({ queryKey: ["/api/roles-summary"] });
+  // Single consolidated picker call gated by the same admin check as policy
+  // management, so the wizard always receives every assignment target regardless
+  // of which granular view permissions the acting role happens to hold.
+  const { data: assignmentTargets } = useQuery<{
+    companies: Division[];
+    locations: Location[];
+    departments: Department[];
+    users: User[];
+    roles: Role[];
+  }>({ queryKey: ["/api/policy-assignment-targets"] });
+  const divisions = assignmentTargets?.companies;
+  const locations = assignmentTargets?.locations;
+  const departments = assignmentTargets?.departments;
+  const users = assignmentTargets?.users;
+  const roles = assignmentTargets?.roles;
 
   const matchingType = policyTypes?.find((pt) => pt.key === selectedTypeKey);
   const ruleFields = useMemo(() => getRuleFieldsForType(selectedTypeKey), [selectedTypeKey]);
@@ -2182,6 +2192,16 @@ function StepAssignments({
   const currentLevelEmpty = !!addLevel && levelAvailability[addLevel]?.count === 0;
   const currentLevelEmptyHint = currentLevelEmpty ? levelAvailability[addLevel]?.emptyHint : "";
 
+  // "No targets of any kind" = every real-world assignment target is empty.
+  // Employment Type / Pay Type are static option lists, not data the admin can
+  // create, so they don't count toward this check.
+  const noDynamicTargetsExist =
+    divisions.length === 0 &&
+    locations.length === 0 &&
+    departments.length === 0 &&
+    users.length === 0 &&
+    roles.length === 0;
+
   const isAlreadyAssigned = (id: string) =>
     assignments.some((a) => a.level === addLevel && a.id === id);
 
@@ -2233,6 +2253,15 @@ function StepAssignments({
         </p>
       </div>
 
+      {noDynamicTargetsExist && (
+        <div
+          className="text-sm text-muted-foreground bg-muted/40 border rounded-md px-3 py-2"
+          data-testid="text-wizard-no-targets"
+        >
+          No assignment targets are currently available. Create a department, location, role, or employee group before assigning this policy.
+        </div>
+      )}
+
       <div className="flex gap-2 items-end">
         <div className="flex-1">
           <Label>Level</Label>
@@ -2244,19 +2273,19 @@ function StepAssignments({
               <SelectValue placeholder="Select level..." />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="division" disabled={divisions.length === 0}>
+              <SelectItem value="division">
                 Company (Org-wide){divisions.length === 0 ? " — none yet" : ""}
               </SelectItem>
-              <SelectItem value="location" disabled={locations.length === 0}>
+              <SelectItem value="location">
                 Location{locations.length === 0 ? " — none yet" : ""}
               </SelectItem>
-              <SelectItem value="department" disabled={departments.length === 0}>
+              <SelectItem value="department">
                 Department{departments.length === 0 ? " — none yet" : ""}
               </SelectItem>
-              <SelectItem value="employee" disabled={users.length === 0}>
+              <SelectItem value="employee">
                 Individual Employee{users.length === 0 ? " — none yet" : ""}
               </SelectItem>
-              <SelectItem value="role" disabled={roles.length === 0}>
+              <SelectItem value="role">
                 Role{roles.length === 0 ? " — none yet" : ""}
               </SelectItem>
               <SelectItem value="employment_type">Employment Type</SelectItem>
@@ -2293,7 +2322,11 @@ function StepAssignments({
               <Command>
                 <CommandInput placeholder="Search..." />
                 <CommandList>
-                  <CommandEmpty>No options found.</CommandEmpty>
+                  <CommandEmpty data-testid="text-wizard-target-empty">
+                    {currentLevelEmpty
+                      ? `No ${getAssignmentLevelLabel(addLevel).toLowerCase()} options are available.`
+                      : "No options found."}
+                  </CommandEmpty>
                   <CommandGroup>
                     {options.map((opt) => {
                       const alreadyAssigned = isAlreadyAssigned(opt.id);

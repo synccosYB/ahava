@@ -5461,6 +5461,41 @@ export async function registerRoutes(
     }
   });
 
+  // Consolidated assignment-target picker for the policy wizard. Gated by the
+  // SAME requireRole("admin") used for policy management itself, so any role that
+  // can manage policies can always load every assignment target (companies,
+  // locations, departments, users, roles) in one call. This deliberately avoids
+  // the per-resource view permissions (company.view / locations.view /
+  // departments.view / users.view) the shared list endpoints require — a policy
+  // manager whose RBAC role lacks one of those would otherwise get a 403 on that
+  // endpoint, leaving the corresponding wizard "Level" silently disabled.
+  app.get("/api/policy-assignment-targets", requireAuth, requireRole("admin"), async (_req, res) => {
+    try {
+      const [companies, locations, departments, allUsers, allRoles] = await Promise.all([
+        storage.getAllCompanies(),
+        storage.getAllLocations(),
+        storage.getAllDepartments(),
+        storage.getAllUsers(),
+        storage.getAllRoles(),
+      ]);
+      res.json({
+        companies: companies.map((c) => ({ id: c.id, name: c.name })),
+        locations: locations.map((l) => ({ id: l.id, name: l.name })),
+        departments: departments.map((d) => ({ id: d.id, name: d.name })),
+        users: allUsers.map((u) => ({
+          id: u.id,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          email: u.email,
+        })),
+        roles: allRoles.map((r) => ({ id: r.id, name: r.name })),
+      });
+    } catch (error) {
+      console.error("Error fetching policy assignment targets:", error);
+      handleRouteError(res, error, "Failed to fetch policy assignment targets");
+    }
+  });
+
   app.get("/api/policy-assignments", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const policyId = req.query.policyId as string | undefined;
