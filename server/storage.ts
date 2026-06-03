@@ -636,16 +636,17 @@ export interface IStorage {
 
   getBiometricEnrollmentSummary(): Promise<{
     userId: string;
-    firstName: string | null;
-    lastName: string | null;
-    email: string | null;
-    enrolled: boolean;
+    userName: string;
+    userEmail: string | null;
+    templateId: string | null;
+    sampleCount: number;
+    enrolledAt: Date | null;
+    lastMatchedAt: Date | null;
     consentAcceptedAt: Date | null;
     consentRevokedAt: Date | null;
+    hasActiveConsent: boolean;
     legalProfileName: string | null;
     legalHold: boolean;
-    lastMatchedAt: Date | null;
-    sampleCount: number | null;
   }[]>;
 }
 
@@ -3548,6 +3549,9 @@ export class DatabaseStorage implements IStorage {
       .from(biometricConsents)
       .where(eq(biometricConsents.userId, userId));
     if (existing.length === 0) {
+      // Releasing a hold on a user with no consent rows is a no-op — there is
+      // nothing to flag and no reason to create a placeholder.
+      if (!hold) return;
       // No consent yet — record an empty placeholder (with no profile) so legal hold can be honoured prior to enrollment.
       const [defaultProfile] = await db
         .select()
@@ -3561,7 +3565,9 @@ export class DatabaseStorage implements IStorage {
           consentVersion: defaultProfile.consentVersion,
           consentTextSnapshot: "[legal-hold placeholder; no consent yet]",
           revokedAt: new Date(),
-          revokedBy: "system",
+          // revokedBy references users.id — "system" is not a real user and
+          // triggers a FK violation. Leave it null on the placeholder.
+          revokedBy: null,
           revokedReason: "legal_hold_placeholder",
           legalHold: hold,
         });
@@ -3777,24 +3783,32 @@ export class DatabaseStorage implements IStorage {
       consentByUser.set(c.userId, arr);
     }
     return usersList.map((u) => {
-      const consents = (consentByUser.get(u.userId) || []).sort(
-        (a, b) => (b.acceptedAt?.getTime() ?? 0) - (a.acceptedAt?.getTime() ?? 0),
-      );
+      const allForUser = consentByUser.get(u.userId) || [];
+      // Placeholder rows (created purely to carry a legal hold before any real
+      // consent) must not be treated as real consent for status display.
+      const consents = allForUser
+        .filter((c) => c.revokedReason !== "legal_hold_placeholder")
+        .sort((a, b) => (b.acceptedAt?.getTime() ?? 0) - (a.acceptedAt?.getTime() ?? 0));
+      const activeConsent = consents.find((c) => !c.revokedAt);
       const latest = consents[0];
       const tpl = tplByUser.get(u.userId);
-      const legalHold = consents.some((c) => c.legalHold);
+      // Legal hold can live on any row for the user, including the placeholder.
+      const legalHold = allForUser.some((c) => c.legalHold);
+      const userName =
+        [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || u.email || "Unknown";
       return {
         userId: u.userId,
-        firstName: u.firstName,
-        lastName: u.lastName,
-        email: u.email,
-        enrolled: !!tpl,
-        consentAcceptedAt: latest?.acceptedAt ?? null,
-        consentRevokedAt: latest?.revokedAt ?? null,
+        userName,
+        userEmail: u.email ?? null,
+        templateId: tpl?.id ?? null,
+        sampleCount: tpl?.sampleCount ?? 0,
+        enrolledAt: tpl?.createdAt ?? null,
+        lastMatchedAt: tpl?.lastMatchedAt ?? null,
+        consentAcceptedAt: activeConsent?.acceptedAt ?? latest?.acceptedAt ?? null,
+        consentRevokedAt: activeConsent ? null : latest?.revokedAt ?? null,
+        hasActiveConsent: !!activeConsent,
         legalProfileName: latest ? profileNameById.get(latest.legalProfileId) ?? null : null,
         legalHold,
-        lastMatchedAt: tpl?.lastMatchedAt ?? null,
-        sampleCount: tpl?.sampleCount ?? null,
       };
     });
   }

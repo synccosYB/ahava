@@ -28,7 +28,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { AlertCircle, ShieldCheck, Trash2, Lock, RefreshCw, Plus, Save, ScanFace } from "lucide-react";
+import { FaceCapture } from "@/components/face-capture";
+import { AlertCircle, ShieldCheck, Trash2, Lock, RefreshCw, Plus, Save, ScanFace, Camera } from "lucide-react";
 
 interface BiometricSettings {
   id: string;
@@ -67,13 +68,14 @@ interface ProfileScope {
 interface EnrollmentRow {
   userId: string;
   userName: string;
-  userEmail: string;
+  userEmail: string | null;
   templateId: string | null;
   sampleCount: number;
   enrolledAt: string | null;
   lastMatchedAt: string | null;
   consentAcceptedAt: string | null;
   consentRevokedAt: string | null;
+  hasActiveConsent: boolean;
   legalHold: boolean;
 }
 
@@ -233,8 +235,12 @@ function DashboardTab() {
 
 function EnrollmentsTab() {
   const { toast } = useToast();
+  const [enrollTarget, setEnrollTarget] = useState<EnrollmentRow | null>(null);
   const { data, isLoading } = useQuery<EnrollmentRow[]>({
     queryKey: ["/api/biometrics/enrollments"],
+  });
+  const { data: settings } = useQuery<BiometricSettings>({
+    queryKey: ["/api/biometrics/settings"],
   });
 
   const revokeMutation = useMutation({
@@ -259,6 +265,19 @@ function EnrollmentsTab() {
     },
     onError: (e: Error) =>
       toast({ title: "Update failed", description: e.message, variant: "destructive" }),
+  });
+
+  const enrollMutation = useMutation({
+    mutationFn: async ({ userId, descriptors }: { userId: string; descriptors: number[][] }) => {
+      await apiRequest("POST", `/api/biometrics/users/${userId}/enroll`, { descriptors });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/biometrics/enrollments"] });
+      setEnrollTarget(null);
+      toast({ title: "Enrolled", description: "Face template saved for the employee." });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Enrollment failed", description: e.message, variant: "destructive" }),
   });
 
   if (isLoading || !data) return <Skeleton className="h-64 mt-4" />;
@@ -301,13 +320,15 @@ function EnrollmentsTab() {
                       <span className="text-xs text-muted-foreground">{row.userEmail}</span>
                     </div>
                   </TableCell>
-                  <TableCell>
+                  <TableCell data-testid={`status-enrollment-${row.userId}`}>
                     {row.templateId ? (
                       <Badge variant="default">Enrolled</Badge>
+                    ) : row.hasActiveConsent ? (
+                      <Badge variant="secondary">Consent received · Not enrolled</Badge>
                     ) : row.consentRevokedAt ? (
                       <Badge variant="outline">Revoked</Badge>
                     ) : (
-                      <Badge variant="secondary">Consent only</Badge>
+                      <Badge variant="outline">No consent</Badge>
                     )}
                   </TableCell>
                   <TableCell>{row.sampleCount}</TableCell>
@@ -321,6 +342,16 @@ function EnrollmentsTab() {
                     />
                   </TableCell>
                   <TableCell className="text-right">
+                    {row.hasActiveConsent && !row.templateId && !row.legalHold && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setEnrollTarget(row)}
+                        data-testid={`button-enroll-${row.userId}`}
+                      >
+                        <Camera className="h-4 w-4 mr-2" /> Start enrollment
+                      </Button>
+                    )}
                     {row.templateId && !row.legalHold && (
                       <Button
                         variant="ghost"
@@ -338,6 +369,29 @@ function EnrollmentsTab() {
           </Table>
         )}
       </CardContent>
+
+      <Dialog open={!!enrollTarget} onOpenChange={(o) => { if (!o) setEnrollTarget(null); }}>
+        <DialogContent className="max-w-lg" data-testid="dialog-admin-enroll">
+          <DialogHeader>
+            <DialogTitle>Enroll {enrollTarget?.userName}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Capture the employee's face at this device. Only an encrypted numeric template is saved —
+            no image leaves the browser. This enrollment is attributed to you.
+          </p>
+          {enrollTarget && (
+            <FaceCapture
+              mode="enroll"
+              requiredSamples={settings?.minSamplesPerEnrollment ?? 3}
+              livenessRequired={settings?.livenessRequired ?? true}
+              onComplete={(descriptors) =>
+                enrollMutation.mutate({ userId: enrollTarget.userId, descriptors })
+              }
+              onCancel={() => setEnrollTarget(null)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

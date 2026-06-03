@@ -8888,6 +8888,69 @@ export async function registerRoutes(
     },
   );
 
+  // Admin-initiated, consent-gated enrollment. An admin captures the employee's
+  // face at the admin's own device and saves the template attributed to the
+  // acting admin. Strictly requires an ACTIVE consent on file for the target —
+  // admins may NOT enroll employees who have not recorded consent (BIPA).
+  app.post(
+    "/api/biometrics/users/:id/enroll",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const targetUserId = String(req.params.id);
+      const settings = await storage.getBiometricSettings();
+      if (!isFeatureEnabled(settings)) {
+        return res.status(403).json({ error: "Biometric feature is not enabled" });
+      }
+      const targetUser = await storage.getUser(targetUserId);
+      if (!targetUser) {
+        return res.status(404).json({ error: "Employee not found" });
+      }
+      const consent = await storage.getActiveBiometricConsent(targetUserId);
+      if (!consent) {
+        return res
+          .status(412)
+          .json({ error: "Employee must have an active consent on file before enrollment" });
+      }
+      const descriptors = req.body?.descriptors;
+      if (!Array.isArray(descriptors) || descriptors.length < settings.minSamplesPerEnrollment) {
+        return res.status(400).json({
+          error: `At least ${settings.minSamplesPerEnrollment} face samples are required`,
+        });
+      }
+      if (descriptors.length > settings.maxSamplesPerEnrollment) {
+        return res
+          .status(400)
+          .json({ error: `Too many samples (max ${settings.maxSamplesPerEnrollment})` });
+      }
+      for (const d of descriptors) {
+        if (!Array.isArray(d) || d.length !== 128 || d.some((x: any) => typeof x !== "number")) {
+          return res.status(400).json({ error: "Each descriptor must be 128 numeric values" });
+        }
+      }
+      const adminId = (req as any).authUser.id;
+      const encrypted = encryptTemplate(descriptors);
+      const template = await storage.upsertBiometricTemplate({
+        userId: targetUserId,
+        type: "face",
+        encryptedTemplate: encrypted,
+        encryptionKeyVersion: getCurrentKeyVersion(),
+        sampleCount: descriptors.length,
+        companyId: targetUser.companyId ?? null,
+        enrolledByUserId: adminId,
+      });
+      await writeAuditLog({
+        actorUserId: adminId,
+        targetType: "biometric_template",
+        targetId: template.id,
+        action: "biometric.admin.enrolled",
+        newValue: { type: "face", sampleCount: descriptors.length, targetUserId },
+        context: getAuditContext(req),
+      });
+      res.json({ ok: true, template: { id: template.id, sampleCount: template.sampleCount } });
+    },
+  );
+
   app.post(
     "/api/biometrics/retention/run",
     requireAuth,
