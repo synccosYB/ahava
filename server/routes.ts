@@ -5019,7 +5019,15 @@ export async function registerRoutes(
   );
 
   const reportSchema = z.object({
-    reportType: z.enum(["employee", "team", "company"]),
+    // The report CATEGORY (what data to show) is distinct from the access
+    // SCOPE (reportType: employee/team/company, which only narrows whose data
+    // a user may see). Older clients that omit `category` get the attendance
+    // summary, preserving the previous default shape.
+    category: z
+      .enum(["attendance", "time", "pto", "missing-punches", "exceptions"])
+      .optional()
+      .default("attendance"),
+    reportType: z.enum(["employee", "team", "company"]).optional().default("company"),
     startDate: z.string(),
     endDate: z.string(),
     department: z.string().optional(),
@@ -5051,7 +5059,7 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid report parameters", errors: parsed.error.flatten() });
     }
 
-    const { reportType, startDate, endDate, department, employeeId, status, departmentIds, employeeIds, locationIds, companyIds, taxClassifications } = parsed.data;
+    const { category, reportType, startDate, endDate, department, employeeId, status, departmentIds, employeeIds, locationIds, companyIds, taxClassifications } = parsed.data;
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const depts = await storage.getAllDepartments();
     const deptMap = new Map(depts.map(d => [d.id, d.name]));
@@ -5104,29 +5112,168 @@ export async function registerRoutes(
       filteredUsers = filteredUsers.filter(u => set.has(taxByUser.get(u.id) as any || "W-2"));
     }
 
-    // Aggregate in the database (GROUP BY), scoped to the final filtered users
-    // and date range, instead of loading the whole punch_logs / time_off tables
-    // into memory. `now` is captured once so in-progress punches are consistent
-    // across employees. Totals match computeAttendanceTotals (see storage).
+    // Final scoped users (after permission + all filters). Every category below
+    // reuses this same set + date range, so scope/visibility and the shared
+    // filters apply uniformly regardless of which report is requested.
     const now = new Date();
     const finalUserIds = filteredUsers.map(u => u.id);
+    const userById = new Map(filteredUsers.map(u => [u.id, u]));
+    const nameOf = (u: User | undefined) =>
+      u ? (`${u.firstName || ""} ${u.lastName || ""}`.trim() || "Unknown") : "Unknown";
+    const deptOf = (u: User | undefined) =>
+      u && u.departmentId ? (deptMap.get(u.departmentId) || "Unassigned") : "Unassigned";
+
+    // Each report category returns a self-describing payload of
+    // { category, columns, rows } so the client (table + CSV) adapts to the
+    // shape without hard-coding columns per tab. `columns[].kind` tells the
+    // client how to format a cell (hours / date / datetime / number / text).
+    type ReportColumn = { key: string; label: string; kind?: "hours" | "date" | "datetime" | "number" | "text" };
+
+    if (category === "pto") {
+      const requests = await storage.getTimeOffRequestsByDateRange(startDate, endDate, finalUserIds, status);
+      const columns: ReportColumn[] = [
+        { key: "employeeName", label: "Employee", kind: "text" },
+        { key: "department", label: "Department", kind: "text" },
+        { key: "type", label: "Type", kind: "text" },
+        { key: "startDate", label: "Start Date", kind: "date" },
+        { key: "endDate", label: "End Date", kind: "date" },
+        { key: "days", label: "Days", kind: "number" },
+        { key: "hours", label: "Hours", kind: "number" },
+        { key: "status", label: "Status", kind: "text" },
+      ];
+      const rows = requests.map(r => {
+        const u = userById.get(r.userId);
+        const effectiveEnd = r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate : r.endDate;
+        const days = Math.max(
+          0,
+          Math.round((new Date(effectiveEnd).getTime() - new Date(r.startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1,
+        );
+        return {
+          id: r.id,
+          employeeName: nameOf(u),
+          department: deptOf(u),
+          type: r.type,
+          startDate: r.startDate,
+          endDate: effectiveEnd,
+          days,
+          hours: Math.round(((r.hoursApproved ?? r.hoursRequested) || 0) * 10) / 10,
+          status: r.status,
+        };
+      });
+      return res.json({ category, columns, rows });
+    }
+
+    if (category === "missing-punches") {
+      const punches = await storage.getIncompletePunchesByDateRange(startDate, endDate, finalUserIds);
+      const columns: ReportColumn[] = [
+        { key: "employeeName", label: "Employee", kind: "text" },
+        { key: "department", label: "Department", kind: "text" },
+        { key: "workDate", label: "Date", kind: "date" },
+        { key: "clockIn", label: "Clock In", kind: "datetime" },
+        { key: "clockOut", label: "Clock Out", kind: "datetime" },
+        { key: "issue", label: "Issue", kind: "text" },
+      ];
+      const rows = punches.map(p => {
+        const u = userById.get(p.employeeId);
+        return {
+          id: p.id,
+          employeeName: nameOf(u),
+          department: deptOf(u),
+          workDate: p.workDate,
+          clockIn: p.clockIn ? new Date(p.clockIn).toISOString() : null,
+          clockOut: p.clockOut ? new Date(p.clockOut).toISOString() : null,
+          issue: p.status === "in-progress" ? "Still clocked in" : "Missing clock-out",
+        };
+      });
+      return res.json({ category, columns, rows });
+    }
+
+    if (category === "exceptions") {
+      const exceptions = await storage.getAttendanceExceptionsByDateRange(startDate, endDate, finalUserIds, status);
+      const columns: ReportColumn[] = [
+        { key: "employeeName", label: "Employee", kind: "text" },
+        { key: "department", label: "Department", kind: "text" },
+        { key: "exceptionDate", label: "Date", kind: "date" },
+        { key: "type", label: "Type", kind: "text" },
+        { key: "status", label: "Status", kind: "text" },
+        { key: "reason", label: "Reason", kind: "text" },
+        { key: "reviewedAt", label: "Reviewed", kind: "datetime" },
+      ];
+      const rows = exceptions.map(e => {
+        const u = userById.get(e.employeeId);
+        return {
+          id: e.id,
+          employeeName: nameOf(u),
+          department: deptOf(u),
+          exceptionDate: e.exceptionDate,
+          type: e.type,
+          status: e.status,
+          reason: e.reason,
+          reviewedAt: e.reviewedAt ? new Date(e.reviewedAt).toISOString() : null,
+        };
+      });
+      return res.json({ category, columns, rows });
+    }
+
+    // Hours-based categories (attendance, time) share DB aggregation so their
+    // totals stay identical to the per-employee timesheet. `now` is captured
+    // once so in-progress punches are consistent across employees.
     const [attendanceAgg, daysOffByUser] = await Promise.all([
       storage.getAttendanceAggregatesByDateRange(startDate, endDate, finalUserIds, now),
       storage.getTimeOffDaysOffByDateRange(startDate, endDate, finalUserIds, status),
     ]);
 
-    const reportData = filteredUsers.map(user => {
-      const agg = attendanceAgg.get(user.id);
+    if (category === "time") {
+      const columns: ReportColumn[] = [
+        { key: "employeeName", label: "Employee", kind: "text" },
+        { key: "taxClassification", label: "Tax Class", kind: "text" },
+        { key: "department", label: "Department", kind: "text" },
+        { key: "daysWorked", label: "Days Worked", kind: "number" },
+        { key: "totalHours", label: "Total Hours", kind: "hours" },
+        { key: "avgHoursPerDay", label: "Avg Hours/Day", kind: "hours" },
+        { key: "overtime", label: "Overtime", kind: "hours" },
+      ];
+      const rows = filteredUsers.map(u => {
+        const agg = attendanceAgg.get(u.id);
+        const totalHours = agg?.totalHours ?? 0;
+        const daysWorked = agg?.daysWorked ?? 0;
+        const overtime = Math.max(0, totalHours - daysWorked * 8);
+        const avg = daysWorked > 0 ? totalHours / daysWorked : 0;
+        return {
+          id: u.id,
+          employeeName: nameOf(u),
+          taxClassification: taxByUser.get(u.id) || "W-2",
+          department: deptOf(u),
+          daysWorked,
+          totalHours: Math.round(totalHours * 10) / 10,
+          avgHoursPerDay: Math.round(avg * 10) / 10,
+          overtime: Math.round(overtime * 10) / 10,
+        };
+      });
+      return res.json({ category, columns, rows });
+    }
+
+    // Default: attendance summary (also the legacy default shape).
+    const attendanceColumns: ReportColumn[] = [
+      { key: "employeeName", label: "Employee", kind: "text" },
+      { key: "taxClassification", label: "Tax Class", kind: "text" },
+      { key: "department", label: "Department", kind: "text" },
+      { key: "totalHours", label: "Total Hours", kind: "hours" },
+      { key: "daysWorked", label: "Days Worked", kind: "number" },
+      { key: "daysOff", label: "Days Off", kind: "number" },
+      { key: "overtime", label: "Overtime", kind: "hours" },
+    ];
+    const attendanceRows = filteredUsers.map(u => {
+      const agg = attendanceAgg.get(u.id);
       const totalHours = agg?.totalHours ?? 0;
       const daysWorked = agg?.daysWorked ?? 0;
-      const daysOff = daysOffByUser.get(user.id) ?? 0;
-      const overtime = Math.max(0, totalHours - (daysWorked * 8));
-
+      const daysOff = daysOffByUser.get(u.id) ?? 0;
+      const overtime = Math.max(0, totalHours - daysWorked * 8);
       return {
-        employeeId: user.id,
-        employeeName: `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Unknown",
-        department: user.departmentId ? (deptMap.get(user.departmentId) || "Unassigned") : "Unassigned",
-        taxClassification: taxByUser.get(user.id) || "W-2",
+        id: u.id,
+        employeeName: nameOf(u),
+        taxClassification: taxByUser.get(u.id) || "W-2",
+        department: deptOf(u),
         totalHours: Math.round(totalHours * 10) / 10,
         daysWorked,
         daysOff,
@@ -5134,7 +5281,7 @@ export async function registerRoutes(
       };
     });
 
-    res.json(reportData);
+    res.json({ category: "attendance", columns: attendanceColumns, rows: attendanceRows });
   });
 
   app.get("/api/pto-policies", requireAuth, requirePermission("pto.manage_policies"), async (_req, res) => {

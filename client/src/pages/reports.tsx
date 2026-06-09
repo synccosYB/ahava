@@ -21,15 +21,18 @@ import {
 } from "@/components/ui/table";
 import type { AuditLog } from "@shared/schema";
 
-type ReportRow = {
-  employeeId: string;
-  employeeName: string;
-  department: string;
-  taxClassification: string;
-  totalHours: number;
-  daysWorked: number;
-  daysOff: number;
-  overtime: number;
+type ReportColumn = {
+  key: string;
+  label: string;
+  kind?: "hours" | "date" | "datetime" | "number" | "text";
+};
+
+type ReportRow = { id: string } & Record<string, unknown>;
+
+type ReportResult = {
+  category: string;
+  columns: ReportColumn[];
+  rows: ReportRow[];
 };
 
 type FilterOptions = {
@@ -66,11 +69,11 @@ export default function ReportsPage() {
           ))}
         </TabsList>
 
-        <TabsContent value="attendance"><StandardReport reportType="company" title="Attendance Report" /></TabsContent>
-        <TabsContent value="time"><StandardReport reportType="employee" title="Time Report" /></TabsContent>
-        <TabsContent value="pto"><StandardReport reportType="team" title="PTO Report" showStatusFilter /></TabsContent>
-        <TabsContent value="missing-punches"><StandardReport reportType="company" title="Missing Punches Report" /></TabsContent>
-        <TabsContent value="exceptions"><StandardReport reportType="company" title="Exceptions Report" /></TabsContent>
+        <TabsContent value="attendance"><StandardReport category="attendance" reportType="company" title="Attendance Report" /></TabsContent>
+        <TabsContent value="time"><StandardReport category="time" reportType="employee" title="Time Report" /></TabsContent>
+        <TabsContent value="pto"><StandardReport category="pto" reportType="team" title="PTO Report" statusFilter="timeOff" /></TabsContent>
+        <TabsContent value="missing-punches"><StandardReport category="missing-punches" reportType="company" title="Missing Punches Report" /></TabsContent>
+        <TabsContent value="exceptions"><StandardReport category="exceptions" reportType="company" title="Exceptions Report" statusFilter="exception" /></TabsContent>
         <TabsContent value="audit"><AuditReport /></TabsContent>
         <TabsContent value="employee-timesheet"><EmployeeTimesheetReport /></TabsContent>
       </Tabs>
@@ -78,16 +81,57 @@ export default function ReportsPage() {
   );
 }
 
+const TIME_OFF_STATUS_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "pending", label: "Pending" },
+  { value: "approved", label: "Approved" },
+  { value: "partially_approved", label: "Partially Approved" },
+  { value: "denied", label: "Denied" },
+];
+
+const EXCEPTION_STATUS_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "pending", label: "Pending" },
+  { value: "approved", label: "Approved" },
+  { value: "denied", label: "Denied" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+function formatCell(value: unknown, kind: ReportColumn["kind"], mode: "display" | "csv" = "display"): string {
+  if (value === null || value === undefined || value === "") {
+    return mode === "display" ? "—" : "";
+  }
+  if (kind === "hours") {
+    return formatHoursMinutes(Number(value));
+  }
+  if (kind === "date") {
+    // Date-only string (YYYY-MM-DD) — render without timezone shifting.
+    const s = String(value);
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[2]}/${m[3]}/${m[1]}`;
+    return s;
+  }
+  if (kind === "datetime") {
+    const d = new Date(String(value));
+    if (isNaN(d.getTime())) return String(value);
+    return mode === "csv" ? d.toISOString() : d.toLocaleString();
+  }
+  return String(value);
+}
+
 function StandardReport({
+  category,
   reportType,
   title,
-  showStatusFilter,
+  statusFilter,
 }: {
+  category: string;
   reportType: string;
   title: string;
-  showStatusFilter?: boolean;
+  statusFilter?: "timeOff" | "exception";
 }) {
   const { toast } = useToast();
+  const showStatusFilter = !!statusFilter;
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
     d.setDate(1);
@@ -100,7 +144,7 @@ function StandardReport({
   const [companyIds, setCompanyIds] = useState<string[]>([]);
   const [taxClassifications, setTaxClassifications] = useState<string[]>([]);
   const [status, setStatus] = useState("all");
-  const [reportData, setReportData] = useState<ReportRow[] | null>(null);
+  const [reportData, setReportData] = useState<ReportResult | null>(null);
 
   const { data: filterOptions } = useQuery<FilterOptions>({
     queryKey: ["/api/reports/filter-options"],
@@ -136,6 +180,7 @@ function StandardReport({
       // DO NOT call generateMutation.mutate() from a useEffect or auto-fire on mount.
       // Report generation is an expensive endpoint (server cooldown applies).
       const res = await apiRequest("POST", "/api/reports/generate", {
+        category,
         reportType,
         startDate,
         endDate,
@@ -148,7 +193,7 @@ function StandardReport({
       });
       return res.json();
     },
-    onSuccess: (data: ReportRow[]) => {
+    onSuccess: (data: ReportResult) => {
       setReportData(data);
       toast({ title: `${title} generated` });
     },
@@ -157,11 +202,17 @@ function StandardReport({
     },
   });
 
+  const escapeCsv = (value: string) =>
+    /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+
   const downloadCSV = () => {
-    if (!reportData || reportData.length === 0) return;
-    const headers = ["Employee", "Tax Classification", "Department", "Total Hours", "Days Worked", "Days Off", "Overtime"];
-    const rows = reportData.map((r) => [r.employeeName, r.taxClassification || "W-2", r.department, formatHoursMinutes(r.totalHours), r.daysWorked, r.daysOff, formatHoursMinutes(r.overtime)]);
-    const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    if (!reportData || reportData.rows.length === 0) return;
+    const { columns, rows } = reportData;
+    const headers = columns.map((c) => c.label);
+    const dataRows = rows.map((r) =>
+      columns.map((c) => escapeCsv(formatCell(r[c.key], c.kind, "csv"))),
+    );
+    const csv = [headers.map(escapeCsv).join(","), ...dataRows.map((r) => r.join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -252,11 +303,9 @@ function StandardReport({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="partially_approved">Partially Approved</SelectItem>
-                    <SelectItem value="denied">Denied</SelectItem>
+                    {(statusFilter === "exception" ? EXCEPTION_STATUS_OPTIONS : TIME_OFF_STATUS_OPTIONS).map((o) => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -292,31 +341,33 @@ function StandardReport({
               </div>
             </CardHeader>
             <CardContent>
-              {reportData.length > 0 ? (
+              {reportData.rows.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
-                      <TableHead className="text-xs font-medium uppercase tracking-wider">Tax Class</TableHead>
-                      <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
-                      <TableHead className="text-xs font-medium uppercase tracking-wider">Total Hours</TableHead>
-                      <TableHead className="text-xs font-medium uppercase tracking-wider">Days Worked</TableHead>
-                      <TableHead className="text-xs font-medium uppercase tracking-wider">Days Off</TableHead>
-                      <TableHead className="text-xs font-medium uppercase tracking-wider">Overtime</TableHead>
+                      {reportData.columns.map((col) => (
+                        <TableHead key={col.key} className="text-xs font-medium uppercase tracking-wider">{col.label}</TableHead>
+                      ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {reportData.map((row) => (
-                      <TableRow key={row.employeeId} data-testid={`row-report-${row.employeeId}`}>
-                        <TableCell className="font-medium" data-testid={`text-report-name-${row.employeeId}`}>{row.employeeName}</TableCell>
-                        <TableCell data-testid={`text-report-tax-${row.employeeId}`}>{row.taxClassification || "W-2"}</TableCell>
-                        <TableCell data-testid={`text-report-dept-${row.employeeId}`}>{row.department}</TableCell>
-                        <TableCell className="tabular-nums" data-testid={`text-report-hours-${row.employeeId}`}>{formatHoursMinutes(row.totalHours)}</TableCell>
-                        <TableCell className="tabular-nums" data-testid={`text-report-days-${row.employeeId}`}>{row.daysWorked}</TableCell>
-                        <TableCell className="tabular-nums" data-testid={`text-report-off-${row.employeeId}`}>{row.daysOff}</TableCell>
-                        <TableCell data-testid={`text-report-overtime-${row.employeeId}`}>
-                          <span className={row.overtime > 0 ? "text-amber-500 font-bold" : ""}>{formatHoursMinutes(row.overtime)}</span>
-                        </TableCell>
+                    {reportData.rows.map((row) => (
+                      <TableRow key={row.id} data-testid={`row-report-${row.id}`}>
+                        {reportData.columns.map((col) => {
+                          const numeric = col.kind === "hours" || col.kind === "number";
+                          const isOvertime = col.key === "overtime" && Number(row[col.key]) > 0;
+                          return (
+                            <TableCell
+                              key={col.key}
+                              className={`${numeric ? "tabular-nums" : ""} ${col.key === "employeeName" ? "font-medium" : ""}`}
+                              data-testid={`cell-report-${col.key}-${row.id}`}
+                            >
+                              <span className={isOvertime ? "text-amber-500 font-bold" : ""}>
+                                {formatCell(row[col.key], col.kind)}
+                              </span>
+                            </TableCell>
+                          );
+                        })}
                       </TableRow>
                     ))}
                   </TableBody>

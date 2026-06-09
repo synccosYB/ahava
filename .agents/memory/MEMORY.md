@@ -4,3 +4,4 @@
 - [Open punch invariant](open-punch-invariant.md) — one open punch per employee enforced by partial unique index; "open" = clock_out NULL (NOT status, which differs web vs kiosk).
 - [Active-user filtering](active-user-filtering.md) — iterate employees with `!u.deactivatedAt && role!=='kiosk'`; users table has no isActive column (it's in shared/models/auth.ts).
 - [Dev server no hot-reload](dev-server-no-hot-reload.md) — `tsx server/index.ts` (not watch); restart "Start application" after any server/** edit before API smoke tests; auth is JWT bearer.
+- [Reports category vs scope](reports-category-vs-scope.md) — /api/reports/generate takes `category` (what data) separate from `reportType` (scope); returns self-describing {category,columns,rows}, client adapts via columns[].kind.

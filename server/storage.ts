@@ -390,6 +390,23 @@ export interface IStorage {
     userIds: string[],
     status?: string,
   ): Promise<Map<string, number>>;
+  getTimeOffRequestsByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds: string[],
+    status?: string,
+  ): Promise<TimeOffRequest[]>;
+  getIncompletePunchesByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds: string[],
+  ): Promise<PunchLog[]>;
+  getAttendanceExceptionsByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds: string[],
+    status?: string,
+  ): Promise<AttendanceException[]>;
 
   getPtoPolicy(id: string): Promise<PtoPolicy | undefined>;
   getAllPtoPolicies(): Promise<PtoPolicy[]>;
@@ -1861,6 +1878,73 @@ export class DatabaseStorage implements IStorage {
       result.set(r.userId, Number(r.daysOff));
     }
     return result;
+  }
+
+  // Per-request time-off rows overlapping [startDate, endDate] for the given
+  // users, used by the PTO report. Excludes cashouts (not "time off taken").
+  // When a status filter is supplied it narrows to that status; otherwise all
+  // statuses are returned so the report can show pending/denied alongside
+  // approved.
+  async getTimeOffRequestsByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds: string[],
+    status?: string,
+  ): Promise<TimeOffRequest[]> {
+    if (userIds.length === 0) return [];
+    const conds: SQL[] = [
+      inArray(timeOffRequests.userId, userIds),
+      lte(timeOffRequests.startDate, endDate),
+      gte(timeOffRequests.endDate, startDate),
+      ne(timeOffRequests.requestCategory, "cashout"),
+    ];
+    if (status && status !== "all") {
+      conds.push(eq(timeOffRequests.status, status));
+    }
+    return db.select().from(timeOffRequests)
+      .where(and(...conds))
+      .orderBy(desc(timeOffRequests.startDate));
+  }
+
+  // Incomplete punch rows for the Missing Punches report: a clock-in with no
+  // clock-out, within the date range, for the given users.
+  async getIncompletePunchesByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds: string[],
+  ): Promise<PunchLog[]> {
+    if (userIds.length === 0) return [];
+    return db.select().from(punchLogs)
+      .where(and(
+        inArray(punchLogs.employeeId, userIds),
+        gte(punchLogs.workDate, startDate),
+        lte(punchLogs.workDate, endDate),
+        isNotNull(punchLogs.clockIn),
+        isNull(punchLogs.clockOut),
+      ))
+      .orderBy(desc(punchLogs.workDate));
+  }
+
+  // Attendance exception rows for the Exceptions report, scoped to the given
+  // users and date range. Optional status filter narrows by exception status.
+  async getAttendanceExceptionsByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds: string[],
+    status?: string,
+  ): Promise<AttendanceException[]> {
+    if (userIds.length === 0) return [];
+    const conds: SQL[] = [
+      inArray(attendanceExceptions.employeeId, userIds),
+      gte(attendanceExceptions.exceptionDate, startDate),
+      lte(attendanceExceptions.exceptionDate, endDate),
+    ];
+    if (status && status !== "all") {
+      conds.push(eq(attendanceExceptions.status, status));
+    }
+    return db.select().from(attendanceExceptions)
+      .where(and(...conds))
+      .orderBy(desc(attendanceExceptions.exceptionDate));
   }
 
   async getCompany(id: string): Promise<Company | undefined> {
