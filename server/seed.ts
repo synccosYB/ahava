@@ -252,7 +252,26 @@ export async function seed() {
     });
     console.log("Created admin user: admin@ahavamedical.com / admin123");
   } else {
-    console.log("Admin user already exists, skipping.");
+    const hasUsablePassword = Boolean(existingAdmin.password || existingAdmin.passwordHash);
+
+    if (!hasUsablePassword) {
+      const hashedPassword = await bcrypt.hash("admin123", 10);
+      await db
+        .update(users)
+        .set({
+          password: hashedPassword,
+          passwordHash: hashedPassword,
+          role: "admin",
+          deactivatedAt: null,
+          forcePasswordChange: true,
+        })
+        .where(eq(users.id, existingAdmin.id));
+      console.log(
+        "Repaired admin user password (was missing): admin@ahavamedical.com / admin123 (forced change on first login).",
+      );
+    } else {
+      console.log("Admin user already exists, skipping.");
+    }
   }
 
   const [existingPerm] = await db
