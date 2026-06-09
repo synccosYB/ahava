@@ -313,7 +313,7 @@ export async function registerRoutes(
     res.json({ permissions: Array.from(perms) });
   });
 
-  app.get("/api/users", requireAuth, requireRole("admin"), requirePermission("users.view"), requestCache({ scope: "user" }), async (req, res) => {
+  app.get("/api/users", requireAuth, requirePermission("users.view"), requestCache({ scope: "user" }), async (req, res) => {
     const users = await storage.getAllUsers();
     // Attach role-rule provenance: which active rule (if any) matches this
     // user. UI uses this to show "Set by rule" only when an actual rule
@@ -334,7 +334,7 @@ export async function registerRoutes(
     res.json(hideSuperAdmin(enriched, isSuperAdmin(req)));
   });
 
-  app.patch("/api/users/:id/role", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/users/:id/role", requireAuth, requirePermission("users.edit"), async (req, res) => {
     if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -366,7 +366,7 @@ export async function registerRoutes(
     res.json(user);
   });
 
-  app.post("/api/users/:id/clear-role-override", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/users/:id/clear-role-override", requireAuth, requirePermission("users.edit"), async (req, res) => {
     if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -416,7 +416,7 @@ export async function registerRoutes(
     skipOnboarding: z.boolean().optional(),
   });
 
-  app.post("/api/users", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/users", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = createUserSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid user data", errors: parsed.error.flatten() });
@@ -558,7 +558,7 @@ export async function registerRoutes(
     keepCompatible: z.boolean().optional().default(false),
   });
 
-  app.post("/api/users/bulk-assign-division", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/users/bulk-assign-division", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = bulkAssignDivisionSchema.safeParse(req.body);
     if (!parsed.success) {
       return badRequestFromZod(res, parsed, "Invalid bulk-assign request");
@@ -646,7 +646,7 @@ export async function registerRoutes(
     userIds: z.array(z.string().min(1)).min(1).max(200),
   });
 
-  app.post("/api/users/bulk-delete", requireAuth, requireRole("admin"), requirePermission("users.delete"), async (req, res) => {
+  app.post("/api/users/bulk-delete", requireAuth, requirePermission("users.delete"), async (req, res) => {
     const parsed = bulkDeleteUsersSchema.safeParse(req.body);
     if (!parsed.success) {
       return badRequestFromZod(res, parsed, "Invalid bulk-delete request");
@@ -701,7 +701,7 @@ export async function registerRoutes(
     res.json({ deleted, skipped });
   });
 
-  app.patch("/api/users/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/users/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -815,7 +815,7 @@ export async function registerRoutes(
     res.json(safe);
   });
 
-  app.post("/api/users/:id/reset-password", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/users/:id/reset-password", requireAuth, requirePermission("users.edit"), async (req, res) => {
     if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -964,12 +964,12 @@ export async function registerRoutes(
 
   const ALLOWED_DOCUMENT_TYPES = ["w9", "i9", "direct_deposit", "emergency_contact", "handbook_ack"];
 
-  app.get("/api/users/:id/documents", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/users/:id/documents", requireAuth, requirePermission("users.view"), async (req, res) => {
     const docs = await storage.getDocumentsByEmployee(String(req.params.id));
     res.json(docs);
   });
 
-  app.post("/api/users/:id/documents", requireAuth, requireRole("admin"), requirePermission("users.edit"), documentUpload.single("file"), async (req, res) => {
+  app.post("/api/users/:id/documents", requireAuth, requirePermission("users.edit"), documentUpload.single("file"), async (req, res) => {
     const employee = await storage.getUser(String(req.params.id));
     if (!employee) {
       return res.status(404).json({ message: "Employee not found" });
@@ -1071,7 +1071,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/documents/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const { status } = req.body;
     if (!status || !["uploaded", "reviewed", "missing"].includes(status)) {
       return res.status(400).json({ message: "Invalid status" });
@@ -1090,7 +1090,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/documents/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     try {
       const doc = await storage.getDocument(String(req.params.id));
       if (!doc) return res.status(404).json({ message: "Document not found" });
@@ -1143,7 +1143,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/certifications", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/certifications", requireAuth, requirePermission("users.view"), async (req, res) => {
     try {
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
       const certs = await storage.getAllCertifications({ status });
@@ -1198,13 +1198,13 @@ export async function registerRoutes(
     }
   }
 
-  app.post("/api/certifications", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+  app.post("/api/certifications", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
     const employeeId = (req.body || {}).employeeId;
     if (!employeeId) return res.status(400).json({ message: "employeeId is required" });
     return createCertificationHandler(req, res, employeeId);
   });
 
-  app.patch("/api/certifications/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+  app.patch("/api/certifications/:id", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
     const parsed = certificationBodySchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid certification data", errors: parsed.error.flatten() });
@@ -1247,7 +1247,6 @@ export async function registerRoutes(
   app.post(
     "/api/certifications/:id/document",
     requireAuth,
-    requireRole("admin"),
     requirePermission("users.edit"),
     documentUpload.single("file"),
     async (req, res) => {
@@ -1296,7 +1295,7 @@ export async function registerRoutes(
     },
   );
 
-  app.delete("/api/certifications/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+  app.delete("/api/certifications/:id", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
     const adminUser = req.authUser as User;
     try {
       const existing = await storage.getCertification(String(req.params.id));
@@ -1370,7 +1369,7 @@ export async function registerRoutes(
     return null;
   }
 
-  app.get("/api/required-documents", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/required-documents", requireAuth, requirePermission("users.view"), async (req, res) => {
     try {
       const documentType = typeof req.query.documentType === "string" ? req.query.documentType : undefined;
       const isActiveRaw = req.query.isActive;
@@ -1384,7 +1383,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/required-documents", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+  app.post("/api/required-documents", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
     const parsed = requiredDocBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid rule data", errors: parsed.error.flatten() });
@@ -1424,7 +1423,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/required-documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+  app.patch("/api/required-documents/:id", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
     const parsed = requiredDocBodySchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid rule data", errors: parsed.error.flatten() });
@@ -1471,7 +1470,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/required-documents/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+  app.delete("/api/required-documents/:id", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
     const adminUser = req.authUser as User;
     try {
       const existing = await storage.getRequiredDocumentRule(String(req.params.id));
@@ -1500,7 +1499,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/required-documents/evaluate-now", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+  app.post("/api/required-documents/evaluate-now", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
     const adminUser = req.authUser as User;
     try {
       const { detectMissingDocuments } = await import("./services/lifecycleAlerts");
@@ -1526,7 +1525,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/users/:id/certifications", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req: any, res) => {
+  app.post("/api/users/:id/certifications", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
     return createCertificationHandler(req, res, String(req.params.id));
   });
 
@@ -1544,7 +1543,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/payroll-documents", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/payroll-documents", requireAuth, requirePermission("payroll.view_all"), async (_req, res) => {
     try {
       const docs = await storage.getAllPayrollDocuments();
       const enriched = await Promise.all(docs.map(async (doc) => {
@@ -1574,7 +1573,7 @@ export async function registerRoutes(
     mimeType: z.string().nullable().optional(),
   });
 
-  app.post("/api/payroll-documents", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/payroll-documents", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
     const parsed = payrollDocSchema.safeParse(req.body);
     if (!parsed.success) {
       return badRequestFromZod(res, parsed, "Invalid payroll document");
@@ -1627,7 +1626,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/payroll-documents/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  app.delete("/api/payroll-documents/:id", requireAuth, requirePermission("payroll.manage"), async (req, res) => {
     try {
       const doc = await storage.getPayrollDocument(String(req.params.id));
       if (!doc) return res.status(404).json({ message: "Document not found" });
@@ -1638,7 +1637,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/pto-balances/all", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/pto-balances/all", requireAuth, requirePermission("pto.view_all"), async (_req, res) => {
     try {
       const allUsers = await storage.getAllUsers();
       const departments = await storage.getAllDepartments();
@@ -1720,7 +1719,7 @@ export async function registerRoutes(
     res.json(company);
   });
 
-  app.post("/api/companies", requireAuth, requireRole("admin"), requirePermission("company.create"), async (req, res) => {
+  app.post("/api/companies", requireAuth, requirePermission("company.create"), async (req, res) => {
     const parsed = insertCompanySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid company data", errors: parsed.error.flatten() });
@@ -1729,7 +1728,7 @@ export async function registerRoutes(
     res.status(201).json(company);
   });
 
-  app.patch("/api/companies/:id", requireAuth, requireRole("admin"), requirePermission("company.edit"), async (req, res) => {
+  app.patch("/api/companies/:id", requireAuth, requirePermission("company.edit"), async (req, res) => {
     const parsed = insertCompanySchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid company data", errors: parsed.error.flatten() });
@@ -1739,7 +1738,7 @@ export async function registerRoutes(
     res.json(company);
   });
 
-  app.delete("/api/companies/:id", requireAuth, requireRole("admin"), requirePermission("company.delete"), async (req, res) => {
+  app.delete("/api/companies/:id", requireAuth, requirePermission("company.delete"), async (req, res) => {
     const company = await storage.getCompany(String(req.params.id));
     if (!company) return res.status(404).json({ message: "Company not found" });
     await storage.deleteCompany(String(req.params.id));
@@ -1812,7 +1811,7 @@ export async function registerRoutes(
     companyIds: z.array(z.string().min(1)).optional(),
   });
 
-  app.post("/api/locations", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+  app.post("/api/locations", requireAuth, requirePermission("locations.manage"), async (req, res) => {
     const parsed = locationBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
@@ -1829,7 +1828,7 @@ export async function registerRoutes(
     res.status(201).json(await enrichLocation(location));
   });
 
-  app.patch("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+  app.patch("/api/locations/:id", requireAuth, requirePermission("locations.manage"), async (req, res) => {
     const parsed = locationBodySchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
@@ -1867,7 +1866,7 @@ export async function registerRoutes(
     res.json(await enrichLocation(location));
   });
 
-  app.delete("/api/locations/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+  app.delete("/api/locations/:id", requireAuth, requirePermission("locations.manage"), async (req, res) => {
     const location = await storage.getLocation(String(req.params.id));
     if (!location) return res.status(404).json({ message: "Location not found" });
     await storage.deleteLocation(String(req.params.id));
@@ -1881,7 +1880,7 @@ export async function registerRoutes(
     res.json(addresses);
   });
 
-  app.post("/api/locations/:locationId/addresses", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+  app.post("/api/locations/:locationId/addresses", requireAuth, requirePermission("locations.manage"), async (req, res) => {
     const location = await storage.getLocation(String(req.params.locationId));
     if (!location) return res.status(404).json({ message: "Location not found" });
     const parsed = insertLocationAddressSchema.safeParse({ ...req.body, locationId: String(req.params.locationId) });
@@ -1892,7 +1891,7 @@ export async function registerRoutes(
     res.status(201).json(address);
   });
 
-  app.patch("/api/locations/:locationId/addresses/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+  app.patch("/api/locations/:locationId/addresses/:id", requireAuth, requirePermission("locations.manage"), async (req, res) => {
     const existing = await storage.getLocationAddress(String(req.params.id));
     if (!existing || existing.locationId !== String(req.params.locationId)) {
       return res.status(404).json({ message: "Address not found" });
@@ -1905,7 +1904,7 @@ export async function registerRoutes(
     res.json(address);
   });
 
-  app.delete("/api/locations/:locationId/addresses/:id", requireAuth, requireRole("admin"), requirePermission("locations.manage"), async (req, res) => {
+  app.delete("/api/locations/:locationId/addresses/:id", requireAuth, requirePermission("locations.manage"), async (req, res) => {
     const existing = await storage.getLocationAddress(String(req.params.id));
     if (!existing || existing.locationId !== String(req.params.locationId)) {
       return res.status(404).json({ message: "Address not found" });
@@ -1952,7 +1951,7 @@ export async function registerRoutes(
 
   const managerIdsSchema = z.array(z.string()).optional().default([]);
 
-  app.post("/api/departments", requireAuth, requireRole("admin"), requirePermission("departments.create"), async (req, res) => {
+  app.post("/api/departments", requireAuth, requirePermission("departments.create"), async (req, res) => {
     const { managerIds: rawManagerIds, ...deptData } = req.body;
     const parsed = insertDepartmentSchema.safeParse(deptData);
     if (!parsed.success) {
@@ -1987,7 +1986,7 @@ export async function registerRoutes(
     res.status(201).json({ ...dept, managerIds: managers.map(m => m.userId) });
   });
 
-  app.patch("/api/departments/:id", requireAuth, requireRole("admin"), requirePermission("departments.edit"), async (req, res) => {
+  app.patch("/api/departments/:id", requireAuth, requirePermission("departments.edit"), async (req, res) => {
     const { managerIds: rawManagerIds, ...deptData } = req.body;
     const parsed = insertDepartmentSchema.partial().safeParse(deptData);
     if (!parsed.success) {
@@ -2006,7 +2005,7 @@ export async function registerRoutes(
     res.json({ ...dept, managerIds: managers.map(m => m.userId) });
   });
 
-  app.delete("/api/departments/:id", requireAuth, requireRole("admin"), requirePermission("departments.edit"), async (req, res) => {
+  app.delete("/api/departments/:id", requireAuth, requirePermission("departments.edit"), async (req, res) => {
     await storage.deleteDepartment(String(req.params.id));
     res.status(204).send();
   });
@@ -2093,7 +2092,7 @@ export async function registerRoutes(
     res.json(profile);
   });
 
-  app.post("/api/employment-profiles", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/employment-profiles", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertEmploymentProfileSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
@@ -2119,7 +2118,7 @@ export async function registerRoutes(
     res.status(201).json(profile);
   });
 
-  app.patch("/api/employment-profiles/:userId", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/employment-profiles/:userId", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertEmploymentProfileSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
@@ -2247,7 +2246,7 @@ export async function registerRoutes(
     return new Set();
   }
 
-  app.get("/api/time-off/pending", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
+  app.get("/api/time-off/pending", requireAuth, requirePermission("pto.approve"), async (req, res) => {
     const user = (req as any).authUser as User;
     const isRequesterAdmin = user.role === "admin";
     const teamIds = await getTeamUserIds(user);
@@ -2721,7 +2720,7 @@ export async function registerRoutes(
     isActive: z.boolean().default(true),
   });
 
-  app.get("/api/employees/:employeeId/schedules", requireAuth, requireRole("admin", "manager"), async (req: any, res) => {
+  app.get("/api/employees/:employeeId/schedules", requireAuth, requirePermission("schedules.view"), async (req: any, res) => {
     try {
       const { employeeId } = req.params;
       const schedules = await storage.getEmployeeSchedules(employeeId);
@@ -2732,7 +2731,7 @@ export async function registerRoutes(
     }
   });
 
-  app.put("/api/employees/:employeeId/schedules", requireAuth, requireRole("admin", "manager"), async (req: any, res) => {
+  app.put("/api/employees/:employeeId/schedules", requireAuth, requirePermission("schedules.manage"), async (req: any, res) => {
     try {
       const { employeeId } = req.params;
       const scheduleEntries = req.body;
@@ -3194,7 +3193,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/attendance/exceptions/:id/reopen-decide", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+  app.post("/api/attendance/exceptions/:id/reopen-decide", requireAuth, requirePermission("attendance.approve_corrections"), async (req: any, res) => {
     try {
       const reviewer = req.authUser as User;
       const exceptionId = String(req.params.id) as string;
@@ -3355,7 +3354,7 @@ export async function registerRoutes(
   app.get(
     "/api/attendance/exceptions/correction-counts/:employeeId",
     requireAuth,
-    requireRole("manager", "admin"),
+    requirePermission("attendance.approve_corrections"),
     async (req: any, res) => {
       try {
         const reviewer = req.authUser as User;
@@ -3375,7 +3374,7 @@ export async function registerRoutes(
     }
   );
 
-  app.get("/api/attendance/exceptions/pending", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+  app.get("/api/attendance/exceptions/pending", requireAuth, requirePermission("attendance.approve_corrections"), async (req: any, res) => {
     try {
       const user = req.authUser as User;
       const teamIds = await getTeamUserIds(user);
@@ -3434,7 +3433,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/attendance/exceptions/reopen-pending", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+  app.get("/api/attendance/exceptions/reopen-pending", requireAuth, requirePermission("attendance.approve_corrections"), async (req: any, res) => {
     try {
       const user = req.authUser as User;
       const teamIds = await getTeamUserIds(user);
@@ -3458,7 +3457,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/attendance/exceptions/recent-decided", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+  app.get("/api/attendance/exceptions/recent-decided", requireAuth, requirePermission("attendance.approve_corrections"), async (req: any, res) => {
     try {
       const user = req.authUser as User;
       const isRequesterAdmin = user.role === "admin";
@@ -3526,7 +3525,7 @@ export async function registerRoutes(
     correctedClockOut: z.string().optional(),
   });
 
-  app.post("/api/attendance/exceptions/:id/resolve", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+  app.post("/api/attendance/exceptions/:id/resolve", requireAuth, requirePermission("attendance.approve_corrections"), async (req: any, res) => {
     try {
       const reviewer = req.authUser as User;
       const exceptionId = String(req.params.id) as string;
@@ -4244,7 +4243,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/time-off/balance", requireAuth, requireRole("manager", "admin"), async (req: any, res) => {
+  app.get("/api/time-off/balance", requireAuth, requirePermission("pto.view_team"), async (req: any, res) => {
     try {
       const user = req.authUser as User;
       const targetUserId = req.query.userId as string || user.id;
@@ -4285,7 +4284,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/manager/team-stats", requireAuth, requireRole("manager", "admin"), requirePermission("attendance.view_team"), requestCache({ scope: "user" }), async (req, res) => {
+  app.get("/api/manager/team-stats", requireAuth, requirePermission("attendance.view_team"), requestCache({ scope: "user" }), async (req, res) => {
     const user = (req as any).authUser as User;
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const today = new Date().toISOString().split("T")[0];
@@ -4322,7 +4321,7 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/manager/team-status", requireAuth, requireRole("manager", "admin"), requirePermission("attendance.view_team"), async (req, res) => {
+  app.get("/api/manager/team-status", requireAuth, requirePermission("attendance.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
     const today = new Date().toISOString().split("T")[0];
 
@@ -4406,7 +4405,7 @@ export async function registerRoutes(
     approvedEndDate: z.string().optional(),
   });
 
-  app.post("/api/time-off/:id/approve", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
+  app.post("/api/time-off/:id/approve", requireAuth, requirePermission("pto.approve"), async (req, res) => {
     try {
       const user = (req as any).authUser as User;
       const parsed = approvalSchema.safeParse(req.body);
@@ -4476,7 +4475,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/time-off/:id/deny", requireAuth, requireRole("manager", "admin"), requirePermission("pto.approve"), async (req, res) => {
+  app.post("/api/time-off/:id/deny", requireAuth, requirePermission("pto.approve"), async (req, res) => {
     try {
       const user = (req as any).authUser as User;
       const parsed = approvalSchema.safeParse(req.body);
@@ -4528,7 +4527,7 @@ export async function registerRoutes(
   app.post(
     "/api/time-off/cleanup-invalid-hours",
     requireAuth,
-    requireRole("admin"),
+    requirePermission("pto.manage_policies"),
     async (req, res) => {
       try {
         const actor = (req as any).authUser as User;
@@ -4627,7 +4626,7 @@ export async function registerRoutes(
     },
   );
 
-  app.get("/api/time-off/processed", requireAuth, requireRole("manager", "admin"), requirePermission("pto.view_team"), async (req, res) => {
+  app.get("/api/time-off/processed", requireAuth, requirePermission("pto.view_team"), async (req, res) => {
     const user = (req as any).authUser as User;
     const { department, location, type, status, startDate, endDate } = req.query as Record<string, string | undefined>;
 
@@ -4701,7 +4700,7 @@ export async function registerRoutes(
     res.json(enriched);
   });
 
-  app.get("/api/managers", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/managers", requireAuth, requirePermission("users.view"), async (req, res) => {
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const userMap = new Map(allUsers.map(u => [u.id, u]));
     const allDepartments = await storage.getAllDepartments();
@@ -4718,7 +4717,7 @@ export async function registerRoutes(
     res.json(names);
   });
 
-  app.get("/api/admin/company-stats", requireAuth, requireRole("admin"), requirePermission("company.view"), requestCache({ scope: "user" }), async (req, res) => {
+  app.get("/api/admin/company-stats", requireAuth, requirePermission("company.view"), requestCache({ scope: "user" }), async (req, res) => {
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const today = new Date().toISOString().split("T")[0];
     const todayAttendance = await storage.getAttendanceByDate(today);
@@ -4738,7 +4737,7 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/admin/department-breakdown", requireAuth, requireRole("admin"), requirePermission("departments.view"), async (req, res) => {
+  app.get("/api/admin/department-breakdown", requireAuth, requirePermission("departments.view"), async (req, res) => {
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const depts = await storage.getAllDepartments();
     const today = new Date().toISOString().split("T")[0];
@@ -4796,7 +4795,7 @@ export async function registerRoutes(
     res.json(breakdown);
   });
 
-  app.get("/api/admin/recent-activity", requireAuth, requireRole("admin"), requirePermission("company.view"), async (req, res) => {
+  app.get("/api/admin/recent-activity", requireAuth, requirePermission("company.view"), async (req, res) => {
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const userMap = new Map(allUsers.map(u => [u.id, u]));
     const pendingRequests = await storage.getPendingTimeOffRequests();
@@ -4834,7 +4833,6 @@ export async function registerRoutes(
   app.get(
     "/api/reports/filter-options",
     requireAuth,
-    requireRole("manager", "admin"),
     requirePermission("reports.view"),
     async (req, res) => {
       const user = (req as any).authUser as User;
@@ -4900,7 +4898,7 @@ export async function registerRoutes(
     ),
   });
 
-  app.post("/api/reports/generate", requireAuth, requireRole("manager", "admin"), requirePermission("reports.view"), async (req, res) => {
+  app.post("/api/reports/generate", requireAuth, requirePermission("reports.view"), async (req, res) => {
     const cdUser = (req as any).authUser as User;
     const cdKey = `reports:generate:${cdUser?.id ?? "anon"}:${JSON.stringify(req.body ?? {})}`;
     const gate = shouldRun(cdKey);
@@ -5019,7 +5017,7 @@ export async function registerRoutes(
     res.json(reportData);
   });
 
-  app.get("/api/pto-policies", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/pto-policies", requireAuth, requirePermission("pto.manage_policies"), async (_req, res) => {
     try {
       const policies = await storage.getAllPtoPolicies();
       res.json(policies);
@@ -5029,7 +5027,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/pto-policies/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/pto-policies/:id", requireAuth, requirePermission("pto.manage_policies"), async (req, res) => {
     try {
       const policy = await storage.getPtoPolicy(String(req.params.id));
       if (!policy) return res.status(404).json({ message: "Policy not found" });
@@ -5040,7 +5038,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/pto-policies", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/pto-policies", requireAuth, requirePermission("pto.manage_policies"), async (req: any, res) => {
     try {
       const parsed = insertPtoPolicySchema.safeParse(req.body);
       if (!parsed.success) {
@@ -5064,7 +5062,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/pto-policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.patch("/api/pto-policies/:id", requireAuth, requirePermission("pto.manage_policies"), async (req: any, res) => {
     try {
       const accrualType = req.body?.accrualType;
       if (accrualType === "per_hours_worked") {
@@ -5102,7 +5100,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/employee-pto-settings/:userId", requireAuth, requireRole("manager", "admin"), async (req, res) => {
+  app.get("/api/employee-pto-settings/:userId", requireAuth, requirePermission("pto.view_team"), async (req, res) => {
     try {
       const settings = await storage.getEmployeePtoSettings(String(req.params.userId));
       if (!settings) return res.json(null);
@@ -5113,7 +5111,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/employee-pto-settings", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/employee-pto-settings", requireAuth, requirePermission("pto.manage_policies"), async (req: any, res) => {
     try {
       const parsed = insertEmployeePtoSettingsSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -5144,7 +5142,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/employee-pto-settings/:userId", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.patch("/api/employee-pto-settings/:userId", requireAuth, requirePermission("pto.manage_policies"), async (req: any, res) => {
     try {
       const settings = await storage.updateEmployeePtoSettings(String(req.params.userId), req.body);
       if (!settings) return res.status(404).json({ message: "Employee PTO settings not found" });
@@ -5165,7 +5163,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/employee-pto-policy/:userId", requireAuth, requireRole("manager", "admin"), async (req, res) => {
+  app.get("/api/employee-pto-policy/:userId", requireAuth, requirePermission("pto.view_team"), async (req, res) => {
     try {
       const policy = await storage.getEmployeePtoPolicy(String(req.params.userId));
       res.json(policy || null);
@@ -5175,7 +5173,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/audit-logs", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/audit-logs", requireAuth, requirePermission("audit.view"), async (req, res) => {
     try {
       const module = req.query.module as string | undefined;
       const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
@@ -5234,7 +5232,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/policies", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/policies", requireAuth, requirePermission("policies.view"), async (req, res) => {
     try {
       const companyId = req.query.companyId as string | undefined;
       const policies = companyId
@@ -5247,7 +5245,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/policies/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/policies/:id", requireAuth, requirePermission("policies.view"), async (req, res) => {
     try {
       const policy = await storage.getPolicy(String(req.params.id));
       if (!policy) return res.status(404).json({ message: "Policy not found" });
@@ -5261,7 +5259,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/policies", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/policies", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       const parsed = insertPolicySchema.safeParse(req.body);
       if (!parsed.success) {
@@ -5308,7 +5306,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.patch("/api/policies/:id", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       const { rules, ...policyData } = req.body;
       if (rules) {
@@ -5350,7 +5348,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/policies/:id/activate", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/policies/:id/activate", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       const policy = await storage.updatePolicy(String(req.params.id), { status: "active" });
       if (!policy) return res.status(404).json({ message: "Policy not found" });
@@ -5371,7 +5369,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/policies/:id/archive", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/policies/:id/archive", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       const policy = await storage.updatePolicy(String(req.params.id), { status: "archived" });
       if (!policy) return res.status(404).json({ message: "Policy not found" });
@@ -5392,7 +5390,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/policies/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.delete("/api/policies/:id", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       const policy = await storage.getPolicy(String(req.params.id));
       if (!policy) return res.status(404).json({ message: "Policy not found" });
@@ -5415,7 +5413,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/policies/:id/rules", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/policies/:id/rules", requireAuth, requirePermission("policies.view"), async (req, res) => {
     try {
       const rules = await storage.getPolicyRulesByPolicy(String(req.params.id));
       res.json(rules[0]?.rules || {});
@@ -5425,7 +5423,7 @@ export async function registerRoutes(
     }
   });
 
-  app.put("/api/policies/:id/rules", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.put("/api/policies/:id/rules", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       const policy = await storage.getPolicy(String(req.params.id));
       if (!policy) return res.status(404).json({ message: "Policy not found" });
@@ -5455,7 +5453,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/roles-summary", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/roles-summary", requireAuth, requirePermission("policies.view"), async (_req, res) => {
     try {
       const allRoles = await storage.getAllRoles();
       res.json(
@@ -5509,7 +5507,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/policy-assignments", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/policy-assignments", requireAuth, requirePermission("policies.view"), async (req, res) => {
     try {
       const policyId = req.query.policyId as string | undefined;
       const assignments = policyId
@@ -5522,7 +5520,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/policy-assignments", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/policy-assignments", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       const isArray = Array.isArray(req.body);
       const items = isArray ? req.body : [req.body];
@@ -5601,7 +5599,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/policy-assignments/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.patch("/api/policy-assignments/:id", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       const assignment = await storage.updatePolicyAssignment(String(req.params.id), req.body);
       if (!assignment) return res.status(404).json({ message: "Policy assignment not found" });
@@ -5612,7 +5610,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/policy-assignments/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.delete("/api/policy-assignments/:id", requireAuth, requirePermission("policies.manage"), async (req: any, res) => {
     try {
       await storage.deletePolicyAssignment(String(req.params.id));
 
@@ -5688,7 +5686,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/policy-defaults/:policyType", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/policy-defaults/:policyType", requireAuth, requirePermission("policies.view"), async (req, res) => {
     try {
       const defaults = getDefaultRulesForType(String(req.params.policyType));
       if (Object.keys(defaults).length === 0) {
@@ -5708,7 +5706,7 @@ export async function registerRoutes(
     notes: z.string().optional(),
   });
 
-  app.get("/api/payroll/exports", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/payroll/exports", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const companyId = req.query.companyId as string | undefined;
       const exports = await storage.getPayrollExports(companyId);
@@ -5762,7 +5760,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/payroll/exports/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/payroll/exports/:id", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
@@ -5773,7 +5771,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/payroll/exports", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/payroll/exports", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
     const peKey = `payroll:exports:${req.authUser?.id ?? "anon"}`;
     const peGate = shouldRun(peKey);
     if (!peGate.ok) {
@@ -5965,7 +5963,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/payroll/exports/:id/records", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/payroll/exports/:id/records", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
@@ -5989,7 +5987,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/payroll/exports/:id/summary", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/payroll/exports/:id/summary", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
@@ -6030,7 +6028,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/payroll/exports/:id/export-csv", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/payroll/exports/:id/export-csv", requireAuth, requirePermission("payroll.export"), async (req: any, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
@@ -6238,7 +6236,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/payroll/exports/:id/lock", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/payroll/exports/:id/lock", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
@@ -6272,7 +6270,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/payroll/exports/:id/reopen", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/payroll/exports/:id/reopen", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
@@ -6306,7 +6304,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/payroll/exports/:id/adjustments", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/payroll/exports/:id/adjustments", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
@@ -6319,7 +6317,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/payroll/adjustments/pending", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/payroll/adjustments/pending", requireAuth, requirePermission("payroll.view_all"), async (_req, res) => {
     try {
       const adjustments = await storage.getPendingPayrollAdjustments();
       res.json(adjustments);
@@ -6329,7 +6327,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/payroll/adjustments/:id/acknowledge", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/payroll/adjustments/:id/acknowledge", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
     try {
       const adjustment = await storage.getPayrollAdjustment(String(req.params.id));
       if (!adjustment) return res.status(404).json({ message: "Adjustment not found" });
@@ -6348,7 +6346,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/payroll/overlap-check", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/payroll/overlap-check", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const startDate = req.query.startDate as string;
       const endDate = req.query.endDate as string;
@@ -6369,7 +6367,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/alerts", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.view"), requestCache({ scope: "user" }), async (req, res) => {
+  app.get("/api/alerts", requireAuth, requirePermission("alerts.view"), requestCache({ scope: "user" }), async (req, res) => {
     try {
       const filters: any = {};
       if (req.query.type) filters.type = req.query.type as string;
@@ -6392,7 +6390,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/alerts/detect", requireAuth, requireRole("admin"), requirePermission("alerts.manage"), async (req: any, res) => {
+  app.post("/api/alerts/detect", requireAuth, requirePermission("alerts.manage"), async (req: any, res) => {
     try {
       const detected = await runAlertDetection();
       const created = [];
@@ -6420,7 +6418,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/alerts/:id/acknowledge", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.manage"), async (req: any, res) => {
+  app.post("/api/alerts/:id/acknowledge", requireAuth, requirePermission("alerts.manage"), async (req: any, res) => {
     try {
       const alert = await storage.getSystemAlert(String(req.params.id));
       if (!alert) return res.status(404).json({ message: "Alert not found" });
@@ -6446,7 +6444,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/alerts/:id/resolve", requireAuth, requireRole("admin", "manager"), requirePermission("alerts.manage"), async (req: any, res) => {
+  app.post("/api/alerts/:id/resolve", requireAuth, requirePermission("alerts.manage"), async (req: any, res) => {
     try {
       const alert = await storage.getSystemAlert(String(req.params.id));
       if (!alert) return res.status(404).json({ message: "Alert not found" });
@@ -6472,7 +6470,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/audit-logs/filtered", requireAuth, requireRole("admin"), requirePermission("audit.view"), requestCache({ scope: "user" }), async (req, res) => {
+  app.get("/api/audit-logs/filtered", requireAuth, requirePermission("audit.view"), requestCache({ scope: "user" }), async (req, res) => {
     try {
       const filters = {
         actorUserId: req.query.actorUserId as string | undefined,
@@ -6501,7 +6499,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/roles", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+  app.get("/api/roles", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     try {
       const isSuperAdmin = req.userPermissions?.has("system.super_admin");
       const allRoles = await storage.getAllRoles();
@@ -6527,7 +6525,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/roles", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+  app.post("/api/roles", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     try {
       const { permissionIds, ...roleData } = req.body;
       const isSuperAdmin = req.userPermissions?.has("system.super_admin");
@@ -6564,7 +6562,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/roles/:id", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+  app.patch("/api/roles/:id", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     try {
       const isSuperAdmin = req.userPermissions?.has("system.super_admin");
       if (!isSuperAdmin) {
@@ -6607,7 +6605,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/roles/:id/duplicate", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+  app.post("/api/roles/:id/duplicate", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     try {
       const sourceRole = await storage.getRole(String(req.params.id));
       if (!sourceRole) return res.status(404).json({ message: "Role not found" });
@@ -6645,7 +6643,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/roles/:id", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+  app.delete("/api/roles/:id", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     try {
       const role = await storage.getRole(String(req.params.id));
       if (!role) return res.status(404).json({ message: "Role not found" });
@@ -6684,7 +6682,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/permissions", requireAuth, requireRole("admin"), requirePermission("roles.manage"), async (req: any, res) => {
+  app.get("/api/permissions", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     try {
       const isSuperAdmin = req.userPermissions?.has("system.super_admin");
       const allPerms = await storage.getAllPermissions();
@@ -6696,7 +6694,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/kiosk-devices", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (_req, res) => {
+  app.get("/api/kiosk-devices", requireAuth, requirePermission("kiosk.manage"), async (_req, res) => {
     try {
       const devices = await storage.getAllKioskDevices();
       // Decorate with a derived liveness status (online / idle / offline / unpaired /
@@ -6715,7 +6713,7 @@ export async function registerRoutes(
   // Generate (or regenerate) a short-lived pairing code for a device. The code is
   // 6 digits and lives 10 minutes — long enough for an admin to walk the code to
   // the tablet, short enough that stale codes don't pile up.
-  app.post("/api/kiosk-devices/:id/pairing-code", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+  app.post("/api/kiosk-devices/:id/pairing-code", requireAuth, requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
       const device = await storage.getKioskDevice(String(req.params.id));
       if (!device) return res.status(404).json({ message: "Device not found" });
@@ -6748,7 +6746,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/kiosk-devices/:id/unpair", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+  app.post("/api/kiosk-devices/:id/unpair", requireAuth, requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
       const device = await storage.getKioskDevice(String(req.params.id));
       if (!device) return res.status(404).json({ message: "Device not found" });
@@ -6768,7 +6766,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/kiosk-devices/:id/recent-punches", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+  app.get("/api/kiosk-devices/:id/recent-punches", requireAuth, requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
       const device = await storage.getKioskDevice(String(req.params.id));
       if (!device) return res.status(404).json({ message: "Device not found" });
@@ -6797,7 +6795,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/kiosk-devices", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+  app.post("/api/kiosk-devices", requireAuth, requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
       const parsed = insertKioskDeviceSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -6820,7 +6818,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/kiosk-devices/:id", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+  app.patch("/api/kiosk-devices/:id", requireAuth, requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
       const device = await storage.updateKioskDevice(String(req.params.id), req.body);
       if (!device) return res.status(404).json({ message: "Device not found" });
@@ -6840,7 +6838,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/kiosk-devices/:id", requireAuth, requireRole("admin"), requirePermission("kiosk.manage"), async (req: any, res) => {
+  app.delete("/api/kiosk-devices/:id", requireAuth, requirePermission("kiosk.manage"), async (req: any, res) => {
     try {
       const device = await storage.getKioskDevice(String(req.params.id));
       if (!device) return res.status(404).json({ message: "Device not found" });
@@ -6872,18 +6870,18 @@ export async function registerRoutes(
     isActive: z.boolean().default(true),
   });
 
-  app.get("/api/role-rules", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/role-rules", requireAuth, requirePermission("roles.manage"), async (_req, res) => {
     const rules = await storage.getAllRoleAssignmentRules();
     res.json(rules);
   });
 
-  app.get("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/role-rules/:id", requireAuth, requirePermission("roles.manage"), async (req, res) => {
     const rule = await storage.getRoleAssignmentRule(String(req.params.id));
     if (!rule) return res.status(404).json({ message: "Rule not found" });
     res.json(rule);
   });
 
-  app.post("/api/role-rules", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/role-rules", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     const parsed = roleRuleSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid rule", errors: parsed.error.flatten() });
@@ -6913,7 +6911,7 @@ export async function registerRoutes(
     res.status(201).json(created);
   });
 
-  app.patch("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.patch("/api/role-rules/:id", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     const existing = await storage.getRoleAssignmentRule(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "Rule not found" });
     const parsed = roleRuleSchema.partial().safeParse(req.body);
@@ -6940,7 +6938,7 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.delete("/api/role-rules/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.delete("/api/role-rules/:id", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     const existing = await storage.getRoleAssignmentRule(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "Rule not found" });
     await storage.deleteRoleAssignmentRule(String(req.params.id));
@@ -6971,8 +6969,8 @@ export async function registerRoutes(
     });
     return res.status(202).json({ jobId: job.id, employeeCount: allUsers.length });
   };
-  app.post("/api/role-rules/reevaluate-all", requireAuth, requireRole("admin"), reevaluateAllHandler);
-  app.post("/api/role-rules/re-evaluate", requireAuth, requireRole("admin"), reevaluateAllHandler);
+  app.post("/api/role-rules/reevaluate-all", requireAuth, requirePermission("roles.manage"), reevaluateAllHandler);
+  app.post("/api/role-rules/re-evaluate", requireAuth, requirePermission("roles.manage"), reevaluateAllHandler);
 
   const roleRuleTestSchema = z.object({
     conditions: z.any(),
@@ -6981,7 +6979,7 @@ export async function registerRoutes(
     limit: z.number().int().min(1).max(500).optional(),
   });
 
-  app.post("/api/role-rules/test", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/role-rules/test", requireAuth, requirePermission("roles.manage"), async (req: any, res) => {
     const parsed = roleRuleTestSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid test request", errors: parsed.error.flatten() });
@@ -7071,7 +7069,7 @@ export async function registerRoutes(
     days: z.array(templateDayInputSchema).max(7).optional(),
   });
 
-  app.get("/api/schedule-templates", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  app.get("/api/schedule-templates", requireAuth, requirePermission("schedules.view"), async (req, res) => {
     const companyId = req.query.companyId as string | undefined;
     const templates = companyId
       ? await storage.getScheduleTemplatesByCompany(companyId)
@@ -7079,14 +7077,14 @@ export async function registerRoutes(
     res.json(templates);
   });
 
-  app.get("/api/schedule-templates/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  app.get("/api/schedule-templates/:id", requireAuth, requirePermission("schedules.view"), async (req, res) => {
     const template = await storage.getScheduleTemplate(String(req.params.id));
     if (!template) return res.status(404).json({ message: "Template not found" });
     const days = await storage.getScheduleTemplateDays(String(req.params.id));
     res.json({ ...template, days });
   });
 
-  app.post("/api/schedule-templates", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/schedule-templates", requireAuth, requirePermission("schedules.manage"), async (req: any, res) => {
     const parsed = scheduleTemplateSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
@@ -7117,7 +7115,7 @@ export async function registerRoutes(
     res.status(201).json({ ...created, days });
   });
 
-  app.patch("/api/schedule-templates/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.patch("/api/schedule-templates/:id", requireAuth, requirePermission("schedules.manage"), async (req: any, res) => {
     const existing = await storage.getScheduleTemplate(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "Template not found" });
     const parsed = scheduleTemplateSchema.partial().safeParse(req.body);
@@ -7146,7 +7144,7 @@ export async function registerRoutes(
     res.json({ ...updated, days: updatedDays });
   });
 
-  app.delete("/api/schedule-templates/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.delete("/api/schedule-templates/:id", requireAuth, requirePermission("schedules.manage"), async (req: any, res) => {
     const existing = await storage.getScheduleTemplate(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "Template not found" });
     await storage.deleteScheduleTemplate(String(req.params.id));
@@ -7166,7 +7164,7 @@ export async function registerRoutes(
     mode: z.enum(["replace", "merge"]).default("replace"),
   });
 
-  app.post("/api/schedule-templates/:id/apply", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/schedule-templates/:id/apply", requireAuth, requirePermission("schedules.manage"), async (req: any, res) => {
     const template = await storage.getScheduleTemplate(String(req.params.id));
     if (!template) return res.status(404).json({ message: "Template not found" });
     if (!template.isActive) {
@@ -7195,7 +7193,7 @@ export async function registerRoutes(
     res.json({ async: false, ...result });
   });
 
-  app.get("/api/workflows", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/workflows", requireAuth, requirePermission("workflows.manage"), async (_req, res) => {
     try {
       const allWorkflows = await storage.getAllWorkflows();
       res.json(allWorkflows);
@@ -7205,7 +7203,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/workflows/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/workflows/:id", requireAuth, requirePermission("workflows.manage"), async (req, res) => {
     try {
       const workflow = await storage.getWorkflow(String(req.params.id));
       if (!workflow) return res.status(404).json({ message: "Workflow not found" });
@@ -7216,7 +7214,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/workflows", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/workflows", requireAuth, requirePermission("workflows.manage"), async (req: any, res) => {
     try {
       const { name, triggerType, policyTypeId, status, nodeGraph } = req.body;
       if (!name || !triggerType || !nodeGraph) {
@@ -7244,7 +7242,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/workflows/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.patch("/api/workflows/:id", requireAuth, requirePermission("workflows.manage"), async (req: any, res) => {
     try {
       const existing = await storage.getWorkflow(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Workflow not found" });
@@ -7272,7 +7270,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/workflows/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.delete("/api/workflows/:id", requireAuth, requirePermission("workflows.manage"), async (req: any, res) => {
     try {
       const existing = await storage.getWorkflow(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Workflow not found" });
@@ -7293,7 +7291,7 @@ export async function registerRoutes(
   });
 
   // ===== Performance review cycles =====
-  app.get("/api/review-cycles", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.get("/api/review-cycles", requireAuth, requirePermission("reviews.manage"), async (req: any, res) => {
     try {
       const isActive =
         typeof req.query.isActive === "string"
@@ -7322,7 +7320,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/review-cycles", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/review-cycles", requireAuth, requirePermission("reviews.manage"), async (req: any, res) => {
     try {
       const parsed = insertPerformanceReviewCycleSchema.parse(req.body);
       const created = await storage.createReviewCycle(parsed);
@@ -7342,7 +7340,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/review-cycles/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.patch("/api/review-cycles/:id", requireAuth, requirePermission("reviews.manage"), async (req: any, res) => {
     try {
       const existing = await storage.getReviewCycle(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Review cycle not found" });
@@ -7365,7 +7363,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/review-cycles/:id", requireAuth, requireRole("admin"), async (req: any, res) => {
+  app.delete("/api/review-cycles/:id", requireAuth, requirePermission("reviews.manage"), async (req: any, res) => {
     try {
       const existing = await storage.getReviewCycle(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Review cycle not found" });
@@ -7436,7 +7434,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/review-reminders/:id", requireAuth, requireRole("admin", "manager"), async (req: any, res) => {
+  app.patch("/api/review-reminders/:id", requireAuth, requirePermission("reviews.update_reminders"), async (req: any, res) => {
     try {
       const existing = await storage.getReviewReminder(String(req.params.id));
       if (!existing) return res.status(404).json({ message: "Reminder not found" });
@@ -7630,7 +7628,7 @@ export async function registerRoutes(
 
   // ===================== Lifecycle Wizards: Onboarding =====================
 
-  app.get("/api/onboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/onboarding-templates", requireAuth, requirePermission("users.view"), async (req, res) => {
     const actor = (req as any).authUser as User;
     const requestedCompanyId = (req.query.companyId as string | undefined) ?? actor.companyId ?? null;
     if (!isSuperAdmin(req) && requestedCompanyId !== null && requestedCompanyId !== (actor.companyId ?? null)) {
@@ -7640,7 +7638,7 @@ export async function registerRoutes(
     res.json(templates);
   });
 
-  app.get("/api/onboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/onboarding-templates/:id", requireAuth, requirePermission("users.view"), async (req, res) => {
     const t = await storage.getOnboardingTemplate(String(req.params.id));
     if (!t) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -7651,7 +7649,7 @@ export async function registerRoutes(
     res.json({ ...t, tasks });
   });
 
-  app.post("/api/onboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/onboarding-templates", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOnboardingTemplateSchema.safeParse({
       ...req.body,
       createdBy: (req as any).authUser?.id ?? null,
@@ -7678,7 +7676,7 @@ export async function registerRoutes(
     res.status(201).json(created);
   });
 
-  app.patch("/api/onboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/onboarding-templates/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOnboardingTemplateSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
     const before = await storage.getOnboardingTemplate(String(req.params.id));
@@ -7712,7 +7710,7 @@ export async function registerRoutes(
     return { ok: true };
   }
 
-  app.post("/api/onboarding-templates/:templateId/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/onboarding-templates/:templateId/tasks", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parent = await storage.getOnboardingTemplate(String(req.params.templateId));
     if (!parent) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -7729,7 +7727,7 @@ export async function registerRoutes(
     res.status(201).json(created);
   });
 
-  app.patch("/api/onboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/onboarding-template-tasks/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOnboardingTemplateTaskSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
     const existingTask = await storage.getOnboardingTemplateTask(String(req.params.id));
@@ -7756,7 +7754,7 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.delete("/api/onboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/onboarding-template-tasks/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const existingTask = await storage.getOnboardingTemplateTask(String(req.params.id));
     if (!existingTask) return res.status(204).end();
     const parent = await storage.getOnboardingTemplate(existingTask.templateId);
@@ -7849,7 +7847,7 @@ export async function registerRoutes(
     templateId: z.string().optional().nullable(),
     hireDate: z.string().optional().nullable(),
   });
-  app.post("/api/employees/:id/start-onboarding", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/employees/:id/start-onboarding", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = startOnboardingSchema.safeParse(req.body ?? {});
     if (!parsed.success) return badRequestFromZod(res, parsed, "Invalid onboarding request");
     const employee = await storage.getUser(String(req.params.id));
@@ -7926,7 +7924,7 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.post("/api/onboarding-checklists/:id/cancel", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/onboarding-checklists/:id/cancel", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const reason = typeof req.body?.reason === "string" ? req.body.reason : "Cancelled by admin";
     const updated = await storage.cancelOnboardingChecklist(String(req.params.id), reason, (req as any).authUser.id);
     if (!updated) return res.status(404).json({ message: "Checklist not found" });
@@ -7959,14 +7957,14 @@ export async function registerRoutes(
     return { ...t, sections, tasks, scopes };
   }
 
-  app.get("/api/onboarding-templates/:id/full", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/onboarding-templates/:id/full", requireAuth, requirePermission("users.view"), async (req, res) => {
     const t = await loadFlexibleOnboardingTemplate(String(req.params.id));
     if (!t) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
     if (!actorCanAccessLifecycleTemplate(actor, t, isSuperAdmin(req))) return res.status(403).json({ message: "Forbidden" });
     res.json(t);
   });
-  app.get("/api/offboarding-templates/:id/full", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/offboarding-templates/:id/full", requireAuth, requirePermission("users.view"), async (req, res) => {
     const t = await loadFlexibleOffboardingTemplate(String(req.params.id));
     if (!t) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -7975,7 +7973,7 @@ export async function registerRoutes(
   });
 
   // Sections (onboarding)
-  app.post("/api/onboarding-templates/:templateId/sections", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/onboarding-templates/:templateId/sections", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parent = await storage.getOnboardingTemplate(String(req.params.templateId));
     if (!parent) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -7985,7 +7983,7 @@ export async function registerRoutes(
     const created = await storage.createOnboardingTemplateSection(parsed.data);
     res.status(201).json(created);
   });
-  app.patch("/api/onboarding-template-sections/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/onboarding-template-sections/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOnboardingTemplateSectionSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid section", errors: parsed.error.flatten() });
     delete (parsed.data as any).templateId;
@@ -7993,13 +7991,13 @@ export async function registerRoutes(
     if (!updated) return res.status(404).json({ message: "Section not found" });
     res.json(updated);
   });
-  app.delete("/api/onboarding-template-sections/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/onboarding-template-sections/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     await storage.deleteOnboardingTemplateSection(String(req.params.id));
     res.status(204).end();
   });
 
   // Sections (offboarding)
-  app.post("/api/offboarding-templates/:templateId/sections", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/offboarding-templates/:templateId/sections", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parent = await storage.getOffboardingTemplate(String(req.params.templateId));
     if (!parent) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -8009,7 +8007,7 @@ export async function registerRoutes(
     const created = await storage.createOffboardingTemplateSection(parsed.data);
     res.status(201).json(created);
   });
-  app.patch("/api/offboarding-template-sections/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/offboarding-template-sections/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOffboardingTemplateSectionSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid section", errors: parsed.error.flatten() });
     delete (parsed.data as any).templateId;
@@ -8017,7 +8015,7 @@ export async function registerRoutes(
     if (!updated) return res.status(404).json({ message: "Section not found" });
     res.json(updated);
   });
-  app.delete("/api/offboarding-template-sections/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/offboarding-template-sections/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     await storage.deleteOffboardingTemplateSection(String(req.params.id));
     res.status(204).end();
   });
@@ -8029,7 +8027,7 @@ export async function registerRoutes(
       scopeRef: z.string().min(1),
     })),
   });
-  app.put("/api/onboarding-templates/:templateId/scopes", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.put("/api/onboarding-templates/:templateId/scopes", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parent = await storage.getOnboardingTemplate(String(req.params.templateId));
     if (!parent) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -8039,7 +8037,7 @@ export async function registerRoutes(
     const out = await storage.setOnboardingTemplateScopes(parent.id, parsed.data.scopes);
     res.json(out);
   });
-  app.put("/api/offboarding-templates/:templateId/scopes", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.put("/api/offboarding-templates/:templateId/scopes", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parent = await storage.getOffboardingTemplate(String(req.params.templateId));
     if (!parent) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -8051,7 +8049,7 @@ export async function registerRoutes(
   });
 
   // Suggestions for a hire
-  app.get("/api/lifecycle/suggest-templates/:employeeId", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/lifecycle/suggest-templates/:employeeId", requireAuth, requirePermission("users.view"), async (req, res) => {
     const employee = await storage.getUser(String(req.params.employeeId));
     if (!employee) return res.status(404).json({ message: "Employee not found" });
     const [onboarding, offboarding] = await Promise.all([
@@ -8062,7 +8060,7 @@ export async function registerRoutes(
   });
 
   // Duplicate
-  app.post("/api/onboarding-templates/:id/duplicate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/onboarding-templates/:id/duplicate", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const src = await storage.getOnboardingTemplate(String(req.params.id));
     if (!src) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -8070,7 +8068,7 @@ export async function registerRoutes(
     const dup = await storage.duplicateOnboardingTemplate(src.id, actor.id);
     res.status(201).json(dup);
   });
-  app.post("/api/offboarding-templates/:id/duplicate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/offboarding-templates/:id/duplicate", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const src = await storage.getOffboardingTemplate(String(req.params.id));
     if (!src) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -8080,7 +8078,7 @@ export async function registerRoutes(
   });
 
   // Delete template
-  app.delete("/api/onboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/onboarding-templates/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const t = await storage.getOnboardingTemplate(String(req.params.id));
     if (!t) return res.status(204).end();
     const actor = (req as any).authUser as User;
@@ -8090,7 +8088,7 @@ export async function registerRoutes(
     await writeAuditLog({ action: "onboarding_template.delete", actorUserId: actor.id, targetType: "onboarding_template", targetId: t.id, oldValue: t, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.status(204).end();
   });
-  app.delete("/api/offboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/offboarding-templates/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const t = await storage.getOffboardingTemplate(String(req.params.id));
     if (!t) return res.status(204).end();
     const actor = (req as any).authUser as User;
@@ -8122,7 +8120,7 @@ export async function registerRoutes(
     dueDate: z.string().nullable().optional(),
     sortOrder: z.number().int().optional(),
   });
-  app.post("/api/onboarding-checklists/:id/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/onboarding-checklists/:id/tasks", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const cl = await storage.getOnboardingChecklist(String(req.params.id));
     if (!cl) return res.status(404).json({ message: "Checklist not found" });
     const parsed = checklistAddTaskSchema.safeParse(req.body);
@@ -8132,7 +8130,7 @@ export async function registerRoutes(
     await writeAuditLog({ action: "onboarding_checklist.task.add", actorUserId: (req as any).authUser.id, targetType: "onboarding_task", targetId: created.id, newValue: created, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.status(201).json(created);
   });
-  app.delete("/api/onboarding-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/onboarding-tasks/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const t = await storage.getOnboardingTask(String(req.params.id));
     if (!t) return res.status(204).end();
     await storage.deleteOnboardingTaskRow(t.id);
@@ -8140,7 +8138,7 @@ export async function registerRoutes(
     await writeAuditLog({ action: "onboarding_checklist.task.delete", actorUserId: (req as any).authUser.id, targetType: "onboarding_task", targetId: t.id, oldValue: t, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.status(204).end();
   });
-  app.post("/api/offboarding-checklists/:id/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/offboarding-checklists/:id/tasks", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const cl = await storage.getOffboardingChecklist(String(req.params.id));
     if (!cl) return res.status(404).json({ message: "Checklist not found" });
     const parsed = checklistAddTaskSchema.safeParse(req.body);
@@ -8150,7 +8148,7 @@ export async function registerRoutes(
     await writeAuditLog({ action: "offboarding_checklist.task.add", actorUserId: (req as any).authUser.id, targetType: "offboarding_task", targetId: created.id, newValue: created, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     res.status(201).json(created);
   });
-  app.delete("/api/offboarding-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/offboarding-tasks/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const t = await storage.getOffboardingTask(String(req.params.id));
     if (!t) return res.status(204).end();
     await storage.deleteOffboardingTaskRow(t.id);
@@ -8161,7 +8159,7 @@ export async function registerRoutes(
 
   // Propagate template task changes to in-progress checklists
   const propagateSchema = z.object({ kind: z.enum(["onboarding", "offboarding"]) });
-  app.post("/api/lifecycle-templates/:id/propagate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/lifecycle-templates/:id/propagate", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = propagateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid propagate request" });
     const actor = (req as any).authUser as User;
@@ -8251,7 +8249,7 @@ export async function registerRoutes(
 
   // ===================== Lifecycle Wizards: Offboarding =====================
 
-  app.get("/api/offboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/offboarding-templates", requireAuth, requirePermission("users.view"), async (req, res) => {
     const actor = (req as any).authUser as User;
     const requestedCompanyId = (req.query.companyId as string | undefined) ?? actor.companyId ?? null;
     if (!isSuperAdmin(req) && requestedCompanyId !== null && requestedCompanyId !== (actor.companyId ?? null)) {
@@ -8261,7 +8259,7 @@ export async function registerRoutes(
     res.json(templates);
   });
 
-  app.get("/api/offboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {
+  app.get("/api/offboarding-templates/:id", requireAuth, requirePermission("users.view"), async (req, res) => {
     const t = await storage.getOffboardingTemplate(String(req.params.id));
     if (!t) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -8272,7 +8270,7 @@ export async function registerRoutes(
     res.json({ ...t, tasks });
   });
 
-  app.post("/api/offboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/offboarding-templates", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOffboardingTemplateSchema.safeParse({
       ...req.body,
       createdBy: (req as any).authUser?.id ?? null,
@@ -8299,7 +8297,7 @@ export async function registerRoutes(
     res.status(201).json(created);
   });
 
-  app.patch("/api/offboarding-templates/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/offboarding-templates/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOffboardingTemplateSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid template", errors: parsed.error.flatten() });
     const before = await storage.getOffboardingTemplate(String(req.params.id));
@@ -8323,7 +8321,7 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.post("/api/offboarding-templates/:templateId/tasks", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/offboarding-templates/:templateId/tasks", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parent = await storage.getOffboardingTemplate(String(req.params.templateId));
     if (!parent) return res.status(404).json({ message: "Template not found" });
     const actor = (req as any).authUser as User;
@@ -8338,7 +8336,7 @@ export async function registerRoutes(
     res.status(201).json(created);
   });
 
-  app.patch("/api/offboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.patch("/api/offboarding-template-tasks/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertOffboardingTemplateTaskSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid task", errors: parsed.error.flatten() });
     const existingTask = await storage.getOffboardingTemplateTask(String(req.params.id));
@@ -8361,7 +8359,7 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.delete("/api/offboarding-template-tasks/:id", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.delete("/api/offboarding-template-tasks/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const existingTask = await storage.getOffboardingTemplateTask(String(req.params.id));
     if (!existingTask) return res.status(204).end();
     const parent = await storage.getOffboardingTemplate(existingTask.templateId);
@@ -8375,7 +8373,7 @@ export async function registerRoutes(
     res.status(204).end();
   });
 
-  app.get("/api/offboarding-checklists", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  app.get("/api/offboarding-checklists", requireAuth, requirePermission("users.view"), async (req, res) => {
     const actor = (req as any).authUser as User;
     const params: { status?: string; employeeIds?: string[] } = {};
     if (typeof req.query.status === "string") params.status = req.query.status;
@@ -8387,7 +8385,7 @@ export async function registerRoutes(
     res.json(checklists);
   });
 
-  app.get("/api/offboarding-checklists/by-employee/:employeeId", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  app.get("/api/offboarding-checklists/by-employee/:employeeId", requireAuth, requirePermission("users.view"), async (req, res) => {
     const actor = (req as any).authUser as User;
     if (actor.role === "manager") {
       const team = await getTeamUserIds(actor);
@@ -8401,7 +8399,7 @@ export async function registerRoutes(
     res.json({ ...cl, tasks, gate, progress });
   });
 
-  app.get("/api/offboarding-checklists/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  app.get("/api/offboarding-checklists/:id", requireAuth, requirePermission("users.view"), async (req, res) => {
     const cl = await storage.getOffboardingChecklist(String(req.params.id));
     if (!cl) return res.status(404).json({ message: "Checklist not found" });
     const actor = (req as any).authUser as User;
@@ -8420,7 +8418,7 @@ export async function registerRoutes(
     templateId: z.string().optional().nullable(),
     terminationDate: z.string().optional().nullable(),
   });
-  app.post("/api/offboarding/start", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/offboarding/start", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = startOffboardingSchema.safeParse(req.body);
     if (!parsed.success) return badRequestFromZod(res, parsed, "Invalid offboarding request");
     const employee = await storage.getUser(parsed.data.employeeId);
@@ -8441,7 +8439,7 @@ export async function registerRoutes(
     notes: z.string().nullable().optional(),
     skippedReason: z.string().nullable().optional(),
   });
-  app.patch("/api/offboarding-tasks/:id", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  app.patch("/api/offboarding-tasks/:id", requireAuth, requirePermission("offboarding.update_tasks"), async (req, res) => {
     const parsed = updateOffboardingTaskSchema.safeParse(req.body ?? {});
     if (!parsed.success) return res.status(400).json({ message: "Invalid task update", errors: parsed.error.flatten() });
     const task = await storage.getOffboardingTask(String(req.params.id));
@@ -8476,7 +8474,7 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.post("/api/offboarding-checklists/:id/deactivate", requireAuth, requireRole("admin"), requirePermission("users.edit"), async (req, res) => {
+  app.post("/api/offboarding-checklists/:id/deactivate", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const cl = await storage.getOffboardingChecklist(String(req.params.id));
     if (!cl) return res.status(404).json({ message: "Checklist not found" });
     if (cl.employeeId === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {

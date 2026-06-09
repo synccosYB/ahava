@@ -68,6 +68,14 @@ const PERMISSION_KEYS = [
   { key: "system.jobs.view", name: "View Background Jobs", description: "View background job health and run the job queue", module: "system" },
   { key: "audit.view", name: "View Audit Logs", description: "View audit logs", module: "audit" },
   { key: "biometrics.manage", name: "Manage Biometrics", description: "Manage biometric kiosk settings, legal profiles, enrollments, and review attempts", module: "biometrics" },
+  { key: "policies.view", name: "View Policies", description: "View policies, assignments, and policy defaults", module: "policies" },
+  { key: "policies.manage", name: "Manage Policies", description: "Create, edit, assign, activate, and archive policies and rules", module: "policies" },
+  { key: "schedules.view", name: "View Schedules", description: "View employee schedules and schedule templates", module: "schedules" },
+  { key: "schedules.manage", name: "Manage Schedules", description: "Edit employee schedules and manage schedule templates", module: "schedules" },
+  { key: "workflows.manage", name: "Manage Workflows", description: "Create and manage visual workflows", module: "workflows" },
+  { key: "reviews.manage", name: "Manage Review Cycles", description: "Manage performance review cycles", module: "reviews" },
+  { key: "reviews.update_reminders", name: "Update Review Reminders", description: "Update performance review reminders for direct reports", module: "reviews" },
+  { key: "offboarding.update_tasks", name: "Update Offboarding Tasks", description: "Update offboarding checklist tasks for direct reports", module: "offboarding" },
 ];
 
 const SYSTEM_ROLES = [
@@ -96,6 +104,12 @@ const SYSTEM_ROLES = [
       "system.jobs.view",
       "audit.view",
       "biometrics.manage",
+      "attendance.view_team", "pto.view_team",
+      "policies.view", "policies.manage",
+      "schedules.view", "schedules.manage",
+      "workflows.manage",
+      "reviews.manage", "reviews.update_reminders",
+      "offboarding.update_tasks",
     ],
   },
   {
@@ -113,6 +127,10 @@ const SYSTEM_ROLES = [
       "alerts.view",
       "audit.view",
       "biometrics.manage",
+      "attendance.view_team", "pto.view_team",
+      "schedules.view", "schedules.manage",
+      "reviews.manage", "reviews.update_reminders",
+      "offboarding.update_tasks",
     ],
   },
   {
@@ -142,6 +160,9 @@ const SYSTEM_ROLES = [
       "kiosk.manage",
       "locations.view",
       "approvals.view",
+      "schedules.view", "schedules.manage",
+      "reviews.update_reminders",
+      "offboarding.update_tasks",
     ],
   },
   {
@@ -156,6 +177,10 @@ const SYSTEM_ROLES = [
       "payroll.view_self",
       "reports.view",
       "approvals.view",
+      "attendance.approve_corrections",
+      "schedules.view", "schedules.manage",
+      "reviews.update_reminders",
+      "offboarding.update_tasks",
     ],
   },
   {
@@ -169,6 +194,10 @@ const SYSTEM_ROLES = [
       "pto.view_team", "pto.approve", "pto.request", "pto.view_self",
       "payroll.view_self",
       "approvals.view",
+      "attendance.approve_corrections",
+      "schedules.view", "schedules.manage",
+      "reviews.update_reminders",
+      "offboarding.update_tasks",
     ],
   },
   {
