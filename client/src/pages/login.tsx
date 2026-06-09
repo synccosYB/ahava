@@ -79,12 +79,15 @@ export default function LoginPage() {
       if (userData?.token) {
         setAuthToken(userData.token);
       }
-      // Start the incoming user from a clean slate: drop any queries/cached
-      // requests left over from a previous session on this tab so the new user
-      // never inherits the prior user's data before a refresh.
+      // Drop any in-memory caches from a previous session, then hard-reload so
+      // the app re-bootstraps in a guaranteed authenticated state. We deliberately
+      // do NOT use queryClient.setQueryData here: pairing it with queryClient.clear()
+      // races a background /api/auth/user refetch that can land a 401 and bounce the
+      // user right back to the login screen even though login succeeded. A full
+      // reload re-runs the auth check once, cleanly, with the stored token.
       invalidateCachedFetch();
       queryClient.clear();
-      queryClient.setQueryData(["/api/auth/user"], userData);
+      window.location.assign("/");
     },
     onError: (err: Error) => {
       setError(err.message);

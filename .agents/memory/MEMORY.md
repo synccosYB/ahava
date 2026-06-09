@@ -1,10 +1,1 @@
-- [Schema drift guardrail](schema-drift-guardrail.md) — boot check derives required tables/columns from Drizzle models (not a hand list); edit a model → generate+commit a migration or the app won't boot.
-- [RBAC permission gating](rbac-permission-gating.md) — requirePermission is exact-match (only super_admin wildcards); view_all does NOT imply view_team, so grant team keys to admin roles when converting routes.
-- [Concurrency guards](concurrency-guards.md) — status-guarded UPDATEs (WHERE status='pending') + 409 RouteConflictError for approvals; atomic incrementTimeOffBalance for PTO balances.
-- [Open punch invariant](open-punch-invariant.md) — one open punch per employee enforced by partial unique index; "open" = clock_out NULL (NOT status, which differs web vs kiosk).
-- [Active-user filtering](active-user-filtering.md) — iterate employees with `!u.deactivatedAt && role!=='kiosk'`; users table has no isActive column (it's in shared/models/auth.ts).
-- [Dev server no hot-reload](dev-server-no-hot-reload.md) — `tsx server/index.ts` (not watch); restart "Start application" after any server/** edit before API smoke tests; auth is JWT bearer.
-- [Reports category vs scope](reports-category-vs-scope.md) — /api/reports/generate takes `category` (what data) separate from `reportType` (scope); returns self-describing {category,columns,rows}, client adapts via columns[].kind.
-- [Department managers dual-source](department-managers-dual-source.md) — a dept's managers = link table ∪ users with `manager` role assigned via department_id; display must union both (use buildDeptManagerNameMap).
-- [Client 409 conflation](client-409-conflation.md) — handleMutationError shows every bare 409 as "already handled"; deliberate 409 blocks MUST carry a machine `code` and be special-cased before isConflictError.
-- [Punch source enforcement](punch-source-enforcement.md) — 5 canonical methods (web/mobile/kiosk/qr/manager) gated per policy; default ON = web/mobile/kiosk/manager (qr off); manager kept on so corrections keep working.
+- [Post-login auth state](auth-login-state.md) — login success must hard-reload, not queryClient.clear()+setQueryData (clear() races a 401 refetch and bounces users back to login).
