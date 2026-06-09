@@ -990,3 +990,353 @@ test("POST /attendance/exceptions: a missing_punch approval (no existing punch) 
     "the new punch should use the corrected clock-in time",
   );
 });
+
+test("POST /attendance/exceptions requires a punchLogId for a punch_removal request (Task #362)", async (t) => {
+  const fx = await setupFixture("punch-removal-requires-fk");
+  t.after(fx.cleanup);
+
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${employeeToken}`,
+    },
+    body: JSON.stringify({
+      exceptionDate: "2026-04-28",
+      type: "punch_removal",
+      reason: "removal without a target punch",
+    }),
+  });
+  assert.equal(res.status, 400, "punch_removal without punchLogId must 400");
+});
+
+test("POST /attendance/exceptions/:id/resolve approve deletes the targeted punch for a punch_removal (Task #362)", async (t) => {
+  const fx = await setupFixture("punch-removal-approve");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-04-28";
+  const clockIn = new Date("2026-04-28T09:00:00Z");
+  const clockOut = new Date("2026-04-28T17:00:00Z");
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut,
+      roundedClockOut: clockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Submit through the public API so we exercise the FK-validation path.
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+  const submitRes = await fetch(`${fx.baseUrl}/api/attendance/exceptions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${employeeToken}`,
+    },
+    body: JSON.stringify({
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "This punch is a duplicate. [Original In: 09:00, Original Out: 17:00]",
+      punchLogId: punch.id,
+    }),
+  });
+  const submitBody = await submitRes.text();
+  assert.equal(submitRes.status, 201, `expected 201 from POST, got ${submitRes.status} (${submitBody})`);
+  const created = JSON.parse(submitBody);
+  assert.equal(created.punchLogId, punch.id, "submitted removal should carry the FK");
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${created.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "approve", reviewNotes: "approved removal" }),
+  });
+  assert.equal(res.status, 200, `expected 200 from resolve route, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const remaining = await db.select().from(punchLogs).where(eq(punchLogs.id, punch.id));
+  assert.equal(remaining.length, 0, "approved punch_removal must delete the targeted punch");
+
+  const [resolved] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, created.id));
+  assert.equal(resolved.status, "approved");
+  assert.equal(resolved.punchLogId, null, "the FK must be nulled after the punch is deleted");
+});
+
+test("POST /attendance/exceptions/:id/resolve deny leaves the targeted punch intact for a punch_removal (Task #362)", async (t) => {
+  const fx = await setupFixture("punch-removal-deny");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-04-29";
+  const clockIn = new Date("2026-04-29T09:00:00Z");
+  const clockOut = new Date("2026-04-29T17:00:00Z");
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut,
+      roundedClockOut: clockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "removal request to be denied",
+      status: "pending",
+      punchLogId: punch.id,
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "deny", reviewNotes: "punch is legitimate" }),
+  });
+  assert.equal(res.status, 200, "denying a punch_removal must succeed");
+
+  const [stillThere] = await db.select().from(punchLogs).where(eq(punchLogs.id, punch.id));
+  assert.ok(stillThere, "denied punch_removal must leave the punch intact");
+  assert.equal(new Date(stillThere.clockIn!).getTime(), clockIn.getTime(), "punch must be unchanged");
+
+  const [resolved] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(resolved.status, "denied");
+});
+
+test("POST /attendance/exceptions/:id/resolve approve of a punch_removal whose punch is already gone resolves cleanly (Task #362)", async (t) => {
+  const fx = await setupFixture("punch-removal-already-gone");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-04-30";
+  const clockIn = new Date("2026-04-30T09:00:00Z");
+  const clockOut = new Date("2026-04-30T17:00:00Z");
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut,
+      roundedClockOut: clockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "removal whose punch is deleted out from under it",
+      status: "pending",
+      punchLogId: punch.id,
+    })
+    .returning();
+
+  // Simulate the punch being removed by another path before approval. Null the
+  // FK first so the delete doesn't trip the foreign key.
+  await db
+    .update(attendanceExceptions)
+    .set({ punchLogId: null })
+    .where(eq(attendanceExceptions.id, exception.id));
+  await db.delete(punchLogs).where(eq(punchLogs.id, punch.id));
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "approve", reviewNotes: "approve even though punch is gone" }),
+  });
+  assert.equal(res.status, 200, `expected a clean 200 (not a 500) when the punch is already gone, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const [resolved] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(resolved.status, "approved");
+});
+
+test("PATCH /attendance/exceptions/:id keeps a pending punch_removal as punch_removal when edited (Task #362)", async (t) => {
+  const fx = await setupFixture("punch-removal-edit-keeps-type");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-01";
+  const clockIn = new Date("2026-05-01T09:00:00Z");
+  const clockOut = new Date("2026-05-01T17:00:00Z");
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut,
+      roundedClockOut: clockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "original removal reason",
+      status: "pending",
+      punchLogId: punch.id,
+    })
+    .returning();
+
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${employeeToken}`,
+    },
+    body: JSON.stringify({
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "updated removal reason",
+      punchLogId: punch.id,
+    }),
+  });
+  assert.equal(res.status, 200, `expected 200 from PATCH, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const [updated] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(updated.type, "punch_removal", "editing a removal must not downgrade its type");
+  assert.equal(updated.punchLogId, punch.id, "edited removal must keep targeting the punch");
+  assert.equal(updated.reason, "updated removal reason");
+  assert.equal(updated.status, "pending");
+});
+
+test("PATCH /attendance/exceptions/:id rejects clearing the punch on a punch_removal (Task #362)", async (t) => {
+  const fx = await setupFixture("punch-removal-edit-clear-target");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-02";
+  const clockIn = new Date("2026-05-02T09:00:00Z");
+  const clockOut = new Date("2026-05-02T17:00:00Z");
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut,
+      roundedClockOut: clockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "removal that will try to drop its target",
+      status: "pending",
+      punchLogId: punch.id,
+    })
+    .returning();
+
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${employeeToken}`,
+    },
+    body: JSON.stringify({
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "removal that will try to drop its target",
+      punchLogId: null,
+    }),
+  });
+  assert.equal(res.status, 400, "a removal edit that clears the target punch must 400");
+
+  const [unchanged] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(unchanged.punchLogId, punch.id, "rejected edit must leave the FK intact");
+});

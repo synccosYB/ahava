@@ -1,6 +1,6 @@
 export const CORRECTION_COUNT_WINDOW_DAYS = 90;
 export const HIGH_CORRECTION_THRESHOLD = 5;
-export const CORRECTION_COUNT_TYPES = ["time_correction", "missing_punch"] as const;
+export const CORRECTION_COUNT_TYPES = ["time_correction", "missing_punch", "punch_removal"] as const;
 
 export type CorrectionCountType = (typeof CORRECTION_COUNT_TYPES)[number];
 

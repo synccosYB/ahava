@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
-import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench, MessageSquare, Lock, Unlock } from "lucide-react";
+import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench, MessageSquare, Lock, Unlock, Trash2 } from "lucide-react";
 import type { AttendanceRecord, AttendanceException } from "@shared/schema";
 import { parseExceptionTimeInfo } from "@/lib/exceptionTimeInfo";
 import {
@@ -39,6 +39,7 @@ type FixDialogState = {
   origIn: string;
   origOut: string;
   missingPunch: boolean;
+  removal?: boolean;
   punchLogId?: string | null;
   editingExceptionId?: string;
   initialReqIn?: string;
@@ -301,6 +302,19 @@ export default function MyAttendance() {
     });
   };
 
+  const openRemovalDialog = (record: AttendanceRecord) => {
+    setFixDialog({
+      open: true,
+      date: record.date,
+      origIn: toTimeInputValue(record.clockIn),
+      origOut: toTimeInputValue(record.clockOut),
+      missingPunch: false,
+      removal: true,
+      // Removal always targets the exact punch the employee is looking at.
+      punchLogId: record.id,
+    });
+  };
+
   const openEditDialog = (ex: AttendanceException) => {
     const parsed = parseExceptionReason(ex.reason || "");
     setFixDialog({
@@ -313,6 +327,9 @@ export default function MyAttendance() {
       // distinction between them is the presence of a linked punch, which
       // CorrectionFormBody derives from punchLogId when classifying the type.
       missingPunch: ex.type === "missing_punch" || ex.type === "forgotten_clock_out",
+      // Preserve the request type when editing a pending removal so it never
+      // silently downgrades into a time_correction.
+      removal: ex.type === "punch_removal",
       punchLogId: ex.punchLogId ?? null,
       editingExceptionId: ex.id,
       initialReqIn: parsed.reqIn,
@@ -602,6 +619,18 @@ export default function MyAttendance() {
                                 <Wrench className="h-3 w-3 mr-1" />
                                 Request Fix
                               </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-destructive hover:text-destructive"
+                                onClick={() => openRemovalDialog(record)}
+                                disabled={exceptionsLoading}
+                                title={exceptionsLoading ? "Loading correction requests..." : "Request that this punch be removed"}
+                                data-testid={`button-request-removal-${record.id}`}
+                              >
+                                <Trash2 className="h-3 w-3 mr-1" />
+                                Request removal
+                              </Button>
                             </div>
                           );
                         })()}
@@ -633,16 +662,20 @@ export default function MyAttendance() {
             <DialogTitle>
               {fixDialog.editingExceptionId
                 ? "Edit Pending Correction Request"
-                : fixDialog.missingPunch
-                  ? "Request Missing Punch Fix"
-                  : "Request Time Correction"}
+                : fixDialog.removal
+                  ? "Request Punch Removal"
+                  : fixDialog.missingPunch
+                    ? "Request Missing Punch Fix"
+                    : "Request Time Correction"}
             </DialogTitle>
             <DialogDescription>
               {fixDialog.editingExceptionId
                 ? "Update the times or reason for your pending correction request. Your manager will see the latest version."
-                : fixDialog.missingPunch
-                  ? "Your shift on this date is missing a clock-out. Fill in what time you actually finished and submit the request to your manager."
-                  : "Update the recorded times for this date and submit the correction to your manager."}
+                : fixDialog.removal
+                  ? "Ask your manager to delete this punch entirely. Explain why it should be removed — this can't be undone once approved."
+                  : fixDialog.missingPunch
+                    ? "Your shift on this date is missing a clock-out. Fill in what time you actually finished and submit the request to your manager."
+                    : "Update the recorded times for this date and submit the correction to your manager."}
             </DialogDescription>
           </DialogHeader>
           <CorrectionFormBody
@@ -654,6 +687,7 @@ export default function MyAttendance() {
             initialReqOut={fixDialog.initialReqOut ?? (fixDialog.missingPunch ? "" : fixDialog.origOut)}
             initialReason={fixDialog.initialReason}
             missingPunch={fixDialog.missingPunch}
+            removal={fixDialog.removal}
             editingExceptionId={fixDialog.editingExceptionId}
             punchLogId={fixDialog.punchLogId ?? null}
             pendingPunchIds={pendingByPunchId}
@@ -680,6 +714,7 @@ type CorrectionFormBodyProps = {
   initialReqOut?: string;
   initialReason?: string;
   missingPunch?: boolean;
+  removal?: boolean;
   lockDate?: boolean;
   pendingDates?: Set<string>;
   pendingPunchIds?: Map<string, AttendanceException>;
@@ -697,6 +732,7 @@ function CorrectionFormBody({
   initialReqOut = "",
   initialReason,
   missingPunch = false,
+  removal = false,
   lockDate = false,
   pendingDates,
   pendingPunchIds,
@@ -794,12 +830,19 @@ function CorrectionFormBody({
       const timeInfo = [];
       if (origIn) timeInfo.push(`Original In: ${origIn}`);
       if (origOut) timeInfo.push(`Original Out: ${origOut}`);
-      if (reqIn) timeInfo.push(`Corrected In: ${reqIn}`);
-      if (reqOut) timeInfo.push(`Corrected Out: ${reqOut}`);
+      // Removal requests have no corrected times — only the original punch is
+      // recorded in the reason so the reviewer can see what will be deleted.
+      if (!removal && reqIn) timeInfo.push(`Corrected In: ${reqIn}`);
+      if (!removal && reqOut) timeInfo.push(`Corrected Out: ${reqOut}`);
       const fullReason = `${reason}${timeInfo.length > 0 ? ` [${timeInfo.join(", ")}]` : ""}`;
+      const submitType = removal
+        ? "punch_removal"
+        : effectiveMissingPunch
+          ? "missing_punch"
+          : "time_correction";
       const payload: Record<string, unknown> = {
         exceptionDate: date,
-        type: correctionType,
+        type: submitType,
         reason: fullReason,
       };
       if (isEditing) {
@@ -826,10 +869,12 @@ function CorrectionFormBody({
         setReason("");
       }
       toast({
-        title: isEditing ? "Correction Updated" : "Correction Submitted",
+        title: isEditing ? "Correction Updated" : removal ? "Removal Request Submitted" : "Correction Submitted",
         description: isEditing
           ? "Your changes have been sent to your manager."
-          : "Your punch correction has been sent to your manager.",
+          : removal
+            ? "Your request to remove this punch has been sent to your manager."
+            : "Your punch correction has been sent to your manager.",
       });
       onSuccess?.();
     },
@@ -890,40 +935,50 @@ function CorrectionFormBody({
         )}
       </div>
 
-      <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="section-corrected-punch">
-        <div className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 mb-3">
-          Corrected Times (what it should be)
+      {removal ? (
+        <div
+          className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive"
+          data-testid="section-removal-warning"
+        >
+          <Trash2 className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>This request asks your manager to delete the punch above entirely. There are no corrected times — if approved, the punch is removed from your attendance.</span>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <Label className="text-xs text-blue-700 dark:text-blue-300">Clock In</Label>
-            <Input
-              type="time"
-              value={reqIn}
-              onChange={(e) => setReqIn(e.target.value)}
-              data-testid="input-corrected-clock-in"
-            />
+      ) : (
+        <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="section-corrected-punch">
+          <div className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 mb-3">
+            Corrected Times (what it should be)
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-blue-700 dark:text-blue-300">
-              Clock Out{effectiveMissingPunch ? " (required)" : ""}
-            </Label>
-            <Input
-              type="time"
-              value={reqOut}
-              onChange={(e) => setReqOut(e.target.value)}
-              data-testid="input-corrected-clock-out"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs text-blue-700 dark:text-blue-300">Clock In</Label>
+              <Input
+                type="time"
+                value={reqIn}
+                onChange={(e) => setReqIn(e.target.value)}
+                data-testid="input-corrected-clock-in"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-blue-700 dark:text-blue-300">
+                Clock Out{effectiveMissingPunch ? " (required)" : ""}
+              </Label>
+              <Input
+                type="time"
+                value={reqOut}
+                onChange={(e) => setReqOut(e.target.value)}
+                data-testid="input-corrected-clock-out"
+              />
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="space-y-1">
         <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Reason</Label>
         <Textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
-          placeholder={effectiveMissingPunch ? "Explain why a clock-out is missing..." : "Explain what happened..."}
+          placeholder={removal ? "Explain why this punch should be removed..." : effectiveMissingPunch ? "Explain why a clock-out is missing..." : "Explain what happened..."}
           data-testid="input-correction-reason"
         />
       </div>
@@ -958,14 +1013,15 @@ function CorrectionFormBody({
       )}
       <Button
         onClick={() => submitMutation.mutate()}
-        disabled={!date || !reason || submitMutation.isPending || (effectiveMissingPunch && !reqOut) || blockDuplicate}
+        disabled={!date || !reason || submitMutation.isPending || (!removal && effectiveMissingPunch && !reqOut) || blockDuplicate}
         className="w-full"
+        variant={removal ? "destructive" : "default"}
         data-testid="button-submit-correction"
       >
-        <Send className="h-4 w-4 mr-1" />
+        {removal ? <Trash2 className="h-4 w-4 mr-1" /> : <Send className="h-4 w-4 mr-1" />}
         {submitMutation.isPending
           ? (isEditing ? "Saving..." : "Submitting...")
-          : (isEditing ? "Save Changes" : "Submit Correction")}
+          : (isEditing ? "Save Changes" : removal ? "Submit Removal Request" : "Submit Correction")}
       </Button>
     </div>
   );

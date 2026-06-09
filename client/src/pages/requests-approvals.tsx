@@ -15,7 +15,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { formatDate, formatDateRange } from "@/lib/utils";
-import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText, Search } from "lucide-react";
+import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText, Search, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location, TimeOffBalanceBucket } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload, timeOnDateToISO } from "@/lib/exceptionTimeInfo";
@@ -80,6 +80,7 @@ const PTO_TYPE_OPTIONS: { value: string; label: string }[] = [
 const EXCEPTION_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "missing_punch", label: "Missing Punch" },
   { value: "time_correction", label: "Time Correction" },
+  { value: "punch_removal", label: "Punch Removal" },
   { value: "forgotten_clock_in", label: "Forgotten Clock In" },
   { value: "forgotten_clock_out", label: "Forgotten Clock Out" },
 ];
@@ -1409,6 +1410,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   // intended clock-out time. Like time_correction it needs the requested time
   // routed through approval (otherwise the backend defaults to "now").
   const isForgottenClockOut = exception.type === "forgotten_clock_out";
+  const isRemoval = exception.type === "punch_removal";
   const needsManualTimes =
     (isTimeCorrection || isForgottenClockOut) && !timeInfo.reqIn && !timeInfo.reqOut;
   const [manualReqIn, setManualReqIn] = useState("");
@@ -1484,7 +1486,13 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
           </div>
           <div className="flex-1 min-w-[200px] space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge variant="outline">{exception.type.replace(/_/g, " ")}</Badge>
+              {isRemoval ? (
+                <Badge variant="outline" className="border-red-300 text-red-700 dark:border-red-700 dark:text-red-400" data-testid={`badge-removal-${exception.id}`}>
+                  <Trash2 className="h-3 w-3 mr-1" /> Punch Removal
+                </Badge>
+              ) : (
+                <Badge variant="outline">{formatExceptionTypeLabel(exception.type)}</Badge>
+              )}
               <Badge variant="secondary" className="bg-amber-100 text-amber-800">Pending</Badge>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -1514,23 +1522,39 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
               </p>
             )}
 
-            {hasTimeInfo && (
-              <div className="grid grid-cols-2 gap-3 max-w-[400px] mt-2">
-                <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3" data-testid={`box-recorded-${exception.id}`}>
-                  <div className="text-[10px] font-bold uppercase text-red-600 mb-1">Recorded</div>
+            {isRemoval ? (
+              <div className="max-w-[400px] mt-2 space-y-2">
+                <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3" data-testid={`box-removal-target-${exception.id}`}>
+                  <div className="text-[10px] font-bold uppercase text-red-600 mb-1">Punch to remove</div>
                   <div className="text-xs text-muted-foreground">{formatDate(exception.exceptionDate)}</div>
                   <div className="text-sm font-mono font-bold text-red-700 dark:text-red-400">
                     {timeInfo.origIn ? formatTime12FromHHmm(timeInfo.origIn) : "—"} – {timeInfo.origOut ? formatTime12FromHHmm(timeInfo.origOut) : "—"}
                   </div>
                 </div>
-                <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3" data-testid={`box-requested-${exception.id}`}>
-                  <div className="text-[10px] font-bold uppercase text-green-600 mb-1">Requested</div>
-                  <div className="text-xs text-muted-foreground">{formatDate(exception.exceptionDate)}</div>
-                  <div className="text-sm font-mono font-bold text-green-700 dark:text-green-400">
-                    {timeInfo.reqIn ? formatTime12FromHHmm(timeInfo.reqIn) : "—"} – {timeInfo.reqOut ? formatTime12FromHHmm(timeInfo.reqOut) : "—"}
+                <p className="flex items-start gap-1.5 text-xs text-red-700 dark:text-red-400" data-testid={`text-removal-warning-${exception.id}`}>
+                  <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                  Approving permanently deletes this punch from the employee's attendance.
+                </p>
+              </div>
+            ) : (
+              hasTimeInfo && (
+                <div className="grid grid-cols-2 gap-3 max-w-[400px] mt-2">
+                  <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3" data-testid={`box-recorded-${exception.id}`}>
+                    <div className="text-[10px] font-bold uppercase text-red-600 mb-1">Recorded</div>
+                    <div className="text-xs text-muted-foreground">{formatDate(exception.exceptionDate)}</div>
+                    <div className="text-sm font-mono font-bold text-red-700 dark:text-red-400">
+                      {timeInfo.origIn ? formatTime12FromHHmm(timeInfo.origIn) : "—"} – {timeInfo.origOut ? formatTime12FromHHmm(timeInfo.origOut) : "—"}
+                    </div>
+                  </div>
+                  <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3" data-testid={`box-requested-${exception.id}`}>
+                    <div className="text-[10px] font-bold uppercase text-green-600 mb-1">Requested</div>
+                    <div className="text-xs text-muted-foreground">{formatDate(exception.exceptionDate)}</div>
+                    <div className="text-sm font-mono font-bold text-green-700 dark:text-green-400">
+                      {timeInfo.reqIn ? formatTime12FromHHmm(timeInfo.reqIn) : "—"} – {timeInfo.reqOut ? formatTime12FromHHmm(timeInfo.reqOut) : "—"}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )
             )}
 
             {timeInfo.cleanReason && (

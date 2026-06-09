@@ -3003,7 +3003,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Date, type, and reason are required" });
       }
 
-      const validTypes = ["missing_punch", "time_correction", "forgotten_clock_in", "forgotten_clock_out"];
+      const validTypes = ["missing_punch", "time_correction", "forgotten_clock_in", "forgotten_clock_out", "punch_removal"];
       if (!validTypes.includes(type)) {
         return res.status(400).json({ message: `Invalid type. Must be one of: ${validTypes.join(", ")}` });
       }
@@ -3022,6 +3022,12 @@ export async function registerRoutes(
           return res.status(400).json({ message: "Punch reference does not match the request date" });
         }
         resolvedPunchLogId = punchLogId;
+      }
+
+      // A removal request must target a specific, employee-owned punch — you
+      // can't remove a punch that isn't referenced.
+      if (type === "punch_removal" && !resolvedPunchLogId) {
+        return res.status(400).json({ message: "A punch removal request must reference a valid punch to remove" });
       }
 
       const auditCtx = getAuditContext(req);
@@ -3149,7 +3155,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Date, type, and reason are required" });
       }
 
-      const validTypes = ["missing_punch", "time_correction", "forgotten_clock_in", "forgotten_clock_out"];
+      const validTypes = ["missing_punch", "time_correction", "forgotten_clock_in", "forgotten_clock_out", "punch_removal"];
       if (!validTypes.includes(type)) {
         return res.status(400).json({ message: `Invalid type. Must be one of: ${validTypes.join(", ")}` });
       }
@@ -3176,6 +3182,16 @@ export async function registerRoutes(
             return res.status(400).json({ message: "Punch reference does not match the request date" });
           }
           updateData.punchLogId = punchLog.id;
+        }
+      }
+
+      // A punch_removal must always target a punch. Block an edit that would
+      // leave it without one (whether explicitly cleared above or never set).
+      if (type === "punch_removal") {
+        const effectivePunchLogId =
+          updateData.punchLogId !== undefined ? updateData.punchLogId : existing.punchLogId;
+        if (!effectivePunchLogId) {
+          return res.status(400).json({ message: "A punch removal request must target a punch." });
         }
       }
 
@@ -3932,6 +3948,48 @@ export async function registerRoutes(
               ...auditCtx,
             }, tx);
           }
+        } else if (exception.type === "punch_removal") {
+          // Load the targeted punch strictly by FK — a removal request always
+          // carries one (enforced at submission). If it's gone, the punch was
+          // already deleted, so treat the request as resolved without 500ing.
+          const [target] = exception.punchLogId
+            ? await tx.select().from(punchLogs)
+                .where(and(
+                  eq(punchLogs.id, exception.punchLogId),
+                  eq(punchLogs.employeeId, exception.employeeId),
+                ))
+                .limit(1)
+            : [];
+          if (target) {
+            // Clear every attendance-exception reference to this punch (incl.
+            // the one being resolved) so the FK constraint doesn't block the
+            // delete. The status-guarded update below re-stamps this exception
+            // with a null punch link.
+            await tx.update(attendanceExceptions)
+              .set({ punchLogId: null })
+              .where(eq(attendanceExceptions.punchLogId, target.id));
+
+            await tx.delete(punchLogs).where(eq(punchLogs.id, target.id));
+
+            await writeAuditLog({
+              actorUserId: reviewer.id,
+              targetType: "punch_log",
+              targetId: target.id,
+              action: "punch_log.removed",
+              oldValue: {
+                clockIn: target.clockIn,
+                clockOut: target.clockOut,
+                hoursWorked: target.hoursWorked,
+                workDate: target.workDate,
+                status: target.status,
+              },
+              newValue: null,
+              context: { exceptionId, reason: exception.reason },
+              ...auditCtx,
+            }, tx);
+          }
+          // `punchLog` stays null — the punch no longer exists, so the
+          // exception is recorded with a null link below.
         }
 
         const [result] = await tx.update(attendanceExceptions).set({
