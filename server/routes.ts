@@ -7578,6 +7578,56 @@ export async function registerRoutes(
     return res.json({ ok: true, job: created });
   });
 
+  // ===================== Background Job Monitoring =====================
+
+  // Per-job-type health for the admin monitoring view: last run / last success /
+  // last failure / retry count / last error, plus live pending/running/failed
+  // counts and a staleness flag.
+  app.get(
+    "/api/admin/jobs/health",
+    requireAuth,
+    requireRole("admin"),
+    requirePermission("system.jobs.view"),
+    async (_req, res) => {
+      try {
+        const { getJobHealth, MAX_ATTEMPTS, VISIBILITY_TIMEOUT_MS } = await import("./services/jobs");
+        const jobsHealth = await getJobHealth();
+        return res.json({
+          jobs: jobsHealth,
+          config: {
+            maxAttempts: MAX_ATTEMPTS,
+            visibilityTimeoutMinutes: Math.round(VISIBILITY_TIMEOUT_MS / 60_000),
+          },
+        });
+      } catch (err: any) {
+        const mapped = mapRouteError(err, "Failed to load job health");
+        return res.status(mapped.status).json({ message: mapped.message });
+      }
+    },
+  );
+
+  // Admin-triggered drain: enqueue any due recurring jobs and process the queue
+  // now. Lets an admin manually kick the runner and reclaim stuck jobs from the
+  // monitoring view.
+  app.post(
+    "/api/admin/jobs/run",
+    requireAuth,
+    requireRole("admin"),
+    requirePermission("system.jobs.view"),
+    async (_req, res) => {
+      try {
+        const { ensureRecurringEnqueued } = await import("./services/jobs");
+        await ensureRecurringEnqueued();
+        const result = await drainPending(config.jobsBatchSize);
+        return res.json({ ok: true, ...result });
+      } catch (err: any) {
+        console.error("/api/admin/jobs/run error:", err);
+        const mapped = mapRouteError(err, "Failed to run jobs");
+        return res.status(mapped.status).json({ ok: false, message: mapped.message });
+      }
+    },
+  );
+
   // ===================== Lifecycle Wizards: Onboarding =====================
 
   app.get("/api/onboarding-templates", requireAuth, requireRole("admin"), requirePermission("users.view"), async (req, res) => {

@@ -34,6 +34,7 @@ import { Loader2 } from "lucide-react";
 import KioskPage from "@/pages/kiosk";
 import ManualPage from "@/pages/manual";
 import BiometricsPage from "@/pages/biometrics";
+import BackgroundJobsPage from "@/pages/background-jobs";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
 
@@ -135,6 +136,11 @@ function AuthenticatedRouter() {
         <Route path="/biometrics">{() => (
           <ProtectedRoute roles={["admin"]}>
             <BiometricsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/background-jobs">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <BackgroundJobsPage />
           </ProtectedRoute>
         )}</Route>
         <Route component={NotFound} />

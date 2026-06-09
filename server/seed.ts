@@ -65,6 +65,7 @@ const PERMISSION_KEYS = [
   { key: "alerts.view", name: "View Alerts", description: "View alerts and notifications", module: "alerts" },
   { key: "alerts.manage", name: "Manage Alerts", description: "Manage alert configurations", module: "alerts" },
   { key: "settings.manage", name: "Manage Settings", description: "Manage system settings", module: "settings" },
+  { key: "system.jobs.view", name: "View Background Jobs", description: "View background job health and run the job queue", module: "system" },
   { key: "audit.view", name: "View Audit Logs", description: "View audit logs", module: "audit" },
   { key: "biometrics.manage", name: "Manage Biometrics", description: "Manage biometric kiosk settings, legal profiles, enrollments, and review attempts", module: "biometrics" },
 ];
@@ -92,6 +93,7 @@ const SYSTEM_ROLES = [
       "approvals.view", "approvals.manage",
       "alerts.view", "alerts.manage",
       "settings.manage",
+      "system.jobs.view",
       "audit.view",
       "biometrics.manage",
     ],

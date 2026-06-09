@@ -1393,6 +1393,8 @@ export const jobs = pgTable("jobs", {
   payload: jsonb("payload"),
   status: varchar("status", { length: 20 }).default("pending").notNull(),
   error: text("error"),
+  attempts: integer("attempts").default(0).notNull(),
+  startedAt: timestamp("started_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
 });
@@ -1401,9 +1403,28 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
   id: true,
   createdAt: true,
   completedAt: true,
+  startedAt: true,
+  attempts: true,
 });
 export type InsertJob = z.infer<typeof insertJobSchema>;
 export type Job = typeof jobs.$inferSelect;
+
+// Per-job-type health/monitoring aggregate. One row per recurring job type,
+// upserted every time a job of that type runs. Surfaces last run / last success
+// / last failure / retry count / last error so silent job failures (auto
+// clock-out, biometric retention, stale punches) become visible to admins.
+export const jobStatus = pgTable("job_status", {
+  type: varchar("type", { length: 64 }).primaryKey(),
+  lastRunAt: timestamp("last_run_at"),
+  lastSuccessAt: timestamp("last_success_at"),
+  lastFailureAt: timestamp("last_failure_at"),
+  lastError: text("last_error"),
+  retryCount: integer("retry_count").default(0).notNull(),
+  consecutiveFailures: integer("consecutive_failures").default(0).notNull(),
+  totalRuns: integer("total_runs").default(0).notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+export type JobStatus = typeof jobStatus.$inferSelect;
 
 export const ptoAnniversaryAdjustments = pgTable(
   "pto_anniversary_adjustments",

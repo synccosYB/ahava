@@ -20,6 +20,7 @@ import {
   Monitor,
   BookOpen,
   ScanFace,
+  Activity,
   Settings,
   ChevronRight,
   PanelLeftClose,
@@ -103,6 +104,7 @@ const settingsItems: NavItem[] = [
   { title: "Permissions", href: "/permissions", icon: ShieldCheck },
   { title: "Kiosks", href: "/kiosk-management", icon: Monitor },
   { title: "Biometrics", href: "/biometrics", icon: ScanFace },
+  { title: "Background Jobs", href: "/background-jobs", icon: Activity },
   { title: "Audit Log", href: "/audit-log", icon: FileText },
   { title: "User Manual", href: "/manual", icon: BookOpen },
 ];
