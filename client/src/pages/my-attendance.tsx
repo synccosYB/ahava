@@ -1027,21 +1027,21 @@ function CorrectionFormBody({
   );
 }
 
-function verdictBadge(status: string, testIdSuffix: string) {
+function verdictBadge(status: string, testIdSuffix: string, isRemoval = false) {
   if (status === "approved") {
     return (
       <Badge
         className="bg-green-600 hover:bg-green-600"
         data-testid={`badge-verdict-approved-${testIdSuffix}`}
       >
-        Approved
+        {isRemoval ? "Removal approved" : "Approved"}
       </Badge>
     );
   }
   if (status === "denied") {
     return (
       <Badge variant="destructive" data-testid={`badge-verdict-denied-${testIdSuffix}`}>
-        Denied
+        {isRemoval ? "Removal denied" : "Denied"}
       </Badge>
     );
   }
@@ -1051,7 +1051,7 @@ function verdictBadge(status: string, testIdSuffix: string) {
       className="text-muted-foreground"
       data-testid={`badge-verdict-cancelled-${testIdSuffix}`}
     >
-      Cancelled
+      {isRemoval ? "Removal cancelled" : "Cancelled"}
     </Badge>
   );
 }
@@ -1063,9 +1063,19 @@ type ResolvedActionCellProps = {
 };
 
 function ResolvedActionCell({ record, exception, onAskToReopen }: ResolvedActionCellProps) {
+  const isRemoval = exception.type === "punch_removal";
   return (
     <div className="flex flex-col items-end gap-1">
-      {verdictBadge(exception.status, record.id)}
+      {verdictBadge(exception.status, record.id, isRemoval)}
+      {isRemoval && exception.status === "approved" && (
+        <span
+          className="inline-flex items-center text-[11px] text-muted-foreground"
+          data-testid={`text-removal-deleted-${record.id}`}
+        >
+          <Trash2 className="h-3 w-3 mr-1" />
+          Punch deleted
+        </span>
+      )}
       {exception.reopenStatus === "pending" ? (
         <span
           className="inline-flex items-center text-[11px] text-muted-foreground"
@@ -1135,20 +1145,22 @@ function ReopenRequestDialog({ open, exception, onClose }: ReopenRequestDialogPr
 
   const trimmed = message.trim();
   const tooLong = trimmed.length > 1000;
+  const isRemoval = exception?.type === "punch_removal";
+  const noun = isRemoval ? "removal request" : "correction";
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-md" data-testid="dialog-reopen-request">
         <DialogHeader>
-          <DialogTitle>Ask to reopen this correction</DialogTitle>
+          <DialogTitle>{isRemoval ? "Ask to reopen this removal request" : "Ask to reopen this correction"}</DialogTitle>
           <DialogDescription>
             {exception ? (
               <>
-                Send your manager a short note explaining why the correction for{" "}
-                <span className="font-medium">{exception.exceptionDate}</span> should be revisited. You can only send one reopen request per resolved correction.
+                Send your manager a short note explaining why the {noun} for{" "}
+                <span className="font-medium">{exception.exceptionDate}</span> should be revisited. You can only send one reopen request per resolved {noun}.
               </>
             ) : (
-              "Send your manager a short note explaining why this correction should be revisited."
+              `Send your manager a short note explaining why this ${noun} should be revisited.`
             )}
           </DialogDescription>
         </DialogHeader>
