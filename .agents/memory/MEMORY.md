@@ -1,3 +1,4 @@
 - [Schema drift guardrail](schema-drift-guardrail.md) — boot check derives required tables/columns from Drizzle models (not a hand list); edit a model → generate+commit a migration or the app won't boot.
 - [RBAC permission gating](rbac-permission-gating.md) — requirePermission is exact-match (only super_admin wildcards); view_all does NOT imply view_team, so grant team keys to admin roles when converting routes.
 - [Concurrency guards](concurrency-guards.md) — status-guarded UPDATEs (WHERE status='pending') + 409 RouteConflictError for approvals; atomic incrementTimeOffBalance for PTO balances.
+- [Open punch invariant](open-punch-invariant.md) — one open punch per employee enforced by partial unique index; "open" = clock_out NULL (NOT status, which differs web vs kiosk).

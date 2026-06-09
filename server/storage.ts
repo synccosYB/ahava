@@ -182,7 +182,7 @@ import {
   MAX_TIME_OFF_HOURS_PER_REQUEST,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, type SQL } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, isNotNull, type SQL } from "drizzle-orm";
 import {
   CORRECTION_COUNT_TYPES,
   CORRECTION_COUNT_WINDOW_DAYS,
@@ -199,6 +199,35 @@ import {
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
+
+export interface ClockInOptions {
+  status?: string;
+  kioskDeviceId?: string;
+}
+
+// Thrown when a clock-in would create a second open punch for an employee.
+// Routes map this to a 409 ("You're already clocked in.") instead of a 500.
+export class DuplicateOpenPunchError extends Error {
+  readonly status = 409;
+  constructor(message = "You're already clocked in.") {
+    super(message);
+    this.name = "DuplicateOpenPunchError";
+  }
+}
+
+// Postgres unique-violation code, plus the name of the partial unique index
+// that enforces "one open punch per employee" (migration 0048).
+const PG_UNIQUE_VIOLATION = "23505";
+export const OPEN_PUNCH_UNIQUE_INDEX = "idx_punch_logs_one_open_per_employee";
+
+function isOpenPunchUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; constraint?: string; message?: string } | null;
+  if (!e || e.code !== PG_UNIQUE_VIOLATION) return false;
+  return (
+    e.constraint === OPEN_PUNCH_UNIQUE_INDEX ||
+    (e.message?.includes(OPEN_PUNCH_UNIQUE_INDEX) ?? false)
+  );
+}
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -254,8 +283,9 @@ export interface IStorage {
   createAttendanceRecord(record: InsertPunchLog): Promise<PunchLog>;
   updateAttendanceRecord(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
 
-  clockIn(userId: string, source?: string, roundedTime?: Date): Promise<PunchLog>;
+  clockIn(userId: string, source?: string, roundedTime?: Date, opts?: ClockInOptions): Promise<PunchLog>;
   clockOut(userId: string, otThresholdDaily?: number): Promise<PunchLog | undefined>;
+  closeOpenPunch(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
   getCurrentAttendance(userId: string): Promise<PunchLog | undefined>;
   getOpenPunchLogs(): Promise<PunchLog[]>;
   getAttendanceRecords(userId: string, startDate?: string, endDate?: string): Promise<PunchLog[]>;
@@ -972,40 +1002,102 @@ export class DatabaseStorage implements IStorage {
     return this.updatePunchLog(id, record);
   }
 
-  async clockIn(userId: string, source: string = "web", roundedTime?: Date): Promise<PunchLog> {
+  async clockIn(
+    userId: string,
+    source: string = "web",
+    roundedTime?: Date,
+    opts?: ClockInOptions,
+  ): Promise<PunchLog> {
     const actualNow = new Date();
     const rounded = roundedTime || actualNow;
     const dateStr = actualNow.toISOString().split("T")[0];
-    const [record] = await db.insert(punchLogs).values({
-      employeeId: userId,
-      workDate: dateStr,
-      clockIn: actualNow,
-      roundedClockIn: rounded,
-      status: "in-progress",
-      source,
-      approved: true,
-    }).returning();
-    return punchLogToLegacy(record);
+    // The "are you already clocked in?" check and the insert must be atomic, or
+    // two near-simultaneous requests (kiosk double-tap, two devices, retried
+    // request) both pass the check and create two open punches. We serialize
+    // per-employee with a transaction-scoped advisory lock, re-check inside the
+    // lock, then insert. The partial unique index (migration 0048) is the
+    // ultimate backstop and is mapped to a friendly error if it ever fires.
+    try {
+      return await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId}))`);
+
+        const [existing] = await tx
+          .select({ id: punchLogs.id })
+          .from(punchLogs)
+          .where(and(
+            eq(punchLogs.employeeId, userId),
+            isNotNull(punchLogs.clockIn),
+            isNull(punchLogs.clockOut),
+          ))
+          .limit(1);
+        if (existing) {
+          throw new DuplicateOpenPunchError();
+        }
+
+        const [record] = await tx.insert(punchLogs).values({
+          employeeId: userId,
+          workDate: dateStr,
+          clockIn: actualNow,
+          roundedClockIn: rounded,
+          status: opts?.status ?? "in-progress",
+          source,
+          ...(opts?.kioskDeviceId ? { kioskDeviceId: opts.kioskDeviceId } : {}),
+          approved: true,
+        }).returning();
+        return punchLogToLegacy(record);
+      });
+    } catch (err) {
+      if (err instanceof DuplicateOpenPunchError) throw err;
+      if (isOpenPunchUniqueViolation(err)) throw new DuplicateOpenPunchError();
+      throw err;
+    }
+  }
+
+  // Close a punch only if it is still open. The WHERE guard on clock_out makes
+  // a double clock-out a no-op: the second call matches nothing and returns
+  // undefined instead of re-closing an already-closed punch.
+  async closeOpenPunch(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined> {
+    const [updated] = await db
+      .update(punchLogs)
+      .set(record)
+      .where(and(eq(punchLogs.id, id), isNull(punchLogs.clockOut)))
+      .returning();
+    return updated ? punchLogToLegacy(updated) : undefined;
   }
 
   async clockOut(userId: string, otThresholdDaily?: number): Promise<PunchLog | undefined> {
-    const current = await this.getCurrentAttendance(userId);
-    if (!current || !current.clockIn) return undefined;
-
-    const now = new Date();
-    const roundedInMs = new Date(current.roundedClockIn ?? current.clockIn).getTime();
-    const totalMs = now.getTime() - roundedInMs;
-    const breakMs = (current.breakMinutes || 0) * 60 * 1000;
-    const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
-
     const threshold = otThresholdDaily ?? 8;
+    // Serialize against concurrent clock-outs for the same employee so the
+    // "find open punch -> close it" pair is atomic; a second concurrent (or
+    // double-tapped) clock-out finds no open punch and no-ops.
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId}))`);
 
-    const [updated] = await db
-      .update(punchLogs)
-      .set({ clockOut: now, roundedClockOut: now, hoursWorked, status: hoursWorked > threshold ? "overtime" : "complete" })
-      .where(eq(punchLogs.id, current.id))
-      .returning();
-    return punchLogToLegacy(updated);
+      const [current] = await tx
+        .select()
+        .from(punchLogs)
+        .where(and(
+          eq(punchLogs.employeeId, userId),
+          isNotNull(punchLogs.clockIn),
+          isNull(punchLogs.clockOut),
+        ))
+        .orderBy(desc(punchLogs.clockIn))
+        .limit(1);
+      if (!current || !current.clockIn) return undefined;
+
+      const now = new Date();
+      const roundedInMs = new Date(current.roundedClockIn ?? current.clockIn).getTime();
+      const totalMs = now.getTime() - roundedInMs;
+      const breakMs = (current.breakMinutes || 0) * 60 * 1000;
+      const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+
+      const [updated] = await tx
+        .update(punchLogs)
+        .set({ clockOut: now, roundedClockOut: now, hoursWorked, status: hoursWorked > threshold ? "overtime" : "complete" })
+        .where(eq(punchLogs.id, current.id))
+        .returning();
+      return updated ? punchLogToLegacy(updated) : undefined;
+    });
   }
 
   async getCurrentAttendance(userId: string): Promise<PunchLog | undefined> {

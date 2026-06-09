@@ -76,6 +76,19 @@ export function mapRouteError(error: unknown, fallback = "Something went wrong")
     };
   }
   const e = error as any;
+  // Duplicate open punch (clock-in race): surfaced as a friendly 409 whether it
+  // arrives as the typed DuplicateOpenPunchError or as the raw Postgres unique
+  // violation on the partial index that enforces one open punch per employee.
+  if (e?.name === "DuplicateOpenPunchError") {
+    return { status: 409, message: e.message || "You're already clocked in." };
+  }
+  if (
+    e?.code === "23505" &&
+    (e?.constraint === "idx_punch_logs_one_open_per_employee" ||
+      (typeof e?.message === "string" && e.message.includes("idx_punch_logs_one_open_per_employee")))
+  ) {
+    return { status: 409, message: "This employee already has an open punch." };
+  }
   const code: string | undefined = e?.code;
   if (typeof code === "string" && PG_CODE_MESSAGES[code]) {
     const field = extractDetail(e, "");

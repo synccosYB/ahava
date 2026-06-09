@@ -1,7 +1,7 @@
 import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
-import { storage } from "./storage";
+import { storage, DuplicateOpenPunchError } from "./storage";
 import { badRequestFromZod, handleRouteError, mapRouteError, RouteConflictError } from "./routeErrors";
 import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, userRoles as userRolesTable } from "@shared/schema";
@@ -2483,16 +2483,21 @@ export async function registerRoutes(
         return kioskError(res, 403, "policy_blocked", enforcement.rejectionMessage || "Clock-in not allowed right now.");
       }
 
-      const record = await storage.createAttendanceRecord({
-        employeeId: user.id,
-        workDate: today,
-        clockIn: now,
-        roundedClockIn: enforcement.roundedTime,
-        status: "present",
-        source: "kiosk",
-        kioskDeviceId: kioskDevice.id,
-        approved: true,
-      });
+      let record;
+      try {
+        // Route through the transactional, advisory-locked clock-in so a kiosk
+        // double-tap can't create two open punches. The unique index is the
+        // backstop if two requests still slip through.
+        record = await storage.clockIn(user.id, "kiosk", enforcement.roundedTime, {
+          status: "present",
+          kioskDeviceId: kioskDevice.id,
+        });
+      } catch (err) {
+        if (err instanceof DuplicateOpenPunchError) {
+          return kioskError(res, 409, "already_clocked_in", "You're already clocked in.");
+        }
+        throw err;
+      }
 
       if (enforcement.alerts.length > 0) {
         await createPolicyAlerts(enforcement.alerts);
@@ -2526,7 +2531,7 @@ export async function registerRoutes(
 
       const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, attRules, payrollRules, user, attendancePolicy?.policyName);
 
-      const updated = await storage.updatePunchLog(lastRecord.id, {
+      const updated = await storage.closeOpenPunch(lastRecord.id, {
         clockOut: now,
         roundedClockOut: enforcement.roundedTime,
         hoursWorked: enforcement.hoursWorked,
@@ -2535,6 +2540,12 @@ export async function registerRoutes(
         // each side of a shift came from.
         kioskDeviceId: kioskDevice.id,
       });
+
+      // A second (double-tapped) clock-out finds the punch already closed and
+      // no-ops cleanly instead of re-closing it.
+      if (!updated) {
+        return kioskError(res, 409, "not_clocked_in", "You're not currently clocked in.");
+      }
 
       if (enforcement.alerts.length > 0) {
         await createPolicyAlerts(enforcement.alerts);
@@ -2637,7 +2648,7 @@ export async function registerRoutes(
       const user = req.authUser as User;
       const current = await storage.getCurrentAttendance(userId);
       if (current) {
-        return res.status(400).json({ message: "Already clocked in" });
+        return res.status(409).json({ message: "You're already clocked in." });
       }
 
       const source = req.body?.source || "web";
@@ -2689,15 +2700,18 @@ export async function registerRoutes(
       const attPolicy = getResolvedPolicy(req, "attendance");
       const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, rules, payrollRules, user, attPolicy?.policyName);
 
-      const record = await storage.updatePunchLog(current.id, {
+      const record = await storage.closeOpenPunch(current.id, {
         clockOut: now,
         roundedClockOut: enforcement.roundedTime,
         hoursWorked: enforcement.hoursWorked,
         status: enforcement.status,
       });
 
+      // closeOpenPunch only updates a punch that is still open, so a second
+      // (double-tapped or concurrent) clock-out lands here as a clean no-op
+      // instead of re-closing an already-closed punch.
       if (!record) {
-        return res.status(400).json({ message: "Failed to clock out" });
+        return res.status(409).json({ message: "You're already clocked out." });
       }
 
       if (enforcement.alerts.length > 0) {

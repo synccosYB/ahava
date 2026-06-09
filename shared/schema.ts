@@ -290,10 +290,15 @@ export const punchLogs = pgTable("punch_logs", {
   kioskDeviceId: varchar("kiosk_device_id"),
   approved: boolean("approved").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
-}, (t) => ({
-  employeeWorkDateIdx: index("punch_logs_employee_work_date_idx").on(t.employeeId, t.workDate),
-  workDateIdx: index("punch_logs_work_date_idx").on(t.workDate),
-}));
+}, (table) => [
+  index("punch_logs_employee_work_date_idx").on(table.employeeId, table.workDate),
+  index("punch_logs_work_date_idx").on(table.workDate),
+  // Task #315: at most one open punch (clock-in with no clock-out) per
+  // employee, enforced by the database so a clock-in race can't create two.
+  uniqueIndex("idx_punch_logs_one_open_per_employee")
+    .on(table.employeeId)
+    .where(sql`${table.clockOut} IS NULL AND ${table.clockIn} IS NOT NULL`),
+]);
 
 export const attendanceRecords = punchLogs;
 
