@@ -12,7 +12,7 @@ import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Depart
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
-import { buildEmployeeTimesheet, computeAttendanceTotals } from "./timesheetService";
+import { buildEmployeeTimesheet } from "./timesheetService";
 import {
   computeAttendanceReconciliation,
   applyAttendanceReconciliation,
@@ -5041,8 +5041,6 @@ export async function registerRoutes(
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const depts = await storage.getAllDepartments();
     const deptMap = new Map(depts.map(d => [d.id, d.name]));
-    const attendance = await storage.getAttendanceByDateRange(startDate, endDate);
-    const timeOff = await storage.getAllTimeOffRequests();
 
     const teamIds = await getTeamUserIds(user);
     let filteredUsers = allUsers.filter(u => teamIds.has(u.id));
@@ -5079,57 +5077,42 @@ export async function registerRoutes(
       filteredUsers = filteredUsers.filter(u => u.companyId && set.has(u.companyId));
     }
 
-    // Tax classification filter requires loading employment profiles. Always
-    // load them when any rows survive filtering — the column is also included
-    // in the response payload (and in CSV exports) so HR can pull e.g.
-    // "Ahava → 1099".
-    const profilesByUser = new Map<string, { taxClassification: string }>();
-    if (filteredUsers.length > 0) {
-      await Promise.all(
-        filteredUsers.map(async (u) => {
-          const p = await storage.getEmploymentProfile(u.id);
-          profilesByUser.set(u.id, { taxClassification: p?.taxClassification || "W-2" });
-        })
-      );
+    // Tax classification filter requires employment profiles. Fetch them in ONE
+    // batched query (was an N+1 loop). The column is also included in the
+    // response payload (and CSV exports) so HR can pull e.g. "Ahava → 1099".
+    const profileMap = await storage.getEmploymentProfilesByUserIds(filteredUsers.map(u => u.id));
+    const taxByUser = new Map<string, string>();
+    for (const u of filteredUsers) {
+      taxByUser.set(u.id, profileMap.get(u.id)?.taxClassification || "W-2");
     }
     if (taxClassifications && taxClassifications.length > 0) {
       const set = new Set(taxClassifications);
-      filteredUsers = filteredUsers.filter(u => set.has(profilesByUser.get(u.id)?.taxClassification as any || "W-2"));
+      filteredUsers = filteredUsers.filter(u => set.has(taxByUser.get(u.id) as any || "W-2"));
     }
 
-    const userIds = new Set(filteredUsers.map(u => u.id));
-    const filteredAttendance = attendance.filter(a => userIds.has(a.employeeId));
-    let filteredTimeOff = timeOff.filter(r =>
-      userIds.has(r.userId) &&
-      r.startDate <= endDate &&
-      r.endDate >= startDate
-    );
-
-    if (status && status !== "all") {
-      filteredTimeOff = filteredTimeOff.filter(r => r.status === status);
-    }
+    // Aggregate in the database (GROUP BY), scoped to the final filtered users
+    // and date range, instead of loading the whole punch_logs / time_off tables
+    // into memory. `now` is captured once so in-progress punches are consistent
+    // across employees. Totals match computeAttendanceTotals (see storage).
+    const now = new Date();
+    const finalUserIds = filteredUsers.map(u => u.id);
+    const [attendanceAgg, daysOffByUser] = await Promise.all([
+      storage.getAttendanceAggregatesByDateRange(startDate, endDate, finalUserIds, now),
+      storage.getTimeOffDaysOffByDateRange(startDate, endDate, finalUserIds, status),
+    ]);
 
     const reportData = filteredUsers.map(user => {
-      const userAttendance = filteredAttendance.filter(a => a.employeeId === user.id);
-      // Shared with /api/attendance/timesheet/:employeeId — guarantees the
-      // per-employee timesheet's totals row matches this report row exactly.
-      const { totalHours, daysWorked } = computeAttendanceTotals(userAttendance);
-
-      const userTimeOff = filteredTimeOff.filter(r => r.userId === user.id && (r.status === "approved" || r.status === "partially_approved"));
-      let daysOff = 0;
-      userTimeOff.forEach(r => {
-        const start = new Date(r.startDate);
-        const end = new Date(r.endDate);
-        daysOff += Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-      });
-
+      const agg = attendanceAgg.get(user.id);
+      const totalHours = agg?.totalHours ?? 0;
+      const daysWorked = agg?.daysWorked ?? 0;
+      const daysOff = daysOffByUser.get(user.id) ?? 0;
       const overtime = Math.max(0, totalHours - (daysWorked * 8));
 
       return {
         employeeId: user.id,
         employeeName: `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Unknown",
         department: user.departmentId ? (deptMap.get(user.departmentId) || "Unassigned") : "Unassigned",
-        taxClassification: profilesByUser.get(user.id)?.taxClassification || "W-2",
+        taxClassification: taxByUser.get(user.id) || "W-2",
         totalHours: Math.round(totalHours * 10) / 10,
         daysWorked,
         daysOff,

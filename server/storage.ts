@@ -282,6 +282,7 @@ export interface IStorage {
 
   getEmploymentProfile(userId: string): Promise<EmploymentProfile | undefined>;
   getAllEmploymentProfiles(): Promise<EmploymentProfile[]>;
+  getEmploymentProfilesByUserIds(userIds: string[]): Promise<Map<string, EmploymentProfile>>;
   createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile>;
   updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined>;
 
@@ -377,6 +378,18 @@ export interface IStorage {
     userIds?: string[];
   }): Promise<TimeOffRequest[]>;
   getAttendanceByDateRange(startDate: string, endDate: string): Promise<PunchLog[]>;
+  getAttendanceAggregatesByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds?: string[],
+    now?: Date,
+  ): Promise<Map<string, { totalHours: number; daysWorked: number }>>;
+  getTimeOffDaysOffByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds: string[],
+    status?: string,
+  ): Promise<Map<string, number>>;
 
   getPtoPolicy(id: string): Promise<PtoPolicy | undefined>;
   getAllPtoPolicies(): Promise<PtoPolicy[]>;
@@ -1760,6 +1773,96 @@ export class DatabaseStorage implements IStorage {
     return records.map(punchLogToLegacy);
   }
 
+  // SQL-side aggregation of worked hours + distinct days worked, grouped by
+  // employee. Mirrors computeAttendanceTotals in timesheetService exactly:
+  //   - per punch with a clock_in, add max(0, (clockOut ?? now) - clockIn) / 3600
+  //   - days worked = distinct work_date among punches that have a clock_in
+  // Pushing this into the DB lets report generation scale to thousands of
+  // employees without loading the whole punch_logs table into memory.
+  async getAttendanceAggregatesByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds?: string[],
+    now: Date = new Date(),
+  ): Promise<Map<string, { totalHours: number; daysWorked: number }>> {
+    const result = new Map<string, { totalHours: number; daysWorked: number }>();
+    if (userIds && userIds.length === 0) return result;
+
+    const conds: SQL[] = [
+      gte(punchLogs.workDate, startDate),
+      lte(punchLogs.workDate, endDate),
+    ];
+    if (userIds && userIds.length > 0) {
+      conds.push(inArray(punchLogs.employeeId, userIds));
+    }
+
+    // Format `now` as a naive (no-tz) timestamp matching how clock_in/clock_out
+    // are stored, so the in-progress-punch arithmetic lines up.
+    const nowLiteral = now.toISOString().replace("T", " ").replace("Z", "");
+
+    const rows = await db
+      .select({
+        employeeId: punchLogs.employeeId,
+        totalHours: sql<string>`COALESCE(SUM(
+          CASE WHEN ${punchLogs.clockIn} IS NOT NULL
+            THEN GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(${punchLogs.clockOut}, ${nowLiteral}::timestamp) - ${punchLogs.clockIn})) / 3600.0)
+            ELSE 0 END
+        ), 0)`,
+        daysWorked: sql<number>`COUNT(DISTINCT CASE WHEN ${punchLogs.clockIn} IS NOT NULL THEN ${punchLogs.workDate} END)`,
+      })
+      .from(punchLogs)
+      .where(and(...conds))
+      .groupBy(punchLogs.employeeId);
+
+    for (const r of rows) {
+      result.set(r.employeeId, {
+        totalHours: Number(r.totalHours),
+        daysWorked: Number(r.daysWorked),
+      });
+    }
+    return result;
+  }
+
+  // SQL-side aggregation of approved time-off days off, grouped by user.
+  // Mirrors the report's in-memory logic: only approved / partially_approved
+  // requests overlapping [startDate, endDate] count, and each contributes its
+  // full span ((endDate - startDate) + 1 days), NOT clamped to the range. When
+  // a status filter is supplied it intersects with the approved set (so e.g.
+  // status="denied" yields zero, matching the previous behaviour).
+  async getTimeOffDaysOffByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds: string[],
+    status?: string,
+  ): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (userIds.length === 0) return result;
+
+    const conds: SQL[] = [
+      inArray(timeOffRequests.userId, userIds),
+      lte(timeOffRequests.startDate, endDate),
+      gte(timeOffRequests.endDate, startDate),
+      inArray(timeOffRequests.status, ["approved", "partially_approved"]),
+    ];
+    if (status && status !== "all") {
+      conds.push(eq(timeOffRequests.status, status));
+    }
+
+    const rows = await db
+      .select({
+        userId: timeOffRequests.userId,
+        daysOff: sql<number>`COALESCE(SUM((${timeOffRequests.endDate}::date - ${timeOffRequests.startDate}::date) + 1), 0)`,
+      })
+      .from(timeOffRequests)
+      .where(and(...conds))
+      .groupBy(timeOffRequests.userId);
+
+    for (const r of rows) {
+      result.set(r.userId, Number(r.daysOff));
+    }
+    return result;
+  }
+
   async getCompany(id: string): Promise<Company | undefined> {
     const [company] = await db.select().from(companies).where(eq(companies.id, id));
     return company;
@@ -3117,6 +3220,20 @@ export class DatabaseStorage implements IStorage {
 
   async getAllEmploymentProfiles(): Promise<EmploymentProfile[]> {
     return db.select().from(userEmploymentProfiles);
+  }
+
+  // Batched replacement for the per-user getEmploymentProfile loop (N+1) in
+  // report generation: fetch every needed profile in a single query keyed by
+  // user id.
+  async getEmploymentProfilesByUserIds(userIds: string[]): Promise<Map<string, EmploymentProfile>> {
+    const result = new Map<string, EmploymentProfile>();
+    if (userIds.length === 0) return result;
+    const rows = await db
+      .select()
+      .from(userEmploymentProfiles)
+      .where(inArray(userEmploymentProfiles.userId, userIds));
+    for (const r of rows) result.set(r.userId, r);
+    return result;
   }
 
   async deleteRequiredDocumentRule(id: string): Promise<void> {
