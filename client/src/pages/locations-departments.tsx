@@ -793,18 +793,27 @@ function DepartmentsTab() {
                         <p className="p-3 text-sm text-muted-foreground">No managers available</p>
                       ) : (
                         eligibleManagers.map((u) => (
-                          <label
+                          <div
                             key={u.id}
+                            role="button"
+                            tabIndex={0}
                             className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm cursor-pointer hover:bg-accent"
                             data-testid={`option-manager-${u.id}`}
+                            onClick={() => toggleManager(u.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                toggleManager(u.id);
+                              }
+                            }}
                           >
                             <Checkbox
                               checked={form.managerIds.includes(u.id)}
-                              onCheckedChange={() => toggleManager(u.id)}
+                              className="pointer-events-none"
                               data-testid={`checkbox-manager-${u.id}`}
                             />
                             {u.firstName} {u.lastName}
-                          </label>
+                          </div>
                         ))
                       )}
                     </div>
