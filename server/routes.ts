@@ -259,6 +259,40 @@ async function buildPayPeriodTypeMap(
   return out;
 }
 
+async function buildDeptManagerNameMap(
+  userMap: Map<string, User>,
+): Promise<Map<string, string[]>> {
+  const allDepartments = await storage.getAllDepartments();
+  const deptManagerMap = new Map<string, string[]>();
+
+  const roleManagersByDept = new Map<string, User[]>();
+  for (const u of Array.from(userMap.values())) {
+    if (u.role === "manager" && !u.deactivatedAt && u.departmentId) {
+      const arr = roleManagersByDept.get(u.departmentId) || [];
+      arr.push(u);
+      roleManagersByDept.set(u.departmentId, arr);
+    }
+  }
+
+  await Promise.all(allDepartments.map(async (dept) => {
+    const linkManagers = await storage.getDepartmentManagers(dept.id);
+    const seen = new Set<string>();
+    const names: string[] = [];
+    const addUser = (mu: User | undefined) => {
+      if (!mu || seen.has(mu.id)) return;
+      const name = `${mu.firstName || ""} ${mu.lastName || ""}`.trim();
+      if (!name) return;
+      seen.add(mu.id);
+      names.push(name);
+    };
+    for (const m of linkManagers) addUser(userMap.get(m.userId));
+    for (const mu of (roleManagersByDept.get(dept.id) || [])) addUser(mu);
+    deptManagerMap.set(dept.id, names);
+  }));
+
+  return deptManagerMap;
+}
+
 async function getScheduleWarning(employeeId: string, punchType: "clock_in" | "clock_out"): Promise<string | null> {
   const now = new Date();
   const dayOfWeek = now.getDay();
@@ -2312,14 +2346,7 @@ export async function registerRoutes(
       deptMap = new Map(allDepartments.map(d => [d.id, d]));
       const allLocations = await storage.getAllLocations();
       locMap = new Map(allLocations.map(l => [l.id, l]));
-      await Promise.all(allDepartments.map(async (dept) => {
-        const managers = await storage.getDepartmentManagers(dept.id);
-        const names = managers.map(m => {
-          const mu = userMap.get(m.userId);
-          return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "Unknown";
-        }).filter(n => n && n !== "Unknown");
-        deptManagerMap.set(dept.id, names);
-      }));
+      deptManagerMap = await buildDeptManagerNameMap(userMap);
     }
 
     const balanceTrackedTypes = new Set(["vacation", "sick", "personal"]);
@@ -3501,14 +3528,7 @@ export async function registerRoutes(
         deptMap = new Map(allDepartments.map(d => [d.id, d]));
         const allLocations = await storage.getAllLocations();
         locMap = new Map(allLocations.map(l => [l.id, l]));
-        await Promise.all(allDepartments.map(async (dept) => {
-          const managers = await storage.getDepartmentManagers(dept.id);
-          const names = managers.map(m => {
-            const mu = userMap.get(m.userId);
-            return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "Unknown";
-          }).filter(n => n && n !== "Unknown");
-          deptManagerMap.set(dept.id, names);
-        }));
+        deptManagerMap = await buildDeptManagerNameMap(userMap);
       }
       const enriched = scopedPending.map(e => {
         const u = userMap.get(e.employeeId);
@@ -3586,14 +3606,7 @@ export async function registerRoutes(
         deptMap = new Map(allDepartments.map(d => [d.id, d]));
         const allLocations = await storage.getAllLocations();
         locMap = new Map(allLocations.map(l => [l.id, l]));
-        await Promise.all(allDepartments.map(async (dept) => {
-          const managers = await storage.getDepartmentManagers(dept.id);
-          const names = managers.map(m => {
-            const mu = userMap.get(m.userId);
-            return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "Unknown";
-          }).filter(n => n && n !== "Unknown");
-          deptManagerMap.set(dept.id, names);
-        }));
+        deptManagerMap = await buildDeptManagerNameMap(userMap);
       }
       const enriched = decided.map(e => {
         const emp = userMap.get(e.employeeId);
@@ -4805,16 +4818,9 @@ export async function registerRoutes(
 
     const requests = await storage.getProcessedTimeOffRequests(filters);
 
-    const deptManagerMap = new Map<string, string[]>();
+    let deptManagerMap = new Map<string, string[]>();
     if (user.role === "admin") {
-      await Promise.all(allDepartments.map(async (dept) => {
-        const managers = await storage.getDepartmentManagers(dept.id);
-        const names = managers.map(m => {
-          const mu = userMap.get(m.userId);
-          return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "";
-        }).filter(n => n);
-        deptManagerMap.set(dept.id, names);
-      }));
+      deptManagerMap = await buildDeptManagerNameMap(userMap);
     }
 
     const enriched = requests.map(r => {

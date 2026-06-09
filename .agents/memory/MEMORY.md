@@ -5,3 +5,4 @@
 - [Active-user filtering](active-user-filtering.md) — iterate employees with `!u.deactivatedAt && role!=='kiosk'`; users table has no isActive column (it's in shared/models/auth.ts).
 - [Dev server no hot-reload](dev-server-no-hot-reload.md) — `tsx server/index.ts` (not watch); restart "Start application" after any server/** edit before API smoke tests; auth is JWT bearer.
 - [Reports category vs scope](reports-category-vs-scope.md) — /api/reports/generate takes `category` (what data) separate from `reportType` (scope); returns self-describing {category,columns,rows}, client adapts via columns[].kind.
+- [Department managers dual-source](department-managers-dual-source.md) — a dept's managers = link table ∪ users with `manager` role assigned via department_id; display must union both (use buildDeptManagerNameMap).
