@@ -1,0 +1,92 @@
+Pasted-BUG-0243-Edit-Employee-Pay-Setup-Bug-New-High-Close-Res_1780997914278.txt
+BUG-0243
+Edit Employee "Pay Setup"
+Bug
+New
+High
+Close
+Resolve
+Status
+New
+Priority
+High
+Assigned To
+Unassigned
+Description
+
+**Steps to Reproduce:**
+1. Log in as an Admin.
+2. Navigate to the "Employee" section in the application.
+3. Select an employee profile to view detailed information.
+4. Click on the "Pay Setup" tab within the employee profile.
+5. Look for an option to edit the "Pay Setup" details.
+
+**Expected Behavior:**
+An "Edit" button should be visible in the "Pay Setup" tab, allowing Admins to update the employee's pay setup details.
+
+**Actual Behavior:**
+There is no "Edit" button displayed in the "Pay Setup" tab, preventing Admins from updating the pay setup details.
+
+**Additional Context:**
+- This issue prevents Admins from making updates to employee pay details directly through the interface.
+- There are no visible alternatives or options to edit pay setup information within the tab. 
+- The issue might be related to missing permissions, a UI element not rendering correctly, or a feature oversight.
+
+AI Analysis
+
+### Analysis:
+#### 1. **Affected Part of the App:**
+   - `Employee Profile > Pay Setup` tab in the Admin interface.
+
+#### 2. **Observations in Screenshot:**
+   - The "Pay Setup" interface is displayed, showing static details like:
+     - Pay Type: hourly.
+     - Hourly Rate: $15.00.
+     - Holiday Pay: Disabled.
+   - No "Edit" or "Update" button is visible in the tab.
+   - UI appears functional and complete, but lacks the expected button for editing pay setup details.
+   - Sidebar navigation confirms the user has accessed the Admin Dashboard, which theoretically grants sufficient privileges for these operations.
+
+#### 3. **Possible Root Cause:**
+   - **Permission configuration issue:**
+     - The system may be failing to render the "Edit" button due to incorrect permission assignments for the Admin role.
+   - **UI bug or oversight:**
+     - The "Edit" button could be unintentionally hidden or removed during a code update.
+   - **Feature toggle is disabled:**
+     - The backend may not be enabling the editing feature for the "Pay Setup" tab, leading to the omission of the UI control.
+   - **Frontend dependency issue:**
+     - A missing or erroneous condition in the rendering logic may hide the button.
+
+#### 4. **Recommended Fix/Next Steps:**
+   - **Validate permissions:**
+     - Check the Admin role's access permissions to ensure "Pay Setup Edit" functionality is enabled.
+   - **UI inspection:**
+     - Inspect the frontend code for conditional logic that determines the visibility of the "Edit" button based on role or system state.
+   - **Backend/API verification:**
+     - Examine if the backend is exposing an appropriate endpoint for updating Pay Setup details. Ensure the corresponding feature flag (if any) is enabled system-wide.
+   - **Frontend debugging:**
+     - Use browser developer tools to debug JavaScript or rendering issues around the "Pay Setup" tab to trace any errors.
+
+### JSON Summary:
+```json
+{"severity": "high", "category": "functionality"}
+```
+
+Screenshot
+
+Screenshot
+https://synccos.space/permissions
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36
+Shlomy Shpilman
+shloimy@synkdex.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+
+Write a reply...
