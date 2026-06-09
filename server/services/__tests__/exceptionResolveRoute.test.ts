@@ -16,7 +16,7 @@ import {
   punchLogs,
   users,
 } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 const REVIEWER_ID = "admin-dev-001";
 const TEST_EMAIL_PREFIX = "task81-overtime-test+";
@@ -830,5 +830,163 @@ test("POST /attendance/exceptions rejects a punchLogId that belongs to another e
     String(body.message ?? ""),
     /Invalid punch reference/i,
     "should report invalid punch reference",
+  );
+});
+
+test("POST /attendance/exceptions: a forgotten_clock_out approval closes the existing open punch and never creates a duplicate (BUG-0246)", async (t) => {
+  const fx = await setupFixture("forgotten-clock-out-no-dup");
+  t.after(fx.cleanup);
+
+  // The employee clocked in but forgot to clock out — one open punch exists.
+  const workDate = "2026-05-04";
+  const clockInAt = new Date("2026-05-04T09:00:00Z");
+  const correctedClockOutAt = new Date("2026-05-04T17:00:00Z"); // 8h shift
+  const [openPunch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn: clockInAt,
+      roundedClockIn: clockInAt,
+      status: "in-progress",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Submit the correction through the public API exactly like the My
+  // Attendance page now does: type forgotten_clock_out, linked to the open
+  // punch, with the corrected clock-out carried in the bracketed reason.
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+  const submitRes = await fetch(`${fx.baseUrl}/api/attendance/exceptions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${employeeToken}`,
+    },
+    body: JSON.stringify({
+      exceptionDate: workDate,
+      type: "forgotten_clock_out",
+      reason:
+        "I forgot to clock out at the end of my shift. [Original In: 09:00, Corrected In: 09:00, Corrected Out: 17:00]",
+      punchLogId: openPunch.id,
+    }),
+  });
+  const submitBody = await submitRes.text();
+  assert.equal(
+    submitRes.status,
+    201,
+    `expected 201 from POST /api/attendance/exceptions, got ${submitRes.status} (${submitBody})`,
+  );
+  const created = JSON.parse(submitBody);
+  assert.equal(created.type, "forgotten_clock_out", "exception should be stored as forgotten_clock_out");
+  assert.equal(created.punchLogId, openPunch.id, "exception should carry the open punch FK");
+
+  // Approve it, routing the requested clock-out through correctedTime as the
+  // Requests & Approvals page now does for forgotten_clock_out.
+  const resolveRes = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${created.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({
+      action: "approve",
+      reviewNotes: "closing the open shift",
+      correctedTime: correctedClockOutAt.toISOString(),
+    }),
+  });
+  assert.equal(
+    resolveRes.status,
+    200,
+    `expected 200 from resolve route, got ${resolveRes.status} (${await resolveRes.text().catch(() => "")})`,
+  );
+
+  // The crux of BUG-0246: exactly ONE punch must exist for this date.
+  const punchesForDate = await db
+    .select()
+    .from(punchLogs)
+    .where(and(eq(punchLogs.employeeId, fx.employeeId), eq(punchLogs.workDate, workDate)));
+  assert.equal(
+    punchesForDate.length,
+    1,
+    `expected exactly one punch for ${workDate} (no duplicate), found ${punchesForDate.length}`,
+  );
+
+  // …and it must be the original punch, now closed with the corrected time.
+  const [updatedPunch] = punchesForDate;
+  assert.equal(updatedPunch.id, openPunch.id, "the existing punch must be the one that was updated");
+  assert.ok(updatedPunch.clockOut, "clockOut should be filled in");
+  assert.equal(
+    new Date(updatedPunch.clockOut!).getTime(),
+    correctedClockOutAt.getTime(),
+    "clockOut should reflect the employee's requested time, not 'now'",
+  );
+  assert.equal(updatedPunch.hoursWorked, 8, "hoursWorked should be recomputed for the 9am–5pm shift");
+  assert.notEqual(updatedPunch.status, "in-progress", "the punch should no longer be open");
+
+  const [resolvedException] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, created.id));
+  assert.equal(resolvedException.status, "approved");
+  assert.equal(resolvedException.punchLogId, openPunch.id);
+});
+
+test("POST /attendance/exceptions: a missing_punch approval (no existing punch) still INSERTS a new punch", async (t) => {
+  const fx = await setupFixture("missing-punch-still-inserts");
+  t.after(fx.cleanup);
+
+  // No punch exists for this date — a genuine missing-punch request.
+  const workDate = "2026-05-05";
+  const clockInAt = new Date("2026-05-05T08:00:00Z");
+
+  const before = await db
+    .select()
+    .from(punchLogs)
+    .where(and(eq(punchLogs.employeeId, fx.employeeId), eq(punchLogs.workDate, workDate)));
+  assert.equal(before.length, 0, "precondition: no punch should exist for this date");
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: clockInAt,
+      type: "missing_punch",
+      reason: "I never clocked in. [Corrected In: 08:00]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({
+      action: "approve",
+      correctedTime: clockInAt.toISOString(),
+    }),
+  });
+  assert.equal(res.status, 200, `expected 200 from resolve route, got ${res.status}`);
+
+  const after = await db
+    .select()
+    .from(punchLogs)
+    .where(and(eq(punchLogs.employeeId, fx.employeeId), eq(punchLogs.workDate, workDate)));
+  assert.equal(after.length, 1, "a genuine missing_punch approval should INSERT exactly one new punch");
+  assert.equal(
+    new Date(after[0].clockIn!).getTime(),
+    clockInAt.getTime(),
+    "the new punch should use the corrected clock-in time",
   );
 });

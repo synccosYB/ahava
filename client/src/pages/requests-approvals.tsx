@@ -18,7 +18,7 @@ import { formatDate, formatDateRange } from "@/lib/utils";
 import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText, Search } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location, TimeOffBalanceBucket } from "@shared/schema";
-import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
+import { parseExceptionTimeInfo, buildTimeCorrectionPayload, timeOnDateToISO } from "@/lib/exceptionTimeInfo";
 import { formatTime12FromHHmm } from "@/lib/utils";
 import {
   isHighCorrectionCount,
@@ -1405,7 +1405,12 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   };
   const hasTimeInfo = !!(timeInfo.origIn || timeInfo.origOut || timeInfo.reqIn || timeInfo.reqOut);
   const isTimeCorrection = exception.type === "time_correction";
-  const needsManualTimes = isTimeCorrection && !timeInfo.reqIn && !timeInfo.reqOut;
+  // forgotten_clock_out closes an existing open punch with the employee's
+  // intended clock-out time. Like time_correction it needs the requested time
+  // routed through approval (otherwise the backend defaults to "now").
+  const isForgottenClockOut = exception.type === "forgotten_clock_out";
+  const needsManualTimes =
+    (isTimeCorrection || isForgottenClockOut) && !timeInfo.reqIn && !timeInfo.reqOut;
   const [manualReqIn, setManualReqIn] = useState("");
   const [manualReqOut, setManualReqOut] = useState("");
 
@@ -1427,6 +1432,15 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
           throw new Error("Enter at least one corrected time before approving.");
         }
         Object.assign(body, payload);
+      } else if (isForgottenClockOut) {
+        // Only the clock-out is applied — the existing punch keeps its clock-in.
+        // The backend's forgotten_clock_out path reads `correctedTime`.
+        const reqOut = needsManualTimes ? manualReqOut : timeInfo.reqOut;
+        const outIso = timeOnDateToISO(exception.exceptionDate, reqOut);
+        if (!outIso) {
+          throw new Error("Enter a corrected clock-out time before approving.");
+        }
+        body.correctedTime = outIso;
       }
       await apiRequest("POST", `/api/attendance/exceptions/${exception.id}/resolve`, body);
     },

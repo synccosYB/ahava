@@ -292,11 +292,12 @@ export default function MyAttendance() {
       origIn: toTimeInputValue(record.clockIn),
       origOut: toTimeInputValue(record.clockOut),
       missingPunch,
-      // Tie the new request to the punch the employee is looking at so the
-      // resolve handler updates that exact punch — not whichever happens to
-      // be the most recent on this date. Missing-punch flows leave it null
-      // because there's no existing punch to attach to yet.
-      punchLogId: missingPunch ? null : record.id,
+      // Always tie the request to the punch the employee is looking at — even
+      // a missing-clock-out row has a real (open) punch. Attaching it lets the
+      // resolve handler UPDATE that exact punch (forgotten_clock_out) instead
+      // of INSERTing a duplicate. A genuinely-absent punch never reaches this
+      // dialog (it's clicked from an existing row), so record.id is always set.
+      punchLogId: record.id,
     });
   };
 
@@ -307,7 +308,11 @@ export default function MyAttendance() {
       date: ex.exceptionDate,
       origIn: parsed.origIn,
       origOut: parsed.origOut,
-      missingPunch: ex.type === "missing_punch",
+      // Both "no punch at all" (missing_punch) and "punch with no clock-out"
+      // (forgotten_clock_out) use the missing-clock-out UI treatment. The
+      // distinction between them is the presence of a linked punch, which
+      // CorrectionFormBody derives from punchLogId when classifying the type.
+      missingPunch: ex.type === "missing_punch" || ex.type === "forgotten_clock_out",
       punchLogId: ex.punchLogId ?? null,
       editingExceptionId: ex.id,
       initialReqIn: parsed.reqIn,
@@ -724,10 +729,24 @@ function CorrectionFormBody({
   const origOut = isLookupMode
     ? (matchedRecord ? toTimeInputValue(matchedRecord.clockOut) : "")
     : initialOrigOut;
+  // Attach the matched punch whenever one exists — including a still-open
+  // (missing clock-out) punch. Linking it lets the backend UPDATE that punch
+  // (forgotten_clock_out) instead of inserting a duplicate. Only a date with
+  // no matching record at all is left unlinked (a genuine missing_punch).
   const effectivePunchLogId = isLookupMode
-    ? (matchedRecord && !effectiveMissingPunch ? matchedRecord.id : null)
+    ? (matchedRecord ? matchedRecord.id : null)
     : (punchLogId ?? null);
   const noPunchForDate = isLookupMode && !!date && !matchedRecord;
+
+  // Three-way classification driven by whether a punch is linked and whether
+  // it already has a clock-out:
+  //   - no linked punch        -> missing_punch       (INSERT a new punch)
+  //   - linked, missing out    -> forgotten_clock_out (UPDATE the open punch)
+  //   - linked, has out        -> time_correction     (UPDATE the punch in place)
+  const correctionType: "missing_punch" | "forgotten_clock_out" | "time_correction" =
+    effectivePunchLogId
+      ? (effectiveMissingPunch ? "forgotten_clock_out" : "time_correction")
+      : "missing_punch";
 
   // Block duplicates on a per-punch basis when a punch is linked, otherwise
   // fall back to the legacy per-date check (which now only counts pending
@@ -780,15 +799,14 @@ function CorrectionFormBody({
       const fullReason = `${reason}${timeInfo.length > 0 ? ` [${timeInfo.join(", ")}]` : ""}`;
       const payload: Record<string, unknown> = {
         exceptionDate: date,
-        type: effectiveMissingPunch ? "missing_punch" : "time_correction",
+        type: correctionType,
         reason: fullReason,
       };
       if (isEditing) {
-        // Allow callers to clear or change the punch target on edit by
-        // explicitly sending punchLogId (null clears it).
-        if (!effectiveMissingPunch) {
-          payload.punchLogId = effectivePunchLogId;
-        }
+        // Always send the resolved punch link on edit so callers can attach,
+        // change, or clear it (null clears). A missing_punch request resolves
+        // to null here; forgotten_clock_out / time_correction carry the id.
+        payload.punchLogId = effectivePunchLogId ?? null;
         return apiRequest("PATCH", `/api/attendance/exceptions/${editingExceptionId}`, payload);
       }
       if (effectivePunchLogId) {
