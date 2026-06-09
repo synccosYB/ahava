@@ -2,6 +2,7 @@ import { pool } from "./db";
 import fs from "fs";
 import path from "path";
 import type { PoolClient } from "pg";
+import { detectSchemaDrift, hasSchemaDrift, formatSchemaDrift } from "./schemaDrift";
 
 const IDEMPOTENT_ERROR_CODES = new Set([
   "42701",
@@ -21,88 +22,6 @@ function isIdempotentError(err: PgError): boolean {
   );
 }
 
-interface ColumnRow {
-  column_name: string;
-}
-
-interface TableRow {
-  table_name: string;
-}
-
-const REQUIRED_COLUMNS: Record<string, string[]> = {
-  employee_pto_settings: [
-    "vacation_hours_override",
-    "sick_hours_override",
-    "personal_hours_override",
-    "hire_date",
-    "notes",
-  ],
-  companies: [
-    "legal_name",
-    "slug",
-    "address",
-    "phone",
-    "email",
-    "timezone",
-  ],
-  locations: [
-    "company_id",
-    "name",
-    "code",
-    "timezone",
-    "is_active",
-  ],
-  departments: [
-    "name",
-    "company_id",
-    "location_id",
-  ],
-  location_addresses: [
-    "location_id",
-    "label",
-    "address",
-    "city",
-    "state",
-    "zip",
-  ],
-  users: [
-    "deactivated_at",
-  ],
-  attendance_exceptions: [
-    "reopen_requested_by",
-    "reopen_requested_at",
-    "reopen_message",
-    "reopen_status",
-    "reopen_decided_by",
-    "reopen_decided_at",
-    "reopen_decision_note",
-    "reopen_consumed_at",
-  ],
-  // 0035_kiosk_pairing_heartbeat — the migration runner executes each .sql
-  // file as one multi-statement query (there are no `--> statement-breakpoint`
-  // markers in this file), so a mid-statement failure could leave the file
-  // half-applied while still being recorded in _migration_log. Verifying
-  // these columns at boot turns that silent drift into a clear startup error
-  // instead of a 500 on the Reports / Time page.
-  punch_logs: [
-    "kiosk_device_id",
-  ],
-  kiosk_devices: [
-    "pairing_code",
-    "pairing_code_expires_at",
-    "paired_at",
-    "status",
-  ],
-};
-
-const REQUIRED_TABLES: string[] = [
-  "location_addresses",
-  "onboarding_checklists",
-  "onboarding_tasks",
-  "onboarding_templates",
-  "onboarding_template_tasks",
-];
-
 export async function runMigrations(): Promise<void> {
   const client = await pool.connect();
   try {
@@ -116,7 +35,7 @@ export async function runMigrations(): Promise<void> {
     const journalPath = path.resolve("migrations/meta/_journal.json");
     if (!fs.existsSync(journalPath)) {
       console.log("No migration journal found, skipping migrations.");
-      await verifyRequiredColumns(client);
+      await verifySchema(client);
       return;
     }
 
@@ -172,48 +91,31 @@ export async function runMigrations(): Promise<void> {
       console.log(`Migration applied: ${entry.tag}`);
     }
 
-    await verifyRequiredColumns(client);
+    await verifySchema(client);
   } finally {
     client.release();
   }
 }
 
-async function verifyRequiredColumns(client: PoolClient): Promise<void> {
-  const problems: string[] = [];
+/**
+ * Post-migration drift guardrail. The expected tables/columns are derived
+ * directly from the Drizzle models in `shared/schema.ts` (see
+ * `server/schemaDrift.ts`) rather than a hand-maintained list, so adding a
+ * column to a model without shipping the matching migration fails the boot
+ * loudly instead of 500ing a page at runtime.
+ */
+async function verifySchema(client: PoolClient): Promise<void> {
+  const drift = await detectSchemaDrift(client);
 
-  if (REQUIRED_TABLES.length > 0) {
-    const { rows: tableRows } = await client.query<TableRow>(
-      `SELECT table_name FROM information_schema.tables
-       WHERE table_schema = 'public' AND table_name = ANY($1::text[])`,
-      [REQUIRED_TABLES]
-    );
-    const existingTables = new Set(tableRows.map((r) => r.table_name));
-    for (const table of REQUIRED_TABLES) {
-      if (!existingTables.has(table)) {
-        problems.push(`missing table: ${table}`);
-      }
-    }
-  }
-
-  for (const [table, columns] of Object.entries(REQUIRED_COLUMNS)) {
-    const { rows } = await client.query<ColumnRow>(
-      `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`,
-      [table]
-    );
-    const existing = new Set(rows.map((r) => r.column_name));
-    const missing = columns.filter((c) => !existing.has(c));
-    if (missing.length > 0) {
-      problems.push(`${table} is missing columns: ${missing.join(", ")}`);
-    }
-  }
-
-  if (problems.length > 0) {
+  if (hasSchemaDrift(drift)) {
     throw new Error(
-      `Post-migration check failed: ${problems.join("; ")}. ` +
-      `Affected admin pages (Divisions, Locations, Departments, Attendance) ` +
-      `will return 500 errors. Check migration logs above.`
+      `Post-migration schema check failed: ${formatSchemaDrift(drift)}. ` +
+      `The database is missing tables/columns declared in shared/schema.ts — ` +
+      `a migration is likely missing or only partially applied, and the ` +
+      `affected pages will return 500 errors. Generate the missing migration ` +
+      `(npx drizzle-kit generate) and check the migration logs above.`
     );
   }
 
-  console.log("Post-migration column verification passed.");
+  console.log("Post-migration schema verification passed (no drift from shared/schema.ts).");
 }

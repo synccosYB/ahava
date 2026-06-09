@@ -1,0 +1,1 @@
+- [Schema drift guardrail](schema-drift-guardrail.md) — boot check derives required tables/columns from Drizzle models (not a hand list); edit a model → generate+commit a migration or the app won't boot.
