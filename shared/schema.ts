@@ -290,7 +290,10 @@ export const punchLogs = pgTable("punch_logs", {
   kioskDeviceId: varchar("kiosk_device_id"),
   approved: boolean("approved").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (t) => ({
+  employeeWorkDateIdx: index("punch_logs_employee_work_date_idx").on(t.employeeId, t.workDate),
+  workDateIdx: index("punch_logs_work_date_idx").on(t.workDate),
+}));
 
 export const attendanceRecords = punchLogs;
 
@@ -333,7 +336,13 @@ export const attendanceExceptions = pgTable("attendance_exceptions", {
   reopenDecisionNote: text("reopen_decision_note"),
   reopenConsumedAt: timestamp("reopen_consumed_at"),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (t) => ({
+  employeeDateStatusIdx: index("attendance_exceptions_employee_date_status_idx").on(
+    t.employeeId,
+    t.exceptionDate,
+    t.status,
+  ),
+}));
 
 export const insertAttendanceExceptionSchema = createInsertSchema(attendanceExceptions).omit({
   id: true,
@@ -366,7 +375,11 @@ export const auditLogs = pgTable("audit_logs", {
   ipAddress: varchar("ip_address", { length: 45 }),
   userAgent: text("user_agent"),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (t) => ({
+  actorIdx: index("audit_logs_actor_user_id_idx").on(t.actorUserId),
+  targetIdx: index("audit_logs_target_id_idx").on(t.targetId),
+  createdAtIdx: index("audit_logs_created_at_idx").on(t.createdAt),
+}));
 
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
   id: true,
@@ -395,7 +408,9 @@ export const timeOffRequests = pgTable("time_off_requests", {
   reviewedAt: timestamp("reviewed_at"),
   editedAt: timestamp("edited_at"),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (t) => ({
+  userStartDateIdx: index("time_off_requests_user_start_date_idx").on(t.userId, t.startDate),
+}));
 
 // Maximum hours a single time-off request can plausibly span. A standard
 // full-time year is ~2080 work hours, so anything above this cap is treated as
