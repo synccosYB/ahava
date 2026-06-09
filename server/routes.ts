@@ -13,6 +13,13 @@ import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { buildEmployeeTimesheet, computeAttendanceTotals } from "./timesheetService";
+import {
+  computeAttendanceReconciliation,
+  applyAttendanceReconciliation,
+  computePtoReconciliation,
+  applyPtoReconciliation,
+  computePayrollVerification,
+} from "./services/reconciliation";
 import { runAlertDetection } from "./services/alerts";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
 import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./services/onboarding";
@@ -6425,6 +6432,92 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error checking overlap:", error);
       handleRouteError(res, error, "Failed to check overlap");
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // Recovery & reconciliation tools (attendance, PTO, payroll)
+  // Admin-only, permission-gated. compute* endpoints are read-only diff
+  // previews; apply* endpoints re-derive server-side and audit-log the write.
+  // -----------------------------------------------------------------------
+  const isIsoDate = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+  app.get("/api/reconciliation/attendance", requireAuth, requireRole("admin"), requirePermission("reconciliation.run"), async (req, res) => {
+    try {
+      const startDate = req.query.startDate as string;
+      const endDate = req.query.endDate as string;
+      if (!isIsoDate(startDate) || !isIsoDate(endDate)) {
+        return res.status(400).json({ message: "startDate and endDate (YYYY-MM-DD) are required" });
+      }
+      if (startDate > endDate) {
+        return res.status(400).json({ message: "startDate must be on or before endDate" });
+      }
+      const result = await computeAttendanceReconciliation(startDate, endDate);
+      res.json(result);
+    } catch (error) {
+      console.error("Error computing attendance reconciliation:", error);
+      handleRouteError(res, error, "Failed to compute attendance reconciliation");
+    }
+  });
+
+  app.post("/api/reconciliation/attendance/apply", requireAuth, requireRole("admin"), requirePermission("reconciliation.run"), async (req: any, res) => {
+    try {
+      const ids = req.body?.punchLogIds;
+      if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id: unknown) => typeof id === "string")) {
+        return res.status(400).json({ message: "punchLogIds (non-empty string array) is required" });
+      }
+      const actor = req.authUser as User;
+      const result = await applyAttendanceReconciliation(ids, actor.id, getAuditContext(req));
+      res.json(result);
+    } catch (error) {
+      console.error("Error applying attendance reconciliation:", error);
+      handleRouteError(res, error, "Failed to apply attendance reconciliation");
+    }
+  });
+
+  app.get("/api/reconciliation/pto", requireAuth, requireRole("admin"), requirePermission("reconciliation.run"), async (req, res) => {
+    try {
+      const yearRaw = req.query.year as string | undefined;
+      const year = yearRaw ? parseInt(yearRaw, 10) : new Date().getFullYear();
+      if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+        return res.status(400).json({ message: "year must be a valid 4-digit year" });
+      }
+      const result = await computePtoReconciliation(year);
+      res.json(result);
+    } catch (error) {
+      console.error("Error computing PTO reconciliation:", error);
+      handleRouteError(res, error, "Failed to compute PTO reconciliation");
+    }
+  });
+
+  app.post("/api/reconciliation/pto/apply", requireAuth, requireRole("admin"), requirePermission("reconciliation.run"), async (req: any, res) => {
+    try {
+      const ids = req.body?.userIds;
+      const yearRaw = req.body?.year;
+      const year = typeof yearRaw === "number" ? yearRaw : parseInt(String(yearRaw), 10);
+      if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id: unknown) => typeof id === "string")) {
+        return res.status(400).json({ message: "userIds (non-empty string array) is required" });
+      }
+      if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+        return res.status(400).json({ message: "year must be a valid 4-digit year" });
+      }
+      const actor = req.authUser as User;
+      const result = await applyPtoReconciliation(ids, year, actor.id, getAuditContext(req));
+      res.json(result);
+    } catch (error) {
+      console.error("Error applying PTO reconciliation:", error);
+      handleRouteError(res, error, "Failed to apply PTO reconciliation");
+    }
+  });
+
+  app.get("/api/reconciliation/payroll/:exportId", requireAuth, requireRole("admin"), requirePermission("reconciliation.run"), async (req, res) => {
+    try {
+      const result = await computePayrollVerification(String(req.params.exportId));
+      if (!result) return res.status(404).json({ message: "Payroll export not found" });
+      res.json(result);
+    } catch (error) {
+      console.error("Error verifying payroll export:", error);
+      handleRouteError(res, error, "Failed to verify payroll export");
     }
   });
 

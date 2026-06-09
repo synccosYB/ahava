@@ -35,6 +35,7 @@ import KioskPage from "@/pages/kiosk";
 import ManualPage from "@/pages/manual";
 import BiometricsPage from "@/pages/biometrics";
 import BackgroundJobsPage from "@/pages/background-jobs";
+import ReconciliationPage from "@/pages/reconciliation";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
 
@@ -141,6 +142,11 @@ function AuthenticatedRouter() {
         <Route path="/background-jobs">{() => (
           <ProtectedRoute roles={["admin"]}>
             <BackgroundJobsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/reconciliation">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <ReconciliationPage />
           </ProtectedRoute>
         )}</Route>
         <Route component={NotFound} />

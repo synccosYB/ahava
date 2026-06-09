@@ -83,6 +83,10 @@ export function computeAttendanceTotals(
   return { totalHours, daysWorked: daysWorked.size };
 }
 
+// Re-export the canonical per-punch hours-worked computation so callers can
+// treat timesheetService as the single hours-engine entry point.
+export { computePunchHoursWorked } from "./punchHours";
+
 /**
  * Build a per-day timesheet for an employee over a date range, plus aggregate
  * totals that exactly match the existing time report formula

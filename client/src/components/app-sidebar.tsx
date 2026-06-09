@@ -22,6 +22,7 @@ import {
   ScanFace,
   Activity,
   Settings,
+  RefreshCw,
   ChevronRight,
   PanelLeftClose,
   PanelLeftOpen,
@@ -95,6 +96,7 @@ const adminItems: NavItem[] = [
 const payrollItems: NavItem[] = [
   { title: "Payroll Prep", href: "/payroll-prep", icon: DollarSign },
   { title: "Payroll Documents", href: "/payroll-documents", icon: FileText },
+  { title: "Reconciliation", href: "/reconciliation", icon: RefreshCw },
 ];
 
 const settingsItems: NavItem[] = [
