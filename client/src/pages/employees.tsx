@@ -1502,6 +1502,63 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     },
   });
 
+  const { has: hasPermission } = usePermissions();
+  const canEditPay = hasPermission("users.edit");
+  const [editPayOpen, setEditPayOpen] = useState(false);
+  const [payForm, setPayForm] = useState({
+    payType: "hourly",
+    hourlyRate: "",
+    dailySalary: "",
+    weeklySalary: "",
+    holidayPayEnabled: false,
+    overtimeEligible: false,
+  });
+
+  const openPayDialog = () => {
+    setPayForm({
+      payType: profile?.payType || "hourly",
+      hourlyRate: profile?.hourlyRate != null ? String(profile.hourlyRate) : "",
+      dailySalary: profile?.dailySalary != null ? String(profile.dailySalary) : "",
+      weeklySalary: profile?.weeklySalary != null ? String(profile.weeklySalary) : "",
+      holidayPayEnabled: !!profile?.holidayPayEnabled,
+      overtimeEligible: !!profile?.overtimeEligible,
+    });
+    setEditPayOpen(true);
+  };
+
+  const payRatePositive = (v: string) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) && n > 0;
+  };
+  const payRateValid =
+    (payForm.payType === "hourly" && payRatePositive(payForm.hourlyRate)) ||
+    (payForm.payType === "daily" && payRatePositive(payForm.dailySalary)) ||
+    (payForm.payType === "salary" && payRatePositive(payForm.weeklySalary));
+
+  const payMutation = useMutation({
+    mutationFn: async () => {
+      const body: Record<string, unknown> = {
+        payType: payForm.payType,
+        holidayPayEnabled: payForm.holidayPayEnabled,
+        overtimeEligible: payForm.overtimeEligible,
+        hourlyRate: payForm.payType === "hourly" ? parseFloat(payForm.hourlyRate) : null,
+        dailySalary: payForm.payType === "daily" ? parseFloat(payForm.dailySalary) : null,
+        weeklySalary: payForm.payType === "salary" ? parseFloat(payForm.weeklySalary) : null,
+      };
+      await apiRequest("PATCH", `/api/employment-profiles/${userId}`, body);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setEditPayOpen(false);
+      toast({ title: "Pay setup updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const dept = departments?.find((d) => d.id === user?.departmentId);
   const loc = locations?.find((l) => l.id === user?.locationId);
   const div = divisions?.find((d) => d.id === user?.companyId);
@@ -1967,7 +2024,20 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
 
         <TabsContent value="pay">
           <Card data-testid="card-pay-setup">
-            <CardHeader><CardTitle>Pay Setup</CardTitle></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Pay Setup</CardTitle>
+              {canEditPay && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={openPayDialog}
+                  disabled={!profile}
+                  data-testid="button-edit-pay-setup"
+                >
+                  Edit
+                </Button>
+              )}
+            </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <Label className="text-muted-foreground text-xs">Pay Type</Label>
@@ -2005,6 +2075,114 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               </div>
             </CardContent>
           </Card>
+          <Dialog open={editPayOpen} onOpenChange={setEditPayOpen}>
+            <DialogContent data-testid="dialog-edit-pay-setup">
+              <DialogHeader>
+                <DialogTitle>Edit Pay Setup</DialogTitle>
+                <DialogDescription>Update this employee's pay type, rate, and pay options.</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Pay Type</Label>
+                  <Select
+                    value={payForm.payType}
+                    onValueChange={(v) =>
+                      setPayForm((f) => ({
+                        ...f,
+                        payType: v,
+                        hourlyRate: v === "hourly" ? f.hourlyRate : "",
+                        dailySalary: v === "daily" ? f.dailySalary : "",
+                        weeklySalary: v === "salary" ? f.weeklySalary : "",
+                        overtimeEligible: v === "hourly",
+                      }))
+                    }
+                  >
+                    <SelectTrigger data-testid="select-pay-type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hourly">Hourly</SelectItem>
+                      <SelectItem value="daily">Daily</SelectItem>
+                      <SelectItem value="salary">Salary</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {payForm.payType === "hourly" && (
+                  <div className="space-y-2">
+                    <Label>Hourly Rate ($)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={payForm.hourlyRate}
+                      onChange={(e) => setPayForm((f) => ({ ...f, hourlyRate: e.target.value }))}
+                      placeholder="0.00"
+                      data-testid="input-pay-hourly-rate"
+                    />
+                  </div>
+                )}
+                {payForm.payType === "daily" && (
+                  <div className="space-y-2">
+                    <Label>Daily Rate ($)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={payForm.dailySalary}
+                      onChange={(e) => setPayForm((f) => ({ ...f, dailySalary: e.target.value }))}
+                      placeholder="0.00"
+                      data-testid="input-pay-daily-rate"
+                    />
+                  </div>
+                )}
+                {payForm.payType === "salary" && (
+                  <div className="space-y-2">
+                    <Label>Weekly Salary ($)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={payForm.weeklySalary}
+                      onChange={(e) => setPayForm((f) => ({ ...f, weeklySalary: e.target.value }))}
+                      placeholder="0.00"
+                      data-testid="input-pay-weekly-salary"
+                    />
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="switch-pay-holiday">Holiday Pay</Label>
+                  <Switch
+                    id="switch-pay-holiday"
+                    checked={payForm.holidayPayEnabled}
+                    onCheckedChange={(v) => setPayForm((f) => ({ ...f, holidayPayEnabled: v }))}
+                    data-testid="switch-pay-holiday"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="checkbox-pay-overtime"
+                    checked={payForm.overtimeEligible}
+                    onCheckedChange={(v) => setPayForm((f) => ({ ...f, overtimeEligible: v === true }))}
+                    data-testid="checkbox-pay-overtime"
+                  />
+                  <Label htmlFor="checkbox-pay-overtime">Overtime Eligible</Label>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setEditPayOpen(false)}
+                  data-testid="button-cancel-pay-setup"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => payMutation.mutate()}
+                  disabled={!payRateValid || payMutation.isPending}
+                  data-testid="button-save-pay-setup"
+                >
+                  {payMutation.isPending ? "Saving…" : "Save"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </TabsContent>
 
         <TabsContent value="timeclock">
