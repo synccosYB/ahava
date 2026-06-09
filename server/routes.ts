@@ -3425,6 +3425,20 @@ export async function registerRoutes(
     }
   });
 
+  // Always self-scoped: returns only the logged-in user's own exceptions,
+  // regardless of role. Powers the personal "My Correction Requests" card on
+  // My Attendance so admins/managers don't see the system-wide list there.
+  app.get("/api/attendance/exceptions/my", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const exceptions = await storage.getAttendanceExceptionsByEmployee(userId);
+      res.json(await attachKioskNamesToExceptions(exceptions));
+    } catch (error) {
+      console.error("Error fetching own attendance exceptions:", error);
+      handleRouteError(res, error, "Failed to fetch attendance exceptions");
+    }
+  });
+
   app.get("/api/attendance/exceptions/correction-counts/me", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id as string;

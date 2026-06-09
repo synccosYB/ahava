@@ -109,7 +109,7 @@ export default function MyAttendance() {
   const { data: myExceptions, isLoading: exceptionsLoading } = useQuery<AttendanceException[]>({
     queryKey: ["/api/attendance/exceptions/my"],
     queryFn: async () => {
-      const res = await fetch("/api/attendance/exceptions", { credentials: "include" });
+      const res = await fetch("/api/attendance/exceptions/my", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch exceptions");
       return res.json();
     },
