@@ -3,3 +3,4 @@
 - [Concurrency guards](concurrency-guards.md) — status-guarded UPDATEs (WHERE status='pending') + 409 RouteConflictError for approvals; atomic incrementTimeOffBalance for PTO balances.
 - [Open punch invariant](open-punch-invariant.md) — one open punch per employee enforced by partial unique index; "open" = clock_out NULL (NOT status, which differs web vs kiosk).
 - [Active-user filtering](active-user-filtering.md) — iterate employees with `!u.deactivatedAt && role!=='kiosk'`; users table has no isActive column (it's in shared/models/auth.ts).
+- [Dev server no hot-reload](dev-server-no-hot-reload.md) — `tsx server/index.ts` (not watch); restart "Start application" after any server/** edit before API smoke tests; auth is JWT bearer.

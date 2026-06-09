@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
+import { cachedFetch } from "@/lib/cachedFetch";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -81,16 +82,45 @@ export default function EmployeesPage() {
   const [taxClassFilter, setTaxClassFilter] = useState("all");
   const [certStatusFilter, setCertStatusFilter] = useState("all");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Selection persists across pages, so we track the full user objects (not
+  // just ids) — the bulk-delete dialog needs them and selected rows may live
+  // on pages that are no longer loaded.
+  const [selected, setSelected] = useState<Map<string, User>>(new Map());
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
+  const [page, setPage] = useState(0);
+  const pageSize = 25;
   const { user: currentUser } = useAuth();
   const { has: hasPermission } = usePermissions();
   const canDelete = hasPermission("users.delete");
 
-  const { data: users, isLoading, isError } = useQuery<User[]>({
-    queryKey: ["/api/users"],
+  // Reset to the first page whenever the search or any filter changes so the
+  // user isn't stranded on an out-of-range page.
+  useEffect(() => {
+    setPage(0);
+  }, [debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter]);
+
+  const usersParams = new URLSearchParams();
+  if (debouncedSearch) usersParams.set("search", debouncedSearch);
+  if (departmentFilter !== "all") usersParams.set("departmentId", departmentFilter);
+  if (divisionFilter !== "all") usersParams.set("companyId", divisionFilter);
+  if (taxClassFilter !== "all") usersParams.set("taxClass", taxClassFilter);
+  if (certStatusFilter !== "all") usersParams.set("certStatus", certStatusFilter);
+  usersParams.set("limit", String(pageSize));
+  usersParams.set("offset", String(page * pageSize));
+
+  const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
+    queryKey: ["/api/users", debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter, page],
+    queryFn: async () => {
+      const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch employees");
+      return res.json();
+    },
   });
+
+  const users = usersPage?.data ?? [];
+  const total = usersPage?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const { data: departments } = useQuery<Department[]>({
     queryKey: ["/api/departments"],
@@ -104,14 +134,9 @@ export default function EmployeesPage() {
     queryKey: ["/api/companies"],
   });
 
-  const { data: allCertifications } = useQuery<{ id: string; employeeId: string; status: string }[]>({
-    queryKey: ["/api/certifications"],
-    enabled: certStatusFilter !== "all",
-  });
-
-  // Bulk-fetch all employment profiles so we can show + filter on tax
-  // classification in the Employees list. Falls back to W-2 for users without
-  // a profile (rollout default).
+  // Bulk-fetch all employment profiles so we can show tax classification in
+  // the Employees list. Falls back to W-2 for users without a profile
+  // (rollout default).
   const { data: allProfiles } = useQuery<EmploymentProfile[]>({
     queryKey: ["/api/employment-profiles"],
   });
@@ -119,57 +144,32 @@ export default function EmployeesPage() {
     (allProfiles || []).map((p) => [p.userId, p.taxClassification || "W-2"]),
   );
 
-  const certStatusByEmployee = (() => {
-    const m = new Map<string, Set<string>>();
-    (allCertifications || []).forEach((c) => {
-      if (c.status === "archived") return;
-      if (!m.has(c.employeeId)) m.set(c.employeeId, new Set());
-      m.get(c.employeeId)!.add(c.status);
-    });
-    return m;
-  })();
-
-  const filtered = (users || []).filter((u) => {
-    const name = `${u.firstName || ""} ${u.lastName || ""}`.toLowerCase();
-    if (debouncedSearch && !name.includes(debouncedSearch.toLowerCase()) && !u.email?.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
-    if (departmentFilter !== "all" && u.departmentId !== departmentFilter) return false;
-    if (divisionFilter !== "all" && u.companyId !== divisionFilter) return false;
-    if (taxClassFilter !== "all" && (taxClassByUser.get(u.id) || "W-2") !== taxClassFilter) return false;
-    if (certStatusFilter !== "all") {
-      const statuses = certStatusByEmployee.get(u.id) || new Set();
-      if (certStatusFilter === "none" && statuses.size > 0) return false;
-      if (certStatusFilter !== "none" && !statuses.has(certStatusFilter)) return false;
-    }
-    return true;
-  });
-
   if (selectedEmployee) {
     return <EmployeeProfile userId={selectedEmployee} onBack={() => setSelectedEmployee(null)} />;
   }
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+  const toggleSelect = (user: User) => {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(user.id)) next.delete(user.id); else next.set(user.id, user);
       return next;
     });
   };
 
-  const allFilteredSelected = filtered.length > 0 && filtered.every((u) => selectedIds.has(u.id));
+  const allPageSelected = users.length > 0 && users.every((u) => selected.has(u.id));
   const toggleSelectAll = () => {
-    setSelectedIds((prev) => {
-      if (allFilteredSelected) {
-        const next = new Set(prev);
-        filtered.forEach((u) => next.delete(u.id));
-        return next;
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (allPageSelected) {
+        users.forEach((u) => next.delete(u.id));
+      } else {
+        users.forEach((u) => next.set(u.id, u));
       }
-      const next = new Set(prev);
-      filtered.forEach((u) => next.add(u.id));
       return next;
     });
   };
 
-  const clearSelection = () => setSelectedIds(new Set());
+  const clearSelection = () => setSelected(new Map());
 
   return (
     <div className="max-w-6xl space-y-6" data-testid="employees-page">
@@ -239,13 +239,13 @@ export default function EmployeesPage() {
         />
       </div>
 
-      {selectedIds.size > 0 && (
+      {selected.size > 0 && (
         <div
           className="flex items-center justify-between gap-4 rounded-md border bg-muted/40 p-3"
           data-testid="bar-bulk-actions"
         >
           <div className="text-sm" data-testid="text-selected-count">
-            <span className="font-medium">{selectedIds.size}</span> selected
+            <span className="font-medium">{selected.size}</span> selected
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -282,7 +282,7 @@ export default function EmployeesPage() {
       <BulkDeleteEmployeesDialog
         open={bulkDeleteDialogOpen}
         onOpenChange={setBulkDeleteDialogOpen}
-        users={(users || []).filter((u) => selectedIds.has(u.id))}
+        users={Array.from(selected.values())}
         currentUserId={currentUser?.id}
         onSuccess={clearSelection}
       />
@@ -290,7 +290,7 @@ export default function EmployeesPage() {
       <BulkAssignDivisionDialog
         open={bulkDialogOpen}
         onOpenChange={setBulkDialogOpen}
-        userIds={Array.from(selectedIds)}
+        userIds={Array.from(selected.keys())}
         divisions={divisions || []}
         onSuccess={clearSelection}
       />
@@ -306,7 +306,7 @@ export default function EmployeesPage() {
             <div className="p-6 space-y-3">
               {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
             </div>
-          ) : filtered.length === 0 ? (
+          ) : users.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground" data-testid="text-no-employees">
               No employees found.
             </div>
@@ -316,7 +316,7 @@ export default function EmployeesPage() {
                 <TableRow>
                   <TableHead className="w-[40px]">
                     <Checkbox
-                      checked={allFilteredSelected}
+                      checked={allPageSelected}
                       onCheckedChange={toggleSelectAll}
                       aria-label="Select all"
                       data-testid="checkbox-select-all"
@@ -334,7 +334,7 @@ export default function EmployeesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((emp) => {
+                {users.map((emp) => {
                   const dept = departments?.find((d) => d.id === emp.departmentId);
                   const loc = locations?.find((l) => l.id === emp.locationId);
                   const div = divisions?.find((d) => d.id === emp.companyId);
@@ -347,8 +347,8 @@ export default function EmployeesPage() {
                     >
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         <Checkbox
-                          checked={selectedIds.has(emp.id)}
-                          onCheckedChange={() => toggleSelect(emp.id)}
+                          checked={selected.has(emp.id)}
+                          onCheckedChange={() => toggleSelect(emp)}
                           aria-label={`Select ${emp.firstName} ${emp.lastName}`}
                           data-testid={`checkbox-select-${emp.id}`}
                         />
@@ -398,6 +398,37 @@ export default function EmployeesPage() {
           )}
         </CardContent>
       </Card>
+
+      {!isLoading && !isError && total > 0 && (
+        <div className="flex items-center justify-between" data-testid="pagination-employees">
+          <p className="text-sm text-muted-foreground" data-testid="text-employees-range">
+            Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, total)} of {total}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={page === 0}
+              data-testid="button-prev-page"
+            >
+              Previous
+            </Button>
+            <span className="text-sm text-muted-foreground" data-testid="text-page-indicator">
+              Page {page + 1} of {totalPages}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPage((p) => (p + 1 < totalPages ? p + 1 : p))}
+              disabled={page + 1 >= totalPages}
+              data-testid="button-next-page"
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

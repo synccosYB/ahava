@@ -28,6 +28,7 @@ import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middle
 import { runWorkflowsForTrigger } from "./workflowEngine";
 import { requestCache, requestCacheInvalidator, invalidateRequestCache } from "./lib/requestCache";
 import { appCache } from "./lib/cache";
+import { parsePagination, MAX_PAGE_SIZE } from "./lib/pagination";
 import {
   DEFAULT_PAY_PERIOD_TYPE,
   emptyCorrectionCountSummary,
@@ -59,6 +60,17 @@ import {
 } from "./services/documentStorage";
 
 const SUPER_ADMIN_USER_ID = "admin-dev-001";
+
+// Hard cap for the legacy bare-array `/api/users` directory response (used by
+// pickers that omit pagination params). Bounds memory/transfer so an unbounded
+// fetch is impossible even without client params; large tenants should switch
+// to the paginated/search response instead.
+const DIRECTORY_MAX_USERS = 1000;
+
+// Hard cap for the legacy bare-array admin attendance-exceptions response
+// (callers that omit pagination params). Bounds the response even without
+// client params; paginated callers should page instead.
+const EXCEPTIONS_DIRECTORY_MAX = 500;
 
 /**
  * @deprecated Manual invalidation is no longer required. The global
@@ -321,7 +333,9 @@ export async function registerRoutes(
   });
 
   app.get("/api/users", requireAuth, requirePermission("users.view"), requestCache({ scope: "user" }), async (req, res) => {
-    const users = await storage.getAllUsers();
+    const pagination = parsePagination(req.query, { defaultLimit: 25, maxLimit: 100 });
+    const excludeUserIds = isSuperAdmin(req) ? [] : [SUPER_ADMIN_USER_ID];
+
     // Attach role-rule provenance: which active rule (if any) matches this
     // user. UI uses this to show "Set by rule" only when an actual rule
     // matches, instead of inferring from the absence of a manual override.
@@ -331,14 +345,36 @@ export async function registerRoutes(
     ]);
     const profileByUser = new Map(allProfiles.map(p => [p.userId, p]));
     const { evaluateRoleForUser } = await import("./services/roleAssignment");
-    const enriched = users.map(u => {
+    const enrich = (list: User[]) => list.map(u => {
       const match = evaluateRoleForUser(u, profileByUser.get(u.id), activeRules);
       return {
         ...u,
         assignedByRule: match ? { id: match.rule.id, name: match.rule.name } : null,
       };
     });
-    res.json(hideSuperAdmin(enriched, isSuperAdmin(req)));
+
+    if (pagination.paginated) {
+      const { rows, total } = await storage.getUsersPage({
+        search: typeof req.query.search === "string" ? req.query.search : undefined,
+        departmentId: typeof req.query.departmentId === "string" ? req.query.departmentId : undefined,
+        companyId: typeof req.query.companyId === "string" ? req.query.companyId : undefined,
+        taxClass: typeof req.query.taxClass === "string" ? req.query.taxClass : undefined,
+        certStatus: typeof req.query.certStatus === "string" ? req.query.certStatus : undefined,
+        excludeUserIds,
+        limit: pagination.limit,
+        offset: pagination.offset,
+      });
+      return res.json({ data: enrich(rows), total, limit: pagination.limit, offset: pagination.offset });
+    }
+
+    // Legacy directory response (pickers that omit pagination params): bounded
+    // array, capped so an unbounded fetch is impossible.
+    const { rows } = await storage.getUsersPage({
+      excludeUserIds,
+      limit: DIRECTORY_MAX_USERS,
+      offset: 0,
+    });
+    res.json(enrich(rows));
   });
 
   app.patch("/api/users/:id/role", requireAuth, requirePermission("users.edit"), async (req, res) => {
@@ -1707,7 +1743,14 @@ export async function registerRoutes(
     const user = (req as any).authUser as User;
     if (user.role === "admin") {
       const allCompanies = await storage.getAllCompanies();
-      return res.json(allCompanies);
+      const pagination = parsePagination(req.query, { defaultLimit: 50, maxLimit: 200 });
+      if (pagination.paginated) {
+        const data = allCompanies.slice(pagination.offset, pagination.offset + pagination.limit);
+        return res.json({ data, total: allCompanies.length, limit: pagination.limit, offset: pagination.offset });
+      }
+      // Companies is a small table consumed by pickers as a bare array; cap
+      // defensively so the response is bounded even without client params.
+      return res.json(allCompanies.slice(0, MAX_PAGE_SIZE));
     }
     if (user.companyId) {
       const company = await storage.getCompany(user.companyId);
@@ -3333,10 +3376,18 @@ export async function registerRoutes(
       const user = req.authUser as User;
 
       if (user.role === "admin" || user.role === "manager") {
-        const all = await storage.getAllAttendanceExceptions();
+        const pagination = parsePagination(req.query, { defaultLimit: 50, maxLimit: 200 });
+        // Legacy (no pagination params) callers get a bounded array; paginated
+        // callers get the { data, total } envelope. Either way the response is
+        // capped so the admin list can't grow unboundedly.
+        const { rows, total } = pagination.paginated
+          ? await storage.getAttendanceExceptionsPage({ limit: pagination.limit, offset: pagination.offset })
+          : await storage.getAttendanceExceptionsPage({ limit: EXCEPTIONS_DIRECTORY_MAX, offset: 0 });
+
         const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
         const userMap = new Map(allUsers.map(u => [u.id, u]));
-        const employeeIds = Array.from(new Set(all.map(e => e.employeeId)));
+        // Only enrich the page we're returning, not the whole table.
+        const employeeIds = Array.from(new Set(rows.map(e => e.employeeId)));
         const payPeriodTypeByEmployee = await buildPayPeriodTypeMap(employeeIds, userMap);
         const counts = await storage.getCorrectionRequestCountsBulk(employeeIds, {
           payPeriodTypeByEmployee,
@@ -3345,7 +3396,7 @@ export async function registerRoutes(
         const deptMap = new Map(allDepartments.map(d => [d.id, d]));
         const allLocations = await storage.getAllLocations();
         const locMap = new Map(allLocations.map(l => [l.id, l]));
-        const enriched = all.map(e => {
+        const enriched = rows.map(e => {
           const summary = counts.get(e.employeeId) || emptyCorrectionCountSummary();
           const u = userMap.get(e.employeeId);
           const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;
@@ -3359,7 +3410,11 @@ export async function registerRoutes(
             correctionCount90d: summary,
           };
         });
-        return res.json(await attachKioskNamesToExceptions(enriched));
+        const withKiosk = await attachKioskNamesToExceptions(enriched);
+        if (pagination.paginated) {
+          return res.json({ data: withKiosk, total, limit: pagination.limit, offset: pagination.offset });
+        }
+        return res.json(withKiosk);
       }
 
       const exceptions = await storage.getAttendanceExceptionsByEmployee(userId);

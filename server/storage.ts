@@ -229,10 +229,24 @@ function isOpenPunchUniqueViolation(err: unknown): boolean {
   );
 }
 
+export interface UsersPageOptions {
+  search?: string;
+  departmentId?: string;
+  companyId?: string;
+  taxClass?: string;
+  // "none" = users with no certifications; any other value = users with at
+  // least one certification of that status.
+  certStatus?: string;
+  excludeUserIds?: string[];
+  limit: number;
+  offset: number;
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getAllUsers(): Promise<User[]>;
+  getUsersPage(opts: UsersPageOptions): Promise<{ rows: User[]; total: number }>;
   updateUserRole(id: string, role: string): Promise<User | undefined>;
   updateUserDepartment(id: string, departmentId: string): Promise<User | undefined>;
 
@@ -296,6 +310,7 @@ export interface IStorage {
   getAttendanceExceptionsByEmployee(employeeId: string): Promise<AttendanceException[]>;
   getPendingAttendanceExceptions(): Promise<AttendanceException[]>;
   getAllAttendanceExceptions(): Promise<AttendanceException[]>;
+  getAttendanceExceptionsPage(opts: { limit: number; offset: number }): Promise<{ rows: AttendanceException[]; total: number }>;
   getReopenPendingAttendanceExceptions(): Promise<AttendanceException[]>;
   getLatestResolvedAttendanceExceptionForDate(employeeId: string, date: string): Promise<AttendanceException | undefined>;
   createAttendanceException(exception: InsertAttendanceException): Promise<AttendanceException>;
@@ -743,6 +758,72 @@ export class DatabaseStorage implements IStorage {
 
   async getAllUsers(): Promise<User[]> {
     return db.select().from(users);
+  }
+
+  async getUsersPage(opts: UsersPageOptions): Promise<{ rows: User[]; total: number }> {
+    const conditions: SQL[] = [];
+
+    const search = opts.search?.trim();
+    if (search) {
+      const like = `%${search}%`;
+      const nameExpr = sql`lower(coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, ''))`;
+      conditions.push(
+        sql`(${nameExpr} like lower(${like}) or lower(coalesce(${users.email}, '')) like lower(${like}))` as SQL,
+      );
+    }
+    if (opts.departmentId) conditions.push(eq(users.departmentId, opts.departmentId));
+    if (opts.companyId) conditions.push(eq(users.companyId, opts.companyId));
+    if (opts.taxClass) {
+      // No employment profile defaults to "W-2" (matches the route/UI default),
+      // so a "W-2" filter must also include users without a profile row.
+      if (opts.taxClass === "W-2") {
+        conditions.push(
+          sql`coalesce(${userEmploymentProfiles.taxClassification}, 'W-2') = ${opts.taxClass}` as SQL,
+        );
+      } else {
+        conditions.push(eq(userEmploymentProfiles.taxClassification, opts.taxClass));
+      }
+    }
+    if (opts.certStatus) {
+      // Certifications are 1:many, so use EXISTS subqueries rather than a join
+      // to avoid multiplying user rows (which would corrupt count/pagination).
+      if (opts.certStatus === "none") {
+        // "No certifications" mirrors the prior client filter, which ignored
+        // archived rows — a user with only archived certs still counts as none.
+        conditions.push(
+          sql`not exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status <> 'archived')` as SQL,
+        );
+      } else {
+        conditions.push(
+          sql`exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status = ${opts.certStatus})` as SQL,
+        );
+      }
+    }
+    if (opts.excludeUserIds && opts.excludeUserIds.length > 0) {
+      conditions.push(sql`${users.id} not in (${sql.join(opts.excludeUserIds.map((id) => sql`${id}`), sql`, `)})` as SQL);
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const rowsQuery = db
+      .select()
+      .from(users)
+      .leftJoin(userEmploymentProfiles, eq(userEmploymentProfiles.userId, users.id))
+      .where(whereClause)
+      .orderBy(users.firstName, users.lastName, users.id)
+      .limit(opts.limit)
+      .offset(opts.offset);
+
+    const countQuery = db
+      .select({ value: count() })
+      .from(users)
+      .leftJoin(userEmploymentProfiles, eq(userEmploymentProfiles.userId, users.id))
+      .where(whereClause);
+
+    const [rowsResult, countResult] = await Promise.all([rowsQuery, countQuery]);
+    const rows = rowsResult.map((r: any) => r.users as User);
+    const total = Number(countResult[0]?.value ?? 0);
+    return { rows, total };
   }
 
   async updateUserRole(id: string, role: string): Promise<User | undefined> {
@@ -1193,6 +1274,17 @@ export class DatabaseStorage implements IStorage {
 
   async getAllAttendanceExceptions(): Promise<AttendanceException[]> {
     return db.select().from(attendanceExceptions).orderBy(desc(attendanceExceptions.createdAt));
+  }
+
+  async getAttendanceExceptionsPage(opts: { limit: number; offset: number }): Promise<{ rows: AttendanceException[]; total: number }> {
+    const [rows, countResult] = await Promise.all([
+      db.select().from(attendanceExceptions)
+        .orderBy(desc(attendanceExceptions.createdAt))
+        .limit(opts.limit)
+        .offset(opts.offset),
+      db.select({ value: count() }).from(attendanceExceptions),
+    ]);
+    return { rows, total: Number(countResult[0]?.value ?? 0) };
   }
 
   async getReopenPendingAttendanceExceptions(): Promise<AttendanceException[]> {
