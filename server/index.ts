@@ -10,6 +10,8 @@ import { seed } from "./seed";
 import { runMigrations } from "./migrate";
 import { config } from "./config";
 import { rateLimit } from "./lib/rateLimit";
+import { logger } from "./lib/logger";
+import { pool } from "./db";
 
 const app = express();
 
@@ -42,15 +44,10 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+// Backwards-compatible thin wrapper around the structured logger so existing
+// callers keep working while emitting through the same pipeline.
 export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
+  logger.info(message, { source });
 }
 
 app.use((req, res, next) => {
@@ -59,9 +56,25 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api") || path.startsWith("/internal")) {
-      log(`${req.method} ${path} ${res.statusCode} in ${duration}ms`);
-      if (duration >= config.slowRequestMs) {
-        log(`[slow] ${req.method} ${path} ${res.statusCode} in ${duration}ms (threshold ${config.slowRequestMs}ms)`);
+      const slow = duration >= config.slowRequestMs;
+      const meta: Record<string, unknown> = {
+        source: "http",
+        method: req.method,
+        path,
+        status: res.statusCode,
+        durationMs: duration,
+      };
+      if (slow) {
+        meta.slow = true;
+        meta.thresholdMs = config.slowRequestMs;
+      }
+      const msg = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+      if (slow) {
+        logger.warn(`[slow] ${msg}`, meta);
+      } else if (res.statusCode >= 500) {
+        logger.error(msg, meta);
+      } else {
+        logger.info(msg, meta);
       }
     }
   });
@@ -78,10 +91,39 @@ app.use((req, res, next) => {
 
 (async () => {
   await runMigrations();
-  await seed().catch((err) => console.error("Seed warning:", err));
+  await seed().catch((err) => logger.warn("Seed warning", { source: "seed", err }));
 
   await setupAuth(app);
   registerAuthRoutes(app);
+
+  // Liveness: process is up and serving. No external dependencies checked so
+  // load balancers don't recycle the instance when the DB is briefly busy.
+  app.get("/health", (_req, res) => {
+    res.json({
+      status: "ok",
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // Readiness: verifies the app can actually serve traffic (DB reachable).
+  app.get("/ready", async (_req, res) => {
+    const checks: Record<string, "ok" | "error"> = {};
+    let healthy = true;
+    try {
+      await pool.query("SELECT 1");
+      checks.database = "ok";
+    } catch (err) {
+      checks.database = "error";
+      healthy = false;
+      logger.error("Readiness check failed: database unreachable", { source: "health", err });
+    }
+    res.status(healthy ? 200 : 503).json({
+      status: healthy ? "ok" : "unhealthy",
+      checks,
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   await registerRoutes(httpServer, app);
 
@@ -111,7 +153,7 @@ app.use((req, res, next) => {
 
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
-    console.error("Internal Server Error:", err);
+    logger.error("Internal Server Error", { source: "express", status, err });
     return res.status(status).json({ message });
   });
 
@@ -143,7 +185,22 @@ app.use((req, res, next) => {
       reusePort: true,
     },
     () => {
-      log(`serving on port ${port}`);
+      logger.info(`serving on port ${port}`, { source: "express", port });
     },
   );
 })();
+
+// Process-level safety nets. Without these, an unhandled async error silently
+// kills (or worse, hangs) the process with no diagnostic trail.
+process.on("unhandledRejection", (reason) => {
+  logger.error("Unhandled promise rejection", { source: "process", err: reason });
+});
+
+process.on("uncaughtException", (err) => {
+  logger.error("Uncaught exception — shutting down", { source: "process", err });
+  // An uncaught exception leaves the process in an undefined state; exit so the
+  // supervisor (Replit / load balancer) can restart a clean instance.
+  httpServer.close(() => process.exit(1));
+  // Force-exit if graceful shutdown stalls.
+  setTimeout(() => process.exit(1), 5_000).unref();
+});
