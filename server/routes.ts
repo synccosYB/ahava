@@ -407,6 +407,13 @@ export async function registerRoutes(
 
   const PASSWORD_CHANGE_EXEMPT_PATHS = ["/api/auth", "/api/users/change-password"];
   app.use((req, res, next) => {
+    // Only ever gate API calls. Never block non-API routes (the SPA HTML
+    // document and its assets) — otherwise a user flagged forcePasswordChange
+    // gets a raw 403 JSON when loading the page and can never reach the
+    // change-password screen that would clear the flag.
+    if (!req.path.startsWith("/api")) {
+      return next();
+    }
     if (PASSWORD_CHANGE_EXEMPT_PATHS.some(p => req.path.startsWith(p))) {
       return next();
     }
