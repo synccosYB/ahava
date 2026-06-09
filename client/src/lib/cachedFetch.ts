@@ -41,6 +41,15 @@ export async function cachedFetch(
   }
 }
 
+/**
+ * Drop entries from the in-memory request cache. With no argument it clears
+ * everything; pass a URL substring to clear only matching entries.
+ *
+ * You normally do NOT need to call this directly — `apiRequest` in
+ * `queryClient.ts` invokes it automatically after every successful mutation, so
+ * `cachedFetch` stays in lockstep with `queryClient.invalidateQueries`. Call it
+ * by hand only for a mutation that bypasses `apiRequest`.
+ */
 export function invalidateCachedFetch(prefix?: string): void {
   if (!prefix) {
     cache.clear();

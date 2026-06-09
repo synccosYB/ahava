@@ -1,4 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { invalidateCachedFetch } from "./cachedFetch";
 
 /**
  * Error thrown by `apiRequest` / query fetcher when the response is not OK.
@@ -61,6 +62,18 @@ export async function apiRequest(
   });
 
   await throwIfResNotOk(res);
+
+  // Keep the in-memory `cachedFetch` TTL cache in lockstep with mutations.
+  // Every mutation goes through `apiRequest`, so once one succeeds we drop the
+  // request-level cache — otherwise a "fresh" TanStack refetch could be served
+  // a stale `cachedFetch` entry and the user sees "I saved it but nothing
+  // changed." This fires automatically alongside any
+  // `queryClient.invalidateQueries` the caller runs.
+  const m = method.toUpperCase();
+  if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS") {
+    invalidateCachedFetch();
+  }
+
   return res;
 }
 

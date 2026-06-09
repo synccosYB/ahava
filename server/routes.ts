@@ -19,7 +19,7 @@ import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./serv
 import { materializeOffboardingChecklist, evaluateDeactivationGate } from "./services/offboarding";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
 import { runWorkflowsForTrigger } from "./workflowEngine";
-import { requestCache } from "./lib/requestCache";
+import { requestCache, requestCacheInvalidator, invalidateRequestCache } from "./lib/requestCache";
 import { appCache } from "./lib/cache";
 import {
   DEFAULT_PAY_PERIOD_TYPE,
@@ -53,8 +53,15 @@ import {
 
 const SUPER_ADMIN_USER_ID = "admin-dev-001";
 
+/**
+ * @deprecated Manual invalidation is no longer required. The global
+ * `requestCacheInvalidator()` middleware (registered in `registerRoutes`)
+ * busts the entire request cache after every successful mutation, so reads are
+ * always fresh. Kept as a thin delegate for the handful of historical call
+ * sites; new mutation routes do NOT need to call anything.
+ */
 function invalidateUserCache() {
-  appCache.invalidatePrefix("rc:");
+  invalidateRequestCache();
 }
 
 function validateBonusRuleOverlaps(rules: any): string | null {
@@ -286,6 +293,12 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Keep the server read cache fresh automatically: any successful mutation
+  // (POST/PUT/PATCH/DELETE) clears the request cache before its response
+  // flushes, so reads never serve stale data. Mutation routes do NOT need to
+  // invalidate by hand — see `requestCacheInvalidator`.
+  app.use(requestCacheInvalidator());
+
   const PASSWORD_CHANGE_EXEMPT_PATHS = ["/api/auth", "/api/users/change-password"];
   app.use((req, res, next) => {
     if (PASSWORD_CHANGE_EXEMPT_PATHS.some(p => req.path.startsWith(p))) {
