@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@shared/models/auth";
+import { invalidateCachedFetch } from "@/lib/cachedFetch";
 
 async function fetchUser(): Promise<User | null> {
   const response = await fetch("/api/auth/user", {
@@ -36,6 +37,12 @@ export function useAuth() {
   const logoutMutation = useMutation({
     mutationFn: logoutFn,
     onSuccess: () => {
+      // Wipe every client-side cache so none of the prior user's data lingers.
+      // Clearing both the TanStack Query cache and the in-memory `cachedFetch`
+      // cache is what actually isolates sessions on this tab — without it, the
+      // next user inherits the previous user's cached queries until a refresh.
+      invalidateCachedFetch();
+      queryClient.clear();
       queryClient.setQueryData(["/api/auth/user"], null);
     },
   });

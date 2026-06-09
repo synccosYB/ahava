@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sun, Moon, Sunrise, Eye, EyeOff, Loader2, Mail, Lock, ArrowRight, ShieldCheck } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { invalidateCachedFetch } from "@/lib/cachedFetch";
 
 function getTimeOfDay(hour: number) {
   if (hour >= 5 && hour < 12) return "morning";
@@ -71,6 +72,11 @@ export default function LoginPage() {
     },
     onSuccess: (userData) => {
       setError("");
+      // Start the incoming user from a clean slate: drop any queries/cached
+      // requests left over from a previous session on this tab so the new user
+      // never inherits the prior user's data before a refresh.
+      invalidateCachedFetch();
+      queryClient.clear();
       queryClient.setQueryData(["/api/auth/user"], userData);
     },
     onError: (err: Error) => {
