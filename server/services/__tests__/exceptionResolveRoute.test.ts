@@ -15,6 +15,8 @@ import {
   attendanceExceptions,
   punchLogs,
   users,
+  payrollExports,
+  payrollBatchRecords,
 } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 
@@ -1088,6 +1090,180 @@ test("POST /attendance/exceptions/:id/resolve approve deletes the targeted punch
     .where(eq(attendanceExceptions.id, created.id));
   assert.equal(resolved.status, "approved");
   assert.equal(resolved.punchLogId, null, "the FK must be nulled after the punch is deleted");
+});
+
+test("POST /attendance/exceptions/:id/resolve blocks a punch_removal tied to finalized payroll (Task #371)", async (t) => {
+  const fx = await setupFixture("punch-removal-finalized-payroll");
+
+  const workDate = "2026-05-12";
+  const clockIn = new Date("2026-05-12T09:00:00Z");
+  const clockOut = new Date("2026-05-12T17:00:00Z");
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut,
+      roundedClockOut: clockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Finalized (exported) payroll batch referencing the punch.
+  const [exp] = await db
+    .insert(payrollExports)
+    .values({
+      startDate: workDate,
+      endDate: workDate,
+      status: "exported",
+      exportedAt: new Date(),
+    })
+    .returning();
+  const [batchRecord] = await db
+    .insert(payrollBatchRecords)
+    .values({
+      payrollExportId: exp.id,
+      employeeId: fx.employeeId,
+      punchLogId: punch.id,
+      recordType: "punch",
+      workDate,
+      regularHours: 8,
+    })
+    .returning();
+  // Delete payroll children before fx.cleanup (which drops punch rows) so the
+  // FK doesn't block teardown. Node runs `after` hooks in registration order.
+  t.after(async () => {
+    await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exp.id));
+    await db.delete(payrollExports).where(eq(payrollExports.id, exp.id));
+    await fx.cleanup();
+  });
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "duplicate punch but already in payroll",
+      status: "pending",
+      punchLogId: punch.id,
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "approve", reviewNotes: "trying to remove" }),
+  });
+  assert.equal(res.status, 409, `expected 409 when removal touches finalized payroll, got ${res.status}`);
+  const body = await res.json();
+  assert.match(
+    String(body.message || ""),
+    /finalized payroll/i,
+    "error message should explain the punch is part of finalized payroll",
+  );
+  assert.ok(Array.isArray(body.payrollExports) && body.payrollExports.length === 1, "should surface the affected export(s)");
+  assert.equal(body.payrollExports[0].id, exp.id);
+  assert.equal(body.code, "PAYROLL_FINALIZED", "should carry a stable machine code so the client can distinguish from a concurrency 409");
+
+  // The punch, batch record, and exception must all be untouched.
+  const [stillThere] = await db.select().from(punchLogs).where(eq(punchLogs.id, punch.id));
+  assert.ok(stillThere, "blocked removal must leave the punch intact");
+  const [stillLinked] = await db.select().from(payrollBatchRecords).where(eq(payrollBatchRecords.id, batchRecord.id));
+  assert.equal(stillLinked.punchLogId, punch.id, "batch record FK must be untouched after a blocked removal");
+  const [stillPending] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(stillPending.status, "pending", "exception must remain pending after a blocked removal");
+});
+
+test("POST /attendance/exceptions/:id/resolve allows a punch_removal tied to a DRAFT payroll batch and nulls the FK (Task #371)", async (t) => {
+  const fx = await setupFixture("punch-removal-draft-payroll");
+
+  const workDate = "2026-05-13";
+  const clockIn = new Date("2026-05-13T09:00:00Z");
+  const clockOut = new Date("2026-05-13T17:00:00Z");
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut,
+      roundedClockOut: clockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Draft payroll batch referencing the punch — not finalized, so removal is allowed.
+  const [exp] = await db
+    .insert(payrollExports)
+    .values({
+      startDate: workDate,
+      endDate: workDate,
+      status: "draft",
+    })
+    .returning();
+  const [batchRecord] = await db
+    .insert(payrollBatchRecords)
+    .values({
+      payrollExportId: exp.id,
+      employeeId: fx.employeeId,
+      punchLogId: punch.id,
+      recordType: "punch",
+      workDate,
+      regularHours: 8,
+    })
+    .returning();
+  // Delete payroll children before fx.cleanup (which drops punch rows) so the
+  // FK doesn't block teardown. Node runs `after` hooks in registration order.
+  t.after(async () => {
+    await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exp.id));
+    await db.delete(payrollExports).where(eq(payrollExports.id, exp.id));
+    await fx.cleanup();
+  });
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      type: "punch_removal",
+      reason: "duplicate punch, batch still in draft",
+      status: "pending",
+      punchLogId: punch.id,
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "approve", reviewNotes: "removing duplicate" }),
+  });
+  assert.equal(res.status, 200, `expected 200 for a draft-batch removal, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const remaining = await db.select().from(punchLogs).where(eq(punchLogs.id, punch.id));
+  assert.equal(remaining.length, 0, "approved punch_removal must delete the punch even when a draft batch references it");
+
+  const [batchAfter] = await db.select().from(payrollBatchRecords).where(eq(payrollBatchRecords.id, batchRecord.id));
+  assert.ok(batchAfter, "draft batch record should survive the punch delete");
+  assert.equal(batchAfter.punchLogId, null, "draft batch record FK must be nulled so the punch can be deleted");
 });
 
 test("POST /attendance/exceptions/:id/resolve deny leaves the targeted punch intact for a punch_removal (Task #362)", async (t) => {

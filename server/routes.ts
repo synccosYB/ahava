@@ -2,13 +2,13 @@ import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage, DuplicateOpenPunchError } from "./storage";
-import { badRequestFromZod, handleRouteError, mapRouteError, RouteConflictError } from "./routeErrors";
+import { badRequestFromZod, handleRouteError, mapRouteError, RouteConflictError, PayrollFinalizedError } from "./routeErrors";
 import { db } from "./db";
-import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, userRoles as userRolesTable } from "@shared/schema";
+import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
-import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException } from "@shared/schema";
+import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
@@ -195,6 +195,50 @@ async function checkPostExportModification(punchLogId: string, modifiedBy: strin
   } catch (error) {
     console.error("Error checking post-export modification:", error);
   }
+}
+
+// Payroll exports are "finalized" once they've been exported or locked. A punch
+// tied to a finalized batch must not be silently deleted — removing it would
+// desync payroll without a paper trail (and the FK from payroll_batch_records /
+// payroll_adjustments would otherwise surface a raw DB error on delete).
+const FINALIZED_PAYROLL_STATUSES = ["exported", "locked"] as const;
+
+type DbOrTx = Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db;
+
+/**
+ * Returns the finalized (exported/locked) payroll exports that reference the
+ * given punch — via either a batch record or an adjustment. Used to warn/block
+ * managers before approving a punch_removal that would touch finalized payroll.
+ */
+async function findFinalizedPayrollExportsForPunch(
+  punchLogId: string,
+  executor: DbOrTx = db,
+): Promise<PayrollExport[]> {
+  const batchRefs = await executor
+    .select({ exp: payrollExportsTable })
+    .from(payrollBatchRecordsTable)
+    .innerJoin(payrollExportsTable, eq(payrollExportsTable.id, payrollBatchRecordsTable.payrollExportId))
+    .where(and(
+      eq(payrollBatchRecordsTable.punchLogId, punchLogId),
+      inArray(payrollExportsTable.status, [...FINALIZED_PAYROLL_STATUSES]),
+    ));
+  const adjustmentRefs = await executor
+    .select({ exp: payrollExportsTable })
+    .from(payrollAdjustmentsTable)
+    .innerJoin(payrollExportsTable, eq(payrollExportsTable.id, payrollAdjustmentsTable.payrollExportId))
+    .where(and(
+      eq(payrollAdjustmentsTable.punchLogId, punchLogId),
+      inArray(payrollExportsTable.status, [...FINALIZED_PAYROLL_STATUSES]),
+    ));
+  const byId = new Map<string, PayrollExport>();
+  for (const r of [...batchRefs, ...adjustmentRefs]) byId.set(r.exp.id, r.exp);
+  return [...byId.values()];
+}
+
+function describeFinalizedPayroll(exports: PayrollExport[]): string {
+  return exports
+    .map((e) => `${e.startDate} – ${e.endDate} (${e.status})`)
+    .join(", ");
 }
 
 export const requireRole = (...roles: string[]): RequestHandler => {
@@ -3763,6 +3807,27 @@ export async function registerRoutes(
         if (!targetedRecord) {
           return res.status(400).json({ message: "No punch record found for this date to correct" });
         }
+      } else if (exception.type === "punch_removal") {
+        // Block a removal that would delete a punch already baked into a
+        // finalized (exported/locked) payroll batch. Deleting it would desync
+        // payroll and otherwise surface a raw FK error. The manager must reopen
+        // the affected batch first.
+        const targetedRecord = await loadTargetedPunch();
+        if (targetedRecord) {
+          const finalizedExports = await findFinalizedPayrollExportsForPunch(targetedRecord.id);
+          if (finalizedExports.length > 0) {
+            return res.status(409).json({
+              message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before removing the punch, or the change won't be reflected in payroll.`,
+              code: "PAYROLL_FINALIZED",
+              payrollExports: finalizedExports.map((e) => ({
+                id: e.id,
+                startDate: e.startDate,
+                endDate: e.endDate,
+                status: e.status,
+              })),
+            });
+          }
+        }
       }
 
       const employeeUser = await storage.getUser(exception.employeeId);
@@ -3968,6 +4033,32 @@ export async function registerRoutes(
             await tx.update(attendanceExceptions)
               .set({ punchLogId: null })
               .where(eq(attendanceExceptions.punchLogId, target.id));
+
+            // Defense-in-depth against a finalize-then-remove race: the
+            // pre-transaction guard already blocks removals tied to finalized
+            // payroll, but re-check inside the tx so a batch that was exported
+            // between the guard and here still fails loudly instead of via a
+            // raw FK error.
+            const finalizedExports = await findFinalizedPayrollExportsForPunch(target.id, tx);
+            if (finalizedExports.length > 0) {
+              throw new PayrollFinalizedError(
+                `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before removing the punch.`,
+              );
+            }
+
+            // Null the remaining nullable references (draft payroll batch
+            // records / adjustments and biometric supervisor overrides) so the
+            // FK constraints don't block the delete. Finalized payroll is
+            // handled by the guard above.
+            await tx.update(payrollBatchRecordsTable)
+              .set({ punchLogId: null })
+              .where(eq(payrollBatchRecordsTable.punchLogId, target.id));
+            await tx.update(payrollAdjustmentsTable)
+              .set({ punchLogId: null })
+              .where(eq(payrollAdjustmentsTable.punchLogId, target.id));
+            await tx.update(biometricSupervisorOverridesTable)
+              .set({ punchLogId: null })
+              .where(eq(biometricSupervisorOverridesTable.punchLogId, target.id));
 
             await tx.delete(punchLogs).where(eq(punchLogs.id, target.id));
 

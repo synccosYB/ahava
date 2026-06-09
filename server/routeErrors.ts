@@ -49,6 +49,7 @@ export type MappedRouteError = {
   status: number;
   message: string;
   errors?: unknown;
+  code?: string;
 };
 
 /**
@@ -64,7 +65,23 @@ export class RouteConflictError extends Error {
   }
 }
 
+/**
+ * Thrown when an action would delete/modify a punch that is already baked into
+ * a finalized (exported/locked) payroll batch. Surfaced as a 409 with a stable
+ * `PAYROLL_FINALIZED` code so the client can show the explanatory message
+ * instead of the generic "already handled by someone else" concurrency toast.
+ */
+export class PayrollFinalizedError extends Error {
+  constructor(message = "This punch is part of finalized payroll.") {
+    super(message);
+    this.name = "PayrollFinalizedError";
+  }
+}
+
 export function mapRouteError(error: unknown, fallback = "Something went wrong"): MappedRouteError {
+  if (error instanceof PayrollFinalizedError) {
+    return { status: 409, message: error.message, code: "PAYROLL_FINALIZED" };
+  }
   if (error instanceof RouteConflictError) {
     return { status: 409, message: error.message };
   }
@@ -112,5 +129,6 @@ export function handleRouteError(
   const mapped = mapRouteError(error, fallback);
   const body: Record<string, unknown> = { message: mapped.message };
   if (mapped.errors !== undefined) body.errors = mapped.errors;
+  if (mapped.code !== undefined) body.code = mapped.code;
   return res.status(mapped.status).json(body);
 }

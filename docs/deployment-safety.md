@@ -214,7 +214,46 @@ schema still follows §4.
 
 ---
 
-## 7. Recommended next step (not built here)
+## 7. Removing a punch tied to finalized payroll
+
+`punch_logs.id` is referenced by `payroll_batch_records`, `payroll_adjustments`,
+and `biometric_supervisor_overrides` (all nullable FKs). Approving a
+`punch_removal` exception deletes the punch row, so those references must be
+handled or the delete fails.
+
+**Decision (Task #371):** the resolve route
+(`POST /api/attendance/exceptions/:id/resolve`) **blocks** a `punch_removal`
+when the targeted punch is referenced by a **finalized** payroll export —
+`status` of `exported` or `locked` — via a batch record or an adjustment.
+
+- The manager gets a clear **409** with a message naming the affected pay
+  period(s) and instructing them to **reopen the payroll batch first** (Payroll
+  Prep → reopen, §1), rather than a raw foreign-key error.
+- The 409 body carries a stable machine code `code: "PAYROLL_FINALIZED"` (the
+  in-transaction race path throws `PayrollFinalizedError` from
+  `server/routeErrors.ts`, which maps to the same code). This is **required** so
+  the client can tell this deliberate block apart from a concurrency 409 —
+  `handleMutationError` (`client/src/lib/mutationError.ts`) otherwise renders any
+  409 as the generic "already handled by someone else — refreshing" toast, which
+  would hide the explanatory message.
+- The check runs both before the transaction (fast feedback) and again inside it
+  (`findFinalizedPayrollExportsForPunch`) to close the finalize-then-remove race.
+- For **non-finalized** references (draft batch records / adjustments and
+  biometric supervisor overrides), the FK is set to `NULL` inside the same
+  transaction before the punch is deleted, so the removal succeeds cleanly with
+  no orphaned-FK DB error. (Attendance-exception references are already nulled by
+  the existing logic.)
+- "Finalized" is keyed off the export `status` lifecycle `draft → exported →
+  locked`. If a new finalized-equivalent status is ever added, update
+  `FINALIZED_PAYROLL_STATUSES` in `server/routes.ts`.
+
+Regression coverage:
+`server/services/__tests__/exceptionResolveRoute.test.ts` (the "finalized
+payroll" / "DRAFT payroll batch" cases).
+
+---
+
+## 8. Recommended next step (not built here)
 
 Wire the pre-deploy gates into CI so they can't be skipped: run `npx tsc`,
 `npx tsx scripts/check-schema-drift.ts`, and the `*drift*` tests on every PR. The

@@ -1,4 +1,4 @@
-import { queryClient, isConflictError } from "@/lib/queryClient";
+import { queryClient, isConflictError, isApiError } from "@/lib/queryClient";
 
 type ToastFn = (opts: {
   title: string;
@@ -14,6 +14,18 @@ type ToastFn = (opts: {
  * back to the standard destructive error toast.
  */
 export function handleMutationError(err: unknown, toast: ToastFn): void {
+  // A 409 carrying the PAYROLL_FINALIZED code is NOT a concurrency conflict —
+  // it's a deliberate block (the punch is baked into finalized payroll). Surface
+  // the explanatory message instead of the generic "already handled" toast.
+  if (isApiError(err) && err.code === "PAYROLL_FINALIZED") {
+    const payload = err.payload as { message?: string } | undefined;
+    toast({
+      title: "Punch is in finalized payroll",
+      description: payload?.message ?? err.message,
+      variant: "destructive",
+    });
+    return;
+  }
   if (isConflictError(err)) {
     toast({
       title: "Already handled",
