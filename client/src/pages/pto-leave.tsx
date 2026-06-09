@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { handleMutationError } from "@/lib/mutationError";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -425,7 +426,7 @@ function PoliciesTab() {
       toast({ title: editingId ? "Policy updated" : "Policy created" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
@@ -694,7 +695,7 @@ function EmployeePtoTab() {
       toast({ title: "PTO settings saved" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
@@ -1055,7 +1056,7 @@ function PtoAlertExceptionRow({
       toast({ title: "Exception approved" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
@@ -1069,7 +1070,7 @@ function PtoAlertExceptionRow({
       toast({ title: "Exception denied" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 

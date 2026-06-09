@@ -2,7 +2,7 @@ import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage } from "./storage";
-import { badRequestFromZod, handleRouteError, mapRouteError } from "./routeErrors";
+import { badRequestFromZod, handleRouteError, mapRouteError, RouteConflictError } from "./routeErrors";
 import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
@@ -3088,7 +3088,11 @@ export async function registerRoutes(
         }
       }
 
-      const updated = await storage.updateAttendanceException(exceptionId, updateData);
+      const updated = await storage.updateAttendanceException(exceptionId, updateData, { expectedStatus: "pending" });
+
+      if (!updated) {
+        return res.status(409).json({ message: "This was already handled by someone else." });
+      }
 
       res.json(updated);
     } catch (error) {
@@ -3115,7 +3119,11 @@ export async function registerRoutes(
 
       const updated = await storage.updateAttendanceException(exceptionId, {
         status: "cancelled",
-      });
+      }, { expectedStatus: "pending" });
+
+      if (!updated) {
+        return res.status(409).json({ message: "This was already handled by someone else." });
+      }
 
       res.json(updated);
     } catch (error) {
@@ -3231,7 +3239,14 @@ export async function registerRoutes(
           reopenDecidedAt: decidedAt,
           reopenDecisionNote: decisionNoteRaw || null,
           reopenConsumedAt: null,
-        }).where(eq(attendanceExceptions.id, exceptionId)).returning();
+        }).where(and(
+          eq(attendanceExceptions.id, exceptionId),
+          eq(attendanceExceptions.reopenStatus, "pending"),
+        )).returning();
+
+        if (!row) {
+          throw new RouteConflictError("This reopen request was already decided by someone else.");
+        }
 
         await writeAuditLog({
           actorUserId: reviewer.id,
@@ -3557,7 +3572,14 @@ export async function registerRoutes(
             reviewedBy: reviewer.id,
             reviewedAt: new Date(),
             reviewNotes: reviewNotes || null,
-          }).where(eq(attendanceExceptions.id, exceptionId)).returning();
+          }).where(and(
+            eq(attendanceExceptions.id, exceptionId),
+            eq(attendanceExceptions.status, "pending"),
+          )).returning();
+
+          if (!result) {
+            throw new RouteConflictError("This correction was already handled by someone else.");
+          }
 
           await writeAuditLog({
             actorUserId: reviewer.id,
@@ -3815,7 +3837,18 @@ export async function registerRoutes(
           reviewedAt: new Date(),
           reviewNotes: reviewNotes || null,
           punchLogId: punchLog?.id || null,
-        }).where(eq(attendanceExceptions.id, exceptionId)).returning();
+        }).where(and(
+          eq(attendanceExceptions.id, exceptionId),
+          eq(attendanceExceptions.status, "pending"),
+        )).returning();
+
+        // A 0-row update means another reviewer resolved this exception while
+        // we were building the punch correction above. Throw to roll the whole
+        // transaction back (including any punch we just created/updated) so the
+        // correction is never applied twice.
+        if (!result) {
+          throw new RouteConflictError("This correction was already handled by someone else.");
+        }
 
         await writeAuditLog({
           actorUserId: reviewer.id,
@@ -4452,7 +4485,14 @@ export async function registerRoutes(
           ...(finalHoursApproved !== undefined ? { hoursApproved: finalHoursApproved } : {}),
           ...(finalApprovedEndDate ? { approvedEndDate: finalApprovedEndDate } : {}),
           ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
-        }).where(eq(timeOffRequests.id, requestId)).returning();
+        }).where(and(
+          eq(timeOffRequests.id, requestId),
+          eq(timeOffRequests.status, "pending"),
+        )).returning();
+
+        if (!result) {
+          throw new RouteConflictError("This request was already handled by someone else.");
+        }
 
         await writeAuditLog({
           actorUserId: user.id,
@@ -4496,7 +4536,14 @@ export async function registerRoutes(
           reviewedBy: user.id,
           reviewedAt: new Date(),
           ...(comment ? { reason: `${request.reason || ""}\n[Manager comment: ${comment}]` } : {}),
-        }).where(eq(timeOffRequests.id, requestId)).returning();
+        }).where(and(
+          eq(timeOffRequests.id, requestId),
+          eq(timeOffRequests.status, "pending"),
+        )).returning();
+
+        if (!result) {
+          throw new RouteConflictError("This request was already handled by someone else.");
+        }
 
         await writeAuditLog({
           actorUserId: user.id,

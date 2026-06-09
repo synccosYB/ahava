@@ -25,6 +25,15 @@ export function isApiError(err: unknown): err is ApiError {
   return err instanceof ApiError;
 }
 
+/**
+ * True when an error is a 409 Conflict — i.e. a status-guarded write was
+ * rejected because the row was already transitioned by a concurrent actor
+ * (e.g. two managers approving the same request at once).
+ */
+export function isConflictError(err: unknown): boolean {
+  return isApiError(err) && err.status === 409;
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { handleMutationError } from "@/lib/mutationError";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -77,7 +78,7 @@ export default function ApprovalQueuePage() {
       toast({ title: "Request approved" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
@@ -92,7 +93,7 @@ export default function ApprovalQueuePage() {
       toast({ title: "Request denied" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 

@@ -51,7 +51,23 @@ export type MappedRouteError = {
   errors?: unknown;
 };
 
+/**
+ * Thrown when an optimistic, status-guarded write affects 0 rows because the
+ * target row was already transitioned out of its expected state by a
+ * concurrent writer (e.g. two managers approving the same correction at once).
+ * Maps to HTTP 409 so the client can refresh instead of silently re-applying.
+ */
+export class RouteConflictError extends Error {
+  constructor(message = "This was already handled by someone else.") {
+    super(message);
+    this.name = "RouteConflictError";
+  }
+}
+
 export function mapRouteError(error: unknown, fallback = "Something went wrong"): MappedRouteError {
+  if (error instanceof RouteConflictError) {
+    return { status: 409, message: error.message };
+  }
   if (error instanceof ZodError) {
     return {
       status: 400,

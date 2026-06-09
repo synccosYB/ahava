@@ -125,11 +125,14 @@ export async function applyPtoAnniversaryAdjustments(): Promise<{
       let oldTotal: number | null = null;
       let newTotal: number | null = null;
       if (balance) {
-        oldTotal = balance.totalHours ?? 0;
-        newTotal = oldTotal + hoursAdded;
-        await storage.updateTimeOffBalance(balance.id, {
-          totalHours: newTotal,
+        // Atomic increment so a concurrent manual edit (or another accrual)
+        // applied between our read and write isn't clobbered. The returned row
+        // reflects the live post-increment value; derive oldTotal from it.
+        const updatedBalance = await storage.incrementTimeOffBalance(balance.id, {
+          totalHoursDelta: hoursAdded,
         });
+        newTotal = updatedBalance?.totalHours ?? (balance.totalHours ?? 0) + hoursAdded;
+        oldTotal = newTotal - hoursAdded;
       } else if (hoursAdded !== 0) {
         oldTotal = 0;
         newTotal = hoursAdded;

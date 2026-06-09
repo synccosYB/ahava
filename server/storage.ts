@@ -292,6 +292,7 @@ export interface IStorage {
   getTimeOffBalancesByUser(userId: string, year: number): Promise<TimeOffBalance[]>;
   createTimeOffBalance(balance: InsertTimeOffBalance): Promise<TimeOffBalance>;
   updateTimeOffBalance(id: string, balance: Partial<InsertTimeOffBalance>): Promise<TimeOffBalance | undefined>;
+  incrementTimeOffBalance(id: string, deltas: { totalHoursDelta?: number; usedHoursDelta?: number }): Promise<TimeOffBalance | undefined>;
   computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }>;
   computeTimeOffBalanceDetailed(userId: string): Promise<TimeOffBalanceDetailed>;
   getOverlappingTimeOffRequests(userId: string, startDate: string, endDate: string): Promise<TimeOffRequest[]>;
@@ -1128,8 +1129,19 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async updateAttendanceException(id: string, data: Partial<AttendanceException>): Promise<AttendanceException | undefined> {
-    const [updated] = await db.update(attendanceExceptions).set(data).where(eq(attendanceExceptions.id, id)).returning();
+  async updateAttendanceException(
+    id: string,
+    data: Partial<AttendanceException>,
+    options?: { expectedStatus?: string },
+  ): Promise<AttendanceException | undefined> {
+    // When `expectedStatus` is supplied, the WHERE clause guards on the current
+    // status so a concurrent writer that already transitioned the row out of
+    // that state results in a 0-row update (returned as `undefined`) instead of
+    // clobbering the newer state.
+    const where = options?.expectedStatus
+      ? and(eq(attendanceExceptions.id, id), eq(attendanceExceptions.status, options.expectedStatus))
+      : eq(attendanceExceptions.id, id);
+    const [updated] = await db.update(attendanceExceptions).set(data).where(where).returning();
     return updated;
   }
 
@@ -1293,6 +1305,33 @@ export class DatabaseStorage implements IStorage {
   async updateTimeOffBalance(id: string, balance: Partial<InsertTimeOffBalance>): Promise<TimeOffBalance | undefined> {
     const [updated] = await db.update(timeOffBalances).set(balance).where(eq(timeOffBalances.id, id)).returning();
     return updated;
+  }
+
+  // Atomic increment/decrement of balance columns. Uses a single SQL
+  // `set total = total + :delta` so concurrent writers (e.g. the anniversary
+  // accrual job and a manual edit) can't clobber each other via the classic
+  // read-modify-write race — every delta is applied on top of the live value.
+  async incrementTimeOffBalance(
+    id: string,
+    deltas: { totalHoursDelta?: number; usedHoursDelta?: number },
+  ): Promise<TimeOffBalance | undefined> {
+    const sets: Record<string, SQL> = {};
+    if (deltas.totalHoursDelta !== undefined) {
+      sets.totalHours = sql`${timeOffBalances.totalHours} + ${deltas.totalHoursDelta}`;
+    }
+    if (deltas.usedHoursDelta !== undefined) {
+      sets.usedHours = sql`${timeOffBalances.usedHours} + ${deltas.usedHoursDelta}`;
+    }
+    if (Object.keys(sets).length === 0) {
+      return this.getTimeOffBalanceById(id);
+    }
+    const [updated] = await db.update(timeOffBalances).set(sets).where(eq(timeOffBalances.id, id)).returning();
+    return updated;
+  }
+
+  async getTimeOffBalanceById(id: string): Promise<TimeOffBalance | undefined> {
+    const [row] = await db.select().from(timeOffBalances).where(eq(timeOffBalances.id, id));
+    return row;
   }
 
   async getOverlappingTimeOffRequests(userId: string, startDate: string, endDate: string): Promise<TimeOffRequest[]> {

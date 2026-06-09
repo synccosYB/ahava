@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { handleMutationError } from "@/lib/mutationError";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -1245,7 +1246,7 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
       toast({ title: "PTO request approved" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
@@ -1259,7 +1260,7 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
       toast({ title: "PTO request denied" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
@@ -1436,7 +1437,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
       toast({ title: "Exception approved" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
@@ -1451,7 +1452,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
       toast({ title: "Exception denied" });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
@@ -1643,7 +1644,7 @@ function ReopenRequestCard({ exception }: { exception: ReopenPendingException })
       });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      handleMutationError(err, toast);
     },
   });
 
