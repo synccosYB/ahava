@@ -12,6 +12,7 @@ import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Depart
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
+import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
 import {
   computeAttendanceReconciliation,
@@ -251,14 +252,22 @@ export const requireRole = (...roles: string[]): RequestHandler => {
   };
 };
 
-function sanitizeUserForKiosk(user: User, departmentName?: string) {
+function sanitizeUserForKiosk(user: User, departmentName?: string, allowedPunchSources?: string[]) {
   return {
     id: user.id,
     firstName: user.firstName || "",
     lastName: user.lastName || "",
     department: departmentName || "Unassigned",
     employeeId: user.id,
+    ...(allowedPunchSources ? { allowedPunchSources } : {}),
   };
+}
+
+// Resolve the allowed punch methods for a kiosk-selected employee so the tablet
+// can hide its clock buttons when "kiosk" isn't permitted for them.
+async function getKioskAllowedSourcesForUser(user: User): Promise<string[]> {
+  const policy = await getEffectivePolicy(user.companyId, user.id, "attendance", user);
+  return getAllowedPunchSources(policy?.rules || DEFAULT_ATTENDANCE_RULES);
 }
 
 function punchLogToApiResponse(record: any) {
@@ -2534,7 +2543,8 @@ export async function registerRoutes(
       type: lastRecord.clockOut ? "clock_out" : (lastRecord.clockIn ? "clock_in" : null),
       timestamp: lastRecord.clockOut || lastRecord.clockIn,
     } : null;
-    return res.json({ employee: sanitizeUserForKiosk(user, deptName), lastRecord: kioskLastRecord });
+    const allowedPunchSources = await getKioskAllowedSourcesForUser(user);
+    return res.json({ employee: sanitizeUserForKiosk(user, deptName, allowedPunchSources), lastRecord: kioskLastRecord });
   }));
 
   app.get("/api/kiosk/search", wrapKiosk(async (req, res) => {
@@ -2570,7 +2580,8 @@ export async function registerRoutes(
       type: lastRecord.clockOut ? "clock_out" : (lastRecord.clockIn ? "clock_in" : null),
       timestamp: lastRecord.clockOut || lastRecord.clockIn,
     } : null;
-    return res.json({ employee: sanitizeUserForKiosk(user, deptName), lastRecord: kioskLastRecord });
+    const allowedPunchSources = await getKioskAllowedSourcesForUser(user);
+    return res.json({ employee: sanitizeUserForKiosk(user, deptName, allowedPunchSources), lastRecord: kioskLastRecord });
   }));
 
   app.post("/api/kiosk/punch", wrapKiosk(async (req, res) => {
@@ -2590,6 +2601,11 @@ export async function registerRoutes(
 
     const attendancePolicy = await getEffectivePolicy(user.companyId, user.id, "attendance", user);
     const attRules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+
+    // Kiosk punches (PIN/name and face both land here) are the "kiosk" method.
+    if (!isPunchSourceAllowed(attRules, "kiosk")) {
+      return kioskError(res, 403, "policy_blocked", punchSourceBlockedMessage("kiosk"));
+    }
 
     if (type === "clock_in") {
       const lastRecord = await storage.getLatestAttendanceForUser(user.id);
@@ -2741,15 +2757,22 @@ export async function registerRoutes(
     try {
       const userId = req.authUser.id;
       const userRole = req.authUser.role;
+      const authUser = req.authUser as User;
       const current = await storage.getCurrentAttendance(userId);
       const todayHours = await storage.getTodayHours(userId);
       const weekHours = await storage.getWeekHours(userId);
+
+      const attendancePolicy = await getEffectivePolicy(authUser.companyId, userId, "attendance", authUser);
+      const allowedPunchSources = getAllowedPunchSources(attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES);
 
       const response: any = {
         isClockedIn: !!current,
         currentRecord: current ? punchLogToApiResponse(current) : null,
         todayHours,
         weekHours,
+        // Lets the dashboard hide the self clock buttons when web/mobile aren't
+        // allowed for this employee.
+        allowedPunchSources,
       };
 
       if (userRole === "admin" || userRole === "manager") {
@@ -2774,9 +2797,8 @@ export async function registerRoutes(
 
       const source = req.body?.source || "web";
       const rules = getPolicyRules(req, "attendance");
-      const allowedSources: string[] = rules.allowedPunchSources || ["web", "kiosk", "mobile"];
-      if (!allowedSources.includes(source)) {
-        return res.status(403).json({ message: `Punch source '${source}' is not allowed by attendance policy` });
+      if (!isPunchSourceAllowed(rules, source)) {
+        return res.status(403).json({ message: punchSourceBlockedMessage(source) });
       }
 
       const now = new Date();
@@ -2813,6 +2835,11 @@ export async function registerRoutes(
 
       const rules = getPolicyRules(req, "attendance");
       const payrollRules = getPolicyRules(req, "payroll");
+
+      const source = req.body?.source || "web";
+      if (!isPunchSourceAllowed(rules, source)) {
+        return res.status(403).json({ message: punchSourceBlockedMessage(source) });
+      }
 
       const now = new Date();
       const roundedClockInTime = new Date(current.roundedClockIn ?? current.clockIn);
@@ -3849,6 +3876,14 @@ export async function registerRoutes(
       const exceptionAttRules = exceptionAttendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
       const exceptionPayrollRules = exceptionPayrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
 
+      // Approving a correction creates or edits a punch on the employee's
+      // behalf — that's the "manager" method. Block it when the employee's
+      // attendance policy doesn't allow Manager Entry. (Removals don't create a
+      // punch, so they aren't gated.)
+      if (exception.type !== "punch_removal" && !isPunchSourceAllowed(exceptionAttRules, "manager")) {
+        return res.status(403).json({ message: punchSourceBlockedMessage("manager") });
+      }
+
       const updated = await db.transaction(async (tx) => {
         let punchLog: PunchLog | undefined | null = null;
 
@@ -3858,7 +3893,7 @@ export async function registerRoutes(
             workDate: exception.exceptionDate,
             clockIn: correctedTimestamp || new Date(),
             status: "present",
-            source: "exception",
+            source: "manager",
             approved: true,
           }).returning();
           punchLog = created;
@@ -3896,6 +3931,8 @@ export async function registerRoutes(
               roundedClockOut: enforcement.roundedTime,
               hoursWorked: enforcement.hoursWorked,
               status: enforcement.status,
+              // A manager resolving an exception is a manager-entry punch.
+              source: "manager",
             }).where(eq(punchLogs.id, latestRecord.id)).returning();
             punchLog = updated;
           }
@@ -3994,6 +4031,9 @@ export async function registerRoutes(
                 updateData.status = enforcement.status;
               }
             }
+
+            // A manager resolving a correction is a manager-entry punch.
+            updateData.source = "manager";
 
             const [corrected] = await tx.update(punchLogs).set(updateData).where(eq(punchLogs.id, latestRecord.id)).returning();
             punchLog = corrected;
@@ -9682,11 +9722,12 @@ export async function registerRoutes(
             timestamp: lastRecord.clockOut || lastRecord.clockIn,
           }
         : null;
+      const allowedPunchSources = await getKioskAllowedSourcesForUser(user);
       return res.json({
         outcome: "auto_approved",
         confidence: match.confidence,
         attemptId: attempt.id,
-        employee: sanitizeUserForKiosk(user, deptName),
+        employee: sanitizeUserForKiosk(user, deptName, allowedPunchSources),
         lastRecord: kioskLastRecord,
       });
     }
@@ -9743,10 +9784,11 @@ export async function registerRoutes(
           timestamp: lastRecord.clockOut || lastRecord.clockIn,
         }
       : null;
+    const allowedPunchSources = await getKioskAllowedSourcesForUser(target);
     res.json({
       ok: true,
       overrideId: override.id,
-      employee: sanitizeUserForKiosk(target, deptName),
+      employee: sanitizeUserForKiosk(target, deptName, allowedPunchSources),
       lastRecord: kioskLastRecord,
     });
   }));

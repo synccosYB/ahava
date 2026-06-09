@@ -25,6 +25,7 @@ import {
   DollarSign, GitBranch, AlertCircle, ChevronsUpDown, Sparkles, FileText
 } from "lucide-react";
 import type { Policy, PolicyType, Division, Location, Department, User, PolicyAssignment, Role } from "@shared/schema";
+import { PUNCH_SOURCES, PUNCH_SOURCE_LABELS, DEFAULT_ALLOWED_PUNCH_SOURCES, getAllowedPunchSources } from "@shared/punchSources";
 import {
   findDayOfWeekBonusOverlaps,
   findEarlyArrivalBonusOverlaps,
@@ -96,7 +97,7 @@ const TEMPLATE_STEP: WizardStep = {
 interface RuleFieldDef {
   key: string;
   label: string;
-  type: "number" | "boolean" | "text" | "select";
+  type: "number" | "boolean" | "text" | "select" | "multiselect";
   description: string;
   defaultValue: any;
   options?: { value: string; label: string }[];
@@ -130,6 +131,14 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
         { key: "roundingIntervalMinutes", label: "Rounding Interval", type: "number", description: "Round clock times to the nearest interval (in minutes)", defaultValue: 15, min: 1, max: 30 },
         { key: "requireBreakAfterHours", label: "Break Required After", type: "number", description: "Require a break after this many hours worked", defaultValue: 6, min: 1, max: 12 },
         { key: "breakDurationMinutes", label: "Break Duration", type: "number", description: "Minimum break duration in minutes", defaultValue: 30, min: 5, max: 60 },
+        {
+          key: "allowedPunchSources",
+          label: "Allowed Punch Methods",
+          type: "multiselect",
+          description: "Which methods employees may use to clock in/out. Applies to whoever this policy is assigned to — assign it to a location or a single employee in the next step to scope it (employee overrides location overrides company).",
+          defaultValue: [...DEFAULT_ALLOWED_PUNCH_SOURCES],
+          options: PUNCH_SOURCES.map((s) => ({ value: s, label: PUNCH_SOURCE_LABELS[s] })),
+        },
       ];
     case "pto":
       return [
@@ -1889,7 +1898,44 @@ function NonPayrollRuleFieldEditor({
 }) {
   return (
     <div className="p-3 rounded-lg border bg-card" data-testid={`rule-field-${field.key}`}>
-      {field.type === "boolean" ? (
+      {field.type === "multiselect" ? (
+        <div>
+          <Label className="font-medium">{field.label}</Label>
+          <p className="text-xs text-muted-foreground mt-0.5 mb-2">{field.description}</p>
+          <div className="space-y-2">
+            {field.options?.map((opt) => {
+              const selected: string[] = Array.isArray(rulesForm[field.key])
+                ? rulesForm[field.key]
+                : (field.defaultValue as string[]);
+              const checked = selected.includes(opt.value);
+              return (
+                <label
+                  key={opt.value}
+                  className="flex items-center gap-2 text-sm cursor-pointer"
+                  data-testid={`label-punch-method-${opt.value}`}
+                >
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={(v) => {
+                      const next = v
+                        ? Array.from(new Set([...selected, opt.value]))
+                        : selected.filter((s) => s !== opt.value);
+                      setRulesForm({ ...rulesForm, [field.key]: next });
+                    }}
+                    data-testid={`checkbox-punch-method-${opt.value}`}
+                  />
+                  <span>{opt.label}</span>
+                </label>
+              );
+            })}
+          </div>
+          {errors[field.key] && (
+            <p className="text-sm text-destructive mt-1 flex items-center gap-1" data-testid={`error-rule-${field.key}`}>
+              <AlertCircle className="h-3 w-3" /> {errors[field.key]}
+            </p>
+          )}
+        </div>
+      ) : field.type === "boolean" ? (
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1">
             <Label className="font-medium">{field.label}</Label>

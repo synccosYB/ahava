@@ -7,3 +7,4 @@
 - [Reports category vs scope](reports-category-vs-scope.md) — /api/reports/generate takes `category` (what data) separate from `reportType` (scope); returns self-describing {category,columns,rows}, client adapts via columns[].kind.
 - [Department managers dual-source](department-managers-dual-source.md) — a dept's managers = link table ∪ users with `manager` role assigned via department_id; display must union both (use buildDeptManagerNameMap).
 - [Client 409 conflation](client-409-conflation.md) — handleMutationError shows every bare 409 as "already handled"; deliberate 409 blocks MUST carry a machine `code` and be special-cased before isConflictError.
+- [Punch source enforcement](punch-source-enforcement.md) — 5 canonical methods (web/mobile/kiosk/qr/manager) gated per policy; default ON = web/mobile/kiosk/manager (qr off); manager kept on so corrections keep working.

@@ -20,6 +20,7 @@ interface DashboardStatus {
   todayHours: number;
   weekHours: number;
   ptoBalance: { vacation: number; sick: number; personal: number };
+  allowedPunchSources?: string[];
 }
 
 export default function Dashboard() {
@@ -108,6 +109,13 @@ export default function Dashboard() {
 
   const recentActivity = (recentRecords || []).slice(0, 5);
 
+  // The web dashboard punches with source "web", so gate visibility on "web"
+  // specifically — matching server enforcement. (A "mobile"-only policy would
+  // still be rejected here, so we don't show the button for it.) When the status
+  // doesn't include a list yet, default to showing the button.
+  const allowedSources = status?.allowedPunchSources;
+  const canSelfPunch = !allowedSources || allowedSources.includes("web");
+
   return (
     <div className="space-y-6 max-w-5xl">
       <PageHeader
@@ -161,7 +169,11 @@ export default function Dashboard() {
                 </div>
               </div>
               <div>
-                {status?.isClockedIn ? (
+                {!canSelfPunch ? (
+                  <p className="text-sm text-muted-foreground max-w-[16rem] text-center sm:text-right" data-testid="text-self-punch-disabled">
+                    Self clock-in isn't enabled for you. Please use a kiosk or ask your manager.
+                  </p>
+                ) : status?.isClockedIn ? (
                   <Button
                     variant="destructive"
                     onClick={() => clockOutMutation.mutate()}

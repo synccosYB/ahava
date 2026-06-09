@@ -7,6 +7,7 @@ interface KioskEmployee {
   lastName: string;
   department: string;
   employeeId: string;
+  allowedPunchSources?: string[];
 }
 
 interface KioskLastRecord {
@@ -875,6 +876,7 @@ function ConfirmScreen({
 }) {
   const isClockedIn = lastRecord?.type === "clock_in";
   const initials = getInitials(employee.firstName, employee.lastName);
+  const kioskAllowed = !employee.allowedPunchSources || employee.allowedPunchSources.includes("kiosk");
 
   return (
     <div className="kiosk-screen kiosk-confirm" data-testid="kiosk-confirm-screen">
@@ -905,13 +907,19 @@ function ConfirmScreen({
         <p className="kiosk-error" data-testid="text-punch-error">{error}</p>
       )}
 
-      <button
-        className={`kiosk-btn kiosk-btn-punch ${punchType === "clock_in" ? "punch-in" : "punch-out"}`}
-        onClick={() => { onClearError?.(); onPunch(); }}
-        data-testid={`button-${punchType}`}
-      >
-        {punchType === "clock_in" ? "CLOCK IN" : "CLOCK OUT"}
-      </button>
+      {kioskAllowed ? (
+        <button
+          className={`kiosk-btn kiosk-btn-punch ${punchType === "clock_in" ? "punch-in" : "punch-out"}`}
+          onClick={() => { onClearError?.(); onPunch(); }}
+          data-testid={`button-${punchType}`}
+        >
+          {punchType === "clock_in" ? "CLOCK IN" : "CLOCK OUT"}
+        </button>
+      ) : (
+        <p className="kiosk-error" data-testid="text-kiosk-disabled">
+          Kiosk clock-in isn't enabled for you. Please use the web app or ask your manager.
+        </p>
+      )}
 
       <button className="kiosk-btn kiosk-btn-goback" onClick={onBack} data-testid="button-go-back">
         Not me — Go Back

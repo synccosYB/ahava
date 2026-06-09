@@ -13,6 +13,7 @@ import {
   type User,
 } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
+import { DEFAULT_ALLOWED_PUNCH_SOURCES } from "@shared/punchSources";
 
 type PolicyAssignmentTargetField = (typeof POLICY_ASSIGNMENT_TARGET_FIELDS)[number];
 
@@ -208,7 +209,7 @@ export const DEFAULT_ATTENDANCE_RULES = {
   roundingIntervalMinutes: 15,
   otThresholdDaily: 8,
   otThresholdWeekly: 40,
-  allowedPunchSources: ["web", "kiosk", "mobile"],
+  allowedPunchSources: [...DEFAULT_ALLOWED_PUNCH_SOURCES],
   autoClockOutEnabled: false,
   autoClockOutAfterHours: 16,
   requireBreakAfterHours: 6,
