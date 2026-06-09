@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Sun, Moon, Sunrise, Eye, EyeOff, Loader2, Mail, Lock, ArrowRight, ShieldCheck } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { invalidateCachedFetch } from "@/lib/cachedFetch";
+import { setAuthToken } from "@/lib/authToken";
 
 function getTimeOfDay(hour: number) {
   if (hour >= 5 && hour < 12) return "morning";
@@ -72,6 +73,12 @@ export default function LoginPage() {
     },
     onSuccess: (userData) => {
       setError("");
+      // Persist the JWT so every subsequent /api request authenticates by token
+      // (via the global fetch interceptor), independent of the session cookie
+      // which is unreliable on mobile / direct top-level access to the domain.
+      if (userData?.token) {
+        setAuthToken(userData.token);
+      }
       // Start the incoming user from a clean slate: drop any queries/cached
       // requests left over from a previous session on this tab so the new user
       // never inherits the prior user's data before a refresh.

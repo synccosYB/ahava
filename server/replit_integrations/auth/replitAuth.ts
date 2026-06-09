@@ -57,6 +57,14 @@ export function getSession() {
     ttl: sessionTtl,
     tableName: "sessions",
   });
+  // The Replit preview embeds the dev app in a cross-site iframe, which requires
+  // `sameSite: "none"` + `partitioned` so the cookie is sent at all. But that
+  // same config is unreliable for the DEPLOYED domain opened directly at the top
+  // level (commonly dropped on mobile Safari/Chrome and when third-party cookies
+  // are restricted). On a real deployment the app is first-party, so `sameSite:
+  // "lax"` keeps the session working there. Token auth (Authorization: Bearer)
+  // remains the primary mechanism; this cookie is defense in depth.
+  const isDeployment = process.env.REPLIT_DEPLOYMENT === "1";
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
@@ -65,8 +73,8 @@ export function getSession() {
     cookie: {
       httpOnly: true,
       secure: true,
-      sameSite: "none" as const,
-      partitioned: true,
+      sameSite: isDeployment ? ("lax" as const) : ("none" as const),
+      ...(isDeployment ? {} : { partitioned: true }),
       maxAge: sessionTtl,
     },
   });
