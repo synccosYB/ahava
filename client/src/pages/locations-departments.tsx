@@ -778,7 +778,7 @@ function DepartmentsTab() {
               <div><Label>Description</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} data-testid="input-department-description" /></div>
               <div>
                 <Label>Managers</Label>
-                <Popover open={managersPopoverOpen} onOpenChange={setManagersPopoverOpen}>
+                <Popover open={managersPopoverOpen} onOpenChange={setManagersPopoverOpen} modal>
                   <PopoverTrigger asChild>
                     <Button variant="outline" className="w-full justify-between font-normal" data-testid="select-department-managers">
                       {form.managerIds.length === 0
