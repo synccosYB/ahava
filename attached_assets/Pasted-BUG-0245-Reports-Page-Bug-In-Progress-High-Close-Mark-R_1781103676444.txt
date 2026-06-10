@@ -1,0 +1,85 @@
+BUG-0245
+Reports Page
+Bug
+In Progress
+High
+Close
+Mark Ready for Review
+Resolve
+Status
+In Progress
+Priority
+High
+Assigned To
+Unassigned
+Description
+
+**Steps to Reproduce:**
+1. Navigate to the "Reports" page in the affected application.
+2. Click on any of the report options: Attendance, Time, PTO, Missing Punches, or Exceptions.
+3. Observe the report that is generated and loaded.
+
+**Expected Behavior:**
+Each report option (Attendance, Time, PTO, Missing Punches, Exceptions) should generate and display its respective unique report.
+
+**Actual Behavior:**
+All report options (Attendance, Time, PTO, Missing Punches, Exceptions) load the same report, regardless of the option selected.
+
+**Additional Context:**
+- This issue affects the ability to view specific reports, which may hinder data analysis and decision-making processes.
+- Attached screenshot demonstrates the loaded report, which appears identical across all options.
+- Ensure all report queries and mappings are correctly configured to display distinct reports for each category.
+
+AI Analysis
+
+### Analysis
+
+**Part of the App Affected:**
+- The "Reports" page is affected, specifically the functionality to correctly load and display distinct reports for different report categories (Attendance, Time, PTO, Missing Punches, and Exceptions).
+
+**Root Cause Analysis:**
+1. **Observed Behavior in Screenshot:** Regardless of which report is selected, the same PTO Report is loading and rendering, as indicated in the screenshot.
+2. **Probable Issues:**
+   - **Backend:** The API or backend logic may be incorrectly mapping all report requests to the same endpoint or query, possibly defaulting to the PTO Report.
+   - **Frontend:** The `onclick` event handlers or the input used to request a specific report may not be correctly passing the selected report type to the backend.
+   - **State Mismanagement:** If client-side state management is in use, it may not properly update when a report tab is selected, causing all actions to resolve to the same state.
+3. **Other Possibilities:**
+   - Dynamic report content rendering might not differentiate between selected categories due to shared components/tools improperly toggling visibility for the respective reports.
+
+**Recommended Fix or Next Steps:**
+1. **Backend Issue:**
+   - Inspect the server logic for report-specific endpoints/queries.
+   - Confirm that each report category (Attendance, Time, PTO, etc.) has a distinct data-fetching mechanism.
+   - Ensure there is validation to execute only the relevant report's logic per the received input.
+2. **Frontend Issue:**
+   - Debug the click handlers or functions responsible for determining and sending the selected report type to the backend.
+   - Verify that the correct report identifier is sent in the request payload or as a query parameter (e.g., "reportType=Attendance").
+3. **Testing and Validation:**
+   - Test all reports after resolving issues to ensure unique data loads and displays for each type.
+   - Add unit tests and integration tests to ensure future changes do not break this functionality.
+
+```json
+{"severity": "high", "category": "functionality"}
+```
+
+Screenshot
+
+Screenshot
+https://synccos.space/reports
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36
+Shlomy Shpilman
+shloimy@synkdex.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (1)
+
+Shloimy Spielmanteam
+14 minutes ago
+The Generate button still doesnt seem to load the selected report
+
+also once a report is loaded and the generate button is clicked again the screen just gets blank instead of reloading the report
+
