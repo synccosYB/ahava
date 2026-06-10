@@ -35,6 +35,19 @@ type ReportResult = {
   rows: ReportRow[];
 };
 
+// A response is only a renderable report when it actually carries columns and
+// rows arrays. The /api/reports/generate endpoint can return a 202 cooldown
+// payload ({ message, retryAfterMs }) that apiRequest still resolves as a 2xx
+// success, so this guard keeps non-report payloads from crashing the table.
+function isReportResult(data: unknown): data is ReportResult {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    Array.isArray((data as ReportResult).columns) &&
+    Array.isArray((data as ReportResult).rows)
+  );
+}
+
 type FilterOptions = {
   employees: { id: string; name: string }[];
   departments: { id: string; name: string }[];
@@ -193,7 +206,24 @@ function StandardReport({
       });
       return res.json();
     },
-    onSuccess: (data: ReportResult) => {
+    onSuccess: (data: unknown) => {
+      // The server returns a 202 with { message, retryAfterMs } when the
+      // per-params cooldown is active. apiRequest treats any 2xx as success,
+      // so guard here: only a payload with real columns/rows is a renderable
+      // report. Anything else (cooldown, future non-report 2xx) must NOT
+      // overwrite the currently displayed report — keep it on screen and just
+      // surface a friendly message.
+      if (!isReportResult(data)) {
+        const cooldown = data as { message?: string; retryAfterMs?: number } | null;
+        const retrySecs = cooldown?.retryAfterMs ? Math.ceil(cooldown.retryAfterMs / 1000) : null;
+        toast({
+          title: "Report is cooling down",
+          description:
+            cooldown?.message ||
+            (retrySecs ? `Try again in ${retrySecs}s.` : "Please try again in a moment."),
+        });
+        return;
+      }
       setReportData(data);
       toast({ title: `${title} generated` });
     },
