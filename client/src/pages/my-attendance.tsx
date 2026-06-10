@@ -651,6 +651,7 @@ export default function MyAttendance() {
         pendingPunchIds={pendingByPunchId}
         records={records}
         onEdit={openEditDialog}
+        onAskToReopen={(ex) => setReopenDialog({ open: true, exception: ex })}
       />
 
       <Dialog
@@ -814,9 +815,13 @@ function CorrectionFormBody({
     },
   });
 
-  const displayCount = correctionCount?.total ?? 0;
-  const nextOrdinal = ordinal(displayCount + 1);
-  const isHighCount = isHighCorrectionCount(displayCount);
+  // Main copy is anchored to the employee's current pay period — the natural
+  // unit for corrections — instead of an opaque rolling "90 days". The
+  // frequent-corrections warning still uses the unchanged 90-day total/threshold.
+  const payPeriodCount = correctionCount?.payPeriod.total ?? 0;
+  const ninetyDayCount = correctionCount?.total ?? 0;
+  const nextOrdinal = ordinal(payPeriodCount + 1);
+  const isHighCount = isHighCorrectionCount(ninetyDayCount);
 
   useEffect(() => {
     setDate(initialDate);
@@ -992,17 +997,15 @@ function CorrectionFormBody({
           }`}
           data-testid="text-self-correction-count"
         >
-          {displayCount === 0 ? (
-            <>This will be your first correction request in the last {correctionCount.windowDays} days.</>
+          {payPeriodCount === 0 ? (
+            <>This will be your first correction request this pay period.</>
           ) : (
-            <>
-              This is your {nextOrdinal} correction request in the last {correctionCount.windowDays} days.
-              {isHighCount && (
-                <span className="ml-1 font-medium">
-                  Frequent corrections may be a sign to double-check your clock-in/out.
-                </span>
-              )}
-            </>
+            <>This is your {nextOrdinal} correction request this pay period.</>
+          )}
+          {isHighCount && (
+            <span className="ml-1 font-medium">
+              That's {ninetyDayCount} in the last {correctionCount.windowDays} days — frequent corrections may be a sign to double-check your clock-in/out.
+            </span>
           )}
         </div>
       )}
@@ -1027,7 +1030,21 @@ function CorrectionFormBody({
   );
 }
 
-function verdictBadge(status: string, testIdSuffix: string, isRemoval = false) {
+// Single source of truth for a correction-request status badge (label + color +
+// removal-aware wording). Used by both the attendance table's resolved cell and
+// the "My Correction Requests" card so the two never drift apart.
+function correctionStatusBadge(status: string, testIdSuffix: string, isRemoval = false) {
+  if (status === "pending") {
+    return (
+      <Badge
+        variant="secondary"
+        className="bg-amber-100 text-amber-800 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-200"
+        data-testid={`badge-verdict-pending-${testIdSuffix}`}
+      >
+        {isRemoval ? "Removal pending" : "Pending"}
+      </Badge>
+    );
+  }
   if (status === "approved") {
     return (
       <Badge
@@ -1056,6 +1073,64 @@ function verdictBadge(status: string, testIdSuffix: string, isRemoval = false) {
   );
 }
 
+// Shared reopen state + action for a resolved correction request. Keeps the
+// attendance table and the "My Correction Requests" card consistent, including
+// the one-reopen-per-resolved-request rule.
+type ReopenStateControlsProps = {
+  exception: AttendanceException;
+  testIdSuffix: string;
+  onAskToReopen: (ex: AttendanceException) => void;
+};
+
+function ReopenStateControls({ exception, testIdSuffix, onAskToReopen }: ReopenStateControlsProps) {
+  if (exception.reopenStatus === "pending") {
+    return (
+      <span
+        className="inline-flex items-center text-[11px] text-muted-foreground"
+        data-testid={`text-reopen-pending-${testIdSuffix}`}
+      >
+        <MessageSquare className="h-3 w-3 mr-1" />
+        Reopen requested
+      </span>
+    );
+  }
+  if (exception.reopenStatus === "declined") {
+    return (
+      <span
+        className="inline-flex items-center text-[11px] text-muted-foreground"
+        data-testid={`text-reopen-declined-${testIdSuffix}`}
+      >
+        <Lock className="h-3 w-3 mr-1" />
+        Reopen declined
+      </span>
+    );
+  }
+  if (exception.reopenStatus === "granted" && !exception.reopenConsumedAt) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+        data-testid={`badge-reopen-granted-${testIdSuffix}`}
+      >
+        <Unlock className="h-3 w-3 mr-1" />
+        Reopen granted
+      </Badge>
+    );
+  }
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+      onClick={() => onAskToReopen(exception)}
+      data-testid={`button-ask-reopen-${testIdSuffix}`}
+    >
+      <MessageSquare className="h-3 w-3 mr-1" />
+      Ask to reopen
+    </Button>
+  );
+}
+
 type ResolvedActionCellProps = {
   record: AttendanceRecord;
   exception: AttendanceException;
@@ -1066,7 +1141,7 @@ function ResolvedActionCell({ record, exception, onAskToReopen }: ResolvedAction
   const isRemoval = exception.type === "punch_removal";
   return (
     <div className="flex flex-col items-end gap-1">
-      {verdictBadge(exception.status, record.id, isRemoval)}
+      {correctionStatusBadge(exception.status, record.id, isRemoval)}
       {isRemoval && exception.status === "approved" && (
         <span
           className="inline-flex items-center text-[11px] text-muted-foreground"
@@ -1076,34 +1151,11 @@ function ResolvedActionCell({ record, exception, onAskToReopen }: ResolvedAction
           Punch deleted
         </span>
       )}
-      {exception.reopenStatus === "pending" ? (
-        <span
-          className="inline-flex items-center text-[11px] text-muted-foreground"
-          data-testid={`text-reopen-pending-${record.id}`}
-        >
-          <MessageSquare className="h-3 w-3 mr-1" />
-          Reopen requested
-        </span>
-      ) : exception.reopenStatus === "declined" ? (
-        <span
-          className="inline-flex items-center text-[11px] text-muted-foreground"
-          data-testid={`text-reopen-declined-${record.id}`}
-        >
-          <Lock className="h-3 w-3 mr-1" />
-          Reopen declined
-        </span>
-      ) : (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-          onClick={() => onAskToReopen(exception)}
-          data-testid={`button-ask-reopen-${record.id}`}
-        >
-          <MessageSquare className="h-3 w-3 mr-1" />
-          Ask to reopen
-        </Button>
-      )}
+      <ReopenStateControls
+        exception={exception}
+        testIdSuffix={record.id}
+        onAskToReopen={onAskToReopen}
+      />
     </div>
   );
 }
@@ -1222,19 +1274,11 @@ type PunchCorrectionFormProps = {
   pendingPunchIds?: Map<string, AttendanceException>;
   records?: AttendanceRecord[];
   onEdit?: (ex: AttendanceException) => void;
+  onAskToReopen?: (ex: AttendanceException) => void;
 };
 
-function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, pendingPunchIds, records, onEdit }: PunchCorrectionFormProps) {
+function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, pendingPunchIds, records, onEdit, onAskToReopen }: PunchCorrectionFormProps) {
   const { toast } = useToast();
-  const getStatusBadgeForException = (status: string) => {
-    switch (status) {
-      case "pending": return <Badge variant="secondary" className="bg-amber-100 text-amber-800">Pending</Badge>;
-      case "approved": return <Badge variant="default" className="bg-green-600">Approved</Badge>;
-      case "denied": return <Badge variant="destructive">Denied</Badge>;
-      case "cancelled": return <Badge variant="outline" className="text-muted-foreground">Cancelled</Badge>;
-      default: return <Badge variant="outline">{status}</Badge>;
-    }
-  };
 
   const cancelMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -1288,7 +1332,7 @@ function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, pe
                 {myExceptions.map((ex) => (
                   <div key={ex.id} className="rounded-md border p-3" data-testid={`card-correction-${ex.id}`}>
                     <div className="flex items-center justify-between gap-2 mb-1">
-                      {getStatusBadgeForException(ex.status)}
+                      {correctionStatusBadge(ex.status, ex.id, ex.type === "punch_removal")}
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-muted-foreground">{formatDate(ex.exceptionDate)}</span>
                         {ex.status === "pending" && onEdit && (
@@ -1324,6 +1368,15 @@ function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, pe
                     <p className="text-sm text-muted-foreground mt-1">{ex.reason}</p>
                     {ex.reviewNotes && (
                       <p className="text-xs text-muted-foreground mt-1 italic">Review: {ex.reviewNotes}</p>
+                    )}
+                    {ex.status !== "pending" && onAskToReopen && (
+                      <div className="mt-2 flex justify-end" data-testid={`reopen-controls-${ex.id}`}>
+                        <ReopenStateControls
+                          exception={ex}
+                          testIdSuffix={ex.id}
+                          onAskToReopen={onAskToReopen}
+                        />
+                      </div>
                     )}
                   </div>
                 ))}
