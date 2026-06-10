@@ -1,0 +1,94 @@
+Please run a full head-to-toe audit of this system before we continue building.
+
+I want this audit to cover:
+
+1. Feature and function audit
+
+* What features exist today
+* What is incomplete or only partially wired
+* What buttons, pages, or flows do not work
+* What features are duplicated or confusing
+* What is using mock/demo data instead of real backend data
+
+2. Backend audit
+
+* API routes
+* database schema
+* storage methods
+* authentication and permissions
+* tenant/company separation
+* single source of truth issues
+* syncing issues
+* missing validations
+* unsafe fallbacks or silent failures
+
+3. Frontend audit
+
+* broken screens
+* bad loading/error states
+* forms that do not save correctly
+* dropdowns/buttons that are disabled incorrectly
+* data not refreshing after changes
+* layout/padding/responsive issues
+* confusing UX flows
+
+4. Security and permission audit
+
+* role access problems
+* admin-only routes
+* client/user data exposure
+* missing permission checks
+* webhook/security-secret validation
+* file upload safety
+
+5. Integrations audit
+
+* Stripe/payment flow
+* email
+* SMS/WhatsApp/Twilio
+* AI/OpenAI
+* document/file storage
+* webhooks
+* any integration that can silently fail
+
+6. Data integrity and syncing audit
+
+* duplicated state
+* stale data after edits
+* tables that do not match UI expectations
+* missing foreign keys or references
+* orphaned records
+* race conditions or lost updates
+* places where the UI shows one thing but backend stores another
+
+7. UX/UI and design audit
+
+* spacing/padding issues
+* page consistency
+* navigation/sidebar issues
+* mobile/tablet responsiveness
+* confusing labels
+* missing helper text
+* empty states
+* professional design polish
+
+8. Error-surface audit
+
+* every place an error can happen
+* whether the user sees a clear message
+* whether admins can diagnose it
+* whether logs capture it
+* whether there are retry/dead-letter mechanisms where needed
+
+Please return the audit as a structured report with:
+
+* Section name
+* Issue found
+* Severity: Critical / High / Medium / Low
+* User impact in plain English
+* File(s) involved
+* Recommended fix
+* Estimated effort
+* Whether it should block deployment
+
+Do not change code yet. This is audit-only. After the report, recommend which items should become tasks first, grouped by priority.
