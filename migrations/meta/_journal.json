@@ -351,6 +351,13 @@
       "when": 1780000000000,
       "tag": "0049_employee_departments_locations",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1780100000000,
+      "tag": "0050_policy_acknowledgments",
+      "breakpoints": true
     }
   ]
 }

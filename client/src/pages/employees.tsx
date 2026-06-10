@@ -1364,7 +1364,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     const section = initialUrlParams.get("section");
     if (section === "certifications") return "basic";
     if (t === "certifications") return "basic";
-    if (t && ["basic", "employment", "pay", "timeclock", "pto", "schedule", "documents", "history"].includes(t)) return t;
+    if (t && ["basic", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "history"].includes(t)) return t;
     return "basic";
   })();
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -1559,7 +1559,9 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
   });
 
   const { has: hasPermission } = usePermissions();
+  const { user: currentAuthUser } = useAuth();
   const canEditPay = hasPermission("users.edit");
+  const canViewPolicies = hasPermission("policies.view");
   const [editPayOpen, setEditPayOpen] = useState(false);
   const [payForm, setPayForm] = useState({
     payType: "hourly",
@@ -1652,6 +1654,9 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           <TabsTrigger value="pto" data-testid="tab-pto-leave">PTO/Leave</TabsTrigger>
           <TabsTrigger value="schedule" data-testid="tab-schedule">Schedule</TabsTrigger>
           <TabsTrigger value="documents" data-testid="tab-documents">Documents</TabsTrigger>
+          {canViewPolicies && (
+            <TabsTrigger value="policies" data-testid="tab-policies">Policies</TabsTrigger>
+          )}
           <TabsTrigger value="onboarding" data-testid="tab-onboarding">Onboarding</TabsTrigger>
           <TabsTrigger value="offboarding" data-testid="tab-offboarding">Offboarding</TabsTrigger>
           <TabsTrigger value="history" data-testid="tab-history">History/Audit</TabsTrigger>
@@ -2305,11 +2310,186 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           <OffboardingTab userId={userId} />
         </TabsContent>
 
+        {canViewPolicies && (
+          <TabsContent value="policies">
+            <EmployeePoliciesTab userId={userId} isSelf={currentAuthUser?.id === userId} />
+          </TabsContent>
+        )}
+
         <TabsContent value="history">
           <EmployeeAuditHistory userId={userId} />
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+interface ApplicablePolicyRow {
+  policyId: string;
+  policyName: string;
+  policyTypeKey: string | null;
+  status: string;
+  version: number;
+  requiresAcknowledgment: boolean;
+  effectiveDate: string | null;
+  sources: { level: string; label: string; effectiveDate: string | null }[];
+  acknowledgment: {
+    required: boolean;
+    acknowledged: boolean;
+    acknowledgedAt: string | null;
+    acknowledgedVersion: number | null;
+  };
+}
+
+const POLICY_TYPE_LABELS: Record<string, string> = {
+  attendance: "Attendance",
+  pto: "PTO / Leave",
+  payroll: "Payroll",
+  approvals: "Approvals",
+};
+
+function EmployeePoliciesTab({ userId, isSelf }: { userId: string; isSelf: boolean }) {
+  const { toast } = useToast();
+  const [, navigate] = useLocation();
+  const { data: rows, isLoading, isError, refetch } = useQuery<ApplicablePolicyRow[]>({
+    queryKey: ["/api/users", userId, "applicable-policies"],
+    queryFn: async () => {
+      const res = await fetch(`/api/users/${userId}/applicable-policies`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load policies");
+      return res.json();
+    },
+  });
+
+  const acknowledgeMutation = useMutation({
+    mutationFn: async (policyId: string) => {
+      await apiRequest("POST", `/api/policies/${policyId}/acknowledge`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "applicable-policies"] });
+      toast({ title: "Policy acknowledged" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not acknowledge", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const formatDate = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+
+  const viewPolicy = (row: ApplicablePolicyRow) => {
+    const params = new URLSearchParams();
+    if (row.policyTypeKey) params.set("type", row.policyTypeKey);
+    params.set("policyId", row.policyId);
+    navigate(`/rules-controls?${params.toString()}`);
+  };
+
+  return (
+    <Card data-testid="card-employee-policies">
+      <CardHeader>
+        <CardTitle>Applicable Policies</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-3" data-testid="loading-employee-policies">
+            {[1, 2, 3].map((i) => <Skeleton key={i} className="h-16 w-full" />)}
+          </div>
+        ) : isError ? (
+          <div className="flex flex-col items-center gap-3 py-10 text-center" data-testid="error-employee-policies">
+            <AlertCircle className="h-8 w-8 text-destructive" />
+            <p className="text-sm text-muted-foreground">Could not load policies for this employee.</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="button-retry-policies">
+              Try again
+            </Button>
+          </div>
+        ) : !rows || rows.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-10 text-center" data-testid="empty-employee-policies">
+            <FileText className="h-8 w-8 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">No policies currently apply to this employee.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table data-testid="table-employee-policies">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Policy</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Why it applies</TableHead>
+                  <TableHead>Effective</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Acknowledgment</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((row) => (
+                  <TableRow key={row.policyId} data-testid={`row-policy-${row.policyId}`}>
+                    <TableCell className="font-medium" data-testid={`text-policy-name-${row.policyId}`}>
+                      {row.policyName}
+                    </TableCell>
+                    <TableCell data-testid={`text-policy-category-${row.policyId}`}>
+                      {row.policyTypeKey ? (POLICY_TYPE_LABELS[row.policyTypeKey] || row.policyTypeKey) : "—"}
+                    </TableCell>
+                    <TableCell data-testid={`text-policy-sources-${row.policyId}`}>
+                      <div className="flex flex-wrap gap-1">
+                        {row.sources.map((s, idx) => (
+                          <Badge key={idx} variant="secondary" className="text-xs font-normal">
+                            {s.label}
+                          </Badge>
+                        ))}
+                      </div>
+                    </TableCell>
+                    <TableCell data-testid={`text-policy-effective-${row.policyId}`}>
+                      {formatDate(row.effectiveDate)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={row.status === "active" ? "default" : "outline"} data-testid={`status-policy-${row.policyId}`}>
+                        {row.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell data-testid={`text-policy-ack-${row.policyId}`}>
+                      {!row.acknowledgment.required ? (
+                        <span className="text-xs text-muted-foreground">Not required</span>
+                      ) : row.acknowledgment.acknowledged ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          {formatDate(row.acknowledgment.acknowledgedAt)}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                          <Clock className="h-3.5 w-3.5" /> Pending
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        {isSelf && row.acknowledgment.required && !row.acknowledgment.acknowledged && (
+                          <Button
+                            size="sm"
+                            onClick={() => acknowledgeMutation.mutate(row.policyId)}
+                            disabled={acknowledgeMutation.isPending}
+                            data-testid={`button-acknowledge-${row.policyId}`}
+                          >
+                            Acknowledge
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => viewPolicy(row)}
+                          data-testid={`button-view-policy-${row.policyId}`}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5 mr-1" /> View
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

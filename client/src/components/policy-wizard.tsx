@@ -322,6 +322,7 @@ export function PolicyWizard({
   const [rulesForm, setRulesForm] = useState<Record<string, any>>({});
   const [assignments, setAssignments] = useState<AssignmentEntry[]>([]);
   const [saveStatus, setSaveStatus] = useState<"draft" | "active">("draft");
+  const [requiresAcknowledgment, setRequiresAcknowledgment] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [templateBaseline, setTemplateBaseline] = useState<string | null>(null);
   const [pendingTemplateId, setPendingTemplateId] = useState<string | null>(null);
@@ -429,12 +430,14 @@ export function PolicyWizard({
         setAssignments([]);
       }
       setSaveStatus(editingPolicy.status === "active" ? "active" : "draft");
+      setRequiresAcknowledgment(!!editingPolicy.requiresAcknowledgment);
       setSelectedTemplateId(null);
       setTemplateBaseline(null);
       setPendingTemplateId(null);
     } else {
       setName("");
       setDescription("");
+      setRequiresAcknowledgment(false);
       setSelectedTypeKey(policyTypeKey || "");
       const defaults: Record<string, any> = {};
       const fields = getRuleFieldsForType(policyTypeKey || "");
@@ -674,6 +677,7 @@ export function PolicyWizard({
         policyTypeId: matchingType.id,
         companyId: divisions?.[0]?.id || null,
         status: targetStatus,
+        requiresAcknowledgment,
       };
 
       let policyId: string;
@@ -812,6 +816,8 @@ export function PolicyWizard({
               selectedTypeKey={selectedTypeKey}
               setSelectedTypeKey={setSelectedTypeKey}
               policyTypeKey={policyTypeKey}
+              requiresAcknowledgment={requiresAcknowledgment}
+              setRequiresAcknowledgment={setRequiresAcknowledgment}
               errors={errors}
             />
           )}
@@ -1031,7 +1037,8 @@ function StepTemplate({
 
 function StepBasics({
   name, setName, description, setDescription,
-  selectedTypeKey, setSelectedTypeKey, policyTypeKey, errors,
+  selectedTypeKey, setSelectedTypeKey, policyTypeKey,
+  requiresAcknowledgment, setRequiresAcknowledgment, errors,
 }: {
   name: string;
   setName: (v: string) => void;
@@ -1040,6 +1047,8 @@ function StepBasics({
   selectedTypeKey: string;
   setSelectedTypeKey: (v: string) => void;
   policyTypeKey?: string;
+  requiresAcknowledgment: boolean;
+  setRequiresAcknowledgment: (v: boolean) => void;
   errors: Record<string, string>;
 }) {
   const typeOptions = ["attendance", "pto", "payroll", "approvals"];
@@ -1123,6 +1132,23 @@ function StepBasics({
           className="mt-1"
           rows={3}
           data-testid="input-wizard-description"
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+        <div className="space-y-0.5">
+          <Label htmlFor="wizard-requires-ack" className="text-sm font-medium">
+            Require acknowledgment
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Employees this policy applies to will be asked to acknowledge it. Tracked per policy version.
+          </p>
+        </div>
+        <Switch
+          id="wizard-requires-ack"
+          checked={requiresAcknowledgment}
+          onCheckedChange={setRequiresAcknowledgment}
+          data-testid="switch-requires-acknowledgment"
         />
       </div>
     </div>

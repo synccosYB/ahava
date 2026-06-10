@@ -74,6 +74,9 @@ import {
   policyAssignments,
   type PolicyAssignment,
   type InsertPolicyAssignment,
+  policyAcknowledgments,
+  type PolicyAcknowledgment,
+  type InsertPolicyAcknowledgment,
   policyTypes,
   payrollExports,
   type PayrollExport,
@@ -501,6 +504,10 @@ export interface IStorage {
   createPolicyAssignment(assignment: InsertPolicyAssignment): Promise<PolicyAssignment>;
   updatePolicyAssignment(id: string, assignment: Partial<InsertPolicyAssignment>): Promise<PolicyAssignment | undefined>;
   deletePolicyAssignment(id: string): Promise<void>;
+
+  getPolicyAcknowledgmentsByUser(userId: string): Promise<PolicyAcknowledgment[]>;
+  getPolicyAcknowledgment(policyId: string, userId: string, policyVersion: number): Promise<PolicyAcknowledgment | undefined>;
+  createPolicyAcknowledgment(ack: InsertPolicyAcknowledgment): Promise<PolicyAcknowledgment>;
 
   getPolicyTypeByKey(key: string): Promise<{ id: string; key: string; name: string } | undefined>;
   getAllPolicyTypes(): Promise<{ id: string; key: string; name: string; description: string | null; module: string | null; isActive: boolean }[]>;
@@ -2766,6 +2773,35 @@ export class DatabaseStorage implements IStorage {
 
   async deletePolicyAssignment(id: string): Promise<void> {
     await db.delete(policyAssignments).where(eq(policyAssignments.id, id));
+  }
+
+  async getPolicyAcknowledgmentsByUser(userId: string): Promise<PolicyAcknowledgment[]> {
+    return db.select().from(policyAcknowledgments).where(eq(policyAcknowledgments.userId, userId));
+  }
+
+  async getPolicyAcknowledgment(policyId: string, userId: string, policyVersion: number): Promise<PolicyAcknowledgment | undefined> {
+    const [ack] = await db
+      .select()
+      .from(policyAcknowledgments)
+      .where(
+        and(
+          eq(policyAcknowledgments.policyId, policyId),
+          eq(policyAcknowledgments.userId, userId),
+          eq(policyAcknowledgments.policyVersion, policyVersion),
+        ),
+      );
+    return ack;
+  }
+
+  async createPolicyAcknowledgment(ack: InsertPolicyAcknowledgment): Promise<PolicyAcknowledgment> {
+    const [created] = await db
+      .insert(policyAcknowledgments)
+      .values(ack)
+      .onConflictDoNothing({ target: [policyAcknowledgments.policyId, policyAcknowledgments.userId, policyAcknowledgments.policyVersion] })
+      .returning();
+    if (created) return created;
+    const existing = await this.getPolicyAcknowledgment(ack.policyId, ack.userId, ack.policyVersion);
+    return existing!;
   }
 
   async getPolicyTypeByKey(key: string): Promise<{ id: string; key: string; name: string } | undefined> {

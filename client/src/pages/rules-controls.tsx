@@ -81,8 +81,29 @@ const sections = [
   { key: "audit", label: "Audit Logs", icon: FileSearch },
 ];
 
+const POLICY_TYPE_TO_SECTION: Record<string, string> = {
+  attendance: "attendance",
+  pto: "pto",
+  payroll: "payroll",
+  approvals: "approval",
+};
+
 export default function RulesControlsPage() {
-  const [activeSection, setActiveSection] = useState("general");
+  const initialParams = (() => {
+    if (typeof window === "undefined") return new URLSearchParams();
+    return new URLSearchParams(window.location.search);
+  })();
+  const sectionKeys = sections.map((s) => s.key);
+  const rawSection = initialParams.get("section");
+  const rawType = initialParams.get("type");
+  const initialSection = (() => {
+    if (rawType && POLICY_TYPE_TO_SECTION[rawType]) return POLICY_TYPE_TO_SECTION[rawType];
+    if (rawSection && sectionKeys.includes(rawSection)) return rawSection;
+    if (rawSection && POLICY_TYPE_TO_SECTION[rawSection]) return POLICY_TYPE_TO_SECTION[rawSection];
+    return "general";
+  })();
+  const [activeSection, setActiveSection] = useState(initialSection);
+  const [openPolicyId, setOpenPolicyId] = useState<string | null>(initialParams.get("policyId"));
 
   return (
     <div className="max-w-6xl space-y-6" data-testid="rules-controls-page">
@@ -110,10 +131,10 @@ export default function RulesControlsPage() {
         <div className="flex-1 min-w-0">
           {activeSection === "general" && <GeneralSection />}
           {activeSection === "locations" && <LocationsSection />}
-          {activeSection === "attendance" && <PolicySection policyTypeKey="attendance" title="Attendance Rules" />}
-          {activeSection === "pto" && <PolicySection policyTypeKey="pto" title="PTO Policies" />}
-          {activeSection === "payroll" && <PolicySection policyTypeKey="payroll" title="Payroll Rules" />}
-          {activeSection === "approval" && <ApprovalWorkflowsSection />}
+          {activeSection === "attendance" && <PolicySection policyTypeKey="attendance" title="Attendance Rules" openPolicyId={openPolicyId} onOpenPolicyHandled={() => setOpenPolicyId(null)} />}
+          {activeSection === "pto" && <PolicySection policyTypeKey="pto" title="PTO Policies" openPolicyId={openPolicyId} onOpenPolicyHandled={() => setOpenPolicyId(null)} />}
+          {activeSection === "payroll" && <PolicySection policyTypeKey="payroll" title="Payroll Rules" openPolicyId={openPolicyId} onOpenPolicyHandled={() => setOpenPolicyId(null)} />}
+          {activeSection === "approval" && <ApprovalWorkflowsSection openPolicyId={openPolicyId} onOpenPolicyHandled={() => setOpenPolicyId(null)} />}
           {activeSection === "roles" && <RolesSection />}
           {activeSection === "role-rules" && <RoleAssignmentRulesSection />}
           {activeSection === "schedule-templates" && <ScheduleTemplatesSection />}
@@ -879,7 +900,7 @@ function PolicyRuleSummary({
   );
 }
 
-function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title: string }) {
+function PolicySection({ policyTypeKey, title, openPolicyId, onOpenPolicyHandled }: { policyTypeKey: string; title: string; openPolicyId?: string | null; onOpenPolicyHandled?: () => void }) {
   const { toast } = useToast();
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
@@ -959,6 +980,16 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
       setEditAssignments([]);
     }
   };
+
+  const [autoOpenedId, setAutoOpenedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!openPolicyId || autoOpenedId === openPolicyId) return;
+    const target = filteredPolicies.find((p) => p.id === openPolicyId);
+    if (!target) return;
+    setAutoOpenedId(openPolicyId);
+    onOpenPolicyHandled?.();
+    startEdit(target);
+  }, [openPolicyId, filteredPolicies, autoOpenedId]);
 
   const hasDivisions = (divisions || []).length > 0;
 
@@ -1107,12 +1138,12 @@ function PolicySection({ policyTypeKey, title }: { policyTypeKey: string; title:
   );
 }
 
-function ApprovalWorkflowsSection() {
+function ApprovalWorkflowsSection({ openPolicyId, onOpenPolicyHandled }: { openPolicyId?: string | null; onOpenPolicyHandled?: () => void } = {}) {
   const { toast } = useToast();
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editingWorkflow, setEditingWorkflow] = useState<WorkflowType | null>(null);
   const [previewWorkflow, setPreviewWorkflow] = useState<WorkflowType | null>(null);
-  const [tab, setTab] = useState<"policies" | "workflows">("workflows");
+  const [tab, setTab] = useState<"policies" | "workflows">(openPolicyId ? "policies" : "workflows");
 
   const { data: wfList, isLoading: wfLoading } = useQuery<WorkflowType[]>({ queryKey: ["/api/workflows"] });
 
@@ -1179,7 +1210,7 @@ function ApprovalWorkflowsSection() {
       </div>
 
       {tab === "policies" ? (
-        <PolicySection policyTypeKey="approvals" title="Approval Rule Policies" />
+        <PolicySection policyTypeKey="approvals" title="Approval Rule Policies" openPolicyId={openPolicyId} onOpenPolicyHandled={onOpenPolicyHandled} />
       ) : (
         <Card data-testid="card-workflows-list">
           <CardContent className="p-0">

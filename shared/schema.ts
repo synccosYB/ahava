@@ -161,6 +161,7 @@ export const policies = pgTable("policies", {
   status: varchar("status", { length: 20 }).default("draft").notNull(),
   version: integer("version").default(1).notNull(),
   isSystemDefault: boolean("is_system_default").default(false).notNull(),
+  requiresAcknowledgment: boolean("requires_acknowledgment").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -199,6 +200,7 @@ export const policyAssignments = pgTable("policy_assignments", {
   roleId: varchar("role_id").references(() => roles.id),
   employmentType: varchar("employment_type", { length: 30 }),
   payType: varchar("pay_type", { length: 20 }),
+  effectiveDate: timestamp("effective_date"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -259,6 +261,23 @@ export const insertPolicyAssignmentSchema = baseInsertPolicyAssignmentSchema.sup
 
 export type InsertPolicyAssignment = z.infer<typeof insertPolicyAssignmentSchema>;
 export type PolicyAssignment = typeof policyAssignments.$inferSelect;
+
+export const policyAcknowledgments = pgTable("policy_acknowledgments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  policyId: varchar("policy_id").notNull().references(() => policies.id),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  policyVersion: integer("policy_version").notNull(),
+  acknowledgedAt: timestamp("acknowledged_at").defaultNow().notNull(),
+}, (table) => ({
+  uniqueAck: unique("policy_acknowledgments_unique").on(table.policyId, table.userId, table.policyVersion),
+}));
+
+export const insertPolicyAcknowledgmentSchema = createInsertSchema(policyAcknowledgments).omit({
+  id: true,
+  acknowledgedAt: true,
+});
+export type InsertPolicyAcknowledgment = z.infer<typeof insertPolicyAcknowledgmentSchema>;
+export type PolicyAcknowledgment = typeof policyAcknowledgments.$inferSelect;
 
 export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

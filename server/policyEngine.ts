@@ -4,6 +4,7 @@ import {
   policyRules,
   policyAssignments,
   policyTypes,
+  policyAcknowledgments,
   userRoles,
   userEmploymentProfiles,
   POLICY_ASSIGNMENT_TARGET_FIELDS,
@@ -14,7 +15,7 @@ import {
   userDepartmentIds,
   userLocationIds,
 } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { DEFAULT_ALLOWED_PUNCH_SOURCES } from "@shared/punchSources";
 
 type PolicyAssignmentTargetField = (typeof POLICY_ASSIGNMENT_TARGET_FIELDS)[number];
@@ -211,6 +212,198 @@ export async function getEffectivePolicy(
     assignmentLevel,
     rules: (rule?.rules as Record<string, any>) || {},
   };
+}
+
+export type ApplicablePolicyLevel =
+  | "global"
+  | "division"
+  | "location"
+  | "department"
+  | "role"
+  | "employment_type"
+  | "pay_type"
+  | "employee";
+
+export interface ApplicablePolicySource {
+  level: ApplicablePolicyLevel;
+  /** The raw target id for this source (companyId/locationId/etc.), or the raw
+   *  employmentType/payType value. Null for a global (no-target) assignment. */
+  targetId: string | null;
+  /** Effective date of THIS assignment (falls back to its createdAt). */
+  effectiveDate: string | null;
+}
+
+export interface ApplicablePolicy {
+  policyId: string;
+  policyName: string;
+  policyTypeKey: string | null;
+  status: string;
+  version: number;
+  requiresAcknowledgment: boolean;
+  /** Earliest effective date across all the sources that apply this policy. */
+  effectiveDate: string | null;
+  sources: ApplicablePolicySource[];
+  acknowledgment: {
+    required: boolean;
+    acknowledged: boolean;
+    acknowledgedAt: string | null;
+    acknowledgedVersion: number | null;
+  };
+}
+
+/**
+ * List EVERY active policy that applies to a user, regardless of type, and the
+ * full set of reasons (sources) each one applies — direct assignment plus any
+ * inherited via role / department / location / company / employment type / pay
+ * type / global. Unlike `getEffectivePolicy` (which resolves a single winning
+ * policy per type by precedence), this returns all of them deduped into one row
+ * per policy, with every matching source attached. Powers the employee profile
+ * "Policies" tab.
+ */
+export async function getApplicablePolicies(user: User): Promise<ApplicablePolicy[]> {
+  const rows = await db
+    .select({
+      assignment: policyAssignments,
+      policy: policies,
+      typeKey: policyTypes.key,
+    })
+    .from(policyAssignments)
+    .innerJoin(policies, eq(policies.id, policyAssignments.policyId))
+    .leftJoin(policyTypes, eq(policyTypes.id, policies.policyTypeId))
+    .where(eq(policies.status, "active"));
+
+  if (rows.length === 0) return [];
+
+  // Resolve the user's role / employment context once.
+  const roleRows = await db
+    .select({ roleId: userRoles.roleId })
+    .from(userRoles)
+    .where(eq(userRoles.userId, user.id));
+  const userRoleIds = new Set(roleRows.map((r) => r.roleId));
+
+  const [profile] = await db
+    .select({
+      employmentType: userEmploymentProfiles.employmentType,
+      payType: userEmploymentProfiles.payType,
+    })
+    .from(userEmploymentProfiles)
+    .where(eq(userEmploymentProfiles.userId, user.id));
+  const employmentType = profile?.employmentType ?? null;
+  const payType = profile?.payType ?? null;
+
+  const memberDeptIds = new Set(userDepartmentIds(user));
+  const memberLocIds = new Set(userLocationIds(user));
+
+  const toIso = (d: Date | string | null | undefined): string | null =>
+    d ? new Date(d).toISOString() : null;
+
+  // Determine the matching source (if any) for a single assignment row. Each
+  // row carries exactly one target field (enforced at write time); legacy rows
+  // with no target are treated as global (applies to everyone).
+  const matchSource = (a: PolicyAssignment): ApplicablePolicySource | null => {
+    const effectiveDate = toIso(a.effectiveDate ?? a.createdAt);
+    if (a.userId) {
+      return a.userId === user.id ? { level: "employee", targetId: a.userId, effectiveDate } : null;
+    }
+    if (a.roleId) {
+      return userRoleIds.has(a.roleId) ? { level: "role", targetId: a.roleId, effectiveDate } : null;
+    }
+    if (a.employmentType) {
+      return a.employmentType === employmentType
+        ? { level: "employment_type", targetId: a.employmentType, effectiveDate }
+        : null;
+    }
+    if (a.payType) {
+      return a.payType === payType ? { level: "pay_type", targetId: a.payType, effectiveDate } : null;
+    }
+    if (a.departmentId) {
+      return memberDeptIds.has(a.departmentId)
+        ? { level: "department", targetId: a.departmentId, effectiveDate }
+        : null;
+    }
+    if (a.locationId) {
+      return memberLocIds.has(a.locationId)
+        ? { level: "location", targetId: a.locationId, effectiveDate }
+        : null;
+    }
+    if (a.companyId) {
+      return user.companyId && a.companyId === user.companyId
+        ? { level: "division", targetId: a.companyId, effectiveDate }
+        : null;
+    }
+    // No target set -> global assignment, applies to everyone.
+    return { level: "global", targetId: null, effectiveDate };
+  };
+
+  const byPolicy = new Map<
+    string,
+    {
+      policy: Policy;
+      typeKey: string | null;
+      sources: ApplicablePolicySource[];
+    }
+  >();
+
+  for (const row of rows) {
+    const source = matchSource(row.assignment);
+    if (!source) continue;
+    let entry = byPolicy.get(row.policy.id);
+    if (!entry) {
+      entry = { policy: row.policy, typeKey: row.typeKey ?? null, sources: [] };
+      byPolicy.set(row.policy.id, entry);
+    }
+    entry.sources.push(source);
+  }
+
+  if (byPolicy.size === 0) return [];
+
+  // Load this user's acknowledgments for the matched policies in one query.
+  const policyIds = Array.from(byPolicy.keys());
+  const ackRows = await db
+    .select()
+    .from(policyAcknowledgments)
+    .where(
+      and(
+        eq(policyAcknowledgments.userId, user.id),
+        inArray(policyAcknowledgments.policyId, policyIds),
+      ),
+    );
+  const acksByPolicy = new Map<string, typeof ackRows[number]>();
+  for (const ack of ackRows) {
+    const existing = acksByPolicy.get(ack.policyId);
+    if (!existing || ack.policyVersion > existing.policyVersion) {
+      acksByPolicy.set(ack.policyId, ack);
+    }
+  }
+
+  const result: ApplicablePolicy[] = [];
+  for (const { policy, typeKey, sources } of byPolicy.values()) {
+    const effectiveDates = sources
+      .map((s) => s.effectiveDate)
+      .filter((d): d is string => !!d)
+      .sort();
+    const ack = acksByPolicy.get(policy.id);
+    const acknowledged = !!ack && ack.policyVersion === policy.version;
+    result.push({
+      policyId: policy.id,
+      policyName: policy.name,
+      policyTypeKey: typeKey,
+      status: policy.status,
+      version: policy.version,
+      requiresAcknowledgment: policy.requiresAcknowledgment,
+      effectiveDate: effectiveDates[0] ?? null,
+      sources,
+      acknowledgment: {
+        required: policy.requiresAcknowledgment,
+        acknowledged,
+        acknowledgedAt: ack ? toIso(ack.acknowledgedAt) : null,
+        acknowledgedVersion: ack ? ack.policyVersion : null,
+      },
+    });
+  }
+
+  result.sort((a, b) => a.policyName.localeCompare(b.policyName));
+  return result;
 }
 
 export const DEFAULT_ATTENDANCE_RULES = {

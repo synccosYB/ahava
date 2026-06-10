@@ -12,7 +12,7 @@ import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Depart
 import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
-import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
+import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
 import {
@@ -6203,6 +6203,138 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching effective policy:", error);
       handleRouteError(res, error, "Failed to fetch effective policy");
+    }
+  });
+
+  // All policies that apply to a single employee, with every reason (source)
+  // each one applies (direct + inherited via role/department/location/company/
+  // employment type/pay type/global), real effective dates, and the viewed
+  // employee's acknowledgment status. Gated on BOTH viewing employee details
+  // and viewing policies; managers are additionally limited to their scope.
+  app.get(
+    "/api/users/:id/applicable-policies",
+    requireAuth,
+    requirePermission("users.view"),
+    requirePermission("policies.view"),
+    async (req: any, res) => {
+      try {
+        const actingUser = req.authUser as User;
+        const targetUserId = String(req.params.id);
+
+        if (targetUserId !== actingUser.id && actingUser.role !== "admin") {
+          if (actingUser.role === "manager") {
+            const scopedIds = await storage.getScopedUserIds(actingUser);
+            if (!scopedIds.has(targetUserId)) {
+              return res.status(403).json({ message: "Not authorized to view this employee's policies" });
+            }
+          } else {
+            return res.status(403).json({ message: "Not authorized to view this employee's policies" });
+          }
+        }
+
+        const targetUser =
+          targetUserId === actingUser.id ? actingUser : await storage.getUser(targetUserId);
+        if (!targetUser) {
+          return res.status(404).json({ message: "Employee not found" });
+        }
+
+        const applicable = await getApplicablePolicies(targetUser);
+
+        const [companies, locations, departments, roles] = await Promise.all([
+          storage.getAllCompanies(),
+          storage.getAllLocations(),
+          storage.getAllDepartments(),
+          storage.getAllRoles(),
+        ]);
+        const companyNames = new Map(companies.map((c) => [c.id, c.name]));
+        const locationNames = new Map(locations.map((l) => [l.id, l.name]));
+        const departmentNames = new Map(departments.map((d) => [d.id, d.name]));
+        const roleNames = new Map(roles.map((r) => [r.id, r.name]));
+
+        const humanize = (v: string) =>
+          v.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+        const labelForSource = (level: string, targetId: string | null): string => {
+          switch (level) {
+            case "employee":
+              return "Directly assigned";
+            case "role":
+              return `Role: ${(targetId && roleNames.get(targetId)) || "Unknown role"}`;
+            case "department":
+              return `Department: ${(targetId && departmentNames.get(targetId)) || "Unknown department"}`;
+            case "location":
+              return `Location: ${(targetId && locationNames.get(targetId)) || "Unknown location"}`;
+            case "division":
+              return `Company: ${(targetId && companyNames.get(targetId)) || "Unknown company"}`;
+            case "employment_type":
+              return `Employment type: ${targetId ? humanize(targetId) : "Unknown"}`;
+            case "pay_type":
+              return `Pay type: ${targetId ? humanize(targetId) : "Unknown"}`;
+            case "global":
+              return "All employees";
+            default:
+              return humanize(level);
+          }
+        };
+
+        const enriched = applicable.map((p) => ({
+          ...p,
+          sources: p.sources.map((s) => ({
+            level: s.level,
+            label: labelForSource(s.level, s.targetId),
+            effectiveDate: s.effectiveDate,
+          })),
+        }));
+
+        res.json(enriched);
+      } catch (error) {
+        console.error("Error fetching applicable policies:", error);
+        handleRouteError(res, error, "Failed to fetch applicable policies");
+      }
+    },
+  );
+
+  // Self-service: an employee acknowledges a policy that applies to them and
+  // requires acknowledgment. Consent-gated server-side — the policy must require
+  // acknowledgment AND actually apply to the acting user.
+  app.post("/api/policies/:id/acknowledge", requireAuth, async (req: any, res) => {
+    try {
+      const actingUser = req.authUser as User;
+      const policyId = String(req.params.id);
+
+      const policy = await storage.getPolicy(policyId);
+      if (!policy) {
+        return res.status(404).json({ message: "Policy not found" });
+      }
+      if (!policy.requiresAcknowledgment) {
+        return res.status(400).json({ message: "This policy does not require acknowledgment" });
+      }
+
+      const applicable = await getApplicablePolicies(actingUser);
+      const applies = applicable.find((p) => p.policyId === policyId);
+      if (!applies) {
+        return res.status(403).json({ message: "This policy does not apply to you" });
+      }
+
+      const ack = await storage.createPolicyAcknowledgment({
+        policyId,
+        userId: actingUser.id,
+        policyVersion: policy.version,
+      });
+
+      await writeAuditLog({
+        actorUserId: actingUser.id,
+        action: "policy.acknowledged",
+        targetId: policyId,
+        targetType: "policy",
+        newValue: { policyName: policy.name, policyVersion: policy.version },
+        ...getAuditContext(req),
+      });
+
+      res.status(201).json(ack);
+    } catch (error) {
+      console.error("Error acknowledging policy:", error);
+      handleRouteError(res, error, "Failed to acknowledge policy");
     }
   });
 
