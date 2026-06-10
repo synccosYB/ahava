@@ -20,7 +20,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building } from "lucide-react";
+import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building, Check } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { useAuth } from "@/hooks/use-auth";
 import type { Location, Department, Division, User, LocationAddress } from "@shared/schema";
@@ -788,35 +788,57 @@ function DepartmentsTab() {
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-full p-0" align="start">
+                    <div className="border-b px-3 py-2 text-xs text-muted-foreground" data-testid="text-managers-hint">
+                      Select one or more. The list stays open so you can pick several.
+                    </div>
                     <div className="max-h-60 overflow-y-auto p-1">
                       {eligibleManagers.length === 0 ? (
                         <p className="p-3 text-sm text-muted-foreground">No managers available</p>
                       ) : (
-                        eligibleManagers.map((u) => (
-                          <div
-                            key={u.id}
-                            role="button"
-                            tabIndex={0}
-                            className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm cursor-pointer hover:bg-accent"
-                            data-testid={`option-manager-${u.id}`}
-                            onClick={() => toggleManager(u.id)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                toggleManager(u.id);
-                              }
-                            }}
-                          >
-                            <Checkbox
-                              checked={form.managerIds.includes(u.id)}
-                              className="pointer-events-none"
-                              data-testid={`checkbox-manager-${u.id}`}
-                            />
-                            {u.firstName} {u.lastName}
-                          </div>
-                        ))
+                        eligibleManagers.map((u) => {
+                          const isSelected = form.managerIds.includes(u.id);
+                          return (
+                            <div
+                              key={u.id}
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={isSelected}
+                              className={`flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm cursor-pointer hover:bg-accent ${isSelected ? "bg-accent font-medium" : ""}`}
+                              data-testid={`option-manager-${u.id}`}
+                              onClick={() => toggleManager(u.id)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  toggleManager(u.id);
+                                }
+                              }}
+                            >
+                              <Checkbox
+                                checked={isSelected}
+                                className="pointer-events-none"
+                                data-testid={`checkbox-manager-${u.id}`}
+                              />
+                              <span className="flex-1">{u.firstName} {u.lastName}</span>
+                              {isSelected && <Check className="h-4 w-4 shrink-0 text-primary" data-testid={`check-manager-${u.id}`} />}
+                            </div>
+                          );
+                        })
                       )}
                     </div>
+                    {eligibleManagers.length > 0 && (
+                      <div className="border-t p-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="w-full justify-center"
+                          onClick={() => setManagersPopoverOpen(false)}
+                          data-testid="button-managers-done"
+                        >
+                          Done
+                        </Button>
+                      </div>
+                    )}
                   </PopoverContent>
                 </Popover>
                 {form.managerIds.length > 0 && (
