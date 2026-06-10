@@ -16,6 +16,8 @@ import {
   userRoles,
   userPermissionOverrides,
   userAccessScopes,
+  employeeDepartments,
+  employeeLocations,
   policyTypes,
 } from "./models/auth";
 
@@ -35,9 +37,13 @@ export {
   userRoles,
   userPermissionOverrides,
   userAccessScopes,
+  employeeDepartments,
+  employeeLocations,
   policyTypes,
   passwordResetTokens,
   normalizeEmail,
+  userDepartmentIds,
+  userLocationIds,
 } from "./models/auth";
 export type {
   User,
@@ -64,6 +70,10 @@ export type {
   UserRole,
   UserPermissionOverride,
   UserAccessScope,
+  EmployeeDepartment,
+  InsertEmployeeDepartment,
+  EmployeeLocation,
+  InsertEmployeeLocation,
   PolicyType,
   InsertPolicyType,
   PasswordResetToken,
@@ -77,6 +87,8 @@ export {
   insertLocationAddressSchema,
   insertDepartmentSchema,
   insertDepartmentManagerSchema,
+  insertEmployeeDepartmentSchema,
+  insertEmployeeLocationSchema,
   insertRoleSchema,
   insertPermissionSchema,
   insertPolicyTypeSchema,
@@ -669,6 +681,18 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   userAccessScopes: many(userAccessScopes),
   ptoSettings: one(employeePtoSettings, { fields: [users.id], references: [employeePtoSettings.userId] }),
   attendanceExceptions: many(attendanceExceptions),
+  employeeDepartments: many(employeeDepartments),
+  employeeLocations: many(employeeLocations),
+}));
+
+export const employeeDepartmentsRelations = relations(employeeDepartments, ({ one }) => ({
+  user: one(users, { fields: [employeeDepartments.userId], references: [users.id] }),
+  department: one(departments, { fields: [employeeDepartments.departmentId], references: [departments.id] }),
+}));
+
+export const employeeLocationsRelations = relations(employeeLocations, ({ one }) => ({
+  user: one(users, { fields: [employeeLocations.userId], references: [users.id] }),
+  location: one(locations, { fields: [employeeLocations.locationId], references: [locations.id] }),
 }));
 
 export const rolesRelations = relations(roles, ({ one, many }) => ({

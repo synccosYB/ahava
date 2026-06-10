@@ -344,6 +344,13 @@
       "when": 1779900000000,
       "tag": "0048_punch_logs_one_open_per_employee",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1780000000000,
+      "tag": "0049_employee_departments_locations",
+      "breakpoints": true
     }
   ]
 }

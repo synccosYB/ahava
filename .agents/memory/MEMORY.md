@@ -1,1 +1,2 @@
 - [Post-login auth state](auth-login-state.md) — login success must hard-reload, not queryClient.clear()+setQueryData (clear() races a 401 refetch and bounces users back to login).
+- [Employee dept/loc membership](employee-dept-loc-membership.md) — employees are M2M with depts/locations; match on ANY via userDepartmentIds()/userLocationIds(), never raw u.departmentId/locationId; legacy cols are first-element compat shim.

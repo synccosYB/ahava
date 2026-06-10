@@ -57,6 +57,8 @@ import {
   type UserPermissionOverride,
   userAccessScopes,
   type UserAccessScope,
+  employeeDepartments,
+  employeeLocations,
   ptoPolicies,
   type PtoPolicy,
   type InsertPtoPolicy,
@@ -180,6 +182,8 @@ import {
   type InsertBiometricSupervisorOverride,
   isSaneTimeOffHours,
   MAX_TIME_OFF_HOURS_PER_REQUEST,
+  userDepartmentIds,
+  userLocationIds,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, isNotNull, type SQL } from "drizzle-orm";
@@ -232,6 +236,7 @@ function isOpenPunchUniqueViolation(err: unknown): boolean {
 export interface UsersPageOptions {
   search?: string;
   departmentId?: string;
+  locationId?: string;
   companyId?: string;
   taxClass?: string;
   // "none" = users with no certifications; any other value = users with at
@@ -249,6 +254,10 @@ export interface IStorage {
   getUsersPage(opts: UsersPageOptions): Promise<{ rows: User[]; total: number }>;
   updateUserRole(id: string, role: string): Promise<User | undefined>;
   updateUserDepartment(id: string, departmentId: string): Promise<User | undefined>;
+  getUserDepartmentIds(userId: string): Promise<string[]>;
+  getUserLocationIds(userId: string): Promise<string[]>;
+  setUserDepartmentIds(userId: string, departmentIds: string[]): Promise<string[]>;
+  setUserLocationIds(userId: string, locationIds: string[]): Promise<string[]>;
 
   getCompany(id: string): Promise<Company | undefined>;
   getAllCompanies(): Promise<Company[]>;
@@ -367,6 +376,7 @@ export interface IStorage {
   getAttendanceForUserOnDate(userId: string, workDate: string): Promise<PunchLog | undefined>;
 
   getUsersByDepartment(departmentId: string): Promise<User[]>;
+  getUsersByLocation(locationId: string): Promise<User[]>;
   getProcessedTimeOffRequests(filters?: {
     reviewerId?: string;
     departmentId?: string;
@@ -771,9 +781,43 @@ function punchLogToLegacy(log: PunchLog): PunchLog & { userId: string; date: str
 }
 
 export class DatabaseStorage implements IStorage {
+  // Attach the many-to-many department/location memberships onto user rows in a
+  // single batched pair of queries (avoids N+1). Falls back gracefully: a user
+  // with no join rows keeps an empty array, so `userDepartmentIds`/`userLocationIds`
+  // can still fall back to the legacy single column for un-migrated rows.
+  private async hydrateUsers<T extends User>(rows: T[]): Promise<T[]> {
+    if (rows.length === 0) return rows;
+    const ids = rows.map((u) => u.id);
+    const [deptRows, locRows] = await Promise.all([
+      db
+        .select({ userId: employeeDepartments.userId, departmentId: employeeDepartments.departmentId })
+        .from(employeeDepartments)
+        .where(inArray(employeeDepartments.userId, ids)),
+      db
+        .select({ userId: employeeLocations.userId, locationId: employeeLocations.locationId })
+        .from(employeeLocations)
+        .where(inArray(employeeLocations.userId, ids)),
+    ]);
+    const deptMap = new Map<string, string[]>();
+    for (const r of deptRows) {
+      (deptMap.get(r.userId) ?? deptMap.set(r.userId, []).get(r.userId)!).push(r.departmentId);
+    }
+    const locMap = new Map<string, string[]>();
+    for (const r of locRows) {
+      (locMap.get(r.userId) ?? locMap.set(r.userId, []).get(r.userId)!).push(r.locationId);
+    }
+    for (const u of rows) {
+      u.departmentIds = deptMap.get(u.id) ?? (u.departmentId ? [u.departmentId] : []);
+      u.locationIds = locMap.get(u.id) ?? (u.locationId ? [u.locationId] : []);
+    }
+    return rows;
+  }
+
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
-    return user;
+    if (!user) return undefined;
+    const [hydrated] = await this.hydrateUsers([user]);
+    return hydrated;
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
@@ -783,11 +827,14 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(users)
       .where(sql`lower(${users.email}) = ${normalized}`);
-    return user;
+    if (!user) return undefined;
+    const [hydrated] = await this.hydrateUsers([user]);
+    return hydrated;
   }
 
   async getAllUsers(): Promise<User[]> {
-    return db.select().from(users);
+    const rows = await db.select().from(users);
+    return this.hydrateUsers(rows);
   }
 
   async getUsersPage(opts: UsersPageOptions): Promise<{ rows: User[]; total: number }> {
@@ -801,7 +848,18 @@ export class DatabaseStorage implements IStorage {
         sql`(${nameExpr} like lower(${like}) or lower(coalesce(${users.email}, '')) like lower(${like}))` as SQL,
       );
     }
-    if (opts.departmentId) conditions.push(eq(users.departmentId, opts.departmentId));
+    // Membership semantics: match an employee assigned to the department via the
+    // many-to-many join OR the legacy single column (kept in sync as a shim).
+    if (opts.departmentId) {
+      conditions.push(
+        sql`(${users.departmentId} = ${opts.departmentId} or exists (select 1 from ${employeeDepartments} ed where ed.user_id = ${users.id} and ed.department_id = ${opts.departmentId}))` as SQL,
+      );
+    }
+    if (opts.locationId) {
+      conditions.push(
+        sql`(${users.locationId} = ${opts.locationId} or exists (select 1 from ${employeeLocations} el where el.user_id = ${users.id} and el.location_id = ${opts.locationId}))` as SQL,
+      );
+    }
     if (opts.companyId) conditions.push(eq(users.companyId, opts.companyId));
     if (opts.taxClass) {
       // No employment profile defaults to "W-2" (matches the route/UI default),
@@ -851,7 +909,7 @@ export class DatabaseStorage implements IStorage {
       .where(whereClause);
 
     const [rowsResult, countResult] = await Promise.all([rowsQuery, countQuery]);
-    const rows = rowsResult.map((r: any) => r.users as User);
+    const rows = await this.hydrateUsers(rowsResult.map((r: any) => r.users as User));
     const total = Number(countResult[0]?.value ?? 0);
     return { rows, total };
   }
@@ -862,8 +920,67 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateUserDepartment(id: string, departmentId: string): Promise<User | undefined> {
-    const [user] = await db.update(users).set({ departmentId, updatedAt: new Date() }).where(eq(users.id, id)).returning();
-    return user;
+    // Single-value setter kept for compatibility. Replaces the full membership
+    // set with this one department so the join table stays the source of truth.
+    await this.setUserDepartmentIds(id, departmentId ? [departmentId] : []);
+    return this.getUser(id);
+  }
+
+  async getUserDepartmentIds(userId: string): Promise<string[]> {
+    const rows = await db
+      .select({ departmentId: employeeDepartments.departmentId })
+      .from(employeeDepartments)
+      .where(eq(employeeDepartments.userId, userId));
+    return rows.map((r) => r.departmentId);
+  }
+
+  async getUserLocationIds(userId: string): Promise<string[]> {
+    const rows = await db
+      .select({ locationId: employeeLocations.locationId })
+      .from(employeeLocations)
+      .where(eq(employeeLocations.userId, userId));
+    return rows.map((r) => r.locationId);
+  }
+
+  // Replace an employee's full department membership set. Also syncs the legacy
+  // `users.department_id` shim to one representative (the first) for any code
+  // still reading the single column. Returns the deduped set written.
+  async setUserDepartmentIds(userId: string, departmentIds: string[]): Promise<string[]> {
+    const dedup = Array.from(new Set((departmentIds || []).filter(Boolean)));
+    await db.transaction(async (tx) => {
+      await tx.delete(employeeDepartments).where(eq(employeeDepartments.userId, userId));
+      if (dedup.length > 0) {
+        await tx
+          .insert(employeeDepartments)
+          .values(dedup.map((departmentId) => ({ userId, departmentId })))
+          .onConflictDoNothing();
+      }
+      await tx
+        .update(users)
+        .set({ departmentId: dedup[0] ?? null, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+    });
+    return dedup;
+  }
+
+  // Replace an employee's full location membership set; syncs the legacy
+  // `users.location_id` shim to one representative.
+  async setUserLocationIds(userId: string, locationIds: string[]): Promise<string[]> {
+    const dedup = Array.from(new Set((locationIds || []).filter(Boolean)));
+    await db.transaction(async (tx) => {
+      await tx.delete(employeeLocations).where(eq(employeeLocations.userId, userId));
+      if (dedup.length > 0) {
+        await tx
+          .insert(employeeLocations)
+          .values(dedup.map((locationId) => ({ userId, locationId })))
+          .onConflictDoNothing();
+      }
+      await tx
+        .update(users)
+        .set({ locationId: dedup[0] ?? null, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+    });
+    return dedup;
   }
 
   async getLocation(id: string): Promise<Location | undefined> {
@@ -1709,7 +1826,7 @@ export class DatabaseStorage implements IStorage {
 
   async searchUsersByName(query: string): Promise<User[]> {
     const pattern = `%${query}%`;
-    return db
+    const rows = await db
       .select()
       .from(users)
       .where(
@@ -1718,6 +1835,7 @@ export class DatabaseStorage implements IStorage {
           ilike(users.lastName, pattern)
         )
       );
+    return this.hydrateUsers(rows);
   }
 
   async getLatestAttendanceForUser(userId: string): Promise<PunchLog | undefined> {
@@ -1741,7 +1859,31 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUsersByDepartment(departmentId: string): Promise<User[]> {
-    return db.select().from(users).where(eq(users.departmentId, departmentId));
+    // Membership: anyone assigned to this department via the join OR the legacy
+    // single column (kept in sync). Mirrors the "is a member of" semantics.
+    const rows = await db
+      .select()
+      .from(users)
+      .where(
+        or(
+          eq(users.departmentId, departmentId),
+          sql`exists (select 1 from ${employeeDepartments} ed where ed.user_id = ${users.id} and ed.department_id = ${departmentId})`,
+        ),
+      );
+    return this.hydrateUsers(rows);
+  }
+
+  async getUsersByLocation(locationId: string): Promise<User[]> {
+    const rows = await db
+      .select()
+      .from(users)
+      .where(
+        or(
+          eq(users.locationId, locationId),
+          sql`exists (select 1 from ${employeeLocations} el where el.user_id = ${users.id} and el.location_id = ${locationId})`,
+        ),
+      );
+    return this.hydrateUsers(rows);
   }
 
   async getProcessedTimeOffRequests(filters?: {
@@ -2142,22 +2284,48 @@ export class DatabaseStorage implements IStorage {
     }
 
     const conditions: any[] = [];
+    const managerLocIds = userLocationIds(user);
+    const managerDeptIds = userDepartmentIds(user);
 
     if (user.companyId) {
       conditions.push(eq(users.companyId, user.companyId));
     }
-    if (user.locationId) {
-      conditions.push(eq(users.locationId, user.locationId));
+    // Membership scope: an employee is in scope if ANY of their location/department
+    // assignments (join OR legacy column) overlaps ANY of the manager's scopes.
+    if (managerLocIds.length > 0) {
+      conditions.push(
+        or(
+          inArray(users.locationId, managerLocIds),
+          inArray(
+            users.id,
+            db
+              .select({ id: employeeLocations.userId })
+              .from(employeeLocations)
+              .where(inArray(employeeLocations.locationId, managerLocIds)),
+          ),
+        ),
+      );
     }
-    if (user.departmentId) {
-      conditions.push(eq(users.departmentId, user.departmentId));
+    if (managerDeptIds.length > 0) {
+      conditions.push(
+        or(
+          inArray(users.departmentId, managerDeptIds),
+          inArray(
+            users.id,
+            db
+              .select({ id: employeeDepartments.userId })
+              .from(employeeDepartments)
+              .where(inArray(employeeDepartments.departmentId, managerDeptIds)),
+          ),
+        ),
+      );
     }
 
     if (conditions.length === 0) {
       return new Set([user.id]);
     }
 
-    const scopedUsers = await db.select().from(users).where(and(...conditions));
+    const scopedUsers = await db.select({ id: users.id }).from(users).where(and(...conditions));
     return new Set(scopedUsers.map(u => u.id));
   }
 

@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { writeAuditLog } from "./audit";
 import type { RoleAssignmentRule, User, EmploymentProfile } from "@shared/schema";
+import { userDepartmentIds, userLocationIds } from "@shared/schema";
 
 const ALLOWED_FIELDS = new Set([
   "companyId",
@@ -66,8 +67,9 @@ export function isAllowedRole(role: string): boolean {
 function getFieldValue(field: string, user: User, profile: EmploymentProfile | undefined): unknown {
   switch (field) {
     case "companyId": return user.companyId;
-    case "locationId": return user.locationId;
-    case "departmentId": return user.departmentId;
+    // Membership-aware: return the full set so eq/in match if ANY assignment matches.
+    case "locationId": return userLocationIds(user);
+    case "departmentId": return userDepartmentIds(user);
     case "employmentType": return profile?.employmentType ?? null;
     case "payType": return profile?.payType ?? null;
     case "overtimeEligible": return profile?.overtimeEligible ?? null;
@@ -84,6 +86,20 @@ function evalNode(node: Condition, user: User, profile: EmploymentProfile | unde
   }
   const leaf = node;
   const value = getFieldValue(leaf.field, user, profile);
+  // Membership fields (departmentId/locationId) resolve to an array of all
+  // assignments; an employee matches if ANY assignment satisfies the condition.
+  if (Array.isArray(value)) {
+    const members = value as unknown[];
+    switch (leaf.op) {
+      case "eq": return members.includes(leaf.value as never);
+      case "neq": return !members.includes(leaf.value as never);
+      case "in": return Array.isArray(leaf.value) && members.some((m) => (leaf.value as unknown[]).includes(m as never));
+      case "nin": return Array.isArray(leaf.value) && !members.some((m) => (leaf.value as unknown[]).includes(m as never));
+      case "exists": return members.length > 0;
+      case "not_exists": return members.length === 0;
+      default: return false;
+    }
+  }
   switch (leaf.op) {
     case "eq": return value === leaf.value;
     case "neq": return value !== leaf.value;

@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { MultiSelect } from "@/components/ui/multi-select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
@@ -22,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -30,6 +31,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { formatCurrency, formatHoursMinutes, formatDate } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
+import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
@@ -335,8 +337,12 @@ export default function EmployeesPage() {
               </TableHeader>
               <TableBody>
                 {users.map((emp) => {
-                  const dept = departments?.find((d) => d.id === emp.departmentId);
-                  const loc = locations?.find((l) => l.id === emp.locationId);
+                  const empDeptNames = userDepartmentIds(emp)
+                    .map((id) => departments?.find((d) => d.id === id)?.name)
+                    .filter((n): n is string => Boolean(n));
+                  const empLocNames = userLocationIds(emp)
+                    .map((id) => locations?.find((l) => l.id === id)?.name)
+                    .filter((n): n is string => Boolean(n));
                   const div = divisions?.find((d) => d.id === emp.companyId);
                   return (
                     <TableRow
@@ -377,8 +383,24 @@ export default function EmployeesPage() {
                         </div>
                       </TableCell>
                       <TableCell data-testid={`text-employee-company-${emp.id}`}>{div?.name || "—"}</TableCell>
-                      <TableCell data-testid={`text-employee-dept-${emp.id}`}>{dept?.name || "—"}</TableCell>
-                      <TableCell data-testid={`text-employee-loc-${emp.id}`}>{loc?.name || "—"}</TableCell>
+                      <TableCell data-testid={`text-employee-dept-${emp.id}`}>
+                        {empDeptNames.length === 0 ? "—" : (
+                          <div className="flex flex-wrap gap-1">
+                            {empDeptNames.map((name) => (
+                              <Badge key={name} variant="outline" className="text-xs">{name}</Badge>
+                            ))}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell data-testid={`text-employee-loc-${emp.id}`}>
+                        {empLocNames.length === 0 ? "—" : (
+                          <div className="flex flex-wrap gap-1">
+                            {empLocNames.map((name) => (
+                              <Badge key={name} variant="outline" className="text-xs">{name}</Badge>
+                            ))}
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell data-testid={`text-employee-tax-class-${emp.id}`}>
                         <Badge variant="outline">{taxClassByUser.get(emp.id) || "W-2"}</Badge>
                       </TableCell>
@@ -756,8 +778,8 @@ function AddEmployeeDialog({
     email: "",
     role: "employee",
     companyId: "",
-    departmentId: "",
-    locationId: "",
+    departmentIds: [] as string[],
+    locationIds: [] as string[],
     employmentType: "full_time",
     taxClassification: "W-2",
     hireDate: new Date().toISOString().split("T")[0],
@@ -808,14 +830,16 @@ function AddEmployeeDialog({
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const body: Record<string, string | number | null> = {
+      const body: Record<string, string | number | null | string[]> = {
         firstName: formData.firstName,
         lastName: formData.lastName,
         email: formData.email.trim().toLowerCase(),
         role: formData.role,
         companyId: formData.companyId || null,
-        departmentId: formData.departmentId || null,
-        locationId: formData.locationId || null,
+        departmentIds: formData.departmentIds,
+        locationIds: formData.locationIds,
+        departmentId: formData.departmentIds[0] || null,
+        locationId: formData.locationIds[0] || null,
         employmentType: formData.employmentType,
         taxClassification: formData.taxClassification,
         hireDate: formData.hireDate,
@@ -878,7 +902,7 @@ function AddEmployeeDialog({
     setEmailError(null);
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
-      companyId: "", departmentId: "", locationId: "", employmentType: "full_time",
+      companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
       taxClassification: "W-2",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
@@ -993,7 +1017,7 @@ function AddEmployeeDialog({
                     setCreateCompanyOpen(true);
                     return;
                   }
-                  setFormData({ ...formData, companyId: v, departmentId: "", locationId: "" });
+                  setFormData({ ...formData, companyId: v, departmentIds: [], locationIds: [] });
                 }}
               >
                 <SelectTrigger data-testid="select-add-division">
@@ -1017,11 +1041,15 @@ function AddEmployeeDialog({
         {step === 2 && (
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>Department</Label>
-              <Select
-                value={formData.departmentId || "none"}
-                onValueChange={(v) => {
-                  if (v === INLINE_ADD_NEW_VALUE) {
+              <div className="flex items-center justify-between">
+                <Label>Departments</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  data-testid="button-add-new-department"
+                  onClick={() => {
                     if (!formData.companyId) {
                       toast({
                         title: "Select a company first",
@@ -1031,33 +1059,43 @@ function AddEmployeeDialog({
                       return;
                     }
                     setCreateDepartmentOpen(true);
-                    return;
-                  }
-                  setFormData({ ...formData, departmentId: v === "none" ? "" : v });
-                }}
-              >
-                <SelectTrigger data-testid="select-add-department">
-                  <SelectValue placeholder="Select department" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No Department</SelectItem>
-                  {scopedDepartments.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-                  ))}
-                  <PermissionedAddNewItem
-                    permission="departments.create"
-                    label="Add new department"
-                    testId="option-add-new-department"
-                  />
-                </SelectContent>
-              </Select>
+                  }}
+                >
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Add new
+                </Button>
+              </div>
+              <MultiSelect
+                options={scopedDepartments.map((d) => ({ label: d.name, value: d.id }))}
+                selected={formData.departmentIds}
+                onChange={(values) => setFormData({ ...formData, departmentIds: values })}
+                placeholder="Select departments"
+                allLabel="No Department"
+                emptyMessage="No departments available."
+                data-testid="select-add-department"
+              />
+              {formData.departmentIds.length > 0 && (
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {formData.departmentIds.map((id) => {
+                    const d = scopedDepartments.find((x) => x.id === id);
+                    return (
+                      <Badge key={id} variant="secondary" data-testid={`badge-add-department-${id}`}>
+                        {d?.name || id}
+                      </Badge>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <div className="space-y-2">
-              <Label>Location</Label>
-              <Select
-                value={formData.locationId || "none"}
-                onValueChange={(v) => {
-                  if (v === INLINE_ADD_NEW_VALUE) {
+              <div className="flex items-center justify-between">
+                <Label>Locations</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  data-testid="button-add-new-location"
+                  onClick={() => {
                     if (!formData.companyId) {
                       toast({
                         title: "Select a company first",
@@ -1067,26 +1105,32 @@ function AddEmployeeDialog({
                       return;
                     }
                     setCreateLocationOpen(true);
-                    return;
-                  }
-                  setFormData({ ...formData, locationId: v === "none" ? "" : v });
-                }}
-              >
-                <SelectTrigger data-testid="select-add-location">
-                  <SelectValue placeholder="Select location" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No Location</SelectItem>
-                  {scopedLocations.map((l) => (
-                    <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
-                  ))}
-                  <PermissionedAddNewItem
-                    permission="locations.manage"
-                    label="Add new location"
-                    testId="option-add-new-location"
-                  />
-                </SelectContent>
-              </Select>
+                  }}
+                >
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Add new
+                </Button>
+              </div>
+              <MultiSelect
+                options={scopedLocations.map((l) => ({ label: l.name, value: l.id }))}
+                selected={formData.locationIds}
+                onChange={(values) => setFormData({ ...formData, locationIds: values })}
+                placeholder="Select locations"
+                allLabel="No Location"
+                emptyMessage="No locations available."
+                data-testid="select-add-location"
+              />
+              {formData.locationIds.length > 0 && (
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {formData.locationIds.map((id) => {
+                    const l = scopedLocations.find((x) => x.id === id);
+                    return (
+                      <Badge key={id} variant="secondary" data-testid={`badge-add-location-${id}`}>
+                        {l?.name || id}
+                      </Badge>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Employment Type</Label>
@@ -1272,8 +1316,8 @@ function AddEmployeeDialog({
           setFormData((prev) => ({
             ...prev,
             companyId: company.id,
-            departmentId: "",
-            locationId: "",
+            departmentIds: [],
+            locationIds: [],
           }));
         }}
       />
@@ -1283,7 +1327,12 @@ function AddEmployeeDialog({
         companyId={formData.companyId}
         companyName={selectedCompanyName}
         onCreated={(dept) => {
-          setFormData((prev) => ({ ...prev, departmentId: dept.id }));
+          setFormData((prev) => ({
+            ...prev,
+            departmentIds: prev.departmentIds.includes(dept.id)
+              ? prev.departmentIds
+              : [...prev.departmentIds, dept.id],
+          }));
         }}
       />
       <CreateLocationDialog
@@ -1292,7 +1341,12 @@ function AddEmployeeDialog({
         companyId={formData.companyId}
         companyName={selectedCompanyName}
         onCreated={(location) => {
-          setFormData((prev) => ({ ...prev, locationId: location.id }));
+          setFormData((prev) => ({
+            ...prev,
+            locationIds: prev.locationIds.includes(location.id)
+              ? prev.locationIds
+              : [...prev.locationIds, location.id],
+          }));
         }}
       />
     </Dialog>
@@ -1381,6 +1435,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       companyId?: string | null;
       departmentId?: string | null;
       locationId?: string | null;
+      departmentIds?: string[];
+      locationIds?: string[];
       firstName?: string;
       lastName?: string;
       email?: string;
@@ -1768,11 +1824,16 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </Select>
               </div>
               <div>
-                <Label className="text-muted-foreground text-xs">Department</Label>
-                <Select
-                  value={user?.departmentId || "none"}
-                  onValueChange={(v) => {
-                    if (v === INLINE_ADD_NEW_VALUE) {
+                <div className="flex items-center justify-between">
+                  <Label className="text-muted-foreground text-xs">Departments</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={!user?.companyId}
+                    data-testid="button-profile-add-new-department"
+                    onClick={() => {
                       if (!user?.companyId) {
                         toast({
                           title: "Select a company first",
@@ -1782,34 +1843,45 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                         return;
                       }
                       setProfileCreateDepartmentOpen(true);
-                      return;
-                    }
-                    updateMutation.mutate({ departmentId: v === "none" ? null : v });
-                  }}
+                    }}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" /> Add new
+                  </Button>
+                </div>
+                <MultiSelect
+                  options={scopedDepartments.map((d) => ({ label: d.name, value: d.id }))}
+                  selected={user ? userDepartmentIds(user) : []}
+                  onChange={(values) => updateMutation.mutate({ departmentIds: values })}
+                  placeholder="Select departments"
+                  allLabel="No Department"
+                  emptyMessage="No departments available."
                   disabled={!user?.companyId}
-                >
-                  <SelectTrigger data-testid="select-profile-department">
-                    <SelectValue placeholder="Select department" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">No Department</SelectItem>
-                    {scopedDepartments.map((d) => (
-                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-                    ))}
-                    <PermissionedAddNewItem
-                      permission="departments.create"
-                      label="Add new department"
-                      testId="option-profile-add-new-department"
-                    />
-                  </SelectContent>
-                </Select>
+                  data-testid="select-profile-department"
+                />
+                {user && userDepartmentIds(user).length > 0 && (
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {userDepartmentIds(user).map((id) => {
+                      const d = scopedDepartments.find((x) => x.id === id) || departments?.find((x) => x.id === id);
+                      return (
+                        <Badge key={id} variant="secondary" data-testid={`badge-profile-department-${id}`}>
+                          {d?.name || id}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               <div>
-                <Label className="text-muted-foreground text-xs">Location</Label>
-                <Select
-                  value={user?.locationId || "none"}
-                  onValueChange={(v) => {
-                    if (v === INLINE_ADD_NEW_VALUE) {
+                <div className="flex items-center justify-between">
+                  <Label className="text-muted-foreground text-xs">Locations</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={!user?.companyId}
+                    data-testid="button-profile-add-new-location"
+                    onClick={() => {
                       if (!user?.companyId) {
                         toast({
                           title: "Select a company first",
@@ -1819,27 +1891,33 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                         return;
                       }
                       setProfileCreateLocationOpen(true);
-                      return;
-                    }
-                    updateMutation.mutate({ locationId: v === "none" ? null : v });
-                  }}
+                    }}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" /> Add new
+                  </Button>
+                </div>
+                <MultiSelect
+                  options={scopedLocations.map((l) => ({ label: l.name, value: l.id }))}
+                  selected={user ? userLocationIds(user) : []}
+                  onChange={(values) => updateMutation.mutate({ locationIds: values })}
+                  placeholder="Select locations"
+                  allLabel="No Location"
+                  emptyMessage="No locations available."
                   disabled={!user?.companyId}
-                >
-                  <SelectTrigger data-testid="select-profile-location">
-                    <SelectValue placeholder="Select location" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">No Location</SelectItem>
-                    {scopedLocations.map((l) => (
-                      <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
-                    ))}
-                    <PermissionedAddNewItem
-                      permission="locations.manage"
-                      label="Add new location"
-                      testId="option-profile-add-new-location"
-                    />
-                  </SelectContent>
-                </Select>
+                  data-testid="select-profile-location"
+                />
+                {user && userLocationIds(user).length > 0 && (
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {userLocationIds(user).map((id) => {
+                      const l = scopedLocations.find((x) => x.id === id) || locations?.find((x) => x.id === id);
+                      return (
+                        <Badge key={id} variant="secondary" data-testid={`badge-profile-location-${id}`}>
+                          {l?.name || id}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -1856,7 +1934,9 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             companyId={user?.companyId || ""}
             companyName={div?.name}
             onCreated={(dept) => {
-              updateMutation.mutate({ departmentId: dept.id });
+              const existing = user ? userDepartmentIds(user) : [];
+              const next = existing.includes(dept.id) ? existing : [...existing, dept.id];
+              updateMutation.mutate({ departmentIds: next });
             }}
           />
           <CreateLocationDialog
@@ -1865,7 +1945,9 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             companyId={user?.companyId || ""}
             companyName={div?.name}
             onCreated={(location) => {
-              updateMutation.mutate({ locationId: location.id });
+              const existing = user ? userLocationIds(user) : [];
+              const next = existing.includes(location.id) ? existing : [...existing, location.id];
+              updateMutation.mutate({ locationIds: next });
             }}
           />
           <div className="mt-4">

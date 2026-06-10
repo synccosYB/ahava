@@ -9,6 +9,7 @@ import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
 import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport } from "@shared/schema";
+import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
@@ -320,10 +321,12 @@ async function buildDeptManagerNameMap(
 
   const roleManagersByDept = new Map<string, User[]>();
   for (const u of Array.from(userMap.values())) {
-    if (u.role === "manager" && !u.deactivatedAt && u.departmentId) {
-      const arr = roleManagersByDept.get(u.departmentId) || [];
-      arr.push(u);
-      roleManagersByDept.set(u.departmentId, arr);
+    if (u.role === "manager" && !u.deactivatedAt) {
+      for (const deptId of userDepartmentIds(u)) {
+        const arr = roleManagersByDept.get(deptId) || [];
+        arr.push(u);
+        roleManagersByDept.set(deptId, arr);
+      }
     }
   }
 
@@ -542,6 +545,10 @@ export async function registerRoutes(
     companyId: z.string().optional().nullable(),
     locationId: z.string().optional().nullable(),
     departmentId: z.string().optional().nullable(),
+    // Many-to-many assignments. When provided, these supersede the single
+    // departmentId/locationId (which are kept populated as a compat shim).
+    departmentIds: z.array(z.string()).optional(),
+    locationIds: z.array(z.string()).optional(),
     employmentType: z.string().optional(),
     taxClassification: z.enum(["W-2", "1099"]).optional(),
     hireDate: z.string().optional(),
@@ -620,6 +627,13 @@ export async function registerRoutes(
       departmentId: parsed.data.departmentId || null,
     });
 
+    // Persist many-to-many department/location memberships. When the arrays are
+    // provided they win; otherwise fall back to the single value just written.
+    const newDeptIds = parsed.data.departmentIds ?? (parsed.data.departmentId ? [parsed.data.departmentId] : []);
+    const newLocIds = parsed.data.locationIds ?? (parsed.data.locationId ? [parsed.data.locationId] : []);
+    await storage.setUserDepartmentIds(newUser.id, newDeptIds);
+    await storage.setUserLocationIds(newUser.id, newLocIds);
+
     await storage.createEmploymentProfile({
       userId: newUser.id,
       employmentType: parsed.data.employmentType || "full_time",
@@ -679,6 +693,9 @@ export async function registerRoutes(
     companyId: z.string().nullable().optional(),
     departmentId: z.string().nullable().optional(),
     locationId: z.string().nullable().optional(),
+    // Many-to-many memberships; when provided they replace the full set.
+    departmentIds: z.array(z.string()).optional(),
+    locationIds: z.array(z.string()).optional(),
     firstName: z.string().trim().min(1).optional(),
     lastName: z.string().trim().min(1).optional(),
     email: z
@@ -860,15 +877,31 @@ export async function registerRoutes(
       }
     }
 
+    // Resolve the effective membership sets. Arrays (when provided) take
+    // precedence; otherwise fall back to the single field, then to the existing
+    // hydrated membership. The legacy single column tracks the first element.
+    const deptIdsProvided = parsed.data.departmentIds !== undefined;
+    const locIdsProvided = parsed.data.locationIds !== undefined;
+    const nextDeptIds = deptIdsProvided
+      ? Array.from(new Set(parsed.data.departmentIds!.filter(Boolean)))
+      : parsed.data.departmentId !== undefined
+        ? (parsed.data.departmentId ? [parsed.data.departmentId] : [])
+        : userDepartmentIds(existing);
+    const nextLocIds = locIdsProvided
+      ? Array.from(new Set(parsed.data.locationIds!.filter(Boolean)))
+      : parsed.data.locationId !== undefined
+        ? (parsed.data.locationId ? [parsed.data.locationId] : [])
+        : userLocationIds(existing);
+
     const next = {
       companyId: parsed.data.companyId !== undefined ? parsed.data.companyId : existing.companyId,
-      locationId: parsed.data.locationId !== undefined ? parsed.data.locationId : existing.locationId,
-      departmentId: parsed.data.departmentId !== undefined ? parsed.data.departmentId : existing.departmentId,
+      locationId: nextLocIds[0] ?? null,
+      departmentId: nextDeptIds[0] ?? null,
     };
 
     if (next.companyId) {
-      if (next.locationId) {
-        const loc = await storage.getLocation(next.locationId);
+      for (const locId of nextLocIds) {
+        const loc = await storage.getLocation(locId);
         if (!loc) {
           return res.status(400).json({ message: "Location does not belong to the selected company" });
         }
@@ -880,14 +913,14 @@ export async function registerRoutes(
           return res.status(400).json({ message: "Location does not belong to the selected company" });
         }
       }
-      if (next.departmentId) {
-        const dept = await storage.getDepartment(next.departmentId);
+      for (const deptId of nextDeptIds) {
+        const dept = await storage.getDepartment(deptId);
         if (!dept || (dept.companyId && dept.companyId !== next.companyId)) {
           return res.status(400).json({ message: "Department does not belong to the selected company" });
         }
       }
     } else {
-      if (next.locationId || next.departmentId) {
+      if (nextLocIds.length > 0 || nextDeptIds.length > 0) {
         return res.status(400).json({ message: "Cannot assign location or department without a company" });
       }
     }
@@ -904,6 +937,15 @@ export async function registerRoutes(
       ...identityPatch,
     });
     if (!updated) return res.status(404).json({ message: "User not found" });
+
+    // Sync the many-to-many membership whenever department/location was touched
+    // (single field or array). Keeps the join tables authoritative.
+    if (deptIdsProvided || parsed.data.departmentId !== undefined || parsed.data.companyId !== undefined) {
+      await storage.setUserDepartmentIds(String(req.params.id), nextDeptIds);
+    }
+    if (locIdsProvided || parsed.data.locationId !== undefined || parsed.data.companyId !== undefined) {
+      await storage.setUserLocationIds(String(req.params.id), nextLocIds);
+    }
 
     try {
       const actor = (req as any).authUser as User | undefined;
@@ -1265,9 +1307,12 @@ export async function registerRoutes(
     let allowed = requester.id === targetId || requester.role === "admin";
     if (!allowed && requester.role === "manager") {
       const target = await storage.getUser(targetId);
-      if (target?.departmentId) {
-        const managedDepts = await storage.getDepartmentsForManager(requester.id);
-        allowed = managedDepts.some((d) => d.id === target.departmentId);
+      if (target) {
+        const targetDeptIds = userDepartmentIds(target);
+        if (targetDeptIds.length > 0) {
+          const managedDepts = await storage.getDepartmentsForManager(requester.id);
+          allowed = managedDepts.some((d) => targetDeptIds.includes(d.id));
+        }
       }
     }
     if (!allowed) return res.status(403).json({ message: "Forbidden" });
@@ -2383,9 +2428,14 @@ export async function registerRoutes(
       }
       return allUserIds;
     }
-    if (user.departmentId) {
-      const deptUsers = await storage.getUsersByDepartment(user.departmentId);
-      return new Set(deptUsers.filter(u => u.id !== user.id).map(u => u.id));
+    const ownDeptIds = userDepartmentIds(user);
+    if (ownDeptIds.length > 0) {
+      const teamIds = new Set<string>();
+      for (const deptId of ownDeptIds) {
+        const deptUsers = await storage.getUsersByDepartment(deptId);
+        deptUsers.forEach(u => { if (u.id !== user.id) teamIds.add(u.id); });
+      }
+      return teamIds;
     }
     return new Set();
   }
@@ -4991,10 +5041,10 @@ export async function registerRoutes(
     } else if (user.role === "admin") {
       let filteredUsers = allUsers;
       if (department) {
-        filteredUsers = filteredUsers.filter(u => u.departmentId === department);
+        filteredUsers = filteredUsers.filter(u => userDepartmentIds(u).includes(department));
       }
       if (location) {
-        filteredUsers = filteredUsers.filter(u => u.locationId === location);
+        filteredUsers = filteredUsers.filter(u => userLocationIds(u).includes(location));
       }
       if (filteredUsers.length !== allUsers.length) {
         scopedUserIds = filteredUsers.map(u => u.id);
@@ -5089,7 +5139,7 @@ export async function registerRoutes(
     const weekAttendance = await storage.getAttendanceByDateRange(weekStartStr, today);
 
     const breakdown = depts.map(dept => {
-      const deptUsers = allUsers.filter(u => u.departmentId === dept.id);
+      const deptUsers = allUsers.filter(u => userDepartmentIds(u).includes(dept.id));
       const deptIds = new Set(deptUsers.map(u => u.id));
       const active = todayAttendance.filter(a => deptIds.has(a.employeeId) && a.clockIn && !a.clockOut).length;
       const usingPto = allTimeOff.filter(r =>
@@ -5117,7 +5167,7 @@ export async function registerRoutes(
       };
     });
 
-    const unassigned = allUsers.filter(u => !u.departmentId);
+    const unassigned = allUsers.filter(u => userDepartmentIds(u).length === 0);
     if (unassigned.length > 0) {
       const unassignedIds = new Set(unassigned.map(u => u.id));
       const active = todayAttendance.filter(a => unassignedIds.has(a.employeeId) && a.clockIn && !a.clockOut).length;
@@ -5195,8 +5245,8 @@ export async function registerRoutes(
       let companies = allCompanies;
 
       if (user.role !== "admin") {
-        const deptIds = new Set(scopedUsers.map(u => u.departmentId).filter(Boolean) as string[]);
-        const locIds = new Set(scopedUsers.map(u => u.locationId).filter(Boolean) as string[]);
+        const deptIds = new Set(scopedUsers.flatMap(u => userDepartmentIds(u)));
+        const locIds = new Set(scopedUsers.flatMap(u => userLocationIds(u)));
         const compIds = new Set(scopedUsers.map(u => u.companyId).filter(Boolean) as string[]);
         departments = allDepartments.filter(d => deptIds.has(d.id));
         locations = allLocations.filter(l => locIds.has(l.id));
@@ -5272,13 +5322,14 @@ export async function registerRoutes(
     if (reportType === "employee" && employeeId) {
       filteredUsers = filteredUsers.filter(u => u.id === employeeId);
     } else if (reportType === "team") {
-      if (user.departmentId) {
-        filteredUsers = filteredUsers.filter(u => u.departmentId === user.departmentId);
+      const ownDeptIds = userDepartmentIds(user);
+      if (ownDeptIds.length > 0) {
+        filteredUsers = filteredUsers.filter(u => userDepartmentIds(u).some(d => ownDeptIds.includes(d)));
       }
     }
 
     if (department && department !== "all") {
-      filteredUsers = filteredUsers.filter(u => u.departmentId === department);
+      filteredUsers = filteredUsers.filter(u => userDepartmentIds(u).includes(department));
     }
     if (employeeId && reportType !== "employee") {
       filteredUsers = filteredUsers.filter(u => u.id === employeeId);
@@ -5286,7 +5337,7 @@ export async function registerRoutes(
 
     if (departmentIds && departmentIds.length > 0) {
       const set = new Set(departmentIds);
-      filteredUsers = filteredUsers.filter(u => u.departmentId && set.has(u.departmentId));
+      filteredUsers = filteredUsers.filter(u => userDepartmentIds(u).some(d => set.has(d)));
     }
     if (employeeIds && employeeIds.length > 0) {
       const set = new Set(employeeIds);
@@ -5294,7 +5345,7 @@ export async function registerRoutes(
     }
     if (locationIds && locationIds.length > 0) {
       const set = new Set(locationIds);
-      filteredUsers = filteredUsers.filter(u => u.locationId && set.has(u.locationId));
+      filteredUsers = filteredUsers.filter(u => userLocationIds(u).some(l => set.has(l)));
     }
     if (companyIds && companyIds.length > 0) {
       const set = new Set(companyIds);

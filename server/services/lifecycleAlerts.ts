@@ -9,6 +9,8 @@ import {
   type User,
   type PerformanceReviewCycle,
   type PerformanceReviewReminder,
+  userDepartmentIds,
+  userLocationIds,
 } from "@shared/schema";
 import { and, eq, isNull, or, gt, sql, desc, inArray } from "drizzle-orm";
 import { storage } from "../storage";
@@ -101,9 +103,9 @@ function ruleAppliesTo(rule: RequiredDocumentRule, user: User): boolean {
     case "company":
       return !!rule.companyId && rule.companyId === user.companyId;
     case "location":
-      return !!rule.locationId && rule.locationId === user.locationId;
+      return !!rule.locationId && userLocationIds(user).includes(rule.locationId);
     case "department":
-      return !!rule.departmentId && rule.departmentId === user.departmentId;
+      return !!rule.departmentId && userDepartmentIds(user).includes(rule.departmentId);
     case "employee":
       return !!rule.employeeId && rule.employeeId === user.id;
     default:

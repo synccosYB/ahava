@@ -120,7 +120,35 @@ export const users = pgTable("users", {
 });
 
 export type UpsertUser = typeof users.$inferInsert;
-export type User = typeof users.$inferSelect;
+// `departmentIds`/`locationIds` are the many-to-many memberships, hydrated onto
+// user reads from the `employee_departments` / `employee_locations` join tables.
+// They are optional because not every read path hydrates them; consumers should
+// use `userDepartmentIds`/`userLocationIds` which fall back to the legacy single
+// column when the arrays aren't present.
+export type User = typeof users.$inferSelect & {
+  departmentIds?: string[];
+  locationIds?: string[];
+};
+
+/**
+ * Canonical accessor for an employee's department memberships. Prefers the
+ * hydrated many-to-many `departmentIds`; falls back to the legacy single
+ * `departmentId` column so un-hydrated rows still resolve to a membership set.
+ */
+export function userDepartmentIds(u: { departmentIds?: string[]; departmentId?: string | null }): string[] {
+  if (u.departmentIds && u.departmentIds.length > 0) return u.departmentIds;
+  return u.departmentId ? [u.departmentId] : [];
+}
+
+/**
+ * Canonical accessor for an employee's location memberships. Prefers the
+ * hydrated many-to-many `locationIds`; falls back to the legacy single
+ * `locationId` column.
+ */
+export function userLocationIds(u: { locationIds?: string[]; locationId?: string | null }): string[] {
+  if (u.locationIds && u.locationIds.length > 0) return u.locationIds;
+  return u.locationId ? [u.locationId] : [];
+}
 
 /**
  * Canonical form for `users.email` — trimmed + lowercased so duplicates that
@@ -279,6 +307,54 @@ export const userAccessScopes = pgTable("user_access_scopes", {
 });
 
 export type UserAccessScope = typeof userAccessScopes.$inferSelect;
+
+// Many-to-many: an employee belongs to one OR MORE departments. Mirrors the
+// `location_companies` pivot pattern. The legacy `users.department_id` column
+// is kept as a compatibility shim (populated with one of the assignments).
+export const employeeDepartments = pgTable(
+  "employee_departments",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    departmentId: varchar("department_id").notNull().references(() => departments.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    unique("employee_departments_unique").on(table.userId, table.departmentId),
+    index("IDX_employee_departments_user").on(table.userId),
+    index("IDX_employee_departments_department").on(table.departmentId),
+  ],
+);
+
+export const insertEmployeeDepartmentSchema = createInsertSchema(employeeDepartments).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertEmployeeDepartment = z.infer<typeof insertEmployeeDepartmentSchema>;
+export type EmployeeDepartment = typeof employeeDepartments.$inferSelect;
+
+// Many-to-many: an employee belongs to one OR MORE locations.
+export const employeeLocations = pgTable(
+  "employee_locations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    locationId: varchar("location_id").notNull().references(() => locations.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    unique("employee_locations_unique").on(table.userId, table.locationId),
+    index("IDX_employee_locations_user").on(table.userId),
+    index("IDX_employee_locations_location").on(table.locationId),
+  ],
+);
+
+export const insertEmployeeLocationSchema = createInsertSchema(employeeLocations).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertEmployeeLocation = z.infer<typeof insertEmployeeLocationSchema>;
+export type EmployeeLocation = typeof employeeLocations.$inferSelect;
 
 export const policyTypes = pgTable("policy_types", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

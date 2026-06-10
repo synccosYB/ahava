@@ -1,6 +1,6 @@
 import { storage } from "./storage";
 import type { Workflow, User } from "@shared/schema";
-import { isBalanceTrackedTimeOffType } from "@shared/schema";
+import { isBalanceTrackedTimeOffType, userDepartmentIds, userLocationIds } from "@shared/schema";
 import { writeAuditLog } from "./services/audit";
 
 /**
@@ -67,6 +67,16 @@ function evaluateCondition(node: WorkflowNode, context: WorkflowContext): boolea
 
   if (contextValue === undefined || value === undefined) return false;
 
+  // Membership fields resolve to an array; match if ANY assignment matches.
+  if (Array.isArray(contextValue)) {
+    const members = contextValue.map((m) => String(m));
+    switch (operator) {
+      case "eq": return members.includes(String(value));
+      case "neq": return !members.includes(String(value));
+      default: return false;
+    }
+  }
+
   const numContext = parseFloat(contextValue);
   const numValue = parseFloat(value);
 
@@ -94,8 +104,11 @@ function getContextValue(field: string, context: WorkflowContext): any {
     case "hours_requested":
     case "days_requested":
       return context.data.hoursRequested;
-    case "employee_department": return context.user?.departmentId || context.data.departmentId;
-    case "employee_location": return context.user?.locationId || context.data.locationId;
+    // Membership-aware: return all assignments so eq/neq match if ANY matches.
+    case "employee_department":
+      return context.user ? userDepartmentIds(context.user) : (context.data.departmentId ? [context.data.departmentId] : []);
+    case "employee_location":
+      return context.user ? userLocationIds(context.user) : (context.data.locationId ? [context.data.locationId] : []);
     case "late_count_month": return context.data.lateCountMonth;
     case "pto_balance": return context.data.ptoBalance;
     case "overtime_hours": return context.data.overtimeHours;

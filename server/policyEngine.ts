@@ -11,6 +11,8 @@ import {
   type PolicyAssignment,
   type PolicyRule,
   type User,
+  userDepartmentIds,
+  userLocationIds,
 } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { DEFAULT_ALLOWED_PUNCH_SOURCES } from "@shared/punchSources";
@@ -142,10 +144,16 @@ export async function getEffectivePolicy(
     }
   }
 
-  if (!resolvedPolicy && user?.departmentId) {
+  // Many-to-many membership: an employee matches a department/location-scoped
+  // policy if ANY of their assigned departments/locations matches. When more
+  // than one assignment qualifies, the tie-break is the first match in the
+  // stable query order of `allAssignments` (same DB ordering used elsewhere).
+  const memberDeptIds = user ? userDepartmentIds(user) : [];
+  if (!resolvedPolicy && memberDeptIds.length > 0) {
     const deptMatch = allAssignments.find(
       (a) =>
-        a.assignment.departmentId === user.departmentId &&
+        !!a.assignment.departmentId &&
+        memberDeptIds.includes(a.assignment.departmentId) &&
         isPureTarget(a.assignment, ["departmentId"])
     );
     if (deptMatch) {
@@ -154,10 +162,12 @@ export async function getEffectivePolicy(
     }
   }
 
-  if (!resolvedPolicy && user?.locationId) {
+  const memberLocIds = user ? userLocationIds(user) : [];
+  if (!resolvedPolicy && memberLocIds.length > 0) {
     const locMatch = allAssignments.find(
       (a) =>
-        a.assignment.locationId === user.locationId &&
+        !!a.assignment.locationId &&
+        memberLocIds.includes(a.assignment.locationId) &&
         isPureTarget(a.assignment, ["locationId"])
     );
     if (locMatch) {
