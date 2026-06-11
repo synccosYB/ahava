@@ -4448,12 +4448,13 @@ export async function registerRoutes(
       const exceptionPayrollRules = exceptionPayrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
 
       // Approving a correction creates or edits a punch on the employee's
-      // behalf — that's the "manager" method. Block it when the employee's
-      // attendance policy doesn't allow Manager Entry. (Removals don't create a
-      // punch, so they aren't gated.)
-      if (exception.type !== "punch_removal" && !isPunchSourceAllowed(exceptionAttRules, "manager")) {
-        return res.status(403).json({ message: punchSourceBlockedMessage("manager") });
-      }
+      // behalf and tags it as the "manager" method. We intentionally do NOT
+      // gate this on the Manager Entry punch-method toggle: that toggle only
+      // controls how an EMPLOYEE may self-clock (web/mobile/kiosk/qr). An admin
+      // approving a correction the employee requested is an administrative
+      // action and must always be allowed, even when the employee's attendance
+      // policy has Manager Entry disabled. (Self clock-in/out endpoints still
+      // enforce isPunchSourceAllowed for employee-initiated punches.)
 
       const updated = await db.transaction(async (tx) => {
         let punchLog: PunchLog | undefined | null = null;
