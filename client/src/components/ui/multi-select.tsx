@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronsUpDown, X, Search } from "lucide-react";
+import { ChevronsUpDown, X, Search, Plus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,9 @@ export interface MultiSelectProps {
   emptyMessage?: string;
   className?: string;
   disabled?: boolean;
+  /** When provided, renders an inline "+ Add new…" action at the bottom of the popover. */
+  onAddNew?: () => void;
+  addNewLabel?: string;
   "data-testid"?: string;
 }
 
@@ -39,6 +42,8 @@ export function MultiSelect({
   emptyMessage = "No options found.",
   className,
   disabled,
+  onAddNew,
+  addNewLabel = "Add new",
   "data-testid": testId,
 }: MultiSelectProps) {
   const [open, setOpen] = React.useState(false);
@@ -168,6 +173,22 @@ export function MultiSelect({
             })
           )}
         </div>
+        {onAddNew && (
+          <div className="border-t p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onAddNew();
+              }}
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm font-medium text-primary hover:bg-accent text-left"
+              data-testid={testId ? `${testId}-add-new` : undefined}
+            >
+              <Plus className="h-4 w-4" />
+              <span>{addNewLabel}</span>
+            </button>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   );

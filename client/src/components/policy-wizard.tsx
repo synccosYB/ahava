@@ -20,9 +20,11 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
+import { usePermissions } from "@/hooks/use-permissions";
+import { CreateRoleDialog } from "@/components/inline-entity-create";
 import {
   ChevronLeft, ChevronRight, Check, Clock, CalendarDays,
-  DollarSign, GitBranch, AlertCircle, ChevronsUpDown, Sparkles, FileText
+  DollarSign, GitBranch, AlertCircle, ChevronsUpDown, Sparkles, FileText, Plus
 } from "lucide-react";
 import type { Policy, PolicyType, Division, Location, Department, User, PolicyAssignment, Role } from "@shared/schema";
 import { PUNCH_SOURCES, PUNCH_SOURCE_LABELS, DEFAULT_ALLOWED_PUNCH_SOURCES, getAllowedPunchSources } from "@shared/punchSources";
@@ -2237,9 +2239,11 @@ function StepAssignments({
   users: User[];
   roles: Role[];
 }) {
+  const { has: hasPermission } = usePermissions();
   const [addLevel, setAddLevel] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [createRoleOpen, setCreateRoleOpen] = useState(false);
   const lastToggleRef = useRef<Record<string, number>>({});
 
   const getOptions = (): { id: string; label: string }[] => {
@@ -2448,6 +2452,27 @@ function StepAssignments({
                       );
                     })}
                   </CommandGroup>
+                  {addLevel === "role" && hasPermission("roles.manage") && (
+                    <CommandGroup className="border-t">
+                      <CommandItem
+                        value="__add_new_role__"
+                        onSelect={() => {
+                          setPopoverOpen(false);
+                          setCreateRoleOpen(true);
+                        }}
+                        className="cursor-pointer text-primary font-medium"
+                        data-testid="option-wizard-add-new-role"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setPopoverOpen(false);
+                          setCreateRoleOpen(true);
+                        }}
+                      >
+                        <Plus className="h-4 w-4 mr-2" />
+                        <span>Add new role</span>
+                      </CommandItem>
+                    </CommandGroup>
+                  )}
                 </CommandList>
               </Command>
             </PopoverContent>
@@ -2462,6 +2487,16 @@ function StepAssignments({
           Add
         </Button>
       </div>
+
+      <CreateRoleDialog
+        open={createRoleOpen}
+        onOpenChange={setCreateRoleOpen}
+        onCreated={(role) => {
+          if (!assignments.some((a) => a.level === "role" && a.id === role.id)) {
+            setAssignments([...assignments, { level: "role", id: role.id, label: role.name }]);
+          }
+        }}
+      />
 
       {assignments.length > 0 ? (
         <div className="space-y-2">

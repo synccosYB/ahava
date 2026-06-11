@@ -40,6 +40,7 @@ import {
   CreateCompanyDialog,
   CreateDepartmentDialog,
   CreateLocationDialog,
+  CreateRoleDialog,
 } from "@/components/inline-entity-create";
 import {
   type CorrectionCountSummary,
@@ -1648,6 +1649,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
   const [profileCreateCompanyOpen, setProfileCreateCompanyOpen] = useState(false);
   const [profileCreateDepartmentOpen, setProfileCreateDepartmentOpen] = useState(false);
   const [profileCreateLocationOpen, setProfileCreateLocationOpen] = useState(false);
+  const [profileCreateRoleOpen, setProfileCreateRoleOpen] = useState(false);
 
   return (
     <div className="max-w-6xl space-y-6" data-testid="employee-profile-page">
@@ -1818,6 +1820,12 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                       searchPlaceholder="Search roles..."
                       emptyMessage="No roles available."
                       disabled={setRolesMutation.isPending}
+                      onAddNew={
+                        hasPermission("roles.manage")
+                          ? () => setProfileCreateRoleOpen(true)
+                          : undefined
+                      }
+                      addNewLabel="Add new role"
                       data-testid="multiselect-profile-roles"
                     />
                   </div>
@@ -1999,6 +2007,16 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               const existing = user ? userLocationIds(user) : [];
               const next = existing.includes(location.id) ? existing : [...existing, location.id];
               updateMutation.mutate({ locationIds: next });
+            }}
+          />
+          <CreateRoleDialog
+            open={profileCreateRoleOpen}
+            onOpenChange={setProfileCreateRoleOpen}
+            onCreated={(role) => {
+              queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "assignable-roles"] });
+              const next = assignedRoles.map((r) => r.id);
+              if (!next.includes(role.id)) next.push(role.id);
+              setRolesMutation.mutate(next);
             }}
           />
           <div className="mt-4">

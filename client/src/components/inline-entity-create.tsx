@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { Company, Department, Location } from "@shared/schema";
+import type { Company, Department, Location, Role } from "@shared/schema";
 
 export const INLINE_ADD_NEW_VALUE = "__inline_add_new__";
 
@@ -264,6 +264,141 @@ export function CreateCompanyDialog({
             data-testid="button-inline-company-save"
           >
             {mutation.isPending ? "Creating..." : "Create company"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ---------- Create Role ---------- */
+
+export function CreateRoleDialog({
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreated: (role: Role) => void;
+}) {
+  const { toast } = useToast();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string | null>>({});
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setDescription("");
+      setError(null);
+      setFieldErrors({});
+    }
+  }, [open]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const payload: Record<string, unknown> = { name: name.trim(), permissionIds: [] };
+      if (description.trim()) payload.description = description.trim();
+      const res = await apiRequest("POST", "/api/roles", payload);
+      return (await res.json()) as Role;
+    },
+    onSuccess: (role) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/roles-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/policy-assignment-targets"] });
+      toast({ title: "Role created", description: role.name });
+      onCreated(role);
+      onOpenChange(false);
+    },
+    onError: (err) => {
+      const perField: Record<string, string | null> = {
+        name: extractFieldError(err, "name"),
+        description: extractFieldError(err, "description"),
+      };
+      setFieldErrors(perField);
+      const anyFieldError = Object.values(perField).some(Boolean);
+      setError(anyFieldError ? null : genericError(err));
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="dialog-create-role">
+        <DialogHeader>
+          <DialogTitle>Add new role</DialogTitle>
+          <DialogDescription>
+            Create a new role. You can assign its permissions later from the Roles &amp; Permissions admin page.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="inline-role-name">Role name</Label>
+            <Input
+              id="inline-role-name"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                if (fieldErrors.name) setFieldErrors((p) => ({ ...p, name: null }));
+                if (error) setError(null);
+              }}
+              placeholder="Night Shift Lead"
+              data-testid="input-inline-role-name"
+              autoFocus
+            />
+            {fieldErrors.name && (
+              <p className="text-sm text-destructive" data-testid="text-inline-role-name-error">
+                {fieldErrors.name}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="inline-role-description">
+              Description <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="inline-role-description"
+              value={description}
+              onChange={(e) => {
+                setDescription(e.target.value);
+                if (fieldErrors.description) setFieldErrors((p) => ({ ...p, description: null }));
+              }}
+              placeholder="What this role is for"
+              data-testid="input-inline-role-description"
+            />
+            {fieldErrors.description && (
+              <p className="text-sm text-destructive" data-testid="text-inline-role-description-error">
+                {fieldErrors.description}
+              </p>
+            )}
+          </div>
+          {error && (
+            <p className="text-sm text-destructive" data-testid="text-inline-role-error">
+              {error}
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            data-testid="button-inline-role-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              if (!name.trim()) {
+                setFieldErrors((p) => ({ ...p, name: "Required" }));
+                return;
+              }
+              mutation.mutate();
+            }}
+            disabled={mutation.isPending}
+            data-testid="button-inline-role-save"
+          >
+            {mutation.isPending ? "Creating..." : "Create role"}
           </Button>
         </DialogFooter>
       </DialogContent>
