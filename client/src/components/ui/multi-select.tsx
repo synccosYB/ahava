@@ -113,7 +113,11 @@ export function MultiSelect({
           </span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+      <PopoverContent
+        className="w-[--radix-popover-trigger-width] p-0"
+        align="start"
+        style={{ pointerEvents: "auto" }}
+      >
         <div className="flex items-center border-b px-2">
           <Search className="h-4 w-4 opacity-50 mr-2 shrink-0" />
           <Input
