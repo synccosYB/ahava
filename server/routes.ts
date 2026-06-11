@@ -516,6 +516,7 @@ export async function registerRoutes(
     const previouslyOverridden = existing.roleManuallyOverriddenAt;
     await storage.updateUser(id, { roleManuallyOverriddenAt: null });
     const actor = (req as any).authUser as User;
+    const auditCtx = getAuditContext(req);
     if (previouslyOverridden) {
       await writeAuditLog({
         actorUserId: actor.id,
@@ -527,10 +528,195 @@ export async function registerRoutes(
         context: getAuditContext(req),
       });
     }
+    // Manually-assigned RBAC roles ARE the override: drop them so permissions
+    // fall back to the rules engine + legacy tier mapping. Each removal is
+    // audited. Super-Admin assignments invisible to a non–super-admin actor are
+    // preserved so they can't be silently stripped.
+    const isSA = isSuperAdmin(req);
+    const currentRoles = await storage.getUserRoles(id);
+    for (const ur of currentRoles) {
+      if (!isSA) {
+        const keys = (await storage.getRolePermissions(ur.roleId)).map((p) => p.key);
+        if (keys.includes("system.super_admin")) continue;
+      }
+      await storage.removeUserRole(id, ur.roleId);
+      await writeAuditLog({
+        actorUserId: actor.id,
+        targetType: "user",
+        targetId: id,
+        action: "user.role_removed",
+        oldValue: { roleId: ur.roleId, roleName: ur.role?.name },
+        context: { source: "override_cleared" },
+        ...auditCtx,
+      });
+    }
     const result = await applyRoleForUser(id, { actorUserId: actor.id, reason: "manual override cleared", force: true });
     const user = await storage.getUser(id);
     invalidateUserCache();
     res.json({ user, result });
+  });
+
+  // --- RBAC multi-role assignment for an employee (Employee profile Basic Info) ---
+  // Roles the acting user is allowed to assign to a target employee. Gated by the
+  // SAME `users.edit` permission used to change a user's role. Excludes the Super
+  // Admin role for non–super-admins and any role carrying a permission the actor
+  // does not personally hold (no privilege escalation).
+  app.get("/api/users/:id/assignable-roles", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
+    try {
+      const id = String(req.params.id);
+      if (id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      const isSA: boolean = req.userPermissions?.has("system.super_admin") ?? false;
+      const actorPerms: Set<string> = req.userPermissions ?? new Set<string>();
+      const allRoles = await storage.getAllRoles();
+      const result: Array<{ id: string; name: string; description: string | null; isSystem: boolean; permissionCount: number }> = [];
+      for (const role of allRoles) {
+        if (!role.isActive) continue;
+        const keys = (await storage.getRolePermissions(role.id)).map((p) => p.key);
+        if (!isSA && keys.includes("system.super_admin")) continue;
+        if (!isSA && !keys.every((k) => actorPerms.has(k))) continue;
+        result.push({ id: role.id, name: role.name, description: role.description, isSystem: role.isSystem, permissionCount: keys.length });
+      }
+      res.json(result);
+    } catch (error) {
+      handleRouteError(res, error, "Failed to fetch assignable roles");
+    }
+  });
+
+  // Currently-assigned RBAC roles for a target user. Super-Admin role rows are
+  // hidden from non–super-admins (consistent with /api/roles).
+  app.get("/api/users/:id/roles", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
+    try {
+      const id = String(req.params.id);
+      if (id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      const isSA: boolean = req.userPermissions?.has("system.super_admin") ?? false;
+      const assigned = await storage.getUserRoles(id);
+      const rows: Array<{ id: string; name: string }> = [];
+      for (const ur of assigned) {
+        if (!ur.role) continue;
+        if (!isSA) {
+          const keys = (await storage.getRolePermissions(ur.roleId)).map((p) => p.key);
+          if (keys.includes("system.super_admin")) continue;
+        }
+        rows.push({ id: ur.roleId, name: ur.role.name });
+      }
+      res.json(rows);
+    } catch (error) {
+      handleRouteError(res, error, "Failed to fetch user roles");
+    }
+  });
+
+  const setUserRolesSchema = z.object({ roleIds: z.array(z.string()).max(50) });
+
+  // Replace a user's assigned RBAC roles with a provided set. Re-validates every
+  // role id, re-checks the Super-Admin and privilege-escalation guards
+  // server-side, keeps the flat `users.role` tier in sync (highest-privilege
+  // assigned role), marks this as a manual override, and audits each add/remove.
+  app.put("/api/users/:id/roles", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
+    try {
+      const id = String(req.params.id);
+      if (id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      const parsed = setUserRolesSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid roleIds", errors: parsed.error.flatten() });
+      }
+      const target = await storage.getUser(id);
+      if (!target) return res.status(404).json({ message: "User not found" });
+
+      const isSA: boolean = req.userPermissions?.has("system.super_admin") ?? false;
+      const actorPerms: Set<string> = req.userPermissions ?? new Set<string>();
+      const requestedIds = Array.from(new Set(parsed.data.roleIds));
+
+      const current = await storage.getUserRoles(id);
+      const currentIds = new Set(current.map((c) => c.roleId));
+
+      // Never silently drop a Super-Admin assignment a non–super-admin can't see.
+      const protectedIds = new Set<string>();
+      if (!isSA) {
+        for (const c of current) {
+          const keys = (await storage.getRolePermissions(c.roleId)).map((p) => p.key);
+          if (keys.includes("system.super_admin")) protectedIds.add(c.roleId);
+        }
+      }
+
+      const desiredIds = new Set<string>([...requestedIds, ...protectedIds]);
+      const toAdd = [...desiredIds].filter((rid) => !currentIds.has(rid));
+      const toRemove = [...currentIds].filter((rid) => !desiredIds.has(rid));
+
+      // Guards apply only to NEWLY-added roles: keeping an already-assigned role
+      // is not privilege escalation, so it must never block an unrelated edit.
+      const addedRoleNames = new Map<string, string>();
+      for (const roleId of toAdd) {
+        const role = await storage.getRole(roleId);
+        if (!role) return res.status(400).json({ message: `Unknown role: ${roleId}` });
+        if (!role.isActive) return res.status(400).json({ message: `Role is inactive: ${role.name}` });
+        const keys = (await storage.getRolePermissions(roleId)).map((p) => p.key);
+        if (!isSA && keys.includes("system.super_admin")) {
+          return res.status(403).json({ message: "Cannot assign the Super Admin role" });
+        }
+        if (!isSA && !keys.every((k) => actorPerms.has(k))) {
+          return res.status(403).json({ message: `Cannot assign role "${role.name}": it grants permissions you do not hold` });
+        }
+        addedRoleNames.set(roleId, role.name);
+      }
+
+      for (const rid of toAdd) await storage.assignUserRole(id, rid, target.companyId ?? undefined);
+      for (const rid of toRemove) await storage.removeUserRole(id, rid);
+
+      // Derive the flat `users.role` tier deterministically from the FINAL set of
+      // assigned roles (highest privilege wins). When no roles remain, drop to the
+      // `employee` baseline — never retain the prior tier, or a removed admin/manager
+      // would keep elevated access in legacy `requireRole(...)` gates.
+      const { tierFromPermissionKeys, highestTier } = await import("./services/roleAssignment");
+      const finalAssigned = await storage.getUserRoles(id);
+      let newTier: "admin" | "manager" | "employee" = "employee";
+      if (finalAssigned.length > 0) {
+        const tiers = [] as Array<"admin" | "manager" | "employee">;
+        for (const a of finalAssigned) {
+          const keys = (await storage.getRolePermissions(a.roleId)).map((p) => p.key);
+          tiers.push(tierFromPermissionKeys(keys));
+        }
+        newTier = highestTier(tiers);
+      }
+      await storage.updateUser(id, { role: newTier, roleManuallyOverriddenAt: new Date() });
+
+      const actor = req.authUser as User;
+      const auditCtx = getAuditContext(req);
+      for (const rid of toAdd) {
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "user",
+          targetId: id,
+          action: "user.role_assigned",
+          newValue: { roleId: rid, roleName: addedRoleNames.get(rid) },
+          context: { source: "manual" },
+          ...auditCtx,
+        });
+      }
+      for (const rid of toRemove) {
+        const r = current.find((x) => x.roleId === rid);
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "user",
+          targetId: id,
+          action: "user.role_removed",
+          oldValue: { roleId: rid, roleName: r?.role?.name },
+          context: { source: "manual" },
+          ...auditCtx,
+        });
+      }
+
+      invalidateUserCache();
+      const updated = await storage.getUser(id);
+      res.json({ user: updated, roleIds: finalAssigned.map((a) => a.roleId) });
+    } catch (error) {
+      handleRouteError(res, error, "Failed to update user roles");
+    }
   });
 
   const createUserSchema = z.object({

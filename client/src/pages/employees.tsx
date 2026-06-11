@@ -1404,26 +1404,50 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     enabled: !!companyId,
   });
 
-  const roleMutation = useMutation({
-    mutationFn: async (newRole: string) => {
-      await apiRequest("PATCH", `/api/users/${userId}/role`, { role: newRole });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
-      toast({ title: "Role updated" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
   const clearOverrideMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", `/api/users/${userId}/clear-role-override`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/permissions"] });
       toast({ title: "Override cleared", description: "Role re-evaluated by automation rules" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const { data: assignableRoles = [] } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ["/api/users", userId, "assignable-roles"],
+    queryFn: async () => {
+      const res = await fetch(`/api/users/${userId}/assignable-roles`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch assignable roles");
+      return res.json();
+    },
+  });
+
+  const { data: assignedRoles = [] } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ["/api/users", userId, "roles"],
+    queryFn: async () => {
+      const res = await fetch(`/api/users/${userId}/roles`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch user roles");
+      return res.json();
+    },
+  });
+
+  const setRolesMutation = useMutation({
+    mutationFn: async (roleIds: string[]) => {
+      await apiRequest("PUT", `/api/users/${userId}/roles`, { roleIds });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/permissions"] });
+      toast({ title: "Roles updated" });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -1777,16 +1801,26 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                   ) : null}
                 </div>
                 <div className="flex items-center gap-2">
-                  <Select value={user?.role || "employee"} onValueChange={(v) => roleMutation.mutate(v)}>
-                    <SelectTrigger data-testid="select-profile-role">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="employee">Employee</SelectItem>
-                      <SelectItem value="manager">Manager</SelectItem>
-                      <SelectItem value="admin">Admin</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="flex-1">
+                    <MultiSelect
+                      options={(() => {
+                        const byId = new Map<string, string>();
+                        for (const r of assignableRoles) byId.set(r.id, r.name);
+                        for (const r of assignedRoles) if (!byId.has(r.id)) byId.set(r.id, r.name);
+                        return Array.from(byId.entries())
+                          .map(([value, label]) => ({ value, label }))
+                          .sort((a, b) => a.label.localeCompare(b.label));
+                      })()}
+                      selected={assignedRoles.map((r) => r.id)}
+                      onChange={(ids) => setRolesMutation.mutate(ids)}
+                      placeholder="No roles assigned"
+                      allLabel="No roles"
+                      searchPlaceholder="Search roles..."
+                      emptyMessage="No roles available."
+                      disabled={setRolesMutation.isPending}
+                      data-testid="multiselect-profile-roles"
+                    />
+                  </div>
                   {user?.roleManuallyOverriddenAt && (
                     <Button
                       variant="outline"
@@ -1800,6 +1834,18 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     </Button>
                   )}
                 </div>
+                {assignedRoles.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2" data-testid="list-profile-assigned-roles">
+                    {assignedRoles.map((r) => (
+                      <Badge key={r.id} variant="outline" className="text-xs" data-testid={`badge-assigned-role-${r.id}`}>
+                        {r.name}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Access tier: <span className="font-medium capitalize">{user?.role || "employee"}</span>
+                </p>
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Company</Label>

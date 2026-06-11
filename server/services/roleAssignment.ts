@@ -64,6 +64,61 @@ export function isAllowedRole(role: string): boolean {
   return ALLOWED_ROLES.has(role);
 }
 
+export type RoleTier = "admin" | "manager" | "employee";
+
+// Single source of truth for mapping an RBAC role's permission set to the flat
+// legacy tier (admin/manager/employee). The flat `users.role` field is kept in
+// sync with the highest-privilege assigned role so all existing flat-field
+// scoping and `requireRole` gates keep working after multi-role assignment.
+// A role is "admin" if it carries any management-grade permission; "manager" if
+// it carries any team/approval permission; otherwise "employee".
+const ADMIN_TIER_PERMISSIONS = new Set<string>([
+  "system.super_admin",
+  "roles.manage",
+  "settings.manage",
+  "company.manage",
+  "company.create", "company.edit", "company.delete",
+  "users.create", "users.edit", "users.deactivate", "users.delete",
+  "departments.create", "departments.edit", "departments.delete",
+  "attendance.view_all", "attendance.manage_rules",
+  "pto.view_all", "pto.manage_policies",
+  "payroll.view_all", "payroll.manage", "payroll.export",
+  "policies.manage",
+  "locations.manage",
+  "approvals.manage",
+  "alerts.manage",
+  "kiosk.manage",
+  "biometrics.manage",
+  "audit.view",
+  "workflows.manage",
+]);
+
+const MANAGER_TIER_PERMISSIONS = new Set<string>([
+  "attendance.view_team",
+  "attendance.edit",
+  "attendance.approve_corrections",
+  "pto.view_team",
+  "pto.approve",
+  "approvals.view",
+  "schedules.manage",
+  "reports.view",
+  "reviews.update_reminders",
+  "offboarding.update_tasks",
+]);
+
+export function tierFromPermissionKeys(keys: Iterable<string>): RoleTier {
+  const set = keys instanceof Set ? (keys as Set<string>) : new Set(keys);
+  for (const k of set) if (ADMIN_TIER_PERMISSIONS.has(k)) return "admin";
+  for (const k of set) if (MANAGER_TIER_PERMISSIONS.has(k)) return "manager";
+  return "employee";
+}
+
+const TIER_RANK: Record<RoleTier, number> = { employee: 0, manager: 1, admin: 2 };
+
+export function highestTier(tiers: RoleTier[]): RoleTier {
+  return tiers.reduce<RoleTier>((acc, t) => (TIER_RANK[t] > TIER_RANK[acc] ? t : acc), "employee");
+}
+
 function getFieldValue(field: string, user: User, profile: EmploymentProfile | undefined): unknown {
   switch (field) {
     case "companyId": return user.companyId;
