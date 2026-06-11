@@ -1,0 +1,91 @@
+FR-0075
+Direct Punch Edit / Delete for Managers & Admins
+Feature Request
+New
+Medium
+Close
+Mark Ready for Review
+Resolve
+Status
+New
+Priority
+Medium
+Assigned To
+Unassigned
+Description
+
+Where: Team View → Attendance Table (and HR Admin equivalent in Admin Dashboard → Live Attendance)
+
+What: Add an edit (pencil) and delete (trash) icon to each punch row in the attendance table. Clicking edit opens a modal with the clock-in and clock-out time fields pre-filled, an optional reason field, and a Save button. Clicking delete prompts a confirmation before removing the punch.
+
+Filters: Add the following filters above the attendance table to allow managers and admins to quickly look up specific punches:
+
+Employee — dropdown list of all employees in the manager's team / all employees for HR admin
+Start date — date picker
+End date — date picker
+Location — dropdown list of assigned locations
+
+Who: Controlled via Settings → Roles & Permissions. The ability to edit and delete punches should be a toggleable permission that can be granted or revoked per role. Suggested default: on for HR Admin and Manager, off for all other roles.
+Rules:
+
+Optional reason/note field on both edit and delete actions
+No employee notification required
+All edits and deletions must be logged in the audit trail with the acting admin's name, timestamp, original value, and new value
+Report screens remain read-only and are not affected by this change
+
+Why: Currently the only way to correct a punch is through the employee-initiated missing punch request workflow. The client requires managers and HR admins to be able to correct punches directly without waiting for an employee to submit a request first.
+
+AI Analysis
+
+### Analysis:
+1. **Affected Part of the App:**
+   - This feature affects the **"Team View → Attendance Table"** for Managers and Admins and the equivalent in the **"Admin Dashboard → Live Attendance"** view. Also indirectly tied to the **Roles & Permissions** settings, as these actions must be controlled by toggleable permissions.
+
+2. **Root Cause/Scope Analysis:**
+   - The described feature does not currently exist in the app. Specifically, there is no functionality to allow HR Admins and Managers to directly edit or delete punches in the attendance table.
+   - Additional UI elements (edit and delete icons, modals, filters) are missing and need to be implemented.
+   - Role-specific permissions to enable or disable this functionality per user role are not in place. A permission toggle must be added to **Settings → Roles & Permissions**.
+   - Any edit or deletion of punches must log the activity into an **audit trail**. The system must verify these operations are properly tracked (including original values, changes made, acting admin, and timestamp).
+   - No detailed rules ensuring the feature remains isolated from **read-only report screens** are implemented.
+   - Feature scope dictates no notifications to employees for edits/deletions, potentially requiring a check for existing notification triggers to prevent undue alerts.
+
+3. **Recommended Fix or Next Steps:**
+   - **UI Update:**
+     - Add edit (pencil) and delete (trash) icons to each punch row in the attendance table.
+     - For "edit" action: Build and trigger a modal with pre-filled clock-in and clock-out time fields, optional reason/note input, and a Save button.
+     - For "delete" action: Implement a confirmation dialog before removal and a note field for optional comments.
+
+   - **Filter Implementation:**
+     - Create and position dropdowns for **Employee** and **Location**, and date pickers for **Start Date** and **End Date** above the table. These filters must dynamically apply queries to the table content.
+
+   - **Permissions Handling:**
+     - Extend the **Roles & Permissions** settings to include toggles for "Edit Punch" and "Delete Punch". Ensure permissions default to "on" for HR Admins and Managers, and "off" for other roles.
+     - Verify roles that lack permissions have these buttons hidden or disabled.
+
+   - **Audit Trail Integration:**
+     - Implement logging mechanisms for all deletions and edits, including admin/user name, timestamp, original punch data, new punch data, and optional reason.
+
+   - **Report Screens Isolation:**
+     - Verify report screens remain read-only and unaffected by this change.
+
+   - **Notification Avoidance:**
+     - Disable or bypass employee notification triggers for punch edits or deletions if they exist or are tied to punch modifications currently.
+
+   - **QA Testing Plan:**
+     - Validate UI components for icons, modals, and filters.
+     -
+
+https://synccos.space/team
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36
+Shloimy Spilman
+shloimy@synkdex.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+
