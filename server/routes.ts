@@ -10,7 +10,7 @@ import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
 import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport } from "@shared/schema";
 import { userDepartmentIds, userLocationIds } from "@shared/schema";
-import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
+import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
@@ -3227,6 +3227,330 @@ export async function registerRoutes(
       handleRouteError(res, error, "Failed to fetch attendance records");
     }
   });
+
+  // --- FR-0075: direct manager/admin punch edit + delete -------------------
+  // Resolve the set of employees a caller may act on for direct punch
+  // management. HR admins (attendance.view_all) see everyone; managers
+  // (attendance.view_team) see their team plus themselves. Returns null when
+  // the caller lacks any attendance view permission so callers can 403.
+  async function resolvePunchScope(
+    req: any,
+  ): Promise<{ users: User[]; canViewAll: boolean } | null> {
+    const requester = req.authUser as User;
+    const perms = await resolveUserPermissions(requester.id);
+    const isSuper = perms.has("system.super_admin");
+    const canViewAll = isSuper || perms.has("attendance.view_all");
+    const canViewTeam = canViewAll || perms.has("attendance.view_team");
+    if (!canViewTeam) return null;
+
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuper);
+    if (canViewAll) {
+      return { users: allUsers, canViewAll: true };
+    }
+    const teamIds = await getTeamUserIds(requester);
+    teamIds.add(requester.id);
+    return { users: allUsers.filter((u) => teamIds.has(u.id)), canViewAll: false };
+  }
+
+  // Punch-level attendance table feed for Team View and Admin Live Attendance.
+  // Filterable by employee, date range, and location, scoped to the caller's
+  // authority. Returns the scoped employee + location option lists too so the
+  // filter dropdowns work without requiring users.view / locations.view.
+  app.get("/api/attendance/punches", requireAuth, async (req: any, res) => {
+    try {
+      const scope = await resolvePunchScope(req);
+      if (!scope) {
+        return res.status(403).json({ message: "Forbidden: missing attendance view permission" });
+      }
+
+      const { employeeId, startDate, endDate, locationId } = req.query as {
+        employeeId?: string;
+        startDate?: string;
+        endDate?: string;
+        locationId?: string;
+      };
+      const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+      if (startDate && !dateRe.test(startDate)) {
+        return res.status(400).json({ message: "startDate must be YYYY-MM-DD" });
+      }
+      if (endDate && !dateRe.test(endDate)) {
+        return res.status(400).json({ message: "endDate must be YYYY-MM-DD" });
+      }
+      if (startDate && endDate && startDate > endDate) {
+        return res.status(400).json({ message: "startDate must be on or before endDate" });
+      }
+
+      const locations = await storage.getAllLocations();
+      const locNameById = new Map(locations.map((l) => [l.id, l.name]));
+
+      const employeeOptions = scope.users
+        .map((u) => ({
+          id: u.id,
+          name: `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || "Unknown",
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      const scopedLocIds = new Set<string>();
+      for (const u of scope.users) {
+        for (const lid of userLocationIds(u)) scopedLocIds.add(lid);
+      }
+      const locationOptions = Array.from(scopedLocIds)
+        .map((id) => ({ id, name: locNameById.get(id) || "Unknown" }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      // Apply employee + location filters to the scoped user set.
+      let targetUsers = scope.users;
+      if (locationId) {
+        targetUsers = targetUsers.filter((u) => userLocationIds(u).includes(locationId));
+      }
+      if (employeeId) {
+        targetUsers = targetUsers.filter((u) => u.id === employeeId);
+      }
+      const targetIds = targetUsers.map((u) => u.id);
+
+      let punches: PunchLog[] = [];
+      if (targetIds.length > 0) {
+        const conds = [inArray(punchLogs.employeeId, targetIds)];
+        if (startDate) conds.push(gte(punchLogs.workDate, startDate));
+        if (endDate) conds.push(lte(punchLogs.workDate, endDate));
+        punches = await db
+          .select()
+          .from(punchLogs)
+          .where(and(...conds))
+          .orderBy(desc(punchLogs.workDate), desc(punchLogs.clockIn));
+      }
+
+      const userById = new Map(scope.users.map((u) => [u.id, u]));
+      const data = punches.map((p) => {
+        const u = userById.get(p.employeeId);
+        const empLocNames = u ? userLocationIds(u).map((id) => locNameById.get(id) || "Unknown") : [];
+        return {
+          id: p.id,
+          employeeId: p.employeeId,
+          employeeName: u
+            ? `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || "Unknown"
+            : "Unknown",
+          workDate: p.workDate,
+          clockIn: p.clockIn,
+          clockOut: p.clockOut,
+          hoursWorked: p.hoursWorked,
+          status: p.status,
+          source: p.source,
+          locationNames: empLocNames,
+        };
+      });
+
+      res.json({ punches: data, employees: employeeOptions, locations: locationOptions });
+    } catch (error) {
+      console.error("Error fetching punches:", error);
+      handleRouteError(res, error, "Failed to fetch punches");
+    }
+  });
+
+  // Directly edit a punch (manager/admin). Recomputes hours via the shared
+  // clock-out enforcement and writes an audit entry. No employee notification.
+  app.patch(
+    "/api/attendance/punches/:id",
+    requireAuth,
+    requirePermission("attendance.edit"),
+    async (req: any, res) => {
+      try {
+        const actor = req.authUser as User;
+        const punchId = String(req.params.id);
+        const { clockIn, clockOut, reason } = req.body as {
+          clockIn?: string | null;
+          clockOut?: string | null;
+          reason?: string;
+        };
+
+        const existing = await storage.getPunchLog(punchId);
+        if (!existing) {
+          return res.status(404).json({ message: "Punch not found" });
+        }
+
+        const scope = await resolvePunchScope(req);
+        if (!scope || !scope.users.some((u) => u.id === existing.employeeId)) {
+          return res.status(403).json({ message: "Not authorized to edit this punch" });
+        }
+
+        const employeeUser = await storage.getUser(existing.employeeId);
+        if (!employeeUser) {
+          return res.status(404).json({ message: "Employee not found for this punch" });
+        }
+
+        const newClockIn =
+          clockIn !== undefined
+            ? clockIn
+              ? new Date(clockIn)
+              : null
+            : existing.clockIn
+              ? new Date(existing.clockIn)
+              : null;
+        const newClockOut =
+          clockOut !== undefined
+            ? clockOut
+              ? new Date(clockOut)
+              : null
+            : existing.clockOut
+              ? new Date(existing.clockOut)
+              : null;
+
+        if (newClockIn && isNaN(newClockIn.getTime())) {
+          return res.status(400).json({ message: "Invalid clock-in time" });
+        }
+        if (newClockOut && isNaN(newClockOut.getTime())) {
+          return res.status(400).json({ message: "Invalid clock-out time" });
+        }
+        if (!newClockIn) {
+          return res.status(400).json({ message: "A punch must have a clock-in time" });
+        }
+        if (newClockOut && newClockOut <= newClockIn) {
+          return res.status(400).json({ message: "Clock-out must be after clock-in" });
+        }
+
+        const attendancePolicy = await getEffectivePolicy(
+          employeeUser.companyId,
+          employeeUser.id,
+          "attendance",
+          employeeUser,
+        );
+        const payrollPolicy = await getEffectivePolicy(
+          employeeUser.companyId,
+          employeeUser.id,
+          "payroll",
+          employeeUser,
+        );
+        const attRules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+        const payrollRules = payrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+        const roundingRule = attRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+        const roundingInterval =
+          attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+
+        const update: Partial<InsertPunchLog> = {
+          clockIn: newClockIn,
+          roundedClockIn: roundTime(newClockIn, roundingRule, roundingInterval),
+        };
+
+        if (newClockOut) {
+          const enforcement = enforceClockOut(
+            new Date(update.roundedClockIn!),
+            newClockOut,
+            existing.breakMinutes || 0,
+            attRules,
+            payrollRules,
+            employeeUser,
+            attendancePolicy?.policyName,
+          );
+          update.clockOut = newClockOut;
+          update.roundedClockOut = enforcement.roundedTime;
+          update.hoursWorked = enforcement.hoursWorked;
+          update.status = enforcement.status;
+        } else {
+          // Re-opened punch: clear the clock-out side (matches a fresh clock-in).
+          update.clockOut = null;
+          update.roundedClockOut = null;
+          update.hoursWorked = null;
+          update.status = "present";
+        }
+
+        const oldValue = {
+          clockIn: existing.clockIn,
+          clockOut: existing.clockOut,
+          hoursWorked: existing.hoursWorked,
+          status: existing.status,
+        };
+        const updated = await storage.updatePunchLog(punchId, update);
+
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "punch_log",
+          targetId: punchId,
+          action: "punch_log.edited",
+          oldValue,
+          newValue: {
+            clockIn: updated?.clockIn,
+            clockOut: updated?.clockOut,
+            hoursWorked: updated?.hoursWorked,
+            status: updated?.status,
+          },
+          context: { reason: reason || null, direct: true, employeeId: existing.employeeId },
+          ...getAuditContext(req),
+        });
+
+        res.json(punchLogToApiResponse(updated));
+      } catch (error) {
+        console.error("Error editing punch:", error);
+        handleRouteError(res, error, "Failed to edit punch");
+      }
+    },
+  );
+
+  // Directly delete a punch (manager/admin). Blocks deletes tied to finalized
+  // payroll, clears nullable FK references, and writes an audit entry. No
+  // employee notification. Idempotent if the punch is already gone.
+  app.delete(
+    "/api/attendance/punches/:id",
+    requireAuth,
+    requirePermission("attendance.delete"),
+    async (req: any, res) => {
+      try {
+        const actor = req.authUser as User;
+        const punchId = String(req.params.id);
+        const reason = typeof req.body?.reason === "string" ? req.body.reason : null;
+
+        const existing = await storage.getPunchLog(punchId);
+        if (!existing) {
+          return res.json({ deleted: false, alreadyGone: true });
+        }
+
+        const scope = await resolvePunchScope(req);
+        if (!scope || !scope.users.some((u) => u.id === existing.employeeId)) {
+          return res.status(403).json({ message: "Not authorized to delete this punch" });
+        }
+
+        const finalizedExports = await findFinalizedPayrollExportsForPunch(punchId);
+        if (finalizedExports.length > 0) {
+          return res.status(409).json({
+            message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before deleting the punch.`,
+            code: "PAYROLL_FINALIZED",
+            payrollExports: finalizedExports.map((e) => ({
+              id: e.id,
+              startDate: e.startDate,
+              endDate: e.endDate,
+              status: e.status,
+            })),
+          });
+        }
+
+        const deleted = await storage.deletePunchLog(punchId);
+        if (!deleted) {
+          return res.json({ deleted: false, alreadyGone: true });
+        }
+
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "punch_log",
+          targetId: punchId,
+          action: "punch_log.deleted",
+          oldValue: {
+            clockIn: deleted.clockIn,
+            clockOut: deleted.clockOut,
+            hoursWorked: deleted.hoursWorked,
+            workDate: deleted.workDate,
+            status: deleted.status,
+          },
+          newValue: null,
+          context: { reason, direct: true, employeeId: deleted.employeeId },
+          ...getAuditContext(req),
+        });
+
+        res.json({ deleted: true });
+      } catch (error) {
+        console.error("Error deleting punch:", error);
+        handleRouteError(res, error, "Failed to delete punch");
+      }
+    },
+  );
 
   app.get("/api/attendance/timesheet/:employeeId", requireAuth, async (req: any, res) => {
     try {

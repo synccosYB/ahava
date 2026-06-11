@@ -303,6 +303,7 @@ export interface IStorage {
   getPunchLogsByDate(date: string): Promise<PunchLog[]>;
   createPunchLog(record: InsertPunchLog): Promise<PunchLog>;
   updatePunchLog(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
+  deletePunchLog(id: string): Promise<PunchLog | undefined>;
 
   getAttendanceRecord(id: string): Promise<PunchLog | undefined>;
   getAttendanceByUser(userId: string): Promise<PunchLog[]>;
@@ -1215,6 +1216,36 @@ export class DatabaseStorage implements IStorage {
   async updatePunchLog(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined> {
     const [updated] = await db.update(punchLogs).set(record).where(eq(punchLogs.id, id)).returning();
     return updated ? punchLogToLegacy(updated) : undefined;
+  }
+
+  // Delete a punch and clear every nullable FK reference to it first so the
+  // delete doesn't hit a constraint violation. Mirrors the FK-clearing the
+  // punch_removal request resolution does (attendance exceptions, draft
+  // payroll batch records / adjustments, biometric supervisor overrides).
+  // Returns the deleted row, or undefined if it was already gone.
+  // NOTE: callers that need to protect finalized payroll must check for that
+  // BEFORE calling this — it nulls payroll references unconditionally.
+  async deletePunchLog(id: string): Promise<PunchLog | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(punchLogs).where(eq(punchLogs.id, id));
+      if (!existing) return undefined;
+
+      await tx.update(attendanceExceptions)
+        .set({ punchLogId: null })
+        .where(eq(attendanceExceptions.punchLogId, id));
+      await tx.update(payrollBatchRecords)
+        .set({ punchLogId: null })
+        .where(eq(payrollBatchRecords.punchLogId, id));
+      await tx.update(payrollAdjustments)
+        .set({ punchLogId: null })
+        .where(eq(payrollAdjustments.punchLogId, id));
+      await tx.update(biometricSupervisorOverrides)
+        .set({ punchLogId: null })
+        .where(eq(biometricSupervisorOverrides.punchLogId, id));
+
+      await tx.delete(punchLogs).where(eq(punchLogs.id, id));
+      return punchLogToLegacy(existing);
+    });
   }
 
   async getAttendanceRecord(id: string): Promise<PunchLog | undefined> {

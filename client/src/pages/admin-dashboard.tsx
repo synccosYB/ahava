@@ -14,6 +14,7 @@ import {
   CheckSquare, FileText, Download, UserPlus, AlertCircle,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { AttendancePunchTable } from "@/components/attendance-punch-table";
 import type { User, Department, Location, TimeOffRequest, AttendanceException } from "@shared/schema";
 
 type PendingPtoRequest = TimeOffRequest & { employeeName: string };
@@ -185,6 +186,8 @@ export default function AdminDashboardPage() {
               )}
             </CardContent>
           </Card>
+
+          <AttendancePunchTable title="Live Attendance — Punch Records" />
 
           <Card data-testid="card-exceptions-panel">
             <CardHeader>

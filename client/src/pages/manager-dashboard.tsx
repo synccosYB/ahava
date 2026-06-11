@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, Users, UserCheck, Clock } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { AttendancePunchTable } from "@/components/attendance-punch-table";
 import {
   Table,
   TableBody,
@@ -156,6 +157,8 @@ export default function ManagerDashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      <AttendancePunchTable title="Punch Records" />
     </div>
   );
 }
