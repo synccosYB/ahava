@@ -203,6 +203,7 @@ import {
   type CorrectionCountSummary,
   type PayPeriodType,
 } from "@shared/correctionCounts";
+import { getEffectivePolicy, buildPtoPolicyFromRules } from "./policyEngine";
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
@@ -499,6 +500,8 @@ export interface IStorage {
   getPolicyRulesByPolicy(policyId: string): Promise<PolicyRule[]>;
   upsertPolicyRules(policyId: string, rules: Record<string, any>): Promise<PolicyRule>;
 
+  getSelectablePtoPolicies(): Promise<Policy[]>;
+  getEmployeePtoAssignment(userId: string): Promise<PolicyAssignment | undefined>;
   getPolicyAssignment(id: string): Promise<PolicyAssignment | undefined>;
   getPolicyAssignmentsByPolicy(policyId: string): Promise<PolicyAssignment[]>;
   getAllPolicyAssignments(): Promise<PolicyAssignment[]>;
@@ -2420,11 +2423,21 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  /**
+   * Resolve the effective PTO policy for a user through the unified policy
+   * engine. The engine governs WHICH policy applies (employee → role →
+   * department → location → company → global). Per-employee overrides and hire
+   * date still live in `employee_pto_settings`. Falls back to the legacy default
+   * `pto_policies` row only when the engine resolves nothing (e.g. a database
+   * that has not yet been migrated/seeded), so numbers never silently change.
+   */
   async getEmployeePtoPolicy(userId: string): Promise<PtoPolicy | undefined> {
-    const empSettings = await this.getEmployeePtoSettings(userId);
-    if (empSettings?.ptoPolicyId) {
-      const policy = await this.getPtoPolicy(empSettings.ptoPolicyId);
-      if (policy) return policy;
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
+    if (user) {
+      const effective = await getEffectivePolicy(user.companyId, userId, "pto", user);
+      if (effective) {
+        return buildPtoPolicyFromRules(effective.policyId, effective.policyName, effective.rules);
+      }
     }
     return this.getDefaultPtoPolicy();
   }
@@ -2736,6 +2749,33 @@ export class DatabaseStorage implements IStorage {
 
   async getAllPolicies(): Promise<Policy[]> {
     return db.select().from(policies).orderBy(desc(policies.createdAt));
+  }
+
+  /** Active PTO-type policies selectable as an employee's assigned PTO policy. */
+  async getSelectablePtoPolicies(): Promise<Policy[]> {
+    const [t] = await db.select().from(policyTypes).where(eq(policyTypes.key, "pto"));
+    if (!t) return [];
+    return db
+      .select()
+      .from(policies)
+      .where(and(eq(policies.policyTypeId, t.id), eq(policies.status, "active")))
+      .orderBy(desc(policies.isSystemDefault), policies.name);
+  }
+
+  /**
+   * The explicit EMPLOYEE-LEVEL PTO policy assignment for a user, if any (the
+   * unified-engine replacement for the legacy employee_pto_settings.pto_policy_id
+   * link). Returns undefined when the employee inherits a higher-scope policy.
+   */
+  async getEmployeePtoAssignment(userId: string): Promise<PolicyAssignment | undefined> {
+    const [t] = await db.select().from(policyTypes).where(eq(policyTypes.key, "pto"));
+    if (!t) return undefined;
+    const rows = await db
+      .select({ a: policyAssignments })
+      .from(policyAssignments)
+      .innerJoin(policies, eq(policyAssignments.policyId, policies.id))
+      .where(and(eq(policies.policyTypeId, t.id), eq(policyAssignments.userId, userId)));
+    return rows[0]?.a;
   }
 
   async createPolicy(policy: InsertPolicy): Promise<Policy> {

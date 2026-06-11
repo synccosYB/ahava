@@ -26,8 +26,7 @@ import { PageHeader } from "@/components/page-header";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { formatDate } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
-import type { PtoPolicy, User, Division, Department, Location, AttendanceException, PtoAnniversaryAdjustment } from "@shared/schema";
-import { explainPtoPolicy } from "@shared/ptoExplanation";
+import type { User, Division, Department, Location, AttendanceException, PtoAnniversaryAdjustment } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload } from "@/lib/exceptionTimeInfo";
 import { useAuth } from "@/hooks/use-auth";
 import { formatTime12 } from "@/lib/utils";
@@ -191,7 +190,6 @@ export default function PtoLeavePage() {
       <Tabs defaultValue={initialTab} data-testid="tabs-pto">
         <TabsList>
           <TabsTrigger value="balances" data-testid="tab-balances">PTO Balances</TabsTrigger>
-          <TabsTrigger value="policies" data-testid="tab-policies">Policies</TabsTrigger>
           <TabsTrigger value="employee-settings" data-testid="tab-employee-settings">Employee Settings</TabsTrigger>
           <TabsTrigger value="alerts-exceptions" data-testid="tab-alerts-exceptions" className="flex items-center gap-1.5">
             Alerts & Exceptions
@@ -204,7 +202,6 @@ export default function PtoLeavePage() {
           <TabsTrigger value="anniversary-history" data-testid="tab-anniversary-history">Anniversary History</TabsTrigger>
         </TabsList>
         <TabsContent value="balances"><PtoBalancesTab /></TabsContent>
-        <TabsContent value="policies"><PoliciesTab /></TabsContent>
         <TabsContent value="employee-settings"><EmployeePtoTab /></TabsContent>
         <TabsContent value="alerts-exceptions"><AlertsExceptionsTab filters={alertsFilters} /></TabsContent>
         <TabsContent value="anniversary-history"><AnniversaryHistoryTab /></TabsContent>
@@ -368,317 +365,44 @@ function PtoBalancesTab() {
   );
 }
 
-function PoliciesTab() {
-  const { toast } = useToast();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({
-    name: "", description: "", accrualType: "annual", accrualHoursPerYear: "120",
-    yearlyCapHours: "", carryoverCapHours: "0", waitingPeriodDays: "0",
-    sickAccrualEnabled: true, personalHoursPerYear: "40",
-    holidayPayEnabled: true, isDefault: false, expirationDate: "",
-    vacationAccrualPerHoursWorked: "30", vacationAccrualHoursPerThreshold: "1",
-  });
-
-  const { data: policies, isLoading } = useQuery<PtoPolicy[]>({ queryKey: ["/api/pto-policies"] });
-  const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
-
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, unknown> = {
-        name: form.name,
-        description: form.description || null,
-        accrualType: form.accrualType,
-        accrualHoursPerYear: parseFloat(form.accrualHoursPerYear) || 120,
-        yearlyCapHours: form.yearlyCapHours ? parseFloat(form.yearlyCapHours) : null,
-        carryoverCapHours: parseFloat(form.carryoverCapHours) || 0,
-        waitingPeriodDays: parseInt(form.waitingPeriodDays) || 0,
-        sickAccrualEnabled: form.sickAccrualEnabled,
-        personalHoursPerYear: parseFloat(form.personalHoursPerYear) || 40,
-        holidayPayEnabled: form.holidayPayEnabled,
-        isDefault: form.isDefault,
-        expirationDate: form.expirationDate || null,
-        companyId: divisions?.[0]?.id || null,
-      };
-
-      if (form.accrualType === "per_hours_worked") {
-        const perHours = parseFloat(form.vacationAccrualPerHoursWorked);
-        const earned = parseFloat(form.vacationAccrualHoursPerThreshold);
-        if (!Number.isFinite(perHours) || perHours <= 0) {
-          throw new Error("\"Hours worked per accrual\" must be a number greater than 0.");
-        }
-        if (!Number.isFinite(earned) || earned < 0) {
-          throw new Error("\"PTO hours earned per threshold\" must be a number greater than or equal to 0.");
-        }
-        payload.vacationAccrualPerHoursWorked = perHours;
-        payload.vacationAccrualHoursPerThreshold = earned;
-      }
-      if (editingId) {
-        await apiRequest("PATCH", `/api/pto-policies/${editingId}`, payload);
-      } else {
-        await apiRequest("POST", "/api/pto-policies", payload);
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/pto-policies"] });
-      setDialogOpen(false);
-      resetForm();
-      toast({ title: editingId ? "Policy updated" : "Policy created" });
-    },
-    onError: (err: Error) => {
-      handleMutationError(err, toast);
-    },
-  });
-
-  const resetForm = () => {
-    setForm({
-      name: "", description: "", accrualType: "annual", accrualHoursPerYear: "120",
-      yearlyCapHours: "", carryoverCapHours: "0", waitingPeriodDays: "0",
-      sickAccrualEnabled: true, personalHoursPerYear: "40",
-      holidayPayEnabled: true, isDefault: false, expirationDate: "",
-      vacationAccrualPerHoursWorked: "30", vacationAccrualHoursPerThreshold: "1",
-    });
-    setEditingId(null);
-  };
-
-  const startEdit = (p: PtoPolicy) => {
-    setForm({
-      name: p.name,
-      description: p.description || "",
-      accrualType: p.accrualType,
-      accrualHoursPerYear: String(p.accrualHoursPerYear),
-      yearlyCapHours: p.yearlyCapHours ? String(p.yearlyCapHours) : "",
-      carryoverCapHours: String(p.carryoverCapHours || 0),
-      waitingPeriodDays: String(p.waitingPeriodDays || 0),
-      sickAccrualEnabled: p.sickAccrualEnabled,
-      personalHoursPerYear: String(p.personalHoursPerYear),
-      holidayPayEnabled: p.holidayPayEnabled,
-      isDefault: p.isDefault,
-      expirationDate: p.expirationDate || "",
-      vacationAccrualPerHoursWorked: String(p.vacationAccrualPerHoursWorked ?? 30),
-      vacationAccrualHoursPerThreshold: String(p.vacationAccrualHoursPerThreshold ?? 1),
-    });
-    setEditingId(p.id);
-    setDialogOpen(true);
-  };
-
-  return (
-    <div className="space-y-4 mt-4">
-      <div className="flex justify-end">
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger asChild>
-            <Button data-testid="button-add-policy"><Plus className="h-4 w-4 mr-1" /> Add Policy</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto" data-testid="dialog-policy-form">
-            <DialogHeader>
-              <DialogTitle>{editingId ? "Edit PTO Policy" : "Create PTO Policy"}</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-3">
-              <div><Label>Policy Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-policy-name" /></div>
-              <div><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} data-testid="input-policy-description" /></div>
-              <div>
-                <Label>Accrual Type</Label>
-                <Select value={form.accrualType} onValueChange={(v) => setForm({ ...form, accrualType: v })}>
-                  <SelectTrigger data-testid="select-accrual-type"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="annual">Annual</SelectItem>
-                    <SelectItem value="per_pay_period">Per Pay Period</SelectItem>
-                    <SelectItem value="per_hours_worked">Per Hours Worked</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {form.accrualType === "per_hours_worked" ? (
-                <div className="rounded-md border bg-muted/20 p-3 space-y-2" data-testid="group-per-hours-worked">
-                  <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    Vacation Accrual Rule
-                  </Label>
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span>Earn</span>
-                    <Input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      className="w-20 h-9"
-                      value={form.vacationAccrualHoursPerThreshold}
-                      onChange={(e) => setForm({ ...form, vacationAccrualHoursPerThreshold: e.target.value })}
-                      data-testid="input-vacation-hours-earned"
-                    />
-                    <span>hour(s) of PTO for every</span>
-                    <Input
-                      type="number"
-                      min="1"
-                      step="0.1"
-                      className="w-20 h-9"
-                      value={form.vacationAccrualPerHoursWorked}
-                      onChange={(e) => setForm({ ...form, vacationAccrualPerHoursWorked: e.target.value })}
-                      data-testid="input-vacation-hours-per-accrual"
-                    />
-                    <span>hours worked, up to</span>
-                    <Input
-                      type="number"
-                      min="0"
-                      step="1"
-                      className="w-24 h-9"
-                      value={form.yearlyCapHours}
-                      onChange={(e) => setForm({ ...form, yearlyCapHours: e.target.value })}
-                      placeholder="no cap"
-                      data-testid="input-yearly-cap"
-                    />
-                    <span>hours per year.</span>
-                  </div>
-                  <p
-                    className="text-xs text-muted-foreground italic pt-1 border-t"
-                    data-testid="text-policy-live-preview"
-                  >
-                    Employees will see: "{explainPtoPolicy({
-                      accrualType: form.accrualType,
-                      accrualHoursPerYear: parseFloat(form.accrualHoursPerYear) || 0,
-                      vacationAccrualPerHoursWorked: parseFloat(form.vacationAccrualPerHoursWorked) || 0,
-                      vacationAccrualHoursPerThreshold: parseFloat(form.vacationAccrualHoursPerThreshold) || 0,
-                      yearlyCapHours: form.yearlyCapHours ? parseFloat(form.yearlyCapHours) : null,
-                      carryoverCapHours: parseFloat(form.carryoverCapHours) || 0,
-                    })}"
-                  </p>
-                </div>
-              ) : (
-                <div className="rounded-md border bg-muted/20 p-3 space-y-2" data-testid="group-annual-accrual">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div><Label>Accrual Rate (hours/year)</Label><Input type="number" value={form.accrualHoursPerYear} onChange={(e) => setForm({ ...form, accrualHoursPerYear: e.target.value })} data-testid="input-accrual-rate" /></div>
-                    <div><Label>Yearly Cap (hours)</Label><Input type="number" value={form.yearlyCapHours} onChange={(e) => setForm({ ...form, yearlyCapHours: e.target.value })} placeholder="no cap" data-testid="input-yearly-cap" /></div>
-                  </div>
-                  <p
-                    className="text-xs text-muted-foreground italic pt-1 border-t"
-                    data-testid="text-policy-live-preview"
-                  >
-                    Employees will see: "{explainPtoPolicy({
-                      accrualType: form.accrualType,
-                      accrualHoursPerYear: parseFloat(form.accrualHoursPerYear) || 0,
-                      vacationAccrualPerHoursWorked: parseFloat(form.vacationAccrualPerHoursWorked) || 0,
-                      vacationAccrualHoursPerThreshold: parseFloat(form.vacationAccrualHoursPerThreshold) || 0,
-                      yearlyCapHours: form.yearlyCapHours ? parseFloat(form.yearlyCapHours) : null,
-                      carryoverCapHours: parseFloat(form.carryoverCapHours) || 0,
-                    })}"
-                  </p>
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Carryover Cap (hours)</Label><Input type="number" value={form.carryoverCapHours} onChange={(e) => setForm({ ...form, carryoverCapHours: e.target.value })} data-testid="input-carryover-cap" /></div>
-                <div><Label>Waiting Period (days)</Label><Input type="number" value={form.waitingPeriodDays} onChange={(e) => setForm({ ...form, waitingPeriodDays: e.target.value })} data-testid="input-waiting-period" /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>Personal Hours/Year</Label><Input type="number" value={form.personalHoursPerYear} onChange={(e) => setForm({ ...form, personalHoursPerYear: e.target.value })} data-testid="input-personal-hours" /></div>
-                <div><Label>Expiration Date</Label><Input type="date" value={form.expirationDate} onChange={(e) => setForm({ ...form, expirationDate: e.target.value })} placeholder="Defaults to Dec 31" data-testid="input-expiration-date" /></div>
-              </div>
-              <div className="flex items-center justify-between">
-                <Label>Sick Accrual Enabled</Label>
-                <Switch checked={form.sickAccrualEnabled} onCheckedChange={(v) => setForm({ ...form, sickAccrualEnabled: v })} data-testid="switch-sick-accrual" />
-              </div>
-              <div className="flex items-center justify-between">
-                <Label>Holiday Pay Enabled</Label>
-                <Switch checked={form.holidayPayEnabled} onCheckedChange={(v) => setForm({ ...form, holidayPayEnabled: v })} data-testid="switch-holiday-pay" />
-              </div>
-              <div className="flex items-center justify-between">
-                <Label>Set as Default</Label>
-                <Switch checked={form.isDefault} onCheckedChange={(v) => setForm({ ...form, isDefault: v })} data-testid="switch-is-default" />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button onClick={() => saveMutation.mutate()} disabled={!form.name || saveMutation.isPending} data-testid="button-save-policy">
-                {saveMutation.isPending ? "Saving..." : "Save Policy"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      <Card data-testid="card-policies-list">
-        <CardContent className="p-0">
-          {isLoading ? (
-            <div className="p-6 space-y-3">
-              {[1, 2, 3].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
-            </div>
-          ) : !policies || policies.length === 0 ? (
-            <p className="p-8 text-center text-muted-foreground" data-testid="text-no-policies">No PTO policies configured.</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Accrual Type</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Rate</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Default</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {policies.map((p) => {
-                  const isPerHoursWorked = p.accrualType === "per_hours_worked";
-                  const rateLabel = isPerHoursWorked
-                    ? `${p.vacationAccrualHoursPerThreshold ?? 1} hr per ${p.vacationAccrualPerHoursWorked ?? 30} hrs worked${p.yearlyCapHours ? `, ${p.yearlyCapHours}/yr cap` : ""}`
-                    : `${p.accrualHoursPerYear} hrs/yr`;
-                  return (
-                  <TableRow key={p.id} data-testid={`row-policy-${p.id}`}>
-                    <TableCell className="font-medium" data-testid={`text-policy-name-${p.id}`}>
-                      {p.name}
-                      {p.isDefault && (
-                        <div className="text-xs text-muted-foreground font-normal mt-1" data-testid={`text-policy-default-rule-${p.id}`}>
-                          Company default — employees earn 1 hour of PTO for every 30 hours worked, capped at 40 hours/year. Unused PTO resets each year.
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell data-testid={`text-policy-accrual-${p.id}`}>{p.accrualType}</TableCell>
-                    <TableCell data-testid={`text-policy-rate-${p.id}`}>{rateLabel}</TableCell>
-                    <TableCell>
-                      <Badge variant={p.isActive ? "default" : "secondary"} data-testid={`badge-policy-status-${p.id}`}>
-                        {p.isActive ? "Active" : "Inactive"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell data-testid={`text-policy-default-${p.id}`}>
-                      {p.isDefault && <Badge className="bg-blue-600">Default</Badge>}
-                    </TableCell>
-                    <TableCell>
-                      <Button variant="ghost" size="icon" onClick={() => startEdit(p)} data-testid={`button-edit-policy-${p.id}`}>
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 function EmployeePtoTab() {
   const { toast } = useToast();
   const [selectedUser, setSelectedUser] = useState<string>("");
 
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
-  const { data: policies } = useQuery<PtoPolicy[]>({ queryKey: ["/api/pto-policies"] });
 
   const { data: settings, isLoading: settingsLoading } = useQuery<any>({
     queryKey: ["/api/employee-pto-settings", selectedUser],
     enabled: !!selectedUser,
   });
 
+  const { data: assignment } = useQuery<{
+    assignmentId: string | null;
+    policyId: string | null;
+    effectivePolicyId: string | null;
+    effectivePolicyName: string | null;
+    policies: { id: string; name: string; isSystemDefault: boolean }[];
+  }>({
+    queryKey: ["/api/employee-pto-assignment", selectedUser],
+    enabled: !!selectedUser,
+  });
+
+  const INHERIT = "__inherit__";
+
   const [form, setForm] = useState({
-    ptoPolicyId: "",
+    hireDate: "",
     vacationHoursOverride: "",
     sickHoursOverride: "",
     personalHoursOverride: "",
     notes: "",
+    assignedPolicyId: INHERIT,
   });
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const payload = {
         userId: selectedUser,
-        ptoPolicyId: form.ptoPolicyId || null,
+        hireDate: form.hireDate || null,
         vacationHoursOverride: form.vacationHoursOverride ? parseFloat(form.vacationHoursOverride) : null,
         sickHoursOverride: form.sickHoursOverride ? parseFloat(form.sickHoursOverride) : null,
         personalHoursOverride: form.personalHoursOverride ? parseFloat(form.personalHoursOverride) : null,
@@ -689,9 +413,13 @@ function EmployeePtoTab() {
       } else {
         await apiRequest("POST", "/api/employee-pto-settings", payload);
       }
+      await apiRequest("PUT", `/api/employee-pto-assignment/${selectedUser}`, {
+        policyId: form.assignedPolicyId === INHERIT ? null : form.assignedPolicyId,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employee-pto-settings", selectedUser] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employee-pto-assignment", selectedUser] });
       toast({ title: "PTO settings saved" });
     },
     onError: (err: Error) => {
@@ -702,13 +430,36 @@ function EmployeePtoTab() {
   const handleUserSelect = (userId: string) => {
     setSelectedUser(userId);
     setForm({
-      ptoPolicyId: "",
+      hireDate: "",
       vacationHoursOverride: "",
       sickHoursOverride: "",
       personalHoursOverride: "",
       notes: "",
+      assignedPolicyId: INHERIT,
     });
   };
+
+  useEffect(() => {
+    if (settings) {
+      setForm((prev) => ({
+        ...prev,
+        hireDate: settings.hireDate ? String(settings.hireDate).slice(0, 10) : "",
+        vacationHoursOverride: settings.vacationHoursOverride != null ? String(settings.vacationHoursOverride) : "",
+        sickHoursOverride: settings.sickHoursOverride != null ? String(settings.sickHoursOverride) : "",
+        personalHoursOverride: settings.personalHoursOverride != null ? String(settings.personalHoursOverride) : "",
+        notes: settings.notes ?? "",
+      }));
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    if (assignment) {
+      setForm((prev) => ({
+        ...prev,
+        assignedPolicyId: assignment.policyId ?? INHERIT,
+      }));
+    }
+  }, [assignment]);
 
   return (
     <div className="space-y-4 mt-4">
@@ -741,18 +492,30 @@ function EmployeePtoTab() {
               ) : (
                 <div className="space-y-3">
                   <div>
+                    <Label>Hire Date</Label>
+                    <Input type="date" value={form.hireDate} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} data-testid="input-hire-date" />
+                    <p className="text-xs text-muted-foreground mt-1">Used for the PTO waiting period and accrual start.</p>
+                  </div>
+                  <div>
                     <Label>Assigned PTO Policy</Label>
-                    <Select value={form.ptoPolicyId || "none"} onValueChange={(v) => setForm({ ...form, ptoPolicyId: v === "none" ? "" : v })}>
-                      <SelectTrigger data-testid="select-assigned-policy">
-                        <SelectValue placeholder="Use default" />
+                    <Select value={form.assignedPolicyId} onValueChange={(v) => setForm({ ...form, assignedPolicyId: v })}>
+                      <SelectTrigger data-testid="select-assigned-pto-policy">
+                        <SelectValue placeholder="Choose a policy..." />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">Use Company Default</SelectItem>
-                        {policies?.map((p) => (
-                          <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                        <SelectItem value={INHERIT}>Inherit (use default / higher-scope policy)</SelectItem>
+                        {assignment?.policies?.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name}{p.isSystemDefault ? " (default)" : ""}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground mt-1" data-testid="text-effective-pto-policy">
+                      {form.assignedPolicyId === INHERIT
+                        ? `Currently inheriting: ${assignment?.effectivePolicyName ?? "default policy"}.`
+                        : "This employee has a directly assigned PTO policy."}
+                    </p>
                   </div>
                   <div className="grid grid-cols-3 gap-3">
                     <div>

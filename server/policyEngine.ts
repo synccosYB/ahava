@@ -11,6 +11,7 @@ import {
   type Policy,
   type PolicyAssignment,
   type PolicyRule,
+  type PtoPolicy,
   type User,
   userDepartmentIds,
   userLocationIds,
@@ -435,10 +436,53 @@ export const DEFAULT_PTO_RULES = {
   holidayPayEnabled: true,
   holidayPtoDeduction: false,
   holidayOtExclusion: true,
+  expirationDate: null as string | null,
   requireApproval: true,
   maxConsecutiveHours: 80,
   blackoutDates: [],
 };
+
+/**
+ * Build a PtoPolicy-shaped object from a set of unified `pto` policy rules
+ * (merged with DEFAULT_PTO_RULES for any missing keys). The rules JSON keys
+ * intentionally mirror the legacy `pto_policies` column names, so a synthetic
+ * PtoPolicy produced here is byte-identical to the legacy row it was migrated
+ * from — which is what keeps every downstream accrual/balance computation
+ * returning the exact same numbers after the PTO consolidation (task #397).
+ */
+export function buildPtoPolicyFromRules(
+  policyId: string,
+  policyName: string,
+  rules: Record<string, any>,
+): PtoPolicy {
+  const merged = { ...DEFAULT_PTO_RULES, ...rules };
+  return {
+    id: policyId,
+    name: policyName,
+    description: null,
+    companyId: null,
+    accrualType: merged.accrualType,
+    accrualHoursPerYear: merged.accrualHoursPerYear,
+    yearlyCapHours: merged.yearlyCapHours ?? null,
+    carryoverCapHours: merged.carryoverCapHours ?? 0,
+    waitingPeriodDays: merged.waitingPeriodDays ?? 0,
+    sickAccrualEnabled: merged.sickAccrualEnabled,
+    sickAccrualRatePerHours: merged.sickAccrualRatePerHours,
+    sickAccrualPerHoursWorked: merged.sickAccrualPerHoursWorked,
+    sickYearlyCapHours: merged.sickYearlyCapHours,
+    vacationAccrualPerHoursWorked: merged.vacationAccrualPerHoursWorked,
+    vacationAccrualHoursPerThreshold: merged.vacationAccrualHoursPerThreshold,
+    personalHoursPerYear: merged.personalHoursPerYear,
+    holidayPayEnabled: merged.holidayPayEnabled,
+    holidayPtoDeduction: merged.holidayPtoDeduction,
+    holidayOtExclusion: merged.holidayOtExclusion,
+    expirationDate: merged.expirationDate || null,
+    isDefault: false,
+    isActive: true,
+    createdAt: null,
+    updatedAt: null,
+  } as PtoPolicy;
+}
 
 export const DEFAULT_PAYROLL_RULES = {
   payPeriodType: "biweekly",

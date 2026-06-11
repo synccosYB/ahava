@@ -7,11 +7,10 @@ import {
   policyTypes,
   policies,
   policyRules,
+  policyAssignments,
   userRoles,
   biometricSettings,
   biometricLegalProfiles,
-  ptoPolicies,
-  employeePtoSettings,
 } from "@shared/schema";
 import { isNull } from "drizzle-orm";
 import { getDefaultRulesForType } from "./policyEngine";
@@ -474,84 +473,81 @@ export async function seed() {
       ));
   }
 
-  // Default PTO policy: 1 hour PTO per 30 hours worked, capped at 40/year,
-  // use-it-or-lose-it (0 carryover). Idempotent: looks up by name, then
-  // ensures the rule values match and the row is the company default.
-  const DEFAULT_PTO_POLICY_NAME = "Standard PTO (1 per 30, 40 cap)";
-  const DEFAULT_PTO_POLICY_DESCRIPTION =
-    "Company default: employees earn 1 hour of PTO for every 30 hours worked, capped at 40 hours per year. Unused PTO resets at year end (use it or lose it).";
-  const defaultPtoRules = {
-    accrualType: "per_hours_worked" as const,
+  // Company default PTO rules: 1 hour PTO per 30 hours worked, capped at 40/year,
+  // use-it-or-lose-it (0 carryover), plus the legacy sick/personal/holiday column
+  // defaults. These are now expressed as the rules JSON on the SYSTEM-DEFAULT
+  // unified `pto` policy (NOT a row in the dormant `pto_policies` table), and the
+  // policy gets a GLOBAL assignment so any employee without a more specific PTO
+  // assignment resolves to exactly these numbers. The shape mirrors PtoPolicy
+  // column names so storage.getEmployeePtoPolicy can treat it as a PtoPolicy.
+  const COMPANY_DEFAULT_PTO_RULES = {
+    accrualType: "per_hours_worked",
     accrualHoursPerYear: 40,
     yearlyCapHours: 40,
     carryoverCapHours: 0,
     waitingPeriodDays: 0,
+    sickAccrualEnabled: true,
+    sickAccrualRatePerHours: 1,
+    sickAccrualPerHoursWorked: 30,
+    sickYearlyCapHours: 40,
     vacationAccrualPerHoursWorked: 30,
     vacationAccrualHoursPerThreshold: 1,
-    isDefault: true,
-    isActive: true,
+    personalHoursPerYear: 40,
+    holidayPayEnabled: true,
+    holidayPtoDeduction: false,
+    holidayOtExclusion: true,
+    expirationDate: null as string | null,
+    requireApproval: true,
+    maxConsecutiveHours: 80,
+    blackoutDates: [] as string[],
   };
-  const [existingDefaultPto] = await db
-    .select()
-    .from(ptoPolicies)
-    .where(eq(ptoPolicies.name, DEFAULT_PTO_POLICY_NAME));
-  let defaultPtoPolicyId: string;
-  if (!existingDefaultPto) {
-    // Clear any other default first to satisfy the single-default invariant.
-    await db.update(ptoPolicies).set({ isDefault: false }).where(eq(ptoPolicies.isDefault, true));
-    const [created] = await db
-      .insert(ptoPolicies)
-      .values({
-        name: DEFAULT_PTO_POLICY_NAME,
-        description: DEFAULT_PTO_POLICY_DESCRIPTION,
-        ...defaultPtoRules,
-      })
-      .returning();
-    defaultPtoPolicyId = created.id;
-    console.log(`Seeded default PTO policy: ${DEFAULT_PTO_POLICY_NAME}`);
-  } else {
-    if (!existingDefaultPto.isDefault) {
-      await db.update(ptoPolicies).set({ isDefault: false }).where(eq(ptoPolicies.isDefault, true));
-    }
-    await db
-      .update(ptoPolicies)
-      .set({
-        description: DEFAULT_PTO_POLICY_DESCRIPTION,
-        ...defaultPtoRules,
-        updatedAt: new Date(),
-      })
-      .where(eq(ptoPolicies.id, existingDefaultPto.id));
-    defaultPtoPolicyId = existingDefaultPto.id;
-    console.log(`Refreshed default PTO policy: ${DEFAULT_PTO_POLICY_NAME}`);
-  }
 
-  // Auto-assign active employees who don't already have an explicit policy.
-  const activeUsers = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(isNull(users.deactivatedAt));
-  let assigned = 0;
-  for (const u of activeUsers) {
-    const [existing] = await db
+  const ptoType = typesByKey.get("pto");
+  if (ptoType) {
+    const [sdPtoPolicy] = await db
       .select()
-      .from(employeePtoSettings)
-      .where(eq(employeePtoSettings.userId, u.id));
-    if (!existing) {
-      await db.insert(employeePtoSettings).values({
-        userId: u.id,
-        ptoPolicyId: defaultPtoPolicyId,
-      });
-      assigned += 1;
-    } else if (!existing.ptoPolicyId) {
-      await db
-        .update(employeePtoSettings)
-        .set({ ptoPolicyId: defaultPtoPolicyId, updatedAt: new Date() })
-        .where(eq(employeePtoSettings.id, existing.id));
-      assigned += 1;
+      .from(policies)
+      .where(and(eq(policies.policyTypeId, ptoType.id), eq(policies.isSystemDefault, true)));
+    if (sdPtoPolicy) {
+      if (sdPtoPolicy.status !== "active") {
+        await db.update(policies).set({ status: "active" }).where(eq(policies.id, sdPtoPolicy.id));
+      }
+      // Override the engine's generic DEFAULT_PTO_RULES (annual/120) with the
+      // company default so the global fallback matches legacy numbers exactly.
+      const [existingRule] = await db
+        .select()
+        .from(policyRules)
+        .where(eq(policyRules.policyId, sdPtoPolicy.id));
+      if (existingRule) {
+        await db
+          .update(policyRules)
+          .set({ rules: COMPANY_DEFAULT_PTO_RULES, updatedAt: new Date() })
+          .where(eq(policyRules.id, existingRule.id));
+      } else {
+        await db.insert(policyRules).values({ policyId: sdPtoPolicy.id, rules: COMPANY_DEFAULT_PTO_RULES });
+      }
+
+      // Ensure a GLOBAL assignment (all targets null) for the system default.
+      const [globalAssignment] = await db
+        .select()
+        .from(policyAssignments)
+        .where(
+          and(
+            eq(policyAssignments.policyId, sdPtoPolicy.id),
+            isNull(policyAssignments.companyId),
+            isNull(policyAssignments.locationId),
+            isNull(policyAssignments.departmentId),
+            isNull(policyAssignments.userId),
+            isNull(policyAssignments.roleId),
+            isNull(policyAssignments.employmentType),
+            isNull(policyAssignments.payType),
+          ),
+        );
+      if (!globalAssignment) {
+        await db.insert(policyAssignments).values({ policyId: sdPtoPolicy.id });
+      }
+      console.log("Ensured system-default PTO policy carries company default rules + global assignment.");
     }
-  }
-  if (assigned > 0) {
-    console.log(`Linked ${assigned} active employee(s) to the default PTO policy.`);
   }
 
   // Biometric singleton settings — feature flag defaults OFF.

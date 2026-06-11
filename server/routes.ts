@@ -2023,7 +2023,11 @@ export async function registerRoutes(
       const currentYear = new Date().getFullYear();
       const balances = await Promise.all(allUsers.filter(u => u.id !== "admin-dev-001").map(async (user) => {
         const ptoSettings = await storage.getEmployeePtoSettings(user.id);
-        const policy = ptoSettings?.ptoPolicyId ? await storage.getPtoPolicy(ptoSettings.ptoPolicyId) : await storage.getDefaultPtoPolicy();
+        // Resolve the PTO policy through the unified engine (policy_assignments +
+        // precedence), NOT the legacy employee_pto_settings.pto_policy_id link, so
+        // balances reflect employee-level assignments edited via
+        // PUT /api/employee-pto-assignment/:userId.
+        const policy = await storage.getEmployeePtoPolicy(user.id);
         const totalVacation = (policy?.accrualType === "per_hours_worked" && ptoSettings?.vacationHoursOverride == null)
           ? await storage.computeAnnualVacationEntitlement(user.id)
           : (ptoSettings?.vacationHoursOverride ?? policy?.accrualHoursPerYear ?? 120);
@@ -6068,67 +6072,10 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/pto-policies", requireAuth, requirePermission("pto.manage_policies"), async (req: any, res) => {
-    try {
-      const parsed = insertPtoPolicySchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: "Invalid policy data", errors: parsed.error.flatten() });
-      }
-      const policy = await storage.createPtoPolicy(parsed.data);
-
-      await writeAuditLog({
-        actorUserId: req.authUser.id,
-        action: "pto_policy.created",
-        targetId: policy.id,
-        targetType: "pto_policy",
-        newValue: { name: policy.name },
-        ...getAuditContext(req),
-      });
-
-      res.status(201).json(policy);
-    } catch (error) {
-      console.error("Error creating PTO policy:", error);
-      handleRouteError(res, error, "Failed to create PTO policy");
-    }
-  });
-
-  app.patch("/api/pto-policies/:id", requireAuth, requirePermission("pto.manage_policies"), async (req: any, res) => {
-    try {
-      const accrualType = req.body?.accrualType;
-      if (accrualType === "per_hours_worked") {
-        const perHours = Number(req.body?.vacationAccrualPerHoursWorked);
-        const earned = Number(req.body?.vacationAccrualHoursPerThreshold);
-        if (!Number.isFinite(perHours) || perHours <= 0) {
-          return res.status(400).json({
-            message: "Invalid policy data",
-            errors: { vacationAccrualPerHoursWorked: "Hours worked per accrual must be a number greater than 0 when accrual type is per_hours_worked" },
-          });
-        }
-        if (!Number.isFinite(earned) || earned < 0) {
-          return res.status(400).json({
-            message: "Invalid policy data",
-            errors: { vacationAccrualHoursPerThreshold: "PTO hours earned per threshold must be a number greater than or equal to 0 when accrual type is per_hours_worked" },
-          });
-        }
-      }
-      const policy = await storage.updatePtoPolicy(String(req.params.id), req.body);
-      if (!policy) return res.status(404).json({ message: "Policy not found" });
-
-      await writeAuditLog({
-        actorUserId: req.authUser.id,
-        action: "pto_policy.updated",
-        targetId: policy.id,
-        targetType: "pto_policy",
-        newValue: { name: policy.name, changes: Object.keys(req.body) },
-        ...getAuditContext(req),
-      });
-
-      res.json(policy);
-    } catch (error) {
-      console.error("Error updating PTO policy:", error);
-      handleRouteError(res, error, "Failed to update PTO policy");
-    }
-  });
+  // PTO policy CREATE/UPDATE/DELETE were retired in the PTO consolidation
+  // (task #397). PTO policies are now authored through the unified policy engine
+  // (`/api/policies`, type "pto") and the legacy `pto_policies` table is dormant.
+  // The GET routes above remain for backward-compatible reads only.
 
   app.get("/api/employee-pto-settings/:userId", requireAuth, requirePermission("pto.view_team"), async (req, res) => {
     try {
@@ -6200,6 +6147,102 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching employee PTO policy:", error);
       handleRouteError(res, error, "Failed to fetch employee PTO policy");
+    }
+  });
+
+  // Employee-level PTO policy ASSIGNMENT, routed through the unified policy
+  // engine's policy_assignments (NOT the legacy employee_pto_settings.pto_policy_id
+  // link). Returns the explicit employee-level assignment (if any), the resolved
+  // effective policy (when the employee inherits), and the selectable PTO policies.
+  app.get("/api/employee-pto-assignment/:userId", requireAuth, requirePermission("pto.view_team"), async (req, res) => {
+    try {
+      const userId = String(req.params.userId);
+      const [assignment, available, effective] = await Promise.all([
+        storage.getEmployeePtoAssignment(userId),
+        storage.getSelectablePtoPolicies(),
+        storage.getEmployeePtoPolicy(userId),
+      ]);
+      res.json({
+        assignmentId: assignment?.id ?? null,
+        policyId: assignment?.policyId ?? null,
+        effectivePolicyId: (effective as any)?.id ?? null,
+        effectivePolicyName: (effective as any)?.name ?? null,
+        policies: available.map((p) => ({
+          id: p.id,
+          name: p.name,
+          isSystemDefault: p.isSystemDefault,
+        })),
+      });
+    } catch (error) {
+      console.error("Error fetching employee PTO assignment:", error);
+      handleRouteError(res, error, "Failed to fetch employee PTO assignment");
+    }
+  });
+
+  // Upsert the employee-level PTO policy assignment. `policyId: null` clears the
+  // employee-level override so the employee inherits a higher-scope policy again.
+  app.put("/api/employee-pto-assignment/:userId", requireAuth, requirePermission("pto.manage_policies"), async (req: any, res) => {
+    try {
+      const userId = String(req.params.userId);
+      const rawPolicyId = req.body?.policyId;
+      const policyId =
+        rawPolicyId === null || rawPolicyId === undefined || rawPolicyId === ""
+          ? null
+          : String(rawPolicyId);
+
+      const target = await storage.getUser(userId);
+      if (!target) return res.status(404).json({ message: "Employee not found." });
+
+      const existing = await storage.getEmployeePtoAssignment(userId);
+
+      if (policyId === null) {
+        if (existing) {
+          await storage.deletePolicyAssignment(existing.id);
+          await writeAuditLog({
+            actorUserId: req.authUser.id,
+            action: "policy_assignment.deleted",
+            targetId: existing.id,
+            targetType: "policy_assignment",
+            oldValue: { policyId: existing.policyId, userId },
+            ...getAuditContext(req),
+          });
+        }
+        return res.json({ assignmentId: null, policyId: null });
+      }
+
+      const selectable = await storage.getSelectablePtoPolicies();
+      if (!selectable.some((p) => p.id === policyId)) {
+        return res.status(400).json({ message: "Selected policy is not an active PTO policy." });
+      }
+
+      let result;
+      if (existing) {
+        result = await storage.updatePolicyAssignment(existing.id, { policyId });
+        await writeAuditLog({
+          actorUserId: req.authUser.id,
+          action: "policy_assignment.updated",
+          targetId: existing.id,
+          targetType: "policy_assignment",
+          oldValue: { policyId: existing.policyId, userId },
+          newValue: { policyId, userId },
+          ...getAuditContext(req),
+        });
+      } else {
+        result = await storage.createPolicyAssignment({ policyId, userId } as any);
+        await writeAuditLog({
+          actorUserId: req.authUser.id,
+          action: "policy_assignment.created",
+          targetId: result.id,
+          targetType: "policy_assignment",
+          newValue: { policyId, userId },
+          ...getAuditContext(req),
+        });
+      }
+
+      res.json({ assignmentId: result?.id ?? null, policyId });
+    } catch (error) {
+      console.error("Error updating employee PTO assignment:", error);
+      handleRouteError(res, error, "Failed to update employee PTO assignment");
     }
   });
 

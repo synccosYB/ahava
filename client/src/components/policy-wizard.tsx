@@ -97,7 +97,7 @@ const TEMPLATE_STEP: WizardStep = {
 interface RuleFieldDef {
   key: string;
   label: string;
-  type: "number" | "boolean" | "text" | "select" | "multiselect";
+  type: "number" | "boolean" | "text" | "select" | "multiselect" | "date";
   description: string;
   defaultValue: any;
   options?: { value: string; label: string }[];
@@ -142,14 +142,27 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
       ];
     case "pto":
       return [
-        { key: "accrualType", label: "Accrual Type", type: "select", description: "How PTO is accrued over time", defaultValue: "annual", options: [{ value: "annual", label: "Annual" }, { value: "monthly", label: "Monthly" }, { value: "per_pay_period", label: "Per Pay Period" }] },
-        { key: "accrualHoursPerYear", label: "Accrual Rate (hours/year)", type: "number", description: "Number of PTO hours accrued per year", defaultValue: 120, min: 0, max: 2920 },
+        { key: "accrualType", label: "Accrual Type", type: "select", description: "How PTO is accrued over time", defaultValue: "annual", options: [{ value: "annual", label: "Annual" }, { value: "monthly", label: "Monthly" }, { value: "per_pay_period", label: "Per Pay Period" }, { value: "per_hours_worked", label: "Per Hours Worked" }] },
+        { key: "accrualHoursPerYear", label: "Accrual Rate (hours/year)", type: "number", description: "Number of PTO hours accrued per year", defaultValue: 120, min: 0, max: 2920, showWhen: (r) => r?.accrualType !== "per_hours_worked" },
+        { key: "vacationAccrualPerHoursWorked", label: "Hours Worked per Accrual", type: "number", description: "Earn PTO for every this many hours worked (e.g. 30 = 1 hour PTO per 30 worked)", defaultValue: 30, min: 1, max: 200, showWhen: (r) => r?.accrualType === "per_hours_worked" },
+        { key: "vacationAccrualHoursPerThreshold", label: "PTO Hours Earned per Threshold", type: "number", description: "How many PTO hours are earned each time the worked-hours threshold is met", defaultValue: 1, min: 0, max: 40, showWhen: (r) => r?.accrualType === "per_hours_worked" },
+        { key: "yearlyCapHours", label: "Yearly Cap (hours)", type: "number", description: "Maximum PTO hours that can accrue in a year (leave 0 for no cap)", defaultValue: 0, min: 0, max: 2920, nullable: true },
+        { key: "expirationDate", label: "Accrual Expiration Date", type: "date", description: "Optional date after which accrued PTO expires (leave blank for none)", defaultValue: null, nullable: true },
+        { key: "waitingPeriodDays", label: "Waiting Period (days)", type: "number", description: "Days after hire before PTO begins accruing", defaultValue: 0, min: 0, max: 365 },
+        { key: "carryoverCapHours", label: "Carryover Cap (hours)", type: "number", description: "Maximum unused PTO hours that carry over to next year (0 = no carryover)", defaultValue: 0, min: 0, max: 500 },
+        { key: "sickAccrualEnabled", label: "Sick Time Accrual", type: "boolean", description: "Whether employees accrue separate sick time", defaultValue: true },
+        { key: "sickAccrualPerHoursWorked", label: "Hours Worked per Sick Accrual", type: "number", description: "Earn sick time for every this many hours worked", defaultValue: 30, min: 1, max: 200, showWhen: (r) => r?.sickAccrualEnabled === true },
+        { key: "sickAccrualRatePerHours", label: "Sick Hours Earned per Threshold", type: "number", description: "How many sick hours are earned each time the threshold is met", defaultValue: 1, min: 0, max: 40, showWhen: (r) => r?.sickAccrualEnabled === true },
+        { key: "sickYearlyCapHours", label: "Sick Yearly Cap (hours)", type: "number", description: "Maximum sick hours that can accrue in a year", defaultValue: 40, min: 0, max: 2920, showWhen: (r) => r?.sickAccrualEnabled === true },
+        { key: "personalHoursPerYear", label: "Personal Hours per Year", type: "number", description: "Annual personal time granted", defaultValue: 40, min: 0, max: 2920 },
+        { key: "holidayPayEnabled", label: "Holiday Pay", type: "boolean", description: "Pay eligible employees for recognized holidays", defaultValue: true },
+        { key: "holidayPtoDeduction", label: "Deduct Holiday from PTO", type: "boolean", description: "Deduct holiday hours from the employee's PTO balance", defaultValue: false },
+        { key: "holidayOtExclusion", label: "Exclude Holiday from Overtime", type: "boolean", description: "Holiday hours do not count toward overtime thresholds", defaultValue: true },
         { key: "maxConsecutiveHours", label: "Max Consecutive Hours", type: "number", description: "Maximum number of consecutive PTO hours allowed", defaultValue: 80, min: 1, max: 720 },
         { key: "requireApproval", label: "Require Approval", type: "boolean", description: "Require manager approval for PTO requests. Requests that exceed an employee's available balance always require approval regardless of this setting.", defaultValue: true },
         { key: "requireAdvanceNotice", label: "Require Advance Notice", type: "boolean", description: "Require employees to submit PTO requests in advance", defaultValue: true },
         { key: "advanceNoticeDays", label: "Advance Notice Days", type: "number", description: "Minimum days in advance for PTO requests", defaultValue: 3, min: 0, max: 90 },
         { key: "blackoutDatesEnabled", label: "Blackout Dates", type: "boolean", description: "Enable blackout dates when PTO cannot be taken", defaultValue: false },
-        { key: "carryoverCapHours", label: "Carryover Cap (hours)", type: "number", description: "Maximum unused PTO hours that carry over to next year (0 = no carryover)", defaultValue: 0, min: 0, max: 500 },
       ];
     case "payroll":
       return [
