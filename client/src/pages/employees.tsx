@@ -2843,11 +2843,24 @@ interface ScheduleEntry {
   isActive: boolean;
 }
 
+function formatTime12(time: string): string {
+  if (!time) return "";
+  const [hStr, mStr] = time.split(":");
+  const hour = parseInt(hStr, 10);
+  const minute = parseInt(mStr, 10);
+  if (isNaN(hour) || isNaN(minute)) return time;
+  const period = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${hour12}:${mStr.padStart(2, "0")} ${period}`;
+}
+
 function ScheduleTab({ employeeId }: { employeeId: string }) {
   const { toast } = useToast();
   const [schedule, setSchedule] = useState<ScheduleEntry[]>(
     DAY_NAMES.map((_, i) => ({ dayOfWeek: i, startTime: "09:00", endTime: "17:00", isActive: false }))
   );
+  const [isEditing, setIsEditing] = useState(false);
+  const snapshotRef = useRef<ScheduleEntry[] | null>(null);
 
   const { data: existingSchedules, isLoading } = useQuery<EmployeeSchedule[]>({
     queryKey: ["/api/employees", employeeId, "schedules"],
@@ -2878,12 +2891,27 @@ function ScheduleTab({ employeeId }: { employeeId: string }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees", employeeId, "schedules"] });
+      snapshotRef.current = null;
+      setIsEditing(false);
       toast({ title: "Schedule Saved", description: "Employee work schedule has been updated." });
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to save schedule.", variant: "destructive" });
     },
   });
+
+  const startEditing = () => {
+    snapshotRef.current = schedule.map((d) => ({ ...d }));
+    setIsEditing(true);
+  };
+
+  const cancelEditing = () => {
+    if (snapshotRef.current) {
+      setSchedule(snapshotRef.current.map((d) => ({ ...d })));
+      snapshotRef.current = null;
+    }
+    setIsEditing(false);
+  };
 
   const toggleDay = (dayOfWeek: number) => {
     setSchedule(prev => prev.map(d => d.dayOfWeek === dayOfWeek ? { ...d, isActive: !d.isActive } : d));
@@ -2933,6 +2961,8 @@ function ScheduleTab({ employeeId }: { employeeId: string }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees", employeeId, "schedules"] });
       hasInitialized.current = false;
+      snapshotRef.current = null;
+      setIsEditing(false);
       toast({ title: "Schedule re-linked", description: "Template re-applied to this employee." });
     },
     onError: (err: Error) => {
@@ -2973,9 +3003,20 @@ function ScheduleTab({ employeeId }: { employeeId: string }) {
             </Button>
           )}
         </div>
-        <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} data-testid="button-save-schedule">
-          {saveMutation.isPending ? "Saving..." : "Save Schedule"}
-        </Button>
+        {isEditing ? (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={cancelEditing} disabled={saveMutation.isPending} data-testid="button-cancel-schedule">
+              Cancel
+            </Button>
+            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} data-testid="button-save-schedule">
+              {saveMutation.isPending ? "Saving..." : "Save Schedule"}
+            </Button>
+          </div>
+        ) : (
+          <Button onClick={startEditing} data-testid="button-edit-schedule">
+            Edit
+          </Button>
+        )}
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
@@ -2984,33 +3025,50 @@ function ScheduleTab({ employeeId }: { employeeId: string }) {
             const isCustomized = sharedTemplateId !== null && dayTemplateId === null && day.isActive;
             return (
               <div key={day.dayOfWeek} className="flex items-center gap-4 p-3 rounded-lg border" data-testid={`schedule-day-${day.dayOfWeek}`}>
-                <button
-                  type="button"
-                  onClick={() => toggleDay(day.dayOfWeek)}
-                  className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${day.isActive ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/30"}`}
-                  data-testid={`toggle-day-${day.dayOfWeek}`}
-                >
-                  {day.isActive && <CheckCircle2 className="h-4 w-4" />}
-                </button>
-                <span className="w-28 font-medium" data-testid={`text-day-name-${day.dayOfWeek}`}>{DAY_NAMES[day.dayOfWeek]}</span>
-                {day.isActive ? (
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="time"
-                      value={day.startTime}
-                      onChange={(e) => updateTime(day.dayOfWeek, "startTime", e.target.value)}
-                      className="w-32"
-                      data-testid={`input-start-time-${day.dayOfWeek}`}
-                    />
-                    <span className="text-muted-foreground">to</span>
-                    <Input
-                      type="time"
-                      value={day.endTime}
-                      onChange={(e) => updateTime(day.dayOfWeek, "endTime", e.target.value)}
-                      className="w-32"
-                      data-testid={`input-end-time-${day.dayOfWeek}`}
-                    />
+                {isEditing ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleDay(day.dayOfWeek)}
+                    className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${day.isActive ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/30"}`}
+                    data-testid={`toggle-day-${day.dayOfWeek}`}
+                  >
+                    {day.isActive && <CheckCircle2 className="h-4 w-4" />}
+                  </button>
+                ) : (
+                  <div
+                    className={`w-6 h-6 rounded border-2 flex items-center justify-center ${day.isActive ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/30"}`}
+                    data-testid={`indicator-day-${day.dayOfWeek}`}
+                  >
+                    {day.isActive && <CheckCircle2 className="h-4 w-4" />}
                   </div>
+                )}
+                <span className="w-28 font-medium" data-testid={`text-day-name-${day.dayOfWeek}`}>{DAY_NAMES[day.dayOfWeek]}</span>
+                {isEditing ? (
+                  day.isActive ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="time"
+                        value={day.startTime}
+                        onChange={(e) => updateTime(day.dayOfWeek, "startTime", e.target.value)}
+                        className="w-32"
+                        data-testid={`input-start-time-${day.dayOfWeek}`}
+                      />
+                      <span className="text-muted-foreground">to</span>
+                      <Input
+                        type="time"
+                        value={day.endTime}
+                        onChange={(e) => updateTime(day.dayOfWeek, "endTime", e.target.value)}
+                        className="w-32"
+                        data-testid={`input-end-time-${day.dayOfWeek}`}
+                      />
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground text-sm" data-testid={`text-day-off-${day.dayOfWeek}`}>Day off</span>
+                  )
+                ) : day.isActive ? (
+                  <span className="text-sm" data-testid={`text-day-hours-${day.dayOfWeek}`}>
+                    {formatTime12(day.startTime)} – {formatTime12(day.endTime)}
+                  </span>
                 ) : (
                   <span className="text-muted-foreground text-sm" data-testid={`text-day-off-${day.dayOfWeek}`}>Day off</span>
                 )}
