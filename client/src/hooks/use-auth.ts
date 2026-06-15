@@ -47,7 +47,13 @@ export function useAuth() {
       // next user inherits the previous user's cached queries until a refresh.
       invalidateCachedFetch();
       queryClient.clear();
-      queryClient.setQueryData(["/api/auth/user"], null);
+      // Hard-reload so the app re-bootstraps in a guaranteed logged-out state.
+      // We deliberately do NOT use queryClient.setQueryData here: pairing it with
+      // queryClient.clear() races a background /api/auth/user refetch, so the soft
+      // swap to "logged out" is unreliable and the app keeps rendering the
+      // authenticated view until a manual refresh. A full reload re-runs the auth
+      // check once, cleanly, landing on the login screen every time (mirrors login).
+      window.location.assign("/");
     },
   });
 
