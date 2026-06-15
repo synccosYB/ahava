@@ -319,6 +319,8 @@ export const punchLogs = pgTable("punch_logs", {
   notes: text("notes"),
   source: varchar("source", { length: 20 }).default("web").notNull(),
   kioskDeviceId: varchar("kiosk_device_id"),
+  punchLatitude: real("punch_latitude"),
+  punchLongitude: real("punch_longitude"),
   approved: boolean("approved").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [

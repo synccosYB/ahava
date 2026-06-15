@@ -83,6 +83,7 @@ const EXCEPTION_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "punch_removal", label: "Punch Removal" },
   { value: "forgotten_clock_in", label: "Forgotten Clock In" },
   { value: "forgotten_clock_out", label: "Forgotten Clock Out" },
+  { value: "geofence", label: "Out of Area" },
 ];
 
 function formatExceptionTypeLabel(type: string): string {

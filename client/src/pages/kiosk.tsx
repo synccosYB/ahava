@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { FaceCapture } from "@/components/face-capture";
+import { getPunchCoords } from "@/lib/geolocation";
 
 interface KioskEmployee {
   id: string;
@@ -8,6 +9,7 @@ interface KioskEmployee {
   department: string;
   employeeId: string;
   allowedPunchSources?: string[];
+  geofenceEnabled?: boolean;
 }
 
 interface KioskLastRecord {
@@ -261,9 +263,22 @@ export default function KioskPage() {
     if (!employee) return;
     setPunchError(null);
     try {
+      // Capture the tablet's location for geofenced employees so the server can
+      // verify the clock-in. Never blocks: denied/unavailable location just
+      // sends nothing and the server raises a geofence exception for managers.
+      const coords =
+        punchType === "clock_in" && employee.geofenceEnabled
+          ? await getPunchCoords()
+          : { latitude: null, longitude: null };
       const res = await kioskFetch("/api/kiosk/punch", {
         method: "POST",
-        body: JSON.stringify({ employeeId: employee.id, type: punchType }),
+        body: JSON.stringify({
+          employeeId: employee.id,
+          type: punchType,
+          ...(coords.latitude != null && coords.longitude != null
+            ? { latitude: coords.latitude, longitude: coords.longitude }
+            : {}),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

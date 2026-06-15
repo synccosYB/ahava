@@ -211,6 +211,8 @@ export type InsertAttendanceRecord = InsertPunchLog;
 export interface ClockInOptions {
   status?: string;
   kioskDeviceId?: string;
+  punchLatitude?: number | null;
+  punchLongitude?: number | null;
 }
 
 // Thrown when a clock-in would create a second open punch for an employee.
@@ -260,6 +262,7 @@ export interface IStorage {
   updateUserDepartment(id: string, departmentId: string): Promise<User | undefined>;
   getUserDepartmentIds(userId: string): Promise<string[]>;
   getUserLocationIds(userId: string): Promise<string[]>;
+  getEmployeeGeofencedAddresses(userId: string): Promise<LocationAddress[]>;
   setUserDepartmentIds(userId: string, departmentIds: string[]): Promise<string[]>;
   setUserLocationIds(userId: string, locationIds: string[]): Promise<string[]>;
 
@@ -953,6 +956,26 @@ export class DatabaseStorage implements IStorage {
     return rows.map((r) => r.locationId);
   }
 
+  // Task #418: geofence-enabled addresses (with usable coordinates) across all
+  // of the employee's assigned locations. Used to decide whether a clock-in
+  // happened inside an allowed radius. Returns [] when the employee has no
+  // geofenced locations — i.e. geofencing simply doesn't apply to them.
+  async getEmployeeGeofencedAddresses(userId: string): Promise<LocationAddress[]> {
+    const locationIds = await this.getUserLocationIds(userId);
+    if (locationIds.length === 0) return [];
+    return db
+      .select()
+      .from(locationAddresses)
+      .where(
+        and(
+          inArray(locationAddresses.locationId, locationIds),
+          eq(locationAddresses.geofenceEnabled, true),
+          isNotNull(locationAddresses.latitude),
+          isNotNull(locationAddresses.longitude),
+        ),
+      );
+  }
+
   // Replace an employee's full department membership set. Also syncs the legacy
   // `users.department_id` shim to one representative (the first) for any code
   // still reading the single column. Returns the deduped set written.
@@ -1311,6 +1334,8 @@ export class DatabaseStorage implements IStorage {
           status: opts?.status ?? "in-progress",
           source,
           ...(opts?.kioskDeviceId ? { kioskDeviceId: opts.kioskDeviceId } : {}),
+          ...(opts?.punchLatitude != null ? { punchLatitude: opts.punchLatitude } : {}),
+          ...(opts?.punchLongitude != null ? { punchLongitude: opts.punchLongitude } : {}),
           approved: true,
         }).returning();
         return punchLogToLegacy(record);

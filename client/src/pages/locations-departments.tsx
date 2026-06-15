@@ -124,9 +124,25 @@ interface AddressEntry {
   city: string;
   state: string;
   zip: string;
+  latitude: number | null;
+  longitude: number | null;
+  geofenceEnabled: boolean;
+  geofenceRadiusMeters: number;
 }
 
-const emptyAddress = (): AddressEntry => ({ label: "", address: "", city: "", state: "", zip: "" });
+const DEFAULT_GEOFENCE_RADIUS = 150;
+
+const emptyAddress = (): AddressEntry => ({
+  label: "",
+  address: "",
+  city: "",
+  state: "",
+  zip: "",
+  latitude: null,
+  longitude: null,
+  geofenceEnabled: false,
+  geofenceRadiusMeters: DEFAULT_GEOFENCE_RADIUS,
+});
 
 type DepartmentWithManagers = Department & { managerIds: string[] };
 
@@ -320,6 +336,10 @@ function LocationsTab() {
             city: a.city || "",
             state: a.state || "",
             zip: a.zip || "",
+            latitude: a.latitude ?? null,
+            longitude: a.longitude ?? null,
+            geofenceEnabled: a.geofenceEnabled ?? false,
+            geofenceRadiusMeters: a.geofenceRadiusMeters ?? DEFAULT_GEOFENCE_RADIUS,
           })));
         } else {
           setAddresses([emptyAddress()]);
@@ -333,7 +353,11 @@ function LocationsTab() {
     setDialogOpen(true);
   };
 
-  const updateAddress = (index: number, field: keyof AddressEntry, value: string) => {
+  const updateAddress = (
+    index: number,
+    field: keyof AddressEntry,
+    value: string | number | boolean | null,
+  ) => {
     setAddresses(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
   };
 
@@ -478,6 +502,8 @@ function LocationsTab() {
                                         city: sel.city || a.city,
                                         state: sel.state || a.state,
                                         zip: sel.zip || a.zip,
+                                        latitude: sel.latitude,
+                                        longitude: sel.longitude,
                                       }
                                     : a,
                                 ),
@@ -515,6 +541,67 @@ function LocationsTab() {
                               data-testid={`input-address-zip-${idx}`}
                             />
                           </div>
+                        </div>
+                        <div className="rounded-md border border-border/60 p-2 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              id={`geofence-enabled-${idx}`}
+                              checked={addr.geofenceEnabled}
+                              onCheckedChange={(checked) =>
+                                updateAddress(idx, "geofenceEnabled", checked === true)
+                              }
+                              data-testid={`checkbox-geofence-enabled-${idx}`}
+                            />
+                            <Label
+                              htmlFor={`geofence-enabled-${idx}`}
+                              className="text-xs font-medium cursor-pointer"
+                            >
+                              Require employees to clock in near this address
+                            </Label>
+                          </div>
+                          {addr.geofenceEnabled && (
+                            <div className="space-y-1 pl-6">
+                              <div className="flex items-center gap-2">
+                                <Label className="text-xs whitespace-nowrap">
+                                  Allowed radius (meters)
+                                </Label>
+                                <Input
+                                  type="number"
+                                  min={10}
+                                  step={10}
+                                  value={addr.geofenceRadiusMeters}
+                                  onChange={(e) =>
+                                    updateAddress(
+                                      idx,
+                                      "geofenceRadiusMeters",
+                                      e.target.value === ""
+                                        ? DEFAULT_GEOFENCE_RADIUS
+                                        : Math.max(10, parseInt(e.target.value, 10) || DEFAULT_GEOFENCE_RADIUS),
+                                    )
+                                  }
+                                  className="h-8 w-28 text-sm"
+                                  data-testid={`input-geofence-radius-${idx}`}
+                                />
+                              </div>
+                              {addr.latitude == null || addr.longitude == null ? (
+                                <p
+                                  className="text-xs text-destructive"
+                                  data-testid={`text-geofence-no-coords-${idx}`}
+                                >
+                                  Pick the address from the suggestions so we can capture its
+                                  coordinates — geofencing needs them.
+                                </p>
+                              ) : (
+                                <p
+                                  className="text-xs text-muted-foreground"
+                                  data-testid={`text-geofence-coords-${idx}`}
+                                >
+                                  Coordinates captured: {addr.latitude.toFixed(5)},{" "}
+                                  {addr.longitude.toFixed(5)}
+                                </p>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>

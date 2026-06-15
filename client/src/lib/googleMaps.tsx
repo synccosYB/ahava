@@ -1,5 +1,5 @@
 import { MapPin } from "lucide-react";
-import { useEffect, useRef, useState, useCallback, forwardRef } from "react";
+import { useEffect, useRef, useState, forwardRef } from "react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -97,59 +97,12 @@ export function GoogleMapsIconLink({
   );
 }
 
-// --- Google Places Autocomplete ---------------------------------------------
-
-type AnyGoogle = any;
-
-let googleLoaderPromise: Promise<AnyGoogle | null> | null = null;
-
-function getPlacesApiKey(): string | undefined {
-  const key = (import.meta as any).env?.VITE_GOOGLE_PLACES_API_KEY as
-    | string
-    | undefined;
-  return key && key.trim() ? key.trim() : undefined;
-}
-
-export function isAddressAutocompleteAvailable(): boolean {
-  return !!getPlacesApiKey();
-}
-
-function loadGoogleMaps(): Promise<AnyGoogle | null> {
-  if (googleLoaderPromise) return googleLoaderPromise;
-  const key = getPlacesApiKey();
-  if (!key || typeof window === "undefined") {
-    googleLoaderPromise = Promise.resolve(null);
-    return googleLoaderPromise;
-  }
-  googleLoaderPromise = new Promise<AnyGoogle | null>((resolve) => {
-    const w = window as any;
-    if (w.google?.maps?.places) {
-      resolve(w.google);
-      return;
-    }
-    const existing = document.querySelector<HTMLScriptElement>(
-      "script[data-google-places-loader]",
-    );
-    const onLoad = () => resolve((window as any).google ?? null);
-    const onError = () => resolve(null);
-    if (existing) {
-      existing.addEventListener("load", onLoad);
-      existing.addEventListener("error", onError);
-      return;
-    }
-    const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(
-      key,
-    )}&libraries=places&v=weekly&loading=async`;
-    script.async = true;
-    script.defer = true;
-    script.dataset.googlePlacesLoader = "true";
-    script.onload = onLoad;
-    script.onerror = onError;
-    document.head.appendChild(script);
-  }).catch(() => null);
-  return googleLoaderPromise;
-}
+// --- Address Autocomplete (SerpApi-backed proxy) ----------------------------
+//
+// Predictions come from `GET /api/places/autocomplete` which proxies SerpApi
+// with a single server-side key. Each prediction already carries the parsed
+// address parts AND lat/lng, so picking one fills the form and surfaces
+// coordinates in a single round-trip — no separate "place details" call.
 
 export interface AddressSelection {
   address: string;
@@ -157,31 +110,18 @@ export interface AddressSelection {
   state: string;
   zip: string;
   formatted: string;
+  latitude: number | null;
+  longitude: number | null;
 }
 
-function parseAddressComponents(place: any): AddressSelection {
-  const comps: any[] = place?.address_components || [];
-  const get = (type: string) =>
-    comps.find((c) => Array.isArray(c.types) && c.types.includes(type));
-  const streetNumber = get("street_number")?.long_name || "";
-  const route = get("route")?.long_name || get("route")?.short_name || "";
-  const city =
-    get("locality")?.long_name ||
-    get("postal_town")?.long_name ||
-    get("sublocality")?.long_name ||
-    get("sublocality_level_1")?.long_name ||
-    get("administrative_area_level_2")?.long_name ||
-    "";
-  const state = get("administrative_area_level_1")?.short_name || "";
-  const zip = get("postal_code")?.long_name || "";
-  const address = [streetNumber, route].filter(Boolean).join(" ").trim();
-  return {
-    address,
-    city,
-    state,
-    zip,
-    formatted: place?.formatted_address || "",
-  };
+interface PlacePrediction extends AddressSelection {
+  id: string;
+  description: string;
+}
+
+interface AutocompleteResponse {
+  available: boolean;
+  predictions: PlacePrediction[];
 }
 
 interface AddressAutocompleteInputProps
@@ -217,15 +157,15 @@ export const AddressAutocompleteInput = forwardRef<
   },
   ref,
 ) {
-  const [available, setAvailable] = useState<boolean>(false);
-  const [predictions, setPredictions] = useState<any[]>([]);
+  // `countries` is accepted for API compatibility; the SerpApi proxy biases to
+  // US results by default. Intentionally unused here.
+  void countries;
+  const [predictions, setPredictions] = useState<PlacePrediction[]>([]);
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(-1);
-  const autocompleteSvc = useRef<any>(null);
-  const placesSvc = useRef<any>(null);
-  const sessionToken = useRef<any>(null);
   const debounceRef = useRef<number | null>(null);
   const skipNextSearch = useRef(false);
+  const requestSeq = useRef(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Close dropdown on outside click
@@ -241,24 +181,7 @@ export const AddressAutocompleteInput = forwardRef<
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const ensureLoaded = useCallback(async () => {
-    if (autocompleteSvc.current) return true;
-    const g = await loadGoogleMaps();
-    if (!g?.maps?.places) {
-      setAvailable(false);
-      return false;
-    }
-    autocompleteSvc.current = new g.maps.places.AutocompleteService();
-    const stubDiv = document.createElement("div");
-    placesSvc.current = new g.maps.places.PlacesService(stubDiv);
-    sessionToken.current = new g.maps.places.AutocompleteSessionToken();
-    setAvailable(true);
-    return true;
-  }, []);
-
-  // Kick off SDK load when the field is first focused.
   const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
-    void ensureLoaded();
     onFocus?.(e);
   };
 
@@ -266,13 +189,12 @@ export const AddressAutocompleteInput = forwardRef<
     onBlur?.(e);
   };
 
-  // Debounced predictions fetch.
+  // Debounced predictions fetch against the server-side proxy.
   useEffect(() => {
     if (skipNextSearch.current) {
       skipNextSearch.current = false;
       return;
     }
-    if (!available || !autocompleteSvc.current) return;
     if (!value || value.trim().length < 3) {
       setPredictions([]);
       setOpen(false);
@@ -280,72 +202,50 @@ export const AddressAutocompleteInput = forwardRef<
     }
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
-      try {
-        autocompleteSvc.current.getPlacePredictions(
-          {
-            input: value,
-            sessionToken: sessionToken.current,
-            componentRestrictions:
-              countries && countries.length > 0
-                ? { country: countries }
-                : undefined,
-            types: ["address"],
-          },
-          (preds: any[] | null, status: string) => {
-            const g = (window as any).google;
-            const ok = g?.maps?.places?.PlacesServiceStatus?.OK;
-            if (status === ok && Array.isArray(preds) && preds.length > 0) {
-              setPredictions(preds);
-              setActiveIdx(-1);
-              setOpen(true);
-            } else {
-              setPredictions([]);
-              setOpen(false);
-            }
-          },
-        );
-      } catch {
-        setPredictions([]);
-        setOpen(false);
-      }
-    }, 250);
+      const seq = ++requestSeq.current;
+      fetch(`/api/places/autocomplete?q=${encodeURIComponent(value.trim())}`, {
+        credentials: "include",
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: AutocompleteResponse | null) => {
+          // Ignore stale responses that resolve out of order.
+          if (seq !== requestSeq.current) return;
+          const preds = data?.predictions ?? [];
+          if (preds.length > 0) {
+            setPredictions(preds);
+            setActiveIdx(-1);
+            setOpen(true);
+          } else {
+            setPredictions([]);
+            setOpen(false);
+          }
+        })
+        .catch(() => {
+          if (seq !== requestSeq.current) return;
+          setPredictions([]);
+          setOpen(false);
+        });
+    }, 300);
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
-  }, [value, available, countries]);
+  }, [value]);
 
-  const pickPrediction = (p: any) => {
-    if (!placesSvc.current || !p?.place_id) {
-      setOpen(false);
-      return;
-    }
-    placesSvc.current.getDetails(
-      {
-        placeId: p.place_id,
-        fields: ["address_components", "formatted_address"],
-        sessionToken: sessionToken.current,
-      },
-      (place: any, status: string) => {
-        const g = (window as any).google;
-        sessionToken.current = new g.maps.places.AutocompleteSessionToken();
-        const ok = g?.maps?.places?.PlacesServiceStatus?.OK;
-        if (status !== ok || !place) {
-          setOpen(false);
-          return;
-        }
-        const parsed = parseAddressComponents(place);
-        skipNextSearch.current = true;
-        onSelect?.(parsed);
-        // If the caller didn't break apart the fields, fall back to street-only.
-        if (!onSelect) {
-          onChange(parsed.address || parsed.formatted);
-        } else {
-          onChange(parsed.address || parsed.formatted);
-        }
-        setPredictions([]);
-        setOpen(false);
-      },
-    );
+  const pickPrediction = (p: PlacePrediction) => {
+    const selection: AddressSelection = {
+      address: p.address,
+      city: p.city,
+      state: p.state,
+      zip: p.zip,
+      formatted: p.formatted,
+      latitude: p.latitude,
+      longitude: p.longitude,
+    };
+    skipNextSearch.current = true;
+    onSelect?.(selection);
+    onChange(selection.address || selection.formatted);
+    setPredictions([]);
+    setOpen(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -392,7 +292,7 @@ export const AddressAutocompleteInput = forwardRef<
           data-testid={testId ? `${testId}-suggestions` : undefined}
         >
           {predictions.map((p, idx) => (
-            <li key={p.place_id || idx}>
+            <li key={p.id || idx}>
               <button
                 type="button"
                 role="option"
@@ -413,12 +313,12 @@ export const AddressAutocompleteInput = forwardRef<
                   testId ? `${testId}-suggestion-${idx}` : undefined
                 }
               >
-                <div className="font-medium">
-                  {p.structured_formatting?.main_text || p.description}
-                </div>
-                {p.structured_formatting?.secondary_text && (
+                <div className="font-medium">{p.address || p.formatted}</div>
+                {(p.city || p.state || p.zip) && (
                   <div className="text-xs text-muted-foreground">
-                    {p.structured_formatting.secondary_text}
+                    {[p.city, [p.state, p.zip].filter(Boolean).join(" ")]
+                      .filter(Boolean)
+                      .join(", ")}
                   </div>
                 )}
               </button>

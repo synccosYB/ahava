@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, jsonb, pgTable, text, timestamp, unique, varchar } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, real, text, timestamp, unique, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -19,6 +19,8 @@ export const companies = pgTable("companies", {
   legalName: varchar("legal_name", { length: 200 }),
   slug: varchar("slug", { length: 100 }).unique(),
   address: varchar("address", { length: 500 }),
+  latitude: real("latitude"),
+  longitude: real("longitude"),
   phone: varchar("phone", { length: 30 }),
   email: varchar("email", { length: 200 }),
   timezone: varchar("timezone", { length: 50 }).default("America/New_York"),
@@ -92,6 +94,10 @@ export const locationAddresses = pgTable("location_addresses", {
   city: varchar("city", { length: 100 }),
   state: varchar("state", { length: 50 }),
   zip: varchar("zip", { length: 20 }),
+  latitude: real("latitude"),
+  longitude: real("longitude"),
+  geofenceEnabled: boolean("geofence_enabled").default(false).notNull(),
+  geofenceRadiusMeters: integer("geofence_radius_meters").default(150).notNull(),
 });
 
 export const insertLocationAddressSchema = createInsertSchema(locationAddresses).omit({

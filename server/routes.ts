@@ -47,6 +47,8 @@ import { shouldRun } from "./lib/cooldown";
 import { drainPending, enqueue } from "./services/jobs";
 import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
+import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
+import { flagClockInGeofence } from "./services/geofence";
 import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
@@ -396,6 +398,9 @@ const pinLookupSchema = z.object({
 const kioskPunchSchema = z.object({
   employeeId: z.string().min(1),
   type: z.enum(["clock_in", "clock_out"]),
+  // Task #418: optional device coordinates captured at the kiosk for geofencing.
+  latitude: z.number().finite().optional(),
+  longitude: z.number().finite().optional(),
 });
 
 export async function registerRoutes(
@@ -2292,6 +2297,39 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
+  // Task #418: pull optional device coordinates off a clock-in payload. Returns
+  // nulls for anything missing or non-finite — geofencing treats "no coords" as
+  // a required-but-missing signal rather than throwing.
+  function parsePunchCoords(body: any): {
+    latitude: number | null;
+    longitude: number | null;
+  } {
+    // Only accept genuine numeric coordinates. We must NOT coerce here:
+    // Number(null) === 0, which would turn an intentional "no location"
+    // (denied/unavailable GPS) into a valid (0,0) punch and break the
+    // required-but-missing geofence case.
+    const rawLat = body?.latitude;
+    const rawLng = body?.longitude;
+    return {
+      latitude: typeof rawLat === "number" && Number.isFinite(rawLat) ? rawLat : null,
+      longitude: typeof rawLng === "number" && Number.isFinite(rawLng) ? rawLng : null,
+    };
+  }
+
+  // Task #418: SerpApi-backed address autocomplete proxy. The single key lives
+  // server-side; the response carries parsed address parts AND lat/lng so the
+  // client can fill the form and silently store coordinates in one round-trip.
+  app.get("/api/places/autocomplete", requireAuth, async (req, res) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : "";
+      const result = await autocompleteAddress(q);
+      res.json(result);
+    } catch (error) {
+      console.error("Address autocomplete error:", error);
+      res.json({ available: isSerpApiConfigured(), predictions: [] });
+    }
+  });
+
   async function enrichDepartmentsWithManagers(depts: Department[]) {
     return Promise.all(depts.map(async (dept) => {
       const managers = await storage.getDepartmentManagers(dept.id);
@@ -2791,7 +2829,8 @@ export async function registerRoutes(
       timestamp: lastRecord.clockOut || lastRecord.clockIn,
     } : null;
     const allowedPunchSources = await getKioskAllowedSourcesForUser(user);
-    return res.json({ employee: sanitizeUserForKiosk(user, deptName, allowedPunchSources), lastRecord: kioskLastRecord });
+    const geofenceEnabled = (await storage.getEmployeeGeofencedAddresses(user.id)).length > 0;
+    return res.json({ employee: { ...sanitizeUserForKiosk(user, deptName, allowedPunchSources), geofenceEnabled }, lastRecord: kioskLastRecord });
   }));
 
   app.get("/api/kiosk/search", wrapKiosk(async (req, res) => {
@@ -2828,7 +2867,8 @@ export async function registerRoutes(
       timestamp: lastRecord.clockOut || lastRecord.clockIn,
     } : null;
     const allowedPunchSources = await getKioskAllowedSourcesForUser(user);
-    return res.json({ employee: sanitizeUserForKiosk(user, deptName, allowedPunchSources), lastRecord: kioskLastRecord });
+    const geofenceEnabled = (await storage.getEmployeeGeofencedAddresses(user.id)).length > 0;
+    return res.json({ employee: { ...sanitizeUserForKiosk(user, deptName, allowedPunchSources), geofenceEnabled }, lastRecord: kioskLastRecord });
   }));
 
   app.post("/api/kiosk/punch", wrapKiosk(async (req, res) => {
@@ -2867,6 +2907,9 @@ export async function registerRoutes(
         return kioskError(res, 403, "policy_blocked", enforcement.rejectionMessage || "Clock-in not allowed right now.");
       }
 
+      const { latitude: punchLatitude, longitude: punchLongitude } =
+        parsePunchCoords(parsed.data);
+
       let record;
       try {
         // Route through the transactional, advisory-locked clock-in so a kiosk
@@ -2875,6 +2918,8 @@ export async function registerRoutes(
         record = await storage.clockIn(user.id, "kiosk", enforcement.roundedTime, {
           status: "present",
           kioskDeviceId: kioskDevice.id,
+          punchLatitude,
+          punchLongitude,
         });
       } catch (err) {
         if (err instanceof DuplicateOpenPunchError) {
@@ -2882,6 +2927,17 @@ export async function registerRoutes(
         }
         throw err;
       }
+
+      // Geofencing never blocks the kiosk punch; out-of-bounds (or missing GPS
+      // when required) just raises a manager-facing exception.
+      await flagClockInGeofence({
+        userId: user.id,
+        punchLogId: record.id,
+        workDate: record.workDate,
+        punchTime: record.clockIn ?? now,
+        punchLatitude,
+        punchLongitude,
+      });
 
       if (enforcement.alerts.length > 0) {
         await createPolicyAlerts(enforcement.alerts);
@@ -3012,6 +3068,12 @@ export async function registerRoutes(
       const attendancePolicy = await getEffectivePolicy(authUser.companyId, userId, "attendance", authUser);
       const allowedPunchSources = getAllowedPunchSources(attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES);
 
+      // Task #418: tells the dashboard whether to request device location at
+      // clock-in (geofencing applies only when the employee has at least one
+      // geofenced location address).
+      const geofencedAddresses = await storage.getEmployeeGeofencedAddresses(userId);
+      const geofenceEnabled = geofencedAddresses.length > 0;
+
       const response: any = {
         isClockedIn: !!current,
         currentRecord: current ? punchLogToApiResponse(current) : null,
@@ -3020,6 +3082,7 @@ export async function registerRoutes(
         // Lets the dashboard hide the self clock buttons when web/mobile aren't
         // allowed for this employee.
         allowedPunchSources,
+        geofenceEnabled,
       };
 
       if (userRole === "admin" || userRole === "manager") {
@@ -3056,7 +3119,25 @@ export async function registerRoutes(
         return res.status(403).json({ message: enforcement.rejectionMessage });
       }
 
-      const record = await storage.clockIn(userId, source, enforcement.roundedTime);
+      const { latitude: punchLatitude, longitude: punchLongitude } =
+        parsePunchCoords(req.body);
+
+      const record = await storage.clockIn(userId, source, enforcement.roundedTime, {
+        punchLatitude,
+        punchLongitude,
+      });
+
+      // Geofencing never blocks the punch; it only raises a manager-facing
+      // exception when the clock-in is outside the allowed radius (or required
+      // but the device shared no location).
+      await flagClockInGeofence({
+        userId,
+        punchLogId: record.id,
+        workDate: record.workDate,
+        punchTime: record.clockIn ?? now,
+        punchLatitude,
+        punchLongitude,
+      });
 
       if (enforcement.alerts.length > 0) {
         await createPolicyAlerts(enforcement.alerts);

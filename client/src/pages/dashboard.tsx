@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useToast } from "@/hooks/use-toast";
 import { PageHeader } from "@/components/page-header";
 import { Clock, Play, Square, TrendingUp } from "lucide-react";
+import { getPunchCoords } from "@/lib/geolocation";
 import type { AttendanceRecord } from "@shared/schema";
 
 interface DashboardStatus {
@@ -21,6 +22,7 @@ interface DashboardStatus {
   weekHours: number;
   ptoBalance: { vacation: number; sick: number; personal: number };
   allowedPunchSources?: string[];
+  geofenceEnabled?: boolean;
 }
 
 export default function Dashboard() {
@@ -79,7 +81,21 @@ export default function Dashboard() {
 
   const clockInMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/attendance/clock-in");
+      // When geofencing applies to this employee, capture device location so the
+      // server can verify the punch is inside an allowed radius. Never blocks:
+      // if location is denied/unavailable we send nothing and the server raises
+      // a geofence exception instead.
+      const coords = status?.geofenceEnabled
+        ? await getPunchCoords()
+        : { latitude: null, longitude: null };
+      // Omit coords entirely when unavailable so we never send a misleading
+      // value; the server treats absence as "no location" and raises a
+      // geofence exception when location is required.
+      const body =
+        coords.latitude != null && coords.longitude != null
+          ? { latitude: coords.latitude, longitude: coords.longitude }
+          : undefined;
+      const res = await apiRequest("POST", "/api/attendance/clock-in", body);
       return res.json() as Promise<AttendanceRecord & { scheduleWarning?: string }>;
     },
     onSuccess: (data) => {

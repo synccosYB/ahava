@@ -163,6 +163,8 @@ function GeneralSection() {
     email: "",
     phone: "",
     address: "",
+    latitude: null as number | null,
+    longitude: null as number | null,
   });
 
   const startEditing = () => {
@@ -174,6 +176,8 @@ function GeneralSection() {
         email: division.email || "",
         phone: division.phone || "",
         address: division.address || "",
+        latitude: division.latitude ?? null,
+        longitude: division.longitude ?? null,
       });
     }
     setEditing(true);
@@ -258,6 +262,8 @@ function GeneralSection() {
                     setEditForm({
                       ...editForm,
                       address: sel.formatted || sel.address,
+                      latitude: sel.latitude,
+                      longitude: sel.longitude,
                     })
                   }
                   testId="input-edit-address"

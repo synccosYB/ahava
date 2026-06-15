@@ -1,3 +1,4 @@
 - [Post-login auth state](auth-login-state.md) — login success must hard-reload, not queryClient.clear()+setQueryData (clear() races a 401 refetch and bounces users back to login).
 - [Employee dept/loc membership](employee-dept-loc-membership.md) — employees are M2M with depts/locations; match on ANY via userDepartmentIds()/userLocationIds(), never raw u.departmentId/locationId; legacy cols are first-element compat shim.
 - [PTO accrual via policy engine](pto-policy-engine.md) — PTO accrual now resolves through the unified engine (buildPtoPolicyFromRules); rules JSON keys mirror legacy columns + a GLOBAL assignment must always exist or numbers drift.
+- [Clock-in geofencing](clock-in-geofencing.md) — clock-in geofence never blocks; out-of-radius/missing-GPS raises a "geofence" attendance exception for managers (web + kiosk).
