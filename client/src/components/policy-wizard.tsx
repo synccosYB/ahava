@@ -864,6 +864,8 @@ export function PolicyWizard({
               departments={departments || []}
               users={users || []}
               roles={roles || []}
+              policyTypeId={matchingType?.id}
+              editingPolicyId={editingPolicy?.id}
             />
           )}
           {currentStepKey === "review" && (
@@ -2230,6 +2232,7 @@ function StepRules({
 function StepAssignments({
   assignments, setAssignments,
   divisions, locations, departments, users, roles,
+  policyTypeId, editingPolicyId,
 }: {
   assignments: AssignmentEntry[];
   setAssignments: (v: AssignmentEntry[]) => void;
@@ -2238,13 +2241,60 @@ function StepAssignments({
   departments: Department[];
   users: User[];
   roles: Role[];
+  policyTypeId?: string;
+  editingPolicyId?: string;
 }) {
   const { has: hasPermission } = usePermissions();
   const [addLevel, setAddLevel] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [createRoleOpen, setCreateRoleOpen] = useState(false);
-  const lastToggleRef = useRef<Record<string, number>>({});
+
+  // Same-type direct-employee conflict detection. We reuse the existing policy
+  // + assignment lists rather than adding new resolution logic: an employee is
+  // "in conflict" when another ACTIVE policy of the SAME type already directly
+  // targets them (a second policy of the same type both directly assigned to the
+  // same employee). Warn only — the assignment is still allowed.
+  const { data: allPolicies } = useQuery<Policy[]>({
+    queryKey: ["/api/policies"],
+    enabled: !!policyTypeId,
+  });
+  const { data: allPolicyAssignments } = useQuery<PolicyAssignment[]>({
+    queryKey: ["/api/policy-assignments"],
+    enabled: !!policyTypeId,
+  });
+
+  const employeeConflictPolicies = useMemo(() => {
+    const map = new Map<string, string[]>();
+    if (!policyTypeId || !allPolicies || !allPolicyAssignments) return map;
+    const sameTypeActive = new Map<string, string>();
+    for (const p of allPolicies) {
+      if (p.policyTypeId === policyTypeId && p.status === "active" && p.id !== editingPolicyId) {
+        sameTypeActive.set(p.id, p.name);
+      }
+    }
+    for (const a of allPolicyAssignments) {
+      if (!a.userId) continue;
+      const policyName = sameTypeActive.get(a.policyId);
+      if (!policyName) continue;
+      const arr = map.get(a.userId) || [];
+      if (!arr.includes(policyName)) arr.push(policyName);
+      map.set(a.userId, arr);
+    }
+    return map;
+  }, [policyTypeId, editingPolicyId, allPolicies, allPolicyAssignments]);
+
+  const employeeConflicts = useMemo(
+    () =>
+      assignments
+        .filter((a) => a.level === "employee" && employeeConflictPolicies.has(a.id))
+        .map((a) => ({
+          id: a.id,
+          label: a.label,
+          policies: employeeConflictPolicies.get(a.id) || [],
+        })),
+    [assignments, employeeConflictPolicies],
+  );
 
   const getOptions = (): { id: string; label: string }[] => {
     switch (addLevel) {
@@ -2294,12 +2344,15 @@ function StepAssignments({
   const isAlreadyAssigned = (id: string) =>
     assignments.some((a) => a.level === addLevel && a.id === id);
 
+  // Single source of truth for toggling: cmdk's own `onSelect` fires once per
+  // click (mouse or touch) and on Enter, and reports the correct clicked item.
+  // The previous version also wired onMouseDown/onTouchEnd with
+  // `e.preventDefault()`, which stopped cmdk from updating its highlighted item
+  // to the one clicked — so the follow-up `onSelect` toggled the PREVIOUSLY
+  // highlighted item back off, making it impossible to keep more than one
+  // selected. Relying on `onSelect` alone fixes the multi-select.
   const toggleSelected = (id: string) => {
     if (isAlreadyAssigned(id)) return;
-    const now = Date.now();
-    const last = lastToggleRef.current[id] || 0;
-    if (now - last < 250) return;
-    lastToggleRef.current[id] = now;
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
@@ -2428,16 +2481,6 @@ function StepAssignments({
                           onSelect={() => toggleSelected(opt.id)}
                           data-testid={`option-wizard-target-${opt.id}`}
                           className={alreadyAssigned ? "opacity-60" : "cursor-pointer"}
-                          onMouseDown={(e) => {
-                            if (alreadyAssigned) return;
-                            e.preventDefault();
-                            toggleSelected(opt.id);
-                          }}
-                          onTouchEnd={(e) => {
-                            if (alreadyAssigned) return;
-                            e.preventDefault();
-                            toggleSelected(opt.id);
-                          }}
                         >
                           <Checkbox
                             checked={isChecked}
@@ -2497,6 +2540,25 @@ function StepAssignments({
           }
         }}
       />
+
+      {employeeConflicts.length > 0 && (
+        <div
+          className="text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2 space-y-1"
+          data-testid="text-policy-conflict-warning"
+        >
+          <div className="flex items-center gap-2 font-medium">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>Conflicting policy assignment</span>
+          </div>
+          {employeeConflicts.map((c) => (
+            <p key={c.id} data-testid={`text-policy-conflict-${c.id}`}>
+              <span className="font-medium">{c.label}</span> is already directly assigned to{" "}
+              {c.policies.length === 1 ? "another policy" : "other policies"} of this type:{" "}
+              <span className="font-medium">{c.policies.join(", ")}</span>. Both will apply unless you remove one — you can still proceed.
+            </p>
+          ))}
+        </div>
+      )}
 
       {assignments.length > 0 ? (
         <div className="space-y-2">
