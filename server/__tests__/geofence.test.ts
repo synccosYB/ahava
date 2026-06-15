@@ -13,9 +13,9 @@
  */
 import assert from "node:assert/strict";
 
-const { haversineMeters, evaluateGeofenceForAddresses } = await import(
-  "../services/geofence.js"
-);
+const { haversineMeters, evaluateGeofenceForAddresses, flagClockInGeofence } =
+  await import("../services/geofence.js");
+const { storage } = await import("../storage.js");
 
 type AnyAddr = any;
 
@@ -107,6 +107,130 @@ test("inside one of several geofenced addresses → within", () => {
     -75.0,
   );
   assert.equal(r.withinRadius, true);
+});
+
+// --- flagClockInGeofence: stubs the storage singleton's methods so we can
+// assert on the side effects (exception creation + punch linking) without a DB.
+function withStubbedStorage(
+  opts: {
+    addresses: AnyAddr[];
+    getThrows?: boolean;
+  },
+  body: (calls: {
+    created: AnyAddr[];
+    updates: { id: string; data: AnyAddr }[];
+  }) => Promise<void>,
+) {
+  const orig = {
+    getEmployeeGeofencedAddresses: storage.getEmployeeGeofencedAddresses,
+    createAttendanceException: storage.createAttendanceException,
+    updateAttendanceException: storage.updateAttendanceException,
+  };
+  const calls = {
+    created: [] as AnyAddr[],
+    updates: [] as { id: string; data: AnyAddr }[],
+  };
+  (storage as any).getEmployeeGeofencedAddresses = async () => {
+    if (opts.getThrows) throw new Error("boom");
+    return opts.addresses;
+  };
+  (storage as any).createAttendanceException = async (exception: AnyAddr) => {
+    const row = { id: "exc-1", ...exception };
+    calls.created.push(row);
+    return row;
+  };
+  (storage as any).updateAttendanceException = async (
+    id: string,
+    data: AnyAddr,
+  ) => {
+    calls.updates.push({ id, data });
+    return { id, ...data };
+  };
+  return body(calls).finally(() => {
+    Object.assign(storage, orig);
+  });
+}
+
+const baseArgs = {
+  userId: "u1",
+  punchLogId: "p1",
+  workDate: "2026-06-15",
+  punchTime: new Date("2026-06-15T09:00:00Z"),
+};
+
+test("flagClockInGeofence creates pending exception + links punch when out of bounds", async () => {
+  await withStubbedStorage({ addresses: [addr()] }, async (calls) => {
+    const result = await flagClockInGeofence({
+      ...baseArgs,
+      punchLatitude: 40.01, // ~1.1km away, outside 150m
+      punchLongitude: -75.0,
+    });
+    assert.equal(result?.withinRadius, false);
+    assert.equal(calls.created.length, 1);
+    assert.equal(calls.created[0].type, "geofence");
+    assert.equal(calls.created[0].status, "pending");
+    assert.equal(calls.created[0].employeeId, "u1");
+    // punchLogId is set via the follow-up update, not the insert.
+    assert.equal(calls.updates.length, 1);
+    assert.equal(calls.updates[0].id, "exc-1");
+    assert.equal(calls.updates[0].data.punchLogId, "p1");
+  });
+});
+
+test("flagClockInGeofence creates exception when geofence required but GPS missing", async () => {
+  await withStubbedStorage({ addresses: [addr()] }, async (calls) => {
+    const result = await flagClockInGeofence({
+      ...baseArgs,
+      punchLatitude: null,
+      punchLongitude: null,
+    });
+    assert.equal(result?.coordsMissing, true);
+    assert.equal(calls.created.length, 1);
+    assert.equal(calls.created[0].type, "geofence");
+  });
+});
+
+test("flagClockInGeofence does NOT create an exception when within radius", async () => {
+  await withStubbedStorage({ addresses: [addr()] }, async (calls) => {
+    const result = await flagClockInGeofence({
+      ...baseArgs,
+      punchLatitude: 40.00012, // ~13m away, inside 150m
+      punchLongitude: -75.0,
+    });
+    assert.equal(result?.withinRadius, true);
+    assert.equal(calls.created.length, 0);
+    assert.equal(calls.updates.length, 0);
+  });
+});
+
+test("flagClockInGeofence does NOT create an exception when no geofence configured", async () => {
+  await withStubbedStorage(
+    { addresses: [addr({ geofenceEnabled: false })] },
+    async (calls) => {
+      const result = await flagClockInGeofence({
+        ...baseArgs,
+        punchLatitude: 40.0,
+        punchLongitude: -75.0,
+      });
+      assert.equal(result?.required, false);
+      assert.equal(calls.created.length, 0);
+    },
+  );
+});
+
+test("flagClockInGeofence never throws and returns null on storage error", async () => {
+  await withStubbedStorage(
+    { addresses: [], getThrows: true },
+    async (calls) => {
+      const result = await flagClockInGeofence({
+        ...baseArgs,
+        punchLatitude: 40.01,
+        punchLongitude: -75.0,
+      });
+      assert.equal(result, null);
+      assert.equal(calls.created.length, 0);
+    },
+  );
 });
 
 (async () => {
