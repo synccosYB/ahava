@@ -48,7 +48,7 @@ import { drainPending, enqueue } from "./services/jobs";
 import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
-import { flagClockInGeofence } from "./services/geofence";
+import { flagClockInGeofence, evaluateGeofenceForAddresses, type GeofenceMapData } from "./services/geofence";
 import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
@@ -4136,6 +4136,52 @@ export async function registerRoutes(
     });
   }
 
+  // Attach map data to "geofence" (Out of Area) exceptions so managers can see
+  // the recorded clock-in point and the allowed location/radius on a map. Other
+  // exception types pass through untouched (geofence: null).
+  async function attachGeofenceMapToExceptions<T extends { type: string; employeeId: string; punchLogId?: string | null }>(
+    rows: T[],
+  ): Promise<Array<T & { geofence: GeofenceMapData | null }>> {
+    const geoRows = rows.filter(r => r.type === "geofence" && r.punchLogId);
+    if (geoRows.length === 0) {
+      return rows.map(r => ({ ...r, geofence: null }));
+    }
+    const punchIds = Array.from(new Set(geoRows.map(r => r.punchLogId as string)));
+    const punchList = await Promise.all(punchIds.map(id => storage.getPunchLog(id)));
+    const punchById = new Map(punchList.filter((p): p is PunchLog => !!p).map(p => [p.id, p]));
+    const employeeIds = Array.from(new Set(geoRows.map(r => r.employeeId)));
+    const addressesByEmployee = new Map<string, Awaited<ReturnType<typeof storage.getEmployeeGeofencedAddresses>>>();
+    await Promise.all(
+      employeeIds.map(async id => {
+        addressesByEmployee.set(id, await storage.getEmployeeGeofencedAddresses(id));
+      }),
+    );
+    return rows.map(r => {
+      if (r.type !== "geofence" || !r.punchLogId) {
+        return { ...r, geofence: null };
+      }
+      const punch = punchById.get(r.punchLogId);
+      const punchLat = punch?.punchLatitude ?? null;
+      const punchLng = punch?.punchLongitude ?? null;
+      const evaluation = evaluateGeofenceForAddresses(
+        addressesByEmployee.get(r.employeeId) || [],
+        punchLat,
+        punchLng,
+      );
+      const geofence: GeofenceMapData = {
+        punchLatitude: punchLat,
+        punchLongitude: punchLng,
+        allowedLatitude: evaluation.nearestLatitude,
+        allowedLongitude: evaluation.nearestLongitude,
+        allowedRadiusMeters: evaluation.nearestRadiusMeters,
+        allowedLabel: evaluation.nearestLabel,
+        distanceMeters: evaluation.nearestDistanceMeters,
+        coordsMissing: evaluation.coordsMissing,
+      };
+      return { ...r, geofence };
+    });
+  }
+
   app.get("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
@@ -4176,7 +4222,7 @@ export async function registerRoutes(
             correctionCount90d: summary,
           };
         });
-        const withKiosk = await attachKioskNamesToExceptions(enriched);
+        const withKiosk = await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched));
         if (pagination.paginated) {
           return res.json({ data: withKiosk, total, limit: pagination.limit, offset: pagination.offset });
         }
@@ -4184,7 +4230,7 @@ export async function registerRoutes(
       }
 
       const exceptions = await storage.getAttendanceExceptionsByEmployee(userId);
-      res.json(await attachKioskNamesToExceptions(exceptions));
+      res.json(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(exceptions)));
     } catch (error) {
       console.error("Error fetching attendance exceptions:", error);
       handleRouteError(res, error, "Failed to fetch attendance exceptions");
@@ -4290,7 +4336,7 @@ export async function registerRoutes(
           managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
         };
       });
-      res.json(await attachKioskNamesToExceptions(enriched));
+      res.json(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched)));
     } catch (error) {
       console.error("Error fetching pending exceptions:", error);
       handleRouteError(res, error, "Failed to fetch pending exceptions");
@@ -4367,7 +4413,7 @@ export async function registerRoutes(
           managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
         };
       });
-      res.json(enriched);
+      res.json(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched)));
     } catch (error) {
       console.error("Error fetching recent decided exceptions:", error);
       handleRouteError(res, error, "Failed to fetch recent decided exceptions");

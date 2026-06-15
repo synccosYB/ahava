@@ -55,6 +55,17 @@ type PendingPtoRequest = TimeOffRequest & {
 function formatDays(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
 }
+type GeofenceMapData = {
+  punchLatitude: number | null;
+  punchLongitude: number | null;
+  allowedLatitude: number | null;
+  allowedLongitude: number | null;
+  allowedRadiusMeters: number | null;
+  allowedLabel: string | null;
+  distanceMeters: number | null;
+  coordsMissing: boolean;
+};
+
 type EnrichedException = AttendanceException & {
   employeeName?: string;
   departmentId?: string | null;
@@ -64,6 +75,7 @@ type EnrichedException = AttendanceException & {
   managerNames?: string[];
   correctionCounts?: CorrectionCountSummary;
   correctionCount90d?: CorrectionCountSummary;
+  geofence?: GeofenceMapData | null;
 };
 
 const PTO_TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -1392,6 +1404,123 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
   );
 }
 
+// Build an OpenStreetMap embed bbox + marker for the recorded clock-in point,
+// padded to also include the allowed location (and its radius) for comparison.
+function GeofenceExceptionMap({ geo, exceptionId }: { geo: GeofenceMapData; exceptionId: string }) {
+  const hasPunch = geo.punchLatitude != null && geo.punchLongitude != null;
+
+  if (!hasPunch) {
+    return (
+      <div
+        className="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30 p-3 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2"
+        data-testid={`box-geofence-no-coords-${exceptionId}`}
+      >
+        <MapPin className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+        <span>
+          No clock-in location was recorded for this punch, so it can't be shown on a map.
+          {geo.allowedLabel ? ` Allowed location: ${geo.allowedLabel}.` : ""}
+        </span>
+      </div>
+    );
+  }
+
+  const punchLat = geo.punchLatitude as number;
+  const punchLng = geo.punchLongitude as number;
+  const hasAllowed = geo.allowedLatitude != null && geo.allowedLongitude != null;
+  const radius = geo.allowedRadiusMeters ?? 150;
+
+  // Collect the points that must be visible, expanding the allowed point by its
+  // radius so the whole geofence circle fits in frame.
+  const metersPerDegLat = 111320;
+  const metersPerDegLng = 111320 * Math.cos((punchLat * Math.PI) / 180) || 111320;
+  const lats = [punchLat];
+  const lngs = [punchLng];
+  if (hasAllowed) {
+    const aLat = geo.allowedLatitude as number;
+    const aLng = geo.allowedLongitude as number;
+    const dLat = radius / metersPerDegLat;
+    const dLng = radius / metersPerDegLng;
+    lats.push(aLat + dLat, aLat - dLat);
+    lngs.push(aLng + dLng, aLng - dLng);
+  }
+  // Minimum span so a tiny distance still renders a sensible zoom (~120m).
+  const minSpanLat = 120 / metersPerDegLat;
+  const minSpanLng = 120 / metersPerDegLng;
+  let minLat = Math.min(...lats);
+  let maxLat = Math.max(...lats);
+  let minLng = Math.min(...lngs);
+  let maxLng = Math.max(...lngs);
+  if (maxLat - minLat < minSpanLat) {
+    const mid = (maxLat + minLat) / 2;
+    minLat = mid - minSpanLat / 2;
+    maxLat = mid + minSpanLat / 2;
+  }
+  if (maxLng - minLng < minSpanLng) {
+    const mid = (maxLng + minLng) / 2;
+    minLng = mid - minSpanLng / 2;
+    maxLng = mid + minSpanLng / 2;
+  }
+  // 25% padding around the points.
+  const padLat = (maxLat - minLat) * 0.25;
+  const padLng = (maxLng - minLng) * 0.25;
+  minLat -= padLat;
+  maxLat += padLat;
+  minLng -= padLng;
+  maxLng += padLng;
+
+  const bbox = `${minLng},${minLat},${maxLng},${maxLat}`;
+  const embedSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(
+    bbox,
+  )}&layer=mapnik&marker=${punchLat},${punchLng}`;
+  const largeMapHref = `https://www.openstreetmap.org/?mlat=${punchLat}&mlon=${punchLng}#map=17/${punchLat}/${punchLng}`;
+
+  return (
+    <div className="max-w-[400px] mt-2 space-y-2" data-testid={`box-geofence-map-${exceptionId}`}>
+      <div className="rounded-lg overflow-hidden border border-border">
+        <iframe
+          title="Clock-in location"
+          src={embedSrc}
+          className="w-full h-48 block"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          data-testid={`iframe-geofence-map-${exceptionId}`}
+        />
+      </div>
+      <div className="text-xs text-muted-foreground space-y-1">
+        <div className="flex items-center gap-1.5" data-testid={`text-geofence-punch-${exceptionId}`}>
+          <MapPin className="h-3 w-3 text-red-600 shrink-0" />
+          <span>
+            Clocked in at {punchLat.toFixed(5)}, {punchLng.toFixed(5)}
+          </span>
+        </div>
+        {hasAllowed && (
+          <div className="flex items-center gap-1.5" data-testid={`text-geofence-allowed-${exceptionId}`}>
+            <Building2 className="h-3 w-3 text-green-600 shrink-0" />
+            <span>
+              Allowed: {geo.allowedLabel || "geofenced location"} ({radius}m radius)
+            </span>
+          </div>
+        )}
+        {geo.distanceMeters != null && (
+          <div className="flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400" data-testid={`text-geofence-distance-${exceptionId}`}>
+            <AlertTriangle className="h-3 w-3 shrink-0" />
+            <span>{geo.distanceMeters}m outside the allowed area</span>
+          </div>
+        )}
+        <a
+          href={largeMapHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-primary hover:underline"
+          data-testid={`link-geofence-larger-map-${exceptionId}`}
+        >
+          <MapPin className="h-3 w-3" /> View larger map
+        </a>
+      </div>
+    </div>
+  );
+}
+
 function ExceptionCard({ exception }: { exception: EnrichedException }) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -1562,6 +1691,10 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
               <p className="text-sm text-muted-foreground italic" data-testid={`text-exc-reason-${exception.id}`}>
                 "{timeInfo.cleanReason}"
               </p>
+            )}
+
+            {exception.type === "geofence" && exception.geofence && (
+              <GeofenceExceptionMap geo={exception.geofence} exceptionId={exception.id} />
             )}
 
             {isAdmin && (

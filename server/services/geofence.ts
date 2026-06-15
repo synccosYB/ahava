@@ -44,6 +44,21 @@ export interface GeofenceEvaluation {
   nearestLabel: string | null;
   // The allowed radius (m) of the nearest geofenced address.
   nearestRadiusMeters: number | null;
+  // Coordinates of the nearest geofenced address (for the manager map preview).
+  nearestLatitude: number | null;
+  nearestLongitude: number | null;
+}
+
+// Manager-facing geo payload for the "Out of Area" exception map preview.
+export interface GeofenceMapData {
+  punchLatitude: number | null;
+  punchLongitude: number | null;
+  allowedLatitude: number | null;
+  allowedLongitude: number | null;
+  allowedRadiusMeters: number | null;
+  allowedLabel: string | null;
+  distanceMeters: number | null;
+  coordsMissing: boolean;
 }
 
 function addressLabel(addr: LocationAddress): string {
@@ -73,6 +88,8 @@ export function evaluateGeofenceForAddresses(
       nearestDistanceMeters: null,
       nearestLabel: null,
       nearestRadiusMeters: null,
+      nearestLatitude: null,
+      nearestLongitude: null,
     };
   }
 
@@ -84,6 +101,8 @@ export function evaluateGeofenceForAddresses(
       nearestDistanceMeters: null,
       nearestLabel: null,
       nearestRadiusMeters: null,
+      nearestLatitude: null,
+      nearestLongitude: null,
     };
   }
 
@@ -115,6 +134,8 @@ export function evaluateGeofenceForAddresses(
     nearestRadiusMeters: nearest
       ? nearest.addr.geofenceRadiusMeters ?? 150
       : null,
+    nearestLatitude: nearest ? (nearest.addr.latitude as number) : null,
+    nearestLongitude: nearest ? (nearest.addr.longitude as number) : null,
   };
 }
 
