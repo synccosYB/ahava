@@ -19,6 +19,7 @@ import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserChec
 import { PageHeader } from "@/components/page-header";
 import type { TimeOffRequest, AttendanceException, Department, Location, TimeOffBalanceBucket } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload, timeOnDateToISO } from "@/lib/exceptionTimeInfo";
+import { computeGeofenceBbox, DEFAULT_GEOFENCE_RADIUS_METERS, type GeofenceMapData } from "@/lib/geofenceMap";
 import { formatTime12FromHHmm } from "@/lib/utils";
 import {
   isHighCorrectionCount,
@@ -55,16 +56,6 @@ type PendingPtoRequest = TimeOffRequest & {
 function formatDays(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
 }
-type GeofenceMapData = {
-  punchLatitude: number | null;
-  punchLongitude: number | null;
-  allowedLatitude: number | null;
-  allowedLongitude: number | null;
-  allowedRadiusMeters: number | null;
-  allowedLabel: string | null;
-  distanceMeters: number | null;
-  coordsMissing: boolean;
-};
 
 type EnrichedException = AttendanceException & {
   employeeName?: string;
@@ -1427,46 +1418,10 @@ function GeofenceExceptionMap({ geo, exceptionId }: { geo: GeofenceMapData; exce
   const punchLat = geo.punchLatitude as number;
   const punchLng = geo.punchLongitude as number;
   const hasAllowed = geo.allowedLatitude != null && geo.allowedLongitude != null;
-  const radius = geo.allowedRadiusMeters ?? 150;
+  const radius = geo.allowedRadiusMeters ?? DEFAULT_GEOFENCE_RADIUS_METERS;
 
-  // Collect the points that must be visible, expanding the allowed point by its
-  // radius so the whole geofence circle fits in frame.
-  const metersPerDegLat = 111320;
-  const metersPerDegLng = 111320 * Math.cos((punchLat * Math.PI) / 180) || 111320;
-  const lats = [punchLat];
-  const lngs = [punchLng];
-  if (hasAllowed) {
-    const aLat = geo.allowedLatitude as number;
-    const aLng = geo.allowedLongitude as number;
-    const dLat = radius / metersPerDegLat;
-    const dLng = radius / metersPerDegLng;
-    lats.push(aLat + dLat, aLat - dLat);
-    lngs.push(aLng + dLng, aLng - dLng);
-  }
-  // Minimum span so a tiny distance still renders a sensible zoom (~120m).
-  const minSpanLat = 120 / metersPerDegLat;
-  const minSpanLng = 120 / metersPerDegLng;
-  let minLat = Math.min(...lats);
-  let maxLat = Math.max(...lats);
-  let minLng = Math.min(...lngs);
-  let maxLng = Math.max(...lngs);
-  if (maxLat - minLat < minSpanLat) {
-    const mid = (maxLat + minLat) / 2;
-    minLat = mid - minSpanLat / 2;
-    maxLat = mid + minSpanLat / 2;
-  }
-  if (maxLng - minLng < minSpanLng) {
-    const mid = (maxLng + minLng) / 2;
-    minLng = mid - minSpanLng / 2;
-    maxLng = mid + minSpanLng / 2;
-  }
-  // 25% padding around the points.
-  const padLat = (maxLat - minLat) * 0.25;
-  const padLng = (maxLng - minLng) * 0.25;
-  minLat -= padLat;
-  maxLat += padLat;
-  minLng -= padLng;
-  maxLng += padLng;
+  // Padded bounding box framing the punch and the allowed location + radius.
+  const { minLat, maxLat, minLng, maxLng } = computeGeofenceBbox(geo)!;
 
   const bbox = `${minLng},${minLat},${maxLng},${maxLat}`;
   const embedSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(

@@ -13,8 +13,13 @@
  */
 import assert from "node:assert/strict";
 
-const { haversineMeters, evaluateGeofenceForAddresses, flagClockInGeofence } =
-  await import("../services/geofence.js");
+const {
+  haversineMeters,
+  evaluateGeofenceForAddresses,
+  flagClockInGeofence,
+  buildGeofenceMapData,
+  attachGeofenceMapToExceptions,
+} = await import("../services/geofence.js");
 const { storage } = await import("../storage.js");
 
 type AnyAddr = any;
@@ -229,6 +234,110 @@ test("flagClockInGeofence never throws and returns null on storage error", async
       });
       assert.equal(result, null);
       assert.equal(calls.created.length, 0);
+    },
+  );
+});
+
+// --- buildGeofenceMapData: pure map payload composition ---
+test("buildGeofenceMapData returns nearest allowed coords + punch coords (out of area)", () => {
+  // Two geofenced addresses; the punch is closest to "near" (HQ defaults).
+  const map = buildGeofenceMapData(
+    [
+      addr({ id: "far", label: "Far", latitude: 41, longitude: -75 }),
+      addr({ id: "near", label: "Near", latitude: 40.0, longitude: -75.0 }),
+    ],
+    40.01, // ~1.1km north of "near", outside its 150m radius
+    -75.0,
+  );
+  // Punch coords echo straight through.
+  assert.equal(map.punchLatitude, 40.01);
+  assert.equal(map.punchLongitude, -75.0);
+  // Allowed point is the NEAREST geofenced address, not the far one.
+  assert.equal(map.allowedLatitude, 40.0);
+  assert.equal(map.allowedLongitude, -75.0);
+  assert.equal(map.allowedRadiusMeters, 150);
+  assert.equal(map.allowedLabel, "Near");
+  assert.ok((map.distanceMeters ?? 0) > 150);
+  assert.equal(map.coordsMissing, false);
+});
+
+test("buildGeofenceMapData flags coordsMissing when geofence required but no GPS", () => {
+  const map = buildGeofenceMapData([addr()], null, null);
+  assert.equal(map.punchLatitude, null);
+  assert.equal(map.punchLongitude, null);
+  assert.equal(map.coordsMissing, true);
+  // Nearest allowed coords are unknown without a punch to measure against.
+  assert.equal(map.allowedLatitude, null);
+  assert.equal(map.allowedLongitude, null);
+});
+
+// --- attachGeofenceMapToExceptions: stub storage punch + address lookups ---
+function withStubbedMapStorage(
+  opts: {
+    addressesByEmployee: Record<string, AnyAddr[]>;
+    punchById: Record<string, AnyAddr>;
+  },
+  body: () => Promise<void>,
+) {
+  const orig = {
+    getPunchLog: storage.getPunchLog,
+    getEmployeeGeofencedAddresses: storage.getEmployeeGeofencedAddresses,
+  };
+  (storage as any).getPunchLog = async (id: string) =>
+    opts.punchById[id] ?? undefined;
+  (storage as any).getEmployeeGeofencedAddresses = async (employeeId: string) =>
+    opts.addressesByEmployee[employeeId] ?? [];
+  return body().finally(() => {
+    Object.assign(storage, orig);
+  });
+}
+
+test("attachGeofenceMapToExceptions enriches geofence rows and nulls other types", async () => {
+  await withStubbedMapStorage(
+    {
+      addressesByEmployee: { u1: [addr({ label: "HQ" })] },
+      punchById: {
+        p1: { id: "p1", punchLatitude: 40.01, punchLongitude: -75.0 },
+      },
+    },
+    async () => {
+      const rows = [
+        { id: "e1", type: "geofence", employeeId: "u1", punchLogId: "p1" },
+        { id: "e2", type: "missing_punch", employeeId: "u1", punchLogId: "p1" },
+        // geofence row WITHOUT a linked punch → still null (nothing to map).
+        { id: "e3", type: "geofence", employeeId: "u1", punchLogId: null },
+      ];
+      const out = await attachGeofenceMapToExceptions(rows);
+
+      // Geofence row with a punch gets the full map payload.
+      assert.ok(out[0].geofence);
+      assert.equal(out[0].geofence?.punchLatitude, 40.01);
+      assert.equal(out[0].geofence?.punchLongitude, -75.0);
+      assert.equal(out[0].geofence?.allowedLatitude, 40.0);
+      assert.equal(out[0].geofence?.allowedLongitude, -75.0);
+      assert.equal(out[0].geofence?.allowedLabel, "HQ");
+
+      // Other exception types pass through untouched.
+      assert.equal(out[1].geofence, null);
+      // Geofence row without a punch link is also null.
+      assert.equal(out[2].geofence, null);
+    },
+  );
+});
+
+test("attachGeofenceMapToExceptions returns all-null when no geofence rows present", async () => {
+  // Storage should never be hit; if it is, the stub returns empty/undefined.
+  await withStubbedMapStorage(
+    { addressesByEmployee: {}, punchById: {} },
+    async () => {
+      const rows = [
+        { id: "e1", type: "missing_punch", employeeId: "u1", punchLogId: "p1" },
+        { id: "e2", type: "late", employeeId: "u2", punchLogId: null },
+      ];
+      const out = await attachGeofenceMapToExceptions(rows);
+      assert.equal(out.length, 2);
+      assert.equal(out[0].geofence, null);
+      assert.equal(out[1].geofence, null);
     },
   );
 });

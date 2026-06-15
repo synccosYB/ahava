@@ -7,7 +7,7 @@
 // manager to review. The punch always succeeds.
 
 import { storage } from "../storage";
-import type { LocationAddress } from "@shared/schema";
+import type { LocationAddress, PunchLog } from "@shared/schema";
 
 const EARTH_RADIUS_METERS = 6371000;
 
@@ -137,6 +137,74 @@ export function evaluateGeofenceForAddresses(
     nearestLatitude: nearest ? (nearest.addr.latitude as number) : null,
     nearestLongitude: nearest ? (nearest.addr.longitude as number) : null,
   };
+}
+
+// Build the manager-facing map payload for a single geofence exception, given
+// the employee's geofenced addresses and the recorded punch coordinates. Pure
+// (no I/O) so the nearest-allowed-coordinate framing is easy to unit-test.
+export function buildGeofenceMapData(
+  addresses: LocationAddress[],
+  punchLat: number | null | undefined,
+  punchLng: number | null | undefined,
+): GeofenceMapData {
+  const evaluation = evaluateGeofenceForAddresses(addresses, punchLat, punchLng);
+  return {
+    punchLatitude: punchLat ?? null,
+    punchLongitude: punchLng ?? null,
+    allowedLatitude: evaluation.nearestLatitude,
+    allowedLongitude: evaluation.nearestLongitude,
+    allowedRadiusMeters: evaluation.nearestRadiusMeters,
+    allowedLabel: evaluation.nearestLabel,
+    distanceMeters: evaluation.nearestDistanceMeters,
+    coordsMissing: evaluation.coordsMissing,
+  };
+}
+
+// Enrich attendance-exception rows with the geofence map payload. Only "geofence"
+// rows that have a linked punch get a payload; every other row (and geofence rows
+// without a punch) passes through with geofence: null. Fetches punches and the
+// per-employee geofenced addresses in bulk to keep this O(1) round-trips.
+export async function attachGeofenceMapToExceptions<
+  T extends { type: string; employeeId: string; punchLogId?: string | null },
+>(rows: T[]): Promise<Array<T & { geofence: GeofenceMapData | null }>> {
+  const geoRows = rows.filter((r) => r.type === "geofence" && r.punchLogId);
+  if (geoRows.length === 0) {
+    return rows.map((r) => ({ ...r, geofence: null }));
+  }
+  const punchIds = Array.from(
+    new Set(geoRows.map((r) => r.punchLogId as string)),
+  );
+  const punchList = await Promise.all(
+    punchIds.map((id) => storage.getPunchLog(id)),
+  );
+  const punchById = new Map(
+    punchList.filter((p): p is PunchLog => !!p).map((p) => [p.id, p]),
+  );
+  const employeeIds = Array.from(new Set(geoRows.map((r) => r.employeeId)));
+  const addressesByEmployee = new Map<
+    string,
+    Awaited<ReturnType<typeof storage.getEmployeeGeofencedAddresses>>
+  >();
+  await Promise.all(
+    employeeIds.map(async (id) => {
+      addressesByEmployee.set(
+        id,
+        await storage.getEmployeeGeofencedAddresses(id),
+      );
+    }),
+  );
+  return rows.map((r) => {
+    if (r.type !== "geofence" || !r.punchLogId) {
+      return { ...r, geofence: null };
+    }
+    const punch = punchById.get(r.punchLogId);
+    const geofence = buildGeofenceMapData(
+      addressesByEmployee.get(r.employeeId) || [],
+      punch?.punchLatitude ?? null,
+      punch?.punchLongitude ?? null,
+    );
+    return { ...r, geofence };
+  });
 }
 
 // Compose a human-readable reason for the manager-facing exception.

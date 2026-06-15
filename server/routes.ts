@@ -48,7 +48,7 @@ import { drainPending, enqueue } from "./services/jobs";
 import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
-import { flagClockInGeofence, evaluateGeofenceForAddresses, type GeofenceMapData } from "./services/geofence";
+import { flagClockInGeofence, attachGeofenceMapToExceptions, type GeofenceMapData } from "./services/geofence";
 import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
@@ -4133,52 +4133,6 @@ export async function registerRoutes(
         kioskDeviceName: name,
         kiosk: devId && name ? { id: devId, name } : null,
       };
-    });
-  }
-
-  // Attach map data to "geofence" (Out of Area) exceptions so managers can see
-  // the recorded clock-in point and the allowed location/radius on a map. Other
-  // exception types pass through untouched (geofence: null).
-  async function attachGeofenceMapToExceptions<T extends { type: string; employeeId: string; punchLogId?: string | null }>(
-    rows: T[],
-  ): Promise<Array<T & { geofence: GeofenceMapData | null }>> {
-    const geoRows = rows.filter(r => r.type === "geofence" && r.punchLogId);
-    if (geoRows.length === 0) {
-      return rows.map(r => ({ ...r, geofence: null }));
-    }
-    const punchIds = Array.from(new Set(geoRows.map(r => r.punchLogId as string)));
-    const punchList = await Promise.all(punchIds.map(id => storage.getPunchLog(id)));
-    const punchById = new Map(punchList.filter((p): p is PunchLog => !!p).map(p => [p.id, p]));
-    const employeeIds = Array.from(new Set(geoRows.map(r => r.employeeId)));
-    const addressesByEmployee = new Map<string, Awaited<ReturnType<typeof storage.getEmployeeGeofencedAddresses>>>();
-    await Promise.all(
-      employeeIds.map(async id => {
-        addressesByEmployee.set(id, await storage.getEmployeeGeofencedAddresses(id));
-      }),
-    );
-    return rows.map(r => {
-      if (r.type !== "geofence" || !r.punchLogId) {
-        return { ...r, geofence: null };
-      }
-      const punch = punchById.get(r.punchLogId);
-      const punchLat = punch?.punchLatitude ?? null;
-      const punchLng = punch?.punchLongitude ?? null;
-      const evaluation = evaluateGeofenceForAddresses(
-        addressesByEmployee.get(r.employeeId) || [],
-        punchLat,
-        punchLng,
-      );
-      const geofence: GeofenceMapData = {
-        punchLatitude: punchLat,
-        punchLongitude: punchLng,
-        allowedLatitude: evaluation.nearestLatitude,
-        allowedLongitude: evaluation.nearestLongitude,
-        allowedRadiusMeters: evaluation.nearestRadiusMeters,
-        allowedLabel: evaluation.nearestLabel,
-        distanceMeters: evaluation.nearestDistanceMeters,
-        coordsMissing: evaluation.coordsMissing,
-      };
-      return { ...r, geofence };
     });
   }
 
