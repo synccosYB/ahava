@@ -27,6 +27,7 @@ import {
   emptyCorrectionCountSummary,
   type CorrectionCountSummary,
 } from "@shared/correctionCounts";
+import { MIN_TIME_OFF_HOURS_APPROVED } from "@shared/schema";
 
 const TIME_OFF_TYPE_LABELS: Record<string, string> = {
   vacation: "Vacation",
@@ -56,6 +57,10 @@ type PendingPtoRequest = TimeOffRequest & {
 function formatDays(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
 }
+
+// Smallest amount a manager may counter-approve on a PTO request. Mirrors the
+// server-side floor in /api/time-off/:id/approve.
+const MIN_APPROVED_PTO_HOURS = MIN_TIME_OFF_HOURS_APPROVED;
 
 type EnrichedException = AttendanceException & {
   employeeName?: string;
@@ -1241,14 +1246,25 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
   const isAdmin = user?.role === "admin";
   const [comment, setComment] = useState("");
 
+  const requestedHours = request.hoursRequested ?? 8;
+  const [approvedHoursStr, setApprovedHoursStr] = useState(String(requestedHours));
+  const approvedHoursNum = Number(approvedHoursStr);
+  const approvedHoursParsed = approvedHoursStr.trim() !== "" && Number.isFinite(approvedHoursNum);
+  const belowMin = approvedHoursParsed && approvedHoursNum < MIN_APPROVED_PTO_HOURS;
+  const aboveRequested = approvedHoursParsed && approvedHoursNum > requestedHours;
+  const approvedHoursValid = approvedHoursParsed && !belowMin && !aboveRequested;
+  const isCounterApproval = approvedHoursValid && approvedHoursNum < requestedHours;
+
   const approveMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", `/api/time-off/${request.id}/approve`, { comment });
+      const body: Record<string, unknown> = { comment };
+      if (isCounterApproval) body.hoursApproved = approvedHoursNum;
+      await apiRequest("POST", `/api/time-off/${request.id}/approve`, body);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/time-off/processed"] });
-      toast({ title: "PTO request approved" });
+      toast({ title: isCounterApproval ? "PTO request partially approved" : "PTO request approved" });
     },
     onError: (err: Error) => {
       handleMutationError(err, toast);
@@ -1270,8 +1286,9 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
   });
 
   const balance = request.currentBalance;
+  const effectiveHours = approvedHoursValid ? approvedHoursNum : requestedHours;
   const projectedRemaining = balance
-    ? Math.round((balance.remaining - (request.hoursRequested ?? 0)) * 100) / 100
+    ? Math.round((balance.remaining - effectiveHours) * 100) / 100
     : null;
   const projectedExceeds = projectedRemaining !== null && projectedRemaining < 0;
 
@@ -1324,7 +1341,9 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
                   <span className="font-semibold tabular-nums">{formatDays(balance.remaining)}</span>
                 </p>
                 <p className="text-sm" data-testid={`text-projected-balance-${request.id}`}>
-                  <span className="text-muted-foreground">If approved as-is:</span>{" "}
+                  <span className="text-muted-foreground">
+                    {isCounterApproval ? `If ${formatDays(effectiveHours)} hrs approved:` : "If approved as-is:"}
+                  </span>{" "}
                   <span
                     className={`font-semibold tabular-nums ${projectedExceeds ? "text-orange-700 dark:text-orange-400" : ""}`}
                     data-testid={`text-projected-balance-value-${request.id}`}
@@ -1362,6 +1381,45 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
                 </span>
               </div>
             )}
+            <div className="rounded-md border border-border bg-muted/20 p-3 mt-2 space-y-1.5" data-testid={`box-approve-hours-${request.id}`}>
+              <label className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground" htmlFor={`input-approve-hours-${request.id}`}>
+                Approve hours
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id={`input-approve-hours-${request.id}`}
+                  type="number"
+                  inputMode="decimal"
+                  step="0.25"
+                  min={MIN_APPROVED_PTO_HOURS}
+                  max={requestedHours}
+                  value={approvedHoursStr}
+                  onChange={(e) => setApprovedHoursStr(e.target.value)}
+                  className="max-w-[120px]"
+                  data-testid={`input-approve-hours-${request.id}`}
+                />
+                <span className="text-xs text-muted-foreground" data-testid={`text-requested-hours-${request.id}`}>
+                  of {formatDays(requestedHours)} requested
+                </span>
+              </div>
+              {!approvedHoursParsed ? (
+                <p className="text-xs text-destructive" data-testid={`error-approve-hours-${request.id}`}>
+                  Enter a number of hours to approve.
+                </p>
+              ) : belowMin ? (
+                <p className="text-xs text-destructive" data-testid={`error-approve-hours-${request.id}`}>
+                  Must approve at least {formatDays(MIN_APPROVED_PTO_HOURS)} hrs.
+                </p>
+              ) : aboveRequested ? (
+                <p className="text-xs text-destructive" data-testid={`error-approve-hours-${request.id}`}>
+                  Cannot approve more than the {formatDays(requestedHours)} hrs requested.
+                </p>
+              ) : isCounterApproval ? (
+                <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`text-counter-approve-note-${request.id}`}>
+                  Partial approval — {formatDays(approvedHoursNum)} of {formatDays(requestedHours)} hrs.
+                </p>
+              ) : null}
+            </div>
             <Textarea
               placeholder="Comment (optional)..."
               value={comment}
@@ -1373,11 +1431,11 @@ function PtoRequestCard({ request }: { request: PendingPtoRequest }) {
           <div className="flex md:flex-col gap-2 md:min-w-[120px]">
             <Button
               onClick={() => approveMutation.mutate()}
-              disabled={approveMutation.isPending || denyMutation.isPending}
+              disabled={approveMutation.isPending || denyMutation.isPending || !approvedHoursValid}
               className="flex-1 bg-green-600 hover:bg-green-700 text-white"
               data-testid={`button-approve-pto-${request.id}`}
             >
-              <Check className="h-4 w-4 mr-1" /> Approve
+              <Check className="h-4 w-4 mr-1" /> {isCounterApproval ? "Approve Partial" : "Approve"}
             </Button>
             <Button
               onClick={() => denyMutation.mutate()}
@@ -1496,10 +1554,17 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   // routed through approval (otherwise the backend defaults to "now").
   const isForgottenClockOut = exception.type === "forgotten_clock_out";
   const isRemoval = exception.type === "punch_removal";
-  const needsManualTimes =
-    (isTimeCorrection || isForgottenClockOut) && !timeInfo.reqIn && !timeInfo.reqOut;
-  const [manualReqIn, setManualReqIn] = useState("");
-  const [manualReqOut, setManualReqOut] = useState("");
+  // Both time_correction and forgotten_clock_out route corrected times through
+  // approval. The manager can now always edit (counter-approve) those times —
+  // they pre-fill with whatever the employee requested, or empty when the
+  // request didn't include any.
+  const isEditableTimeType = isTimeCorrection || isForgottenClockOut;
+  const [editReqIn, setEditReqIn] = useState(timeInfo.reqIn);
+  const [editReqOut, setEditReqOut] = useState(timeInfo.reqOut);
+  // True when the manager's approved times differ from what the employee asked.
+  const isCounterApproval =
+    isEditableTimeType &&
+    (editReqIn !== timeInfo.reqIn || editReqOut !== timeInfo.reqOut);
 
   const initials = (exception.employeeName || "E")
     .split(" ")
@@ -1512,9 +1577,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
     mutationFn: async () => {
       const body: Record<string, unknown> = { action: "approve", reviewNotes: notes };
       if (isTimeCorrection) {
-        const reqIn = needsManualTimes ? manualReqIn : timeInfo.reqIn;
-        const reqOut = needsManualTimes ? manualReqOut : timeInfo.reqOut;
-        const payload = buildTimeCorrectionPayload(exception.exceptionDate, reqIn, reqOut);
+        const payload = buildTimeCorrectionPayload(exception.exceptionDate, editReqIn, editReqOut);
         if (!payload.correctedClockIn && !payload.correctedClockOut) {
           throw new Error("Enter at least one corrected time before approving.");
         }
@@ -1522,8 +1585,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
       } else if (isForgottenClockOut) {
         // Only the clock-out is applied — the existing punch keeps its clock-in.
         // The backend's forgotten_clock_out path reads `correctedTime`.
-        const reqOut = needsManualTimes ? manualReqOut : timeInfo.reqOut;
-        const outIso = timeOnDateToISO(exception.exceptionDate, reqOut);
+        const outIso = timeOnDateToISO(exception.exceptionDate, editReqOut);
         if (!outIso) {
           throw new Error("Enter a corrected clock-out time before approving.");
         }
@@ -1535,7 +1597,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/correction-counts"] });
-      toast({ title: "Exception approved" });
+      toast({ title: isCounterApproval ? "Correction approved with edited times" : "Exception approved" });
     },
     onError: (err: Error) => {
       handleMutationError(err, toast);
@@ -1560,7 +1622,8 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   const approveDisabled =
     approveMutation.isPending ||
     denyMutation.isPending ||
-    (needsManualTimes && !manualReqIn && !manualReqOut);
+    (isTimeCorrection && !editReqIn && !editReqOut) ||
+    (isForgottenClockOut && !editReqOut);
 
   return (
     <Card data-testid={`card-exception-request-${exception.id}`}>
@@ -1621,6 +1684,54 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
                   Approving permanently deletes this punch from the employee's attendance.
                 </p>
               </div>
+            ) : isEditableTimeType ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-[440px] mt-2">
+                <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3" data-testid={`box-recorded-${exception.id}`}>
+                  <div className="text-[10px] font-bold uppercase text-red-600 mb-1">Recorded</div>
+                  <div className="text-xs text-muted-foreground">{formatDate(exception.exceptionDate)}</div>
+                  <div className="text-sm font-mono font-bold text-red-700 dark:text-red-400">
+                    {timeInfo.origIn ? formatTime12FromHHmm(timeInfo.origIn) : "—"} – {timeInfo.origOut ? formatTime12FromHHmm(timeInfo.origOut) : "—"}
+                  </div>
+                </div>
+                <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3 space-y-2" data-testid={`box-approve-times-${exception.id}`}>
+                  <div className="text-[10px] font-bold uppercase text-green-700 dark:text-green-400">
+                    Approve times {timeInfo.reqIn || timeInfo.reqOut ? "(edit to counter)" : "(employee left blank)"}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {isTimeCorrection && (
+                      <div>
+                        <label className="text-[10px] uppercase font-bold text-muted-foreground" htmlFor={`input-corrected-in-${exception.id}`}>
+                          Clock In
+                        </label>
+                        <Input
+                          id={`input-corrected-in-${exception.id}`}
+                          type="time"
+                          value={editReqIn}
+                          onChange={(e) => setEditReqIn(e.target.value)}
+                          data-testid={`input-corrected-in-${exception.id}`}
+                        />
+                      </div>
+                    )}
+                    <div className={isTimeCorrection ? "" : "col-span-2"}>
+                      <label className="text-[10px] uppercase font-bold text-muted-foreground" htmlFor={`input-corrected-out-${exception.id}`}>
+                        Clock Out
+                      </label>
+                      <Input
+                        id={`input-corrected-out-${exception.id}`}
+                        type="time"
+                        value={editReqOut}
+                        onChange={(e) => setEditReqOut(e.target.value)}
+                        data-testid={`input-corrected-out-${exception.id}`}
+                      />
+                    </div>
+                  </div>
+                  {isCounterApproval && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-400" data-testid={`text-counter-approve-note-${exception.id}`}>
+                      Approving edited times (differs from request).
+                    </p>
+                  )}
+                </div>
+              </div>
             ) : (
               hasTimeInfo && (
                 <div className="grid grid-cols-2 gap-3 max-w-[400px] mt-2">
@@ -1663,34 +1774,6 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
                 <span className="flex items-center gap-1" data-testid={`text-exc-manager-${exception.id}`}>
                   <UserCheck className="h-3 w-3" /> {exception.managerNames && exception.managerNames.length > 0 ? exception.managerNames.join(", ") : "No manager"}
                 </span>
-              </div>
-            )}
-            {needsManualTimes && (
-              <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30 p-3 mt-2 space-y-2" data-testid={`box-manual-times-${exception.id}`}>
-                <div className="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-200">
-                  <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
-                  <span>This request didn't include corrected times. Enter at least one before approving.</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[10px] uppercase font-bold text-muted-foreground">Corrected In</label>
-                    <Input
-                      type="time"
-                      value={manualReqIn}
-                      onChange={(e) => setManualReqIn(e.target.value)}
-                      data-testid={`input-manual-corrected-in-${exception.id}`}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase font-bold text-muted-foreground">Corrected Out</label>
-                    <Input
-                      type="time"
-                      value={manualReqOut}
-                      onChange={(e) => setManualReqOut(e.target.value)}
-                      data-testid={`input-manual-corrected-out-${exception.id}`}
-                    />
-                  </div>
-                </div>
               </div>
             )}
             <Textarea

@@ -7,7 +7,7 @@ import { db } from "./db";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
 import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport } from "@shared/schema";
 import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
@@ -4943,7 +4943,17 @@ export async function registerRoutes(
           action: "exception.approved",
           oldValue: { status: "pending" },
           newValue: { status: "approved", punchLogId: punchLog?.id },
-          context: { reviewNotes, exceptionType: exception.type },
+          context: {
+            reviewNotes,
+            exceptionType: exception.type,
+            // The employee's requested values are embedded in `reason`; the
+            // approver-supplied (possibly counter-approved) values are captured
+            // here so the audit trail shows both requested and approved.
+            requested: exception.reason,
+            ...(correctedClockIn ? { approvedClockIn: correctedClockIn } : {}),
+            ...(correctedClockOut ? { approvedClockOut: correctedClockOut } : {}),
+            ...(correctedTime ? { approvedTime: correctedTime } : {}),
+          },
           ...auditCtx,
         }, tx);
 
@@ -5540,6 +5550,9 @@ export async function registerRoutes(
 
       if (hoursApproved !== undefined && hoursApproved > (request.hoursRequested || 8)) {
         return res.status(400).json({ message: "Hours approved cannot exceed hours requested" });
+      }
+      if (hoursApproved !== undefined && hoursApproved < MIN_TIME_OFF_HOURS_APPROVED) {
+        return res.status(400).json({ message: `Hours approved must be at least ${MIN_TIME_OFF_HOURS_APPROVED}` });
       }
       if (approvedEndDate && (approvedEndDate < request.startDate || approvedEndDate > request.endDate)) {
         return res.status(400).json({ message: "Approved end date must be within the requested date range" });

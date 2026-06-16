@@ -464,6 +464,10 @@ export const timeOffRequests = pgTable("time_off_requests", {
 // with the new bound.
 export const MAX_TIME_OFF_HOURS_PER_REQUEST = 2000;
 
+// Smallest amount a manager may counter-approve (partially approve) on a PTO
+// request. Anything below this is treated as a denial, not a partial approval.
+export const MIN_TIME_OFF_HOURS_APPROVED = 0.25;
+
 export function isSaneTimeOffHours(value: unknown): value is number {
   return (
     typeof value === "number" &&
