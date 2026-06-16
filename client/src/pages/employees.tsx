@@ -2078,6 +2078,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
+                <Label className="text-muted-foreground text-xs">Employee Number</Label>
+                <p className="font-medium" data-testid="text-profile-employee-number">{profile?.employeeNumber || "—"}</p>
+              </div>
+              <div>
                 <Label className="text-muted-foreground text-xs">Department</Label>
                 <p className="font-medium" data-testid="text-profile-department">{dept?.name || "—"}</p>
               </div>

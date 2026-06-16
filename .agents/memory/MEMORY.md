@@ -2,3 +2,4 @@
 - [Employee dept/loc membership](employee-dept-loc-membership.md) — employees are M2M with depts/locations; match on ANY via userDepartmentIds()/userLocationIds(), never raw u.departmentId/locationId; legacy cols are first-element compat shim.
 - [PTO accrual via policy engine](pto-policy-engine.md) — PTO accrual now resolves through the unified engine (buildPtoPolicyFromRules); rules JSON keys mirror legacy columns + a GLOBAL assignment must always exist or numbers drift.
 - [Clock-in geofencing](clock-in-geofencing.md) — clock-in geofence never blocks; out-of-radius/missing-GPS raises a "geofence" attendance exception for managers (web + kiosk).
+- [Migrations are hand-written](migrations-hand-written.md) — drizzle-kit generate is broken (snapshot stale at 0000); add a column → hand-write migrations/00NN_*.sql + append to meta/_journal.json.
