@@ -3882,7 +3882,27 @@ export async function registerRoutes(
         if (latestResolved) {
           const hasUnusedReopen =
             latestResolved.reopenStatus === "granted" && !latestResolved.reopenConsumedAt;
-          if (!hasUnusedReopen) {
+
+          // A genuinely open punch (has a clock-in, no clock-out) can still
+          // receive its missing clock-out even after a prior correction on this
+          // date was resolved — e.g. an approved missing-clock-in correction
+          // leaves the punch open. Adding the clock-out is a NEW, non-overlapping
+          // fix, not a re-litigation of the prior decision, so the date lock must
+          // not block it. (Re-editing the prior approval still goes via reopen.)
+          let allowOpenPunchClockOut = false;
+          if (type === "forgotten_clock_out" && resolvedPunchLogId) {
+            const [targetPunch] = await tx.select().from(punchLogs)
+              .where(and(
+                eq(punchLogs.id, resolvedPunchLogId),
+                eq(punchLogs.employeeId, userId),
+              ))
+              .limit(1);
+            if (targetPunch && targetPunch.clockIn && !targetPunch.clockOut) {
+              allowOpenPunchClockOut = true;
+            }
+          }
+
+          if (!hasUnusedReopen && !allowOpenPunchClockOut) {
             const verdict = latestResolved.status.charAt(0).toUpperCase() + latestResolved.status.slice(1);
             return {
               error: {
@@ -4673,31 +4693,43 @@ export async function registerRoutes(
             : await tx.select().from(punchLogs)
                 .where(and(eq(punchLogs.employeeId, exception.employeeId), eq(punchLogs.workDate, exception.exceptionDate)))
                 .orderBy(desc(punchLogs.createdAt)).limit(1);
-          if (latestRecord && latestRecord.clockIn && !latestRecord.clockOut) {
-            const clockOutTime = correctedTimestamp || new Date();
-            const roundedClockInTime = new Date(latestRecord.roundedClockIn ?? latestRecord.clockIn);
-            const breakMinutes = latestRecord.breakMinutes || 0;
-
-            const enforcement = enforceClockOut(
-              roundedClockInTime,
-              clockOutTime,
-              breakMinutes,
-              exceptionAttRules,
-              exceptionPayrollRules,
-              employeeUser,
-              exceptionAttendancePolicy?.policyName,
+          // The in-transaction lookup MUST agree with the pre-transaction
+          // validation above (which rejects a missing or already-closed punch).
+          // Previously this block silently fell through when there was nothing
+          // open to close, yet the exception was still stamped "approved" below
+          // — leaving an Approved correction with NO clock-out written (the punch
+          // still nagged "missing clock-out"). Abort loudly instead so the punch
+          // and the verdict can never disagree. A null/closed punch here means
+          // the state changed between validation and this transaction (race), so
+          // a 409 telling the reviewer to refresh is the right outcome.
+          if (!latestRecord || !latestRecord.clockIn || latestRecord.clockOut) {
+            throw new RouteConflictError(
+              "No open punch was found to close for this date — it may have just been corrected or removed. Refresh and try again.",
             );
-
-            const [updated] = await tx.update(punchLogs).set({
-              clockOut: clockOutTime,
-              roundedClockOut: enforcement.roundedTime,
-              hoursWorked: enforcement.hoursWorked,
-              status: enforcement.status,
-              // A manager resolving an exception is a manager-entry punch.
-              source: "manager",
-            }).where(eq(punchLogs.id, latestRecord.id)).returning();
-            punchLog = updated;
           }
+          const clockOutTime = correctedTimestamp || new Date();
+          const roundedClockInTime = new Date(latestRecord.roundedClockIn ?? latestRecord.clockIn);
+          const breakMinutes = latestRecord.breakMinutes || 0;
+
+          const enforcement = enforceClockOut(
+            roundedClockInTime,
+            clockOutTime,
+            breakMinutes,
+            exceptionAttRules,
+            exceptionPayrollRules,
+            employeeUser,
+            exceptionAttendancePolicy?.policyName,
+          );
+
+          const [updated] = await tx.update(punchLogs).set({
+            clockOut: clockOutTime,
+            roundedClockOut: enforcement.roundedTime,
+            hoursWorked: enforcement.hoursWorked,
+            status: enforcement.status,
+            // A manager resolving an exception is a manager-entry punch.
+            source: "manager",
+          }).where(eq(punchLogs.id, latestRecord.id)).returning();
+          punchLog = updated;
         } else if (exception.type === "time_correction") {
           // Same as forgotten_clock_out: prefer the FK target so the right
           // punch is updated even when an employee has multiple punches on

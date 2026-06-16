@@ -942,6 +942,133 @@ test("POST /attendance/exceptions: a forgotten_clock_out approval closes the exi
   assert.equal(resolvedException.punchLogId, openPunch.id);
 });
 
+test("POST /attendance/exceptions/:id/resolve: approving forgotten_clock_out aborts (409) when there is no open punch to close (Task #439)", async (t) => {
+  const fx = await setupFixture("forgotten-clock-out-no-open");
+  t.after(fx.cleanup);
+
+  // The punch on this date is ALREADY closed — there is nothing open to close.
+  const workDate = "2026-05-06";
+  const clockIn = new Date("2026-05-06T09:00:00Z");
+  const clockOut = new Date("2026-05-06T17:00:00Z");
+  const [closedPunch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut,
+      roundedClockOut: clockOut,
+      hoursWorked: 8,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // A forgotten_clock_out exception that (incorrectly) points at the already
+  // closed punch. Approving it must NOT silently mark the exception approved
+  // while writing nothing — it must abort loudly.
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: clockOut,
+      type: "forgotten_clock_out",
+      reason: "regression for task #439",
+      status: "pending",
+      punchLogId: closedPunch.id,
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "approve", correctedTime: clockOut.toISOString() }),
+  });
+  // Either the pre-transaction validation (400) or the in-transaction guard
+  // (409, on a race) rejects — the point is it is NEVER silently approved.
+  assert.ok(
+    res.status === 400 || res.status === 409,
+    `expected 400/409 when no open punch exists, got ${res.status}`,
+  );
+
+  // The exception must remain pending (transaction rolled back), never approved.
+  const [after] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(after.status, "pending", "exception must stay pending when nothing was closed");
+});
+
+test("POST /attendance/exceptions: a genuinely open punch can still receive its missing clock-out after a prior approved correction on the same date (Task #439)", async (t) => {
+  const fx = await setupFixture("open-punch-clock-out-after-resolved");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-07";
+  const clockIn = new Date("2026-05-07T09:00:00Z");
+
+  // Simulate the aftermath of an approved missing-clock-in correction: an open
+  // punch (clock-in, no clock-out) plus an APPROVED exception on this date that
+  // would normally lock the date against new submissions.
+  const [openPunch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      status: "in-progress",
+      source: "manager",
+      approved: true,
+    })
+    .returning();
+  await db.insert(attendanceExceptions).values({
+    employeeId: fx.employeeId,
+    exceptionDate: workDate,
+    exceptionTime: clockIn,
+    type: "missing_punch",
+    reason: "I forgot to clock in. [Corrected In: 09:00]",
+    status: "approved",
+    reviewedBy: REVIEWER_ID,
+    reviewedAt: new Date(),
+    punchLogId: openPunch.id,
+  });
+
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+
+  // The date lock must NOT block a missing clock-out on the still-open punch.
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${employeeToken}`,
+    },
+    body: JSON.stringify({
+      exceptionDate: workDate,
+      type: "forgotten_clock_out",
+      reason: "I also forgot to clock out. [Corrected Out: 17:00]",
+      punchLogId: openPunch.id,
+    }),
+  });
+  const body = await res.text();
+  assert.equal(res.status, 201, `expected 201 (lock relaxed for open punch), got ${res.status} (${body})`);
+  const created = JSON.parse(body);
+  assert.equal(created.type, "forgotten_clock_out");
+  assert.equal(created.punchLogId, openPunch.id);
+});
+
 test("POST /attendance/exceptions: a missing_punch approval (no existing punch) still INSERTS a new punch", async (t) => {
   const fx = await setupFixture("missing-punch-still-inserts");
   t.after(fx.cleanup);

@@ -476,6 +476,17 @@ export default function MyAttendance() {
                   const pendingException = pendingForRow.get(record.id);
                   const hasPending = !!pendingException;
                   const overnightInfo = getOvernightShiftInfo(record.date, record.clockOut);
+                  const resolvedEx = latestResolvedByDate.get(record.date);
+                  const reopenGrantedUnused =
+                    resolvedEx?.reopenStatus === "granted" && !resolvedEx?.reopenConsumedAt;
+                  const showResolvedCell = !!resolvedEx && !reopenGrantedUnused;
+                  // Once a row carries an approved/resolved correction (or was
+                  // corrected), it must never ALSO nag "missing clock-out –
+                  // request a fix". A clock-in correction (missing_punch /
+                  // forgotten_clock_in, or a time_correction that only fixed the
+                  // clock-in) legitimately leaves the punch open, so we show a
+                  // neutral "Open shift" instead of the contradictory warning.
+                  const suppressMissingClockOutNag = record.wasCorrected || showResolvedCell;
                   return (
                     <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
                       <TableCell className="text-sm font-medium">
@@ -533,12 +544,18 @@ export default function MyAttendance() {
                               )}
                             </span>
                           )
-                          : (
-                            <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400" data-testid={`hint-missing-clock-out-${record.id}`}>
-                              <AlertCircle className="h-3 w-3" />
-                              <span className="text-xs">Missing clock-out – request a fix</span>
-                            </span>
-                          )}
+                          : suppressMissingClockOutNag
+                            ? (
+                              <span className="inline-flex items-center gap-1 text-muted-foreground" data-testid={`text-open-shift-${record.id}`}>
+                                <span className="text-xs">Open shift</span>
+                              </span>
+                            )
+                            : (
+                              <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400" data-testid={`hint-missing-clock-out-${record.id}`}>
+                                <AlertCircle className="h-3 w-3" />
+                                <span className="text-xs">Missing clock-out – request a fix</span>
+                              </span>
+                            )}
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">{record.breakMinutes || 0} min</TableCell>
                       <TableCell
@@ -582,17 +599,37 @@ export default function MyAttendance() {
                             );
                           }
 
-                          const resolvedEx = latestResolvedByDate.get(record.date);
-                          const reopenGrantedUnused =
-                            resolvedEx?.reopenStatus === "granted" && !resolvedEx?.reopenConsumedAt;
-
                           if (resolvedEx && !reopenGrantedUnused) {
+                            // A resolved correction normally locks the date —
+                            // the only follow-up is "Ask to reopen". But if the
+                            // punch is genuinely still open (a clock-in
+                            // correction left it with no clock-out), the
+                            // employee needs a clean, non-contradictory way to
+                            // add the missing clock-out — a NEW correction, not
+                            // a re-edit of the prior approval. Surface it
+                            // alongside the verdict + reopen controls.
+                            const openShiftNeedsClockOut = !record.clockOut;
                             return (
-                              <ResolvedActionCell
-                                record={record}
-                                exception={resolvedEx}
-                                onAskToReopen={(ex) => setReopenDialog({ open: true, exception: ex })}
-                              />
+                              <div className="flex flex-col items-end gap-1">
+                                <ResolvedActionCell
+                                  record={record}
+                                  exception={resolvedEx}
+                                  onAskToReopen={(ex) => setReopenDialog({ open: true, exception: ex })}
+                                />
+                                {openShiftNeedsClockOut && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openFixDialog(record)}
+                                    disabled={exceptionsLoading}
+                                    title={exceptionsLoading ? "Loading correction requests..." : "Submit the missing clock-out for this open shift"}
+                                    data-testid={`button-add-clock-out-${record.id}`}
+                                  >
+                                    <Wrench className="h-3 w-3 mr-1" />
+                                    Add missing clock-out
+                                  </Button>
+                                )}
+                              </div>
                             );
                           }
 
@@ -840,11 +877,11 @@ function CorrectionFormBody({
       if (!removal && reqIn) timeInfo.push(`Corrected In: ${reqIn}`);
       if (!removal && reqOut) timeInfo.push(`Corrected Out: ${reqOut}`);
       const fullReason = `${reason}${timeInfo.length > 0 ? ` [${timeInfo.join(", ")}]` : ""}`;
-      const submitType = removal
-        ? "punch_removal"
-        : effectiveMissingPunch
-          ? "missing_punch"
-          : "time_correction";
+      // Use the three-way classification so a linked, still-open punch submits
+      // `forgotten_clock_out` (UPDATE the open punch) instead of `missing_punch`
+      // (which INSERTs a duplicate). Only a date with no linked punch at all is
+      // a genuine `missing_punch`. (See BUG-0246.)
+      const submitType = removal ? "punch_removal" : correctionType;
       const payload: Record<string, unknown> = {
         exceptionDate: date,
         type: submitType,
