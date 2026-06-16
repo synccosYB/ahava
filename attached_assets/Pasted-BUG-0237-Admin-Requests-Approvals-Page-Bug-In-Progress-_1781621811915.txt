@@ -1,0 +1,89 @@
+BUG-0237
+Admin "Requests & Approvals " Page
+Bug
+In Progress
+High
+Close
+Mark Ready for Review
+Resolve
+Status
+In Progress
+Priority
+High
+Assigned To
+Unassigned
+Description
+
+**Steps to Reproduce:**
+1. Log in as an admin user.
+2. Navigate to the "Requests & Approvals" page in the admin portal.
+3. Locate the cards showing departmental requests with an assigned manager role.
+4. Observe the displayed information for each card regarding manager assignments.
+
+**Expected Behavior:**
+The cards on the "Requests & Approvals" page should display the assigned manager's name for the corresponding department where a manager role exists.
+
+**Actual Behavior:**
+The cards incorrectly show "No Manager," even though a manager role is already assigned to the department.
+
+**Additional Context:**
+- The issue appears to affect all departments where a manager has been assigned.
+- The assigned manager data is correctly reflected in other parts of the admin portal.
+- This may be caused by a data retrieval issue specific to the "Requests & Approvals" page.
+
+AI Analysis
+
+### Analysis of the Issue:
+
+**1. Affected Part of the App:**
+   - The "Requests & Approvals" page in the admin section of the portal specifically fails to display the assigned manager's name for departmental requests. Despite properly reflecting this data elsewhere in the admin portal, the cards on this page incorrectly show "No Manager."
+
+**2. Observations from the Screenshot:**
+   - Multiple cards on the page have a label listing "Main -> No Manager."
+   - This suggests a failure to correctly fetch or display the assigned manager’s name for the relevant requests, likely pointing to a problem in either:
+     - The API call fetching the manager data.
+     - Data mapping or rendering in the frontend code of this specific page.
+
+**3. Root Cause Analysis:**
+   - **Data Retrieval Issue:**
+     - Since manager data is correctly reflected elsewhere:
+       - The API endpoint (or database query used) for this page may not include the necessary mapping of departments and associated roles.
+       - If the endpoint includes the data, the frontend may not be processing or mapping it correctly.
+   - **Conditional Rendering Issue:** 
+     - The logic for displaying manager names on the cards might have an error (e.g., failing to recognize the assigned manager in certain conditions).
+   - **Data Caching Issue:**
+     - If this page uses cached responses, outdated or incomplete data may result in the "No Manager" message.
+
+**4. Recommended Fix or Next Steps:**
+   - **Backend Investigation:**
+     - Verify the API/DB query used for manager role assignments on the "Requests & Approvals" page.
+     - Ensure the endpoint returns the correct manager data for departments with assigned roles.
+   - **Frontend Debugging:**
+     - Examine how the API/endpoint responses are processed on this page.
+     - Check the rendering logic for manager data in the cards — confirm that it skips "No Manager" only when a manager is truly assigned.
+   - **Testing & Debugging:**
+     - Test the flow in a development/staging environment to understand whether the page's API call (or query) is failing consistently with mock data.
+
+---
+
+```json
+{"severity": "high", "category": "data"}
+```
+
+Screenshot
+
+Screenshot
+https://synccos.space/requests-approvals
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36
+Shlomy Shpilman
+shloimy@synkdex.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+
