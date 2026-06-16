@@ -2465,30 +2465,14 @@ export async function registerRoutes(
   }
 
   app.get("/api/departments", requireAuth, requirePermission("departments.view"), async (req, res) => {
-    const user = (req as any).authUser as User;
-    const companyId = req.query.companyId as string | undefined;
     const locationId = req.query.locationId as string | undefined;
 
-    let depts: Department[];
-    if (user.role === "admin") {
-      if (locationId) {
-        depts = await storage.getDepartmentsByLocation(locationId);
-      } else if (companyId) {
-        depts = await storage.getDepartmentsByCompany(companyId);
-      } else {
-        depts = await storage.getAllDepartments();
-      }
-    } else if (user.departmentId && !user.companyId && !user.locationId) {
-      const dept = await storage.getDepartment(user.departmentId);
-      depts = dept ? [dept] : [];
-    } else if (!user.companyId) {
-      depts = [];
-    } else {
-      depts = await storage.getDepartmentsByCompany(user.companyId);
-      if (user.locationId) {
-        depts = depts.filter(d => d.locationId === user.locationId);
-      }
-    }
+    // Departments are a single shared list across all companies (Task #433).
+    // Anyone with departments.view sees the full list; the only narrowing kept
+    // is the optional location filter.
+    const depts = locationId
+      ? await storage.getDepartmentsByLocation(locationId)
+      : await storage.getAllDepartments();
 
     res.json(await enrichDepartmentsWithManagers(depts));
   });
@@ -2496,7 +2480,9 @@ export async function registerRoutes(
   const managerIdsSchema = z.array(z.string()).optional().default([]);
 
   app.post("/api/departments", requireAuth, requirePermission("departments.create"), async (req, res) => {
-    const { managerIds: rawManagerIds, ...deptData } = req.body;
+    // Departments are a single shared list across all companies (Task #433):
+    // companyId is ignored entirely — it never scopes or gates creation.
+    const { managerIds: rawManagerIds, companyId: _ignoredCompanyId, ...deptData } = req.body;
     const parsed = insertDepartmentSchema.safeParse(deptData);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid department data", errors: parsed.error.flatten() });
@@ -2506,47 +2492,47 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid managerIds, expected an array of strings" });
     }
     const uniqueManagerIds = [...new Set(mgrParsed.data)];
-    if (parsed.data.locationId && parsed.data.companyId) {
-      const location = await storage.getLocation(parsed.data.locationId);
-      if (!location) {
-        return res.status(400).json({ message: "Location does not belong to the specified company" });
+    try {
+      const dept = await storage.createDepartment(parsed.data);
+      if (uniqueManagerIds.length > 0) {
+        await storage.setDepartmentManagers(dept.id, uniqueManagerIds);
       }
-      // Task #258: locations can belong to multiple companies. Membership is
-      // valid if the requested company is the legacy primary OR is linked via
-      // the `location_companies` join table.
-      const linkedCompanyIds = new Set([
-        ...(location.companyId ? [location.companyId] : []),
-        ...(await storage.getLocationCompanyIds(location.id)),
-      ]);
-      if (!linkedCompanyIds.has(parsed.data.companyId)) {
-        return res.status(400).json({ message: "Location does not belong to the specified company" });
+      const managers = await storage.getDepartmentManagers(dept.id);
+      res.status(201).json({ ...dept, managerIds: managers.map(m => m.userId) });
+    } catch (error: any) {
+      // Department names are globally unique across all companies (Task #433).
+      if (error?.code === "23505") {
+        return res.status(409).json({ message: "A department with this name already exists." });
       }
+      return handleRouteError(res, error, "Failed to create department");
     }
-    const dept = await storage.createDepartment(parsed.data);
-    if (uniqueManagerIds.length > 0) {
-      await storage.setDepartmentManagers(dept.id, uniqueManagerIds);
-    }
-    const managers = await storage.getDepartmentManagers(dept.id);
-    res.status(201).json({ ...dept, managerIds: managers.map(m => m.userId) });
   });
 
   app.patch("/api/departments/:id", requireAuth, requirePermission("departments.edit"), async (req, res) => {
-    const { managerIds: rawManagerIds, ...deptData } = req.body;
+    // companyId is ignored entirely — departments are company-independent (Task #433).
+    const { managerIds: rawManagerIds, companyId: _ignoredCompanyId, ...deptData } = req.body;
     const parsed = insertDepartmentSchema.partial().safeParse(deptData);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid department data", errors: parsed.error.flatten() });
     }
-    const dept = await storage.updateDepartment(String(req.params.id), parsed.data);
-    if (!dept) return res.status(404).json({ message: "Department not found" });
-    if (rawManagerIds !== undefined) {
-      const mgrParsed = managerIdsSchema.safeParse(rawManagerIds);
-      if (!mgrParsed.success) {
-        return res.status(400).json({ message: "Invalid managerIds, expected an array of strings" });
+    try {
+      const dept = await storage.updateDepartment(String(req.params.id), parsed.data);
+      if (!dept) return res.status(404).json({ message: "Department not found" });
+      if (rawManagerIds !== undefined) {
+        const mgrParsed = managerIdsSchema.safeParse(rawManagerIds);
+        if (!mgrParsed.success) {
+          return res.status(400).json({ message: "Invalid managerIds, expected an array of strings" });
+        }
+        await storage.setDepartmentManagers(dept.id, [...new Set(mgrParsed.data)]);
       }
-      await storage.setDepartmentManagers(dept.id, [...new Set(mgrParsed.data)]);
+      const managers = await storage.getDepartmentManagers(dept.id);
+      res.json({ ...dept, managerIds: managers.map(m => m.userId) });
+    } catch (error: any) {
+      if (error?.code === "23505") {
+        return res.status(409).json({ message: "A department with this name already exists." });
+      }
+      return handleRouteError(res, error, "Failed to update department");
     }
-    const managers = await storage.getDepartmentManagers(dept.id);
-    res.json({ ...dept, managerIds: managers.map(m => m.userId) });
   });
 
   app.delete("/api/departments/:id", requireAuth, requirePermission("departments.edit"), async (req, res) => {

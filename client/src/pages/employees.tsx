@@ -1006,14 +1006,10 @@ function AddEmployeeDialog({
     enabled: open && !!formData.companyId,
   });
 
+  // Departments are a single shared list across all companies (Task #433):
+  // the selected company no longer narrows the list.
   const { data: scopedDepartments = [] } = useQuery<Department[]>({
-    queryKey: ["/api/departments", { companyId: formData.companyId }],
-    queryFn: async () => {
-      const res = await fetch(`/api/departments?companyId=${formData.companyId}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch departments");
-      return res.json();
-    },
-    enabled: !!formData.companyId,
+    queryKey: ["/api/departments"],
   });
 
   const { data: scopedLocations = [] } = useQuery<Location[]>({
@@ -1247,17 +1243,7 @@ function AddEmployeeDialog({
                   size="sm"
                   className="h-7 px-2 text-xs"
                   data-testid="button-add-new-department"
-                  onClick={() => {
-                    if (!formData.companyId) {
-                      toast({
-                        title: "Select a company first",
-                        description: "Choose a company in Step 1 before adding a department.",
-                        variant: "destructive",
-                      });
-                      return;
-                    }
-                    setCreateDepartmentOpen(true);
-                  }}
+                  onClick={() => setCreateDepartmentOpen(true)}
                 >
                   <Plus className="h-3.5 w-3.5 mr-1" /> Add new
                 </Button>
@@ -1582,14 +1568,9 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
 
   const companyId = user?.companyId || "";
 
+  // Departments are a single shared list across all companies (Task #433).
   const { data: scopedDepartments = [] } = useQuery<Department[]>({
-    queryKey: ["/api/departments", { companyId }],
-    queryFn: async () => {
-      const res = await fetch(`/api/departments?companyId=${companyId}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch departments");
-      return res.json();
-    },
-    enabled: !!companyId,
+    queryKey: ["/api/departments"],
   });
 
   const { data: scopedLocations = [] } = useQuery<Location[]>({

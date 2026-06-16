@@ -272,17 +272,24 @@ export const departments = pgTable("departments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 100 }).notNull(),
   description: text("description"),
+  // Departments are a single shared list across all companies (Task #433).
+  // companyId is retained (nullable, unused for scoping) to avoid a destructive
+  // schema change; name is now globally unique.
   companyId: varchar("company_id").references(() => companies.id),
   locationId: varchar("location_id").references(() => locations.id),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
-  unique("departments_company_name_unique").on(table.companyId, table.name),
+  unique("departments_name_unique").on(table.name),
 ]);
 
-export const insertDepartmentSchema = createInsertSchema(departments).omit({
-  id: true,
-  createdAt: true,
-});
+export const insertDepartmentSchema = createInsertSchema(departments)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    companyId: z.string().nullish(),
+  });
 export type InsertDepartment = z.infer<typeof insertDepartmentSchema>;
 export type Department = typeof departments.$inferSelect;
 

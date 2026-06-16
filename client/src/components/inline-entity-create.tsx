@@ -411,16 +411,14 @@ export function CreateRoleDialog({
 export function CreateDepartmentDialog({
   open,
   onOpenChange,
-  companyId,
-  companyName,
   onCreated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /**
-   * Optional parent company. When omitted (e.g. the surface has no
-   * company in scope), the dialog renders its own Company picker so
-   * admins can still create a department inline.
+   * Optional/ignored. Departments are a single shared list across all
+   * companies (Task #433), so they are created with just a name. These props
+   * are accepted for backwards compatibility with existing call sites.
    */
   companyId?: string;
   companyName?: string;
@@ -429,19 +427,11 @@ export function CreateDepartmentDialog({
   const { toast } = useToast();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const needsCompanyPicker = !companyId;
-  const [internalCompanyId, setInternalCompanyId] = useState("");
-  const { data: companies } = useQuery<Company[]>({
-    queryKey: ["/api/companies"],
-    enabled: open && needsCompanyPicker,
-  });
-  const effectiveCompanyId = companyId || internalCompanyId;
 
   useEffect(() => {
     if (!open) {
       setName("");
       setError(null);
-      setInternalCompanyId("");
     }
   }, [open]);
 
@@ -449,7 +439,6 @@ export function CreateDepartmentDialog({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/departments", {
         name: name.trim(),
-        companyId: effectiveCompanyId,
       });
       return (await res.json()) as Department;
     },
@@ -470,44 +459,10 @@ export function CreateDepartmentDialog({
         <DialogHeader>
           <DialogTitle>Add new department</DialogTitle>
           <DialogDescription>
-            {companyName
-              ? `Create a new department under ${companyName}.`
-              : needsCompanyPicker
-              ? "Pick a company and create a new department under it."
-              : "Create a new department under the selected company."}
+            Create a new department. Departments are shared across all companies.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          {needsCompanyPicker && (
-            <div className="space-y-2">
-              <Label htmlFor="inline-department-company">Company</Label>
-              <Select
-                value={internalCompanyId}
-                onValueChange={(v) => {
-                  setInternalCompanyId(v);
-                  if (error === "Select a company first") setError(null);
-                }}
-              >
-                <SelectTrigger
-                  id="inline-department-company"
-                  data-testid="select-inline-department-company"
-                >
-                  <SelectValue placeholder="Select company" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(companies ?? []).map((c) => (
-                    <SelectItem
-                      key={c.id}
-                      value={c.id}
-                      data-testid={`option-inline-department-company-${c.id}`}
-                    >
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
           <div className="space-y-2">
             <Label htmlFor="inline-department-name">Department name</Label>
             <Input
@@ -519,7 +474,7 @@ export function CreateDepartmentDialog({
               }}
               placeholder="Nursing"
               data-testid="input-inline-department-name"
-              autoFocus={!needsCompanyPicker}
+              autoFocus
             />
             {error && (
               <p className="text-sm text-destructive" data-testid="text-inline-department-error">
@@ -542,13 +497,9 @@ export function CreateDepartmentDialog({
                 setError("Required");
                 return;
               }
-              if (!effectiveCompanyId) {
-                setError("Select a company first");
-                return;
-              }
               mutation.mutate();
             }}
-            disabled={mutation.isPending || !effectiveCompanyId}
+            disabled={mutation.isPending}
             data-testid="button-inline-department-save"
           >
             {mutation.isPending ? "Creating..." : "Create department"}

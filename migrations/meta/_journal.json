@@ -379,6 +379,13 @@
       "when": 1780300100000,
       "tag": "0053_user_employment_profiles_employee_number",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1780300200000,
+      "tag": "0054_departments_global_shared",
+      "breakpoints": true
     }
   ]
 }

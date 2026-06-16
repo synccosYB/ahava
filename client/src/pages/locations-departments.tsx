@@ -730,7 +730,6 @@ function LocationsTab() {
 
 function DepartmentsTab() {
   const { toast } = useToast();
-  const { user, isLoading: authLoading } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", description: "", managerIds: [] as string[], locationId: "" });
@@ -739,26 +738,15 @@ function DepartmentsTab() {
   const { data: departments, isLoading } = useQuery<DepartmentWithManagers[]>({ queryKey: ["/api/departments"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
-  const { data: divisions, isLoading: divisionsLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
-  const divisionId = resolveActiveCompanyId(user, divisions);
-  const hasCompany = !!divisionId;
-  const companyContextLoading = authLoading || divisionsLoading;
-  const addDisabled = companyContextLoading || !hasCompany;
-  const addDisabledReason = companyContextLoading
-    ? "Loading company info…"
-    : "Set up your company first in Rules & Controls → General.";
-
+  // Departments are a single shared list across all companies (Task #433), so
+  // they no longer require a company context to view or create.
   const createMutation = useMutation({
     mutationFn: async () => {
-      if (!editingId && !divisionId) {
-        throw new Error(NO_COMPANY_MESSAGE);
-      }
       const payload = {
         name: form.name,
         description: form.description || null,
         managerIds: form.managerIds,
         locationId: form.locationId || null,
-        companyId: divisionId || null,
       };
       if (editingId) {
         await apiRequest("PATCH", `/api/departments/${editingId}`, payload);
@@ -836,26 +824,12 @@ function DepartmentsTab() {
     <div className="space-y-4 mt-4">
       <div className="flex justify-end">
         <Dialog open={dialogOpen} onOpenChange={(open) => {
-          if (open && addDisabled) return;
           setDialogOpen(open);
           if (!open) resetForm();
         }}>
-          {addDisabled ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span tabIndex={0}>
-                  <Button disabled data-testid="button-add-department">
-                    <Plus className="h-4 w-4 mr-1" /> Add Department
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent data-testid="tooltip-add-department-disabled">{addDisabledReason}</TooltipContent>
-            </Tooltip>
-          ) : (
-            <DialogTrigger asChild>
-              <Button data-testid="button-add-department"><Plus className="h-4 w-4 mr-1" /> Add Department</Button>
-            </DialogTrigger>
-          )}
+          <DialogTrigger asChild>
+            <Button data-testid="button-add-department"><Plus className="h-4 w-4 mr-1" /> Add Department</Button>
+          </DialogTrigger>
           <DialogContent data-testid="dialog-department-form">
             <DialogHeader>
               <DialogTitle>{editingId ? "Edit Department" : "Add Department"}</DialogTitle>
@@ -964,11 +938,7 @@ function DepartmentsTab() {
             <DialogFooter>
               <Button
                 onClick={() => createMutation.mutate()}
-                disabled={
-                  !form.name ||
-                  createMutation.isPending ||
-                  (!editingId && (companyContextLoading || !divisionId))
-                }
+                disabled={!form.name || createMutation.isPending}
                 data-testid="button-save-department"
               >
                 {createMutation.isPending ? "Saving..." : "Save"}
@@ -978,7 +948,7 @@ function DepartmentsTab() {
         </Dialog>
       </div>
 
-      {companyContextLoading || isLoading ? (
+      {isLoading ? (
         <Card data-testid="card-departments-list">
           <CardContent className="p-0">
             <div className="p-6 space-y-3">
@@ -986,8 +956,6 @@ function DepartmentsTab() {
             </div>
           </CardContent>
         </Card>
-      ) : !hasCompany ? (
-        <NoCompanyEmptyState entity="departments" />
       ) : (
       <Card data-testid="card-departments-list">
         <CardContent className="p-0">
