@@ -17,6 +17,7 @@ import AdminDashboardPage from "@/pages/admin-dashboard";
 import ReportsPage from "@/pages/reports";
 import EmployeesPage from "@/pages/employees";
 import LocationsDepartmentsPage from "@/pages/locations-departments";
+import CompaniesPage from "@/pages/companies";
 import PtoLeavePage from "@/pages/pto-leave";
 import RulesControlsPage from "@/pages/rules-controls";
 import PayrollPrepPage from "@/pages/payroll-prep";
@@ -38,6 +39,7 @@ import BackgroundJobsPage from "@/pages/background-jobs";
 import ReconciliationPage from "@/pages/reconciliation";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
+import { ActiveCompanyProvider } from "@/hooks/use-active-company";
 
 function AuthenticatedRouter() {
   return (
@@ -77,6 +79,11 @@ function AuthenticatedRouter() {
         <Route path="/locations">{() => (
           <ProtectedRoute roles={["admin"]}>
             <LocationsDepartmentsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/companies">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <CompaniesPage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/alerts-exceptions">{() => (
@@ -174,7 +181,11 @@ function AppContent() {
     return <ChangePasswordPage />;
   }
 
-  return <AuthenticatedRouter />;
+  return (
+    <ActiveCompanyProvider>
+      <AuthenticatedRouter />
+    </ActiveCompanyProvider>
+  );
 }
 
 function App() {

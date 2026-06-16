@@ -9,6 +9,7 @@ import {
   Users,
   Settings2,
   BarChart3,
+  Building2,
   LogOut,
   MapPin,
   DollarSign,
@@ -88,6 +89,7 @@ const teamItems: NavItem[] = [
 
 const adminItems: NavItem[] = [
   { title: "Admin Dashboard", href: "/company", icon: LayoutDashboard },
+  { title: "Companies", href: "/companies", icon: Building2 },
   { title: "Employees", href: "/employees", icon: Users },
   { title: "Locations", href: "/locations", icon: MapPin },
   { title: "Reports", href: "/reports", icon: BarChart3 },

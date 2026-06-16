@@ -23,6 +23,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building, Check } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { useAuth } from "@/hooks/use-auth";
+import { useActiveCompany } from "@/hooks/use-active-company";
 import type { Location, Department, Division, User, LocationAddress } from "@shared/schema";
 import { buildGoogleMapsUrl, GoogleMapsIconLink, AddressAutocompleteInput } from "@/lib/googleMaps";
 
@@ -149,14 +150,19 @@ type DepartmentWithManagers = Department & { managerIds: string[] };
 function resolveActiveCompanyId(
   user: { companyId?: string | null } | null | undefined,
   divisions: Division[] | undefined,
+  activeCompanyId: string | undefined,
 ): string | undefined {
+  // Prefer the explicitly selected active company when it is a real company.
+  if (activeCompanyId && divisions?.some((d) => d.id === activeCompanyId)) {
+    return activeCompanyId;
+  }
   const userCompanyId = user?.companyId || undefined;
   if (userCompanyId) {
     const match = divisions?.find((d) => d.id === userCompanyId);
     if (match) return match.id;
     return userCompanyId;
   }
-  if (divisions && divisions.length === 1) {
+  if (divisions && divisions.length >= 1) {
     return divisions[0].id;
   }
   return undefined;
@@ -195,9 +201,10 @@ function LocationsTab() {
   const [addressCounts, setAddressCounts] = useState<Record<string, LocationAddress[]>>({});
   const [editOriginalAddresses, setEditOriginalAddresses] = useState<LocationAddress[]>([]);
 
+  const { activeCompanyId } = useActiveCompany();
   const { data: locations, isLoading } = useQuery<LocationWithCompanies[]>({ queryKey: ["/api/locations"] });
   const { data: divisions, isLoading: divisionsLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
-  const divisionId = resolveActiveCompanyId(user, divisions);
+  const divisionId = resolveActiveCompanyId(user, divisions, activeCompanyId);
   const hasCompany = !!divisionId;
   const companyContextLoading = authLoading || divisionsLoading;
   const addDisabled = companyContextLoading || !hasCompany;
@@ -738,6 +745,7 @@ function DepartmentsTab() {
   const { data: departments, isLoading } = useQuery<DepartmentWithManagers[]>({ queryKey: ["/api/departments"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
+
   // Departments are a single shared list across all companies (Task #433), so
   // they no longer require a company context to view or create.
   const createMutation = useMutation({

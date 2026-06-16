@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/hooks/use-permissions";
+import { useActiveCompany } from "@/hooks/use-active-company";
 import { CreateRoleDialog } from "@/components/inline-entity-create";
 import {
   ChevronLeft, ChevronRight, Check, Clock, CalendarDays,
@@ -377,6 +378,7 @@ export function PolicyWizard({
     users: User[];
     roles: Role[];
   }>({ queryKey: ["/api/policy-assignment-targets"] });
+  const { activeCompanyId } = useActiveCompany();
   const divisions = assignmentTargets?.companies;
   const locations = assignmentTargets?.locations;
   const departments = assignmentTargets?.departments;
@@ -705,7 +707,10 @@ export function PolicyWizard({
         name: name.trim(),
         description: description.trim() || null,
         policyTypeId: matchingType.id,
-        companyId: divisions?.[0]?.id || null,
+        companyId:
+          (activeCompanyId && divisions?.some((d) => d.id === activeCompanyId)
+            ? activeCompanyId
+            : divisions?.[0]?.id) || null,
         status: targetStatus,
         requiresAcknowledgment,
       };
