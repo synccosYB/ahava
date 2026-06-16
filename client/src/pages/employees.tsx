@@ -1118,6 +1118,7 @@ function AddEmployeeDialog({
     return Number.isFinite(n) && n > 0;
   };
   const payRateValid =
+    formData.payType === "contractual" ||
     (formData.payType === "hourly" && ratePositive(formData.hourlyRate)) ||
     (formData.payType === "daily" && ratePositive(formData.dailySalary)) ||
     (formData.payType === "salary" && ratePositive(formData.weeklySalary));
@@ -1400,9 +1401,15 @@ function AddEmployeeDialog({
                   <SelectItem value="hourly">Hourly</SelectItem>
                   <SelectItem value="daily">Daily</SelectItem>
                   <SelectItem value="salary">Salary</SelectItem>
+                  <SelectItem value="contractual">Contractual</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+            {formData.payType === "contractual" && (
+              <p className="text-sm text-muted-foreground" data-testid="text-add-contractual-note">
+                Contractual workers have no pay rate. Their hours are still tracked and counted.
+              </p>
+            )}
             {formData.payType === "hourly" && (
               <div className="space-y-2">
                 <Label>Hourly Rate ($)</Label>
@@ -1792,6 +1799,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     return Number.isFinite(n) && n > 0;
   };
   const payRateValid =
+    payForm.payType === "contractual" ||
     (payForm.payType === "hourly" && payRatePositive(payForm.hourlyRate)) ||
     (payForm.payType === "daily" && payRatePositive(payForm.dailySalary)) ||
     (payForm.payType === "salary" && payRatePositive(payForm.weeklySalary));
@@ -2437,9 +2445,15 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                       <SelectItem value="hourly">Hourly</SelectItem>
                       <SelectItem value="daily">Daily</SelectItem>
                       <SelectItem value="salary">Salary</SelectItem>
+                      <SelectItem value="contractual">Contractual</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
+                {payForm.payType === "contractual" && (
+                  <p className="text-sm text-muted-foreground" data-testid="text-pay-contractual-note">
+                    Contractual workers have no pay rate. Their hours are still tracked and counted.
+                  </p>
+                )}
                 {payForm.payType === "hourly" && (
                   <div className="space-y-2">
                     <Label>Hourly Rate ($)</Label>

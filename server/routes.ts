@@ -2641,6 +2641,11 @@ export async function registerRoutes(
     if (data.payType === "salary" && !(data.weeklySalary && data.weeklySalary > 0)) {
       return res.status(400).json({ message: "Salary pay type requires a positive Weekly Salary." });
     }
+    if (data.payType === "contractual") {
+      data.hourlyRate = null;
+      data.dailySalary = null;
+      data.weeklySalary = null;
+    }
     if (data.payType && req.body?.overtimeEligible === undefined) {
       data.overtimeEligible = data.payType === "hourly";
     }
@@ -2673,6 +2678,11 @@ export async function registerRoutes(
       }
       if (nextPayType === "salary" && !(nextWeekly && nextWeekly > 0)) {
         return res.status(400).json({ message: "Salary pay type requires a positive Weekly Salary." });
+      }
+      if (nextPayType === "contractual") {
+        data.hourlyRate = null;
+        data.dailySalary = null;
+        data.weeklySalary = null;
       }
     }
     if (payTypeChanged && req.body?.overtimeEligible === undefined) {
@@ -7580,6 +7590,8 @@ export async function registerRoutes(
           payType = "PTO Cash-Out";
         } else if (r.recordType === "pto") {
           payType = "Regular";
+        } else if (profile?.payType === "contractual") {
+          payType = "Contractual";
         } else if (scheduledDays.length > 0 && !scheduledDays.includes(jsDayOfWeek)) {
           payType = "Holiday";
         }
