@@ -366,6 +366,76 @@ async function buildDeptManagerNameMap(
   return deptManagerMap;
 }
 
+/**
+ * Resolve an employee's displayed department(s), location(s), and manager(s)
+ * from their REAL membership (the `employee_departments` / `employee_locations`
+ * join tables surfaced via `userDepartmentIds` / `userLocationIds`), NOT the
+ * legacy single `users.department_id` / `users.location_id` columns which can be
+ * empty or stale. Names and manager lists are unioned across all memberships
+ * and de-duplicated, so a multi-department employee shows every relevant
+ * department/manager instead of one stale value.
+ *
+ * `departmentName` / `locationName` are null when the employee genuinely has no
+ * membership; callers apply their own "Unassigned" / "N/A" fallback. A
+ * representative `departmentId` / `locationId` (first membership) is kept for
+ * frontends that still read the single id.
+ */
+function resolveMembershipDisplay(
+  u: { departmentIds?: string[]; departmentId?: string | null; locationIds?: string[]; locationId?: string | null } | undefined,
+  deptMap: Map<string, { name?: string | null }>,
+  locMap: Map<string, { name?: string | null }> | null,
+  deptManagerMap: Map<string, string[]> | null,
+): {
+  departmentId: string | null;
+  locationId: string | null;
+  departmentName: string | null;
+  locationName: string | null;
+  managerNames: string[];
+} {
+  const deptIds = u ? userDepartmentIds(u) : [];
+  const locIds = u ? userLocationIds(u) : [];
+
+  const deptNames: string[] = [];
+  const seenDeptName = new Set<string>();
+  const managerNames: string[] = [];
+  const seenManager = new Set<string>();
+  for (const id of deptIds) {
+    const name = deptMap.get(id)?.name;
+    if (name && !seenDeptName.has(name)) {
+      seenDeptName.add(name);
+      deptNames.push(name);
+    }
+    if (deptManagerMap) {
+      for (const m of (deptManagerMap.get(id) || [])) {
+        if (!seenManager.has(m)) {
+          seenManager.add(m);
+          managerNames.push(m);
+        }
+      }
+    }
+  }
+
+  const locNames: string[] = [];
+  const seenLocName = new Set<string>();
+  if (locMap) {
+    for (const id of locIds) {
+      const name = locMap.get(id)?.name;
+      if (name && !seenLocName.has(name)) {
+        seenLocName.add(name);
+        locNames.push(name);
+      }
+    }
+  }
+
+  return {
+    departmentId: deptIds[0] || null,
+    locationId: locIds[0] || null,
+    departmentName: deptNames.length ? deptNames.join(", ") : null,
+    locationName: locNames.length ? locNames.join(", ") : null,
+    managerNames,
+  };
+}
+
 async function getScheduleWarning(employeeId: string, punchType: "clock_in" | "clock_out"): Promise<string | null> {
   const now = new Date();
   const dayOfWeek = now.getDay();
@@ -2079,17 +2149,9 @@ export async function registerRoutes(
     try {
       const allUsers = await storage.getAllUsers();
       const departments = await storage.getAllDepartments();
-      const deptMap = new Map(departments.map(d => [d.id, d.name]));
+      const deptMap = new Map(departments.map(d => [d.id, d]));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
-      const deptManagerMap = new Map<string, string[]>();
-      await Promise.all(departments.map(async (dept) => {
-        const managers = await storage.getDepartmentManagers(dept.id);
-        const names = managers.map(m => {
-          const mu = userMap.get(m.userId);
-          return mu ? `${mu.firstName || ""} ${mu.lastName || ""}`.trim() : "";
-        }).filter(n => n);
-        deptManagerMap.set(dept.id, names);
-      }));
+      const deptManagerMap = await buildDeptManagerNameMap(userMap);
       const currentYear = new Date().getFullYear();
       const balances = await Promise.all(allUsers.filter(u => u.id !== "admin-dev-001").map(async (user) => {
         const ptoSettings = await storage.getEmployeePtoSettings(user.id);
@@ -2116,16 +2178,16 @@ export async function registerRoutes(
         const pendingVacation = sumHours("vacation", ["pending"]);
         const pendingSick = sumHours("sick", ["pending"]);
         const pendingPersonal = sumHours("personal", ["pending"]);
-        const managerNames = user.departmentId ? (deptManagerMap.get(user.departmentId) || []) : [];
+        const display = resolveMembershipDisplay(user, deptMap, null, deptManagerMap);
         return {
           userId: user.id,
           firstName: user.firstName,
           lastName: user.lastName,
           role: user.role,
-          departmentId: user.departmentId,
-          departmentName: user.departmentId ? deptMap.get(user.departmentId) || "Unassigned" : "Unassigned",
+          departmentId: display.departmentId,
+          departmentName: display.departmentName || "Unassigned",
           profileImageUrl: user.profileImageUrl,
-          managerNames,
+          managerNames: display.managerNames,
           vacation: { total: totalVacation, used: usedVacation, pending: pendingVacation },
           sick: { total: totalSick, used: usedSick, pending: pendingSick },
           personal: { total: totalPersonal, used: usedPersonal, pending: pendingPersonal },
@@ -2779,15 +2841,14 @@ export async function registerRoutes(
         currentBalance,
       };
       if (!isRequesterAdmin) return base;
-      const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;
-      const loc = u?.locationId ? locMap.get(u.locationId) : undefined;
+      const display = resolveMembershipDisplay(u, deptMap, locMap, deptManagerMap);
       return {
         ...base,
-        departmentId: u?.departmentId || null,
-        locationId: u?.locationId || null,
-        departmentName: dept?.name || "Unassigned",
-        locationName: loc?.name || "Unassigned",
-        managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
+        departmentId: display.departmentId,
+        locationId: display.locationId,
+        departmentName: display.departmentName || "Unassigned",
+        locationName: display.locationName || "Unassigned",
+        managerNames: display.managerNames,
       };
     });
     res.json(enriched);
@@ -4230,13 +4291,12 @@ export async function registerRoutes(
         const enriched = rows.map(e => {
           const summary = counts.get(e.employeeId) || emptyCorrectionCountSummary();
           const u = userMap.get(e.employeeId);
-          const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;
-          const loc = u?.locationId ? locMap.get(u.locationId) : undefined;
+          const display = resolveMembershipDisplay(u, deptMap, locMap, null);
           return {
             ...e,
             employeeName: u ? `${u.firstName || ""} ${u.lastName || ""}`.trim() : "Unknown",
-            departmentName: dept?.name || null,
-            locationName: loc?.name || null,
+            departmentName: display.departmentName,
+            locationName: display.locationName,
             correctionCounts: summary,
             correctionCount90d: summary,
           };
@@ -4344,15 +4404,14 @@ export async function registerRoutes(
           correctionCount90d: summary,
         };
         if (!isRequesterAdmin) return base;
-        const dept = u?.departmentId ? deptMap.get(u.departmentId) : undefined;
-        const loc = u?.locationId ? locMap.get(u.locationId) : undefined;
+        const display = resolveMembershipDisplay(u, deptMap, locMap, deptManagerMap);
         return {
           ...base,
-          departmentId: u?.departmentId || null,
-          locationId: u?.locationId || null,
-          departmentName: dept?.name || "Unassigned",
-          locationName: loc?.name || "Unassigned",
-          managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
+          departmentId: display.departmentId,
+          locationId: display.locationId,
+          departmentName: display.departmentName || "Unassigned",
+          locationName: display.locationName || "Unassigned",
+          managerNames: display.managerNames,
         };
       });
       res.json(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched)));
@@ -4421,15 +4480,14 @@ export async function registerRoutes(
           reviewerName: reviewer ? `${reviewer.firstName || ""} ${reviewer.lastName || ""}`.trim() : "System",
         };
         if (!isRequesterAdmin) return base;
-        const dept = emp?.departmentId ? deptMap.get(emp.departmentId) : undefined;
-        const loc = emp?.locationId ? locMap.get(emp.locationId) : undefined;
+        const display = resolveMembershipDisplay(emp, deptMap, locMap, deptManagerMap);
         return {
           ...base,
-          departmentId: emp?.departmentId || null,
-          locationId: emp?.locationId || null,
-          departmentName: dept?.name || "Unassigned",
-          locationName: loc?.name || "Unassigned",
-          managerNames: dept ? (deptManagerMap.get(dept.id) || []) : [],
+          departmentId: display.departmentId,
+          locationId: display.locationId,
+          departmentName: display.departmentName || "Unassigned",
+          locationName: display.locationName || "Unassigned",
+          managerNames: display.managerNames,
         };
       });
       res.json(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched)));
@@ -5690,8 +5748,8 @@ export async function registerRoutes(
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const allDepartments = await storage.getAllDepartments();
     const allLocations = await storage.getAllLocations();
-    const deptMap = new Map(allDepartments.map(d => [d.id, d.name]));
-    const locMap = new Map(allLocations.map(l => [l.id, l.name]));
+    const deptMap = new Map(allDepartments.map(d => [d.id, d]));
+    const locMap = new Map(allLocations.map(l => [l.id, l]));
     const userMap = new Map(allUsers.map(u => [u.id, u]));
 
     let scopedUserIds: string[] | undefined;
@@ -5732,14 +5790,15 @@ export async function registerRoutes(
 
     const enriched = requests.map(r => {
       const emp = userMap.get(r.userId);
+      const display = resolveMembershipDisplay(emp, deptMap, locMap, user.role === "admin" ? deptManagerMap : null);
       return {
         ...r,
         employeeName: emp ? `${emp.firstName || ""} ${emp.lastName || ""}`.trim() : "Unknown",
-        departmentId: emp?.departmentId ?? null,
-        locationId: emp?.locationId ?? null,
-        departmentName: emp?.departmentId ? (deptMap.get(emp.departmentId) || "N/A") : "N/A",
-        locationName: emp?.locationId ? (locMap.get(emp.locationId) || "N/A") : "N/A",
-        managerNames: user.role === "admin" && emp?.departmentId ? (deptManagerMap.get(emp.departmentId) || []) : [],
+        departmentId: display.departmentId,
+        locationId: display.locationId,
+        departmentName: display.departmentName || "N/A",
+        locationName: display.locationName || "N/A",
+        managerNames: display.managerNames,
         reviewerName: (() => {
           if (!r.reviewedBy) return "N/A";
           const u = userMap.get(r.reviewedBy);
