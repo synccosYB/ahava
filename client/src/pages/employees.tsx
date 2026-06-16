@@ -91,11 +91,13 @@ export default function EmployeesPage() {
   const [selected, setSelected] = useState<Map<string, User>>(new Map());
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [page, setPage] = useState(0);
   const pageSize = 25;
   const { user: currentUser } = useAuth();
   const { has: hasPermission } = usePermissions();
   const canDelete = hasPermission("users.delete");
+  const canImport = currentUser?.role === "admin";
 
   // Reset to the first page whenever the search or any filter changes so the
   // user isn't stranded on an out-of-range page.
@@ -233,6 +235,16 @@ export default function EmployeesPage() {
             <SelectItem value="expired">Expired</SelectItem>
           </SelectContent>
         </Select>
+        {canImport && (
+          <Button
+            variant="outline"
+            onClick={() => setImportDialogOpen(true)}
+            data-testid="button-import-employees"
+          >
+            <Upload className="h-4 w-4 mr-2" />
+            Import Employees
+          </Button>
+        )}
         <AddEmployeeDialog
           open={addDialogOpen}
           onOpenChange={setAddDialogOpen}
@@ -241,6 +253,13 @@ export default function EmployeesPage() {
           divisions={divisions || []}
         />
       </div>
+
+      {canImport && (
+        <ImportEmployeesDialog
+          open={importDialogOpen}
+          onOpenChange={setImportDialogOpen}
+        />
+      )}
 
       {selected.size > 0 && (
         <div
@@ -753,6 +772,164 @@ function formatValidationError(
     return { message: p.message };
   }
   return null;
+}
+
+interface ImportSummary {
+  company: string;
+  rowsParsed: number;
+  locationsTotal: number;
+  created: number;
+  updated: number;
+  skipped: { row: number; reason: string }[];
+  profilesWithNumber: number;
+}
+
+function ImportEmployeesDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [summary, setSummary] = useState<ImportSummary | null>(null);
+
+  const importMutation = useMutation({
+    mutationFn: async (selectedFile: File): Promise<ImportSummary> => {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      const res = await fetch("/api/users/import", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        let message = "Failed to import employees";
+        try {
+          const body = await res.json();
+          if (body?.message) message = body.message;
+        } catch {
+          /* keep default */
+        }
+        throw new Error(message);
+      }
+      return res.json();
+    },
+    onSuccess: (result) => {
+      setSummary(result);
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/locations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      toast({
+        title: "Import complete",
+        description: `${result.created} added, ${result.updated} updated.`,
+      });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Import failed",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleClose = (next: boolean) => {
+    if (!next) {
+      setFile(null);
+      setSummary(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+    onOpenChange(next);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent data-testid="dialog-import-employees">
+        <DialogHeader>
+          <DialogTitle>Import Employees</DialogTitle>
+          <DialogDescription>
+            Upload an Excel (.xlsx) spreadsheet with columns Employee, ID, Dept,
+            and Location. Existing staff (matched by ID) are updated, new ones
+            are added. Names, ID numbers, company, and location are imported.
+          </DialogDescription>
+        </DialogHeader>
+
+        {summary ? (
+          <div className="space-y-2 text-sm" data-testid="text-import-summary">
+            <p>
+              <span className="font-medium">{summary.created}</span> employees
+              added, <span className="font-medium">{summary.updated}</span>{" "}
+              updated.
+            </p>
+            <p className="text-muted-foreground">
+              Company: {summary.company} · Locations: {summary.locationsTotal} ·
+              Rows read: {summary.rowsParsed}
+            </p>
+            {summary.skipped.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+                <p className="font-medium text-amber-800 dark:text-amber-300">
+                  {summary.skipped.length} row
+                  {summary.skipped.length === 1 ? "" : "s"} skipped
+                </p>
+                <ul className="mt-1 max-h-40 overflow-auto text-xs text-amber-700 dark:text-amber-400">
+                  {summary.skipped.slice(0, 25).map((s, i) => (
+                    <li key={i}>
+                      Row {s.row}: {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <Input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              data-testid="input-import-file"
+            />
+            {file && (
+              <p className="text-sm text-muted-foreground" data-testid="text-selected-file">
+                Selected: {file.name}
+              </p>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          {summary ? (
+            <Button onClick={() => handleClose(false)} data-testid="button-import-done">
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => handleClose(false)}
+                disabled={importMutation.isPending}
+                data-testid="button-import-cancel"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => file && importMutation.mutate(file)}
+                disabled={!file || importMutation.isPending}
+                data-testid="button-import-submit"
+              >
+                {importMutation.isPending ? "Importing…" : "Import"}
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function AddEmployeeDialog({

@@ -15,6 +15,7 @@ import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
+import { importEmployeesFromBuffer } from "./services/employeeImport";
 import {
   computeAttendanceReconciliation,
   applyAttendanceReconciliation,
@@ -155,6 +156,20 @@ const documentUpload = multer({
       cb(null, true);
     } else {
       cb(new Error("Only PDF and image files are allowed"));
+    }
+  },
+});
+
+const employeeImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = [".xlsx", ".xls"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only Excel (.xlsx) spreadsheets are allowed"));
     }
   },
 });
@@ -1045,6 +1060,56 @@ export async function registerRoutes(
     if (deleted.length > 0) invalidateUserCache();
     res.json({ deleted, skipped });
   });
+
+  // Bulk-import employees from an uploaded .xlsx spreadsheet. Admin-only.
+  // Idempotent: existing employees (matched on stored employee number) are
+  // updated, new ones are created. Runs against whichever database the app is
+  // connected to (so on the published site it loads production).
+  app.post(
+    "/api/users/import",
+    requireAuth,
+    requireRole("admin"),
+    requirePermission("users.edit"),
+    (req: any, res, next) => {
+      employeeImportUpload.single("file")(req, res, (err: any) => {
+        if (err) {
+          return res
+            .status(400)
+            .json({ message: err.message || "Invalid upload" });
+        }
+        next();
+      });
+    },
+    async (req: any, res) => {
+      if (!req.file?.buffer) {
+        return res.status(400).json({ message: "No spreadsheet file uploaded" });
+      }
+      const actor = (req as any).authUser as User;
+      const auditCtx = getAuditContext(req);
+      try {
+        const summary = await importEmployeesFromBuffer(req.file.buffer);
+        invalidateUserCache();
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "company",
+          targetId: summary.companyId,
+          action: "user.bulk_import",
+          oldValue: null,
+          newValue: {
+            created: summary.created,
+            updated: summary.updated,
+            skipped: summary.skipped.length,
+            company: summary.company,
+          },
+          context: { fileName: req.file.originalname },
+          ...auditCtx,
+        });
+        res.json(summary);
+      } catch (err) {
+        handleRouteError(res, err, "Failed to import employees");
+      }
+    },
+  );
 
   app.patch("/api/users/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
