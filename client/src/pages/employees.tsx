@@ -93,7 +93,7 @@ export default function EmployeesPage() {
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [page, setPage] = useState(0);
-  const pageSize = 25;
+  const [pageSize, setPageSize] = useState(25);
   const { user: currentUser } = useAuth();
   const { has: hasPermission } = usePermissions();
   const canDelete = hasPermission("users.delete");
@@ -115,7 +115,7 @@ export default function EmployeesPage() {
   usersParams.set("offset", String(page * pageSize));
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
-    queryKey: ["/api/users", debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter, page],
+    queryKey: ["/api/users", debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter, page, pageSize],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employees");
@@ -443,9 +443,29 @@ export default function EmployeesPage() {
 
       {!isLoading && !isError && total > 0 && (
         <div className="flex items-center justify-between" data-testid="pagination-employees">
-          <p className="text-sm text-muted-foreground" data-testid="text-employees-range">
-            Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, total)} of {total}
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-muted-foreground" data-testid="text-employees-range">
+              Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, total)} of {total}
+            </p>
+            <Select
+              value={String(pageSize)}
+              onValueChange={(v) => {
+                setPageSize(Number(v));
+                setPage(0);
+              }}
+            >
+              <SelectTrigger className="h-9 w-[140px]" data-testid="select-page-size">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="25">25 per page</SelectItem>
+                <SelectItem value="50">50 per page</SelectItem>
+                <SelectItem value="100">100 per page</SelectItem>
+                <SelectItem value="200">200 per page</SelectItem>
+                <SelectItem value="1000">Show all</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex items-center gap-2">
             <Button
               size="sm"

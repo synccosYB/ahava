@@ -450,7 +450,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/users", requireAuth, requirePermission("users.view"), requestCache({ scope: "user" }), async (req, res) => {
-    const pagination = parsePagination(req.query, { defaultLimit: 25, maxLimit: 100 });
+    const pagination = parsePagination(req.query, { defaultLimit: 25, maxLimit: 1000 });
     const excludeUserIds = isSuperAdmin(req) ? [] : [SUPER_ADMIN_USER_ID];
 
     // Attach role-rule provenance: which active rule (if any) matches this
