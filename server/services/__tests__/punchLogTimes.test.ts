@@ -19,6 +19,47 @@ test("roundTime with rule 'none' returns the same instant", () => {
   assert.equal(rounded.getTime(), at1207.getTime());
 });
 
+test("roundTime honors a 1-minute interval (no effective rounding) for the nearest family", () => {
+  // Regression for task #440: an admin sets the interval to 1 minute. The
+  // nearest-family rules must respect that instead of snapping to 15.
+  const at1405 = new Date(2026, 3, 21, 14, 5, 0, 0);
+  // Legacy default method value still present on most policies.
+  const roundedLegacy = roundTime(at1405, "nearest_15", 1);
+  assert.equal(roundedLegacy.getHours(), 14);
+  assert.equal(roundedLegacy.getMinutes(), 5);
+  // Canonical "nearest" method behaves identically.
+  const roundedCanonical = roundTime(at1405, "nearest", 1);
+  assert.equal(roundedCanonical.getTime(), at1405.getTime());
+});
+
+test("enforceClockOut with interval=1 records exact minutes (2:05 in / 2:24 out = 0h 19m)", () => {
+  // The reported bug: a 19-minute shift was recorded as 0h 30m because the
+  // interval was ignored and times snapped to the 15-minute grid.
+  const clockIn = new Date(2026, 3, 21, 14, 5, 0, 0);
+  const clockOut = new Date(2026, 3, 21, 14, 24, 0, 0);
+
+  const result = enforceClockOut(
+    clockIn,
+    clockOut,
+    0,
+    { roundingRule: "nearest", roundingIntervalMinutes: 1, otThresholdDaily: 8 },
+    DEFAULT_PAYROLL_RULES,
+    fakeUser,
+  );
+
+  assert.equal(result.roundedTime.getHours(), 14);
+  assert.equal(result.roundedTime.getMinutes(), 24);
+  // 19 minutes = 0.32h after rounding to two decimals.
+  assert.equal(result.hoursWorked, 0.32);
+});
+
+test("default nearest_15 rounding is preserved when no interval override is set", () => {
+  // Existing policies left at the 15-minute default must keep snapping to 15.
+  const clockOut = roundTime(new Date(2026, 3, 21, 16, 23, 0, 0), "nearest_15", 15);
+  assert.equal(clockOut.getHours(), 16);
+  assert.equal(clockOut.getMinutes(), 30);
+});
+
 test("enforceClockOut computes hoursWorked from rounded times, not actual punch moment", () => {
   // Employee actually clocked in at 12:07 PM. Rounded clock-in (15-min nearest) = 12:00 PM.
   // They clock out at 4:23 PM. Rounded clock-out = 4:30 PM. Expected 4.5h, not ~4.27h.

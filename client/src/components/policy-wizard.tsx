@@ -121,6 +121,20 @@ const PAYDAY_OPTIONS = [
 
 const PAYDAY_UNSET_VALUE = "__unset__";
 
+// Normalize a saved policy's rules for the wizard form. The legacy rounding
+// method values (`nearest_15` / `nearest_5` / `nearest_6`) predate the
+// configurable interval and the Rounding Method selector; collapse them to the
+// canonical `nearest` option so an existing policy loads with a valid, visible
+// selection instead of an empty dropdown.
+function normalizeRulesForForm(rules: Record<string, any>): Record<string, any> {
+  if (!rules || typeof rules !== "object") return rules;
+  const rr = rules.roundingRule;
+  if (rr === "nearest_15" || rr === "nearest_5" || rr === "nearest_6") {
+    return { ...rules, roundingRule: "nearest" };
+  }
+  return rules;
+}
+
 function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
   switch (policyTypeKey) {
     case "attendance":
@@ -130,7 +144,8 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
         { key: "requirePhotoVerification", label: "Require Photo Verification", type: "boolean", description: "Require employees to take a photo when clocking in/out", defaultValue: false },
         { key: "allowEarlyClockIn", label: "Allow Early Clock-In", type: "boolean", description: "Allow employees to clock in before their scheduled shift", defaultValue: true },
         { key: "earlyClockInMinutes", label: "Early Clock-In Window", type: "number", description: "How many minutes before shift start employees can clock in", defaultValue: 15, min: 0, max: 120 },
-        { key: "roundingIntervalMinutes", label: "Rounding Interval", type: "number", description: "Round clock times to the nearest interval (in minutes)", defaultValue: 15, min: 1, max: 30 },
+        { key: "roundingRule", label: "Rounding Method", type: "select", description: "How clock times are rounded. The Rounding Interval below sets the step. Choose None for exact times, or pick an interval of 1 minute for effectively no rounding.", defaultValue: "nearest", options: [{ value: "none", label: "None (exact time)" }, { value: "nearest", label: "Nearest" }, { value: "round_up", label: "Round up" }, { value: "round_down", label: "Round down" }] },
+        { key: "roundingIntervalMinutes", label: "Rounding Interval", type: "number", description: "Round clock times to this interval (in minutes) using the method above. Set to 1 for no effective rounding. Ignored when the method is None.", defaultValue: 15, min: 1, max: 60, showWhen: (r) => r?.roundingRule !== "none" },
         { key: "requireBreakAfterHours", label: "Break Required After", type: "number", description: "Require a break after this many hours worked", defaultValue: 6, min: 1, max: 12 },
         { key: "breakDurationMinutes", label: "Break Duration", type: "number", description: "Minimum break duration in minutes", defaultValue: 30, min: 5, max: 60 },
         {
@@ -435,7 +450,7 @@ export function PolicyWizard({
       setDescription(editingPolicy.description || "");
       const typeObj = policyTypes?.find((pt) => pt.id === editingPolicy.policyTypeId);
       setSelectedTypeKey(typeObj?.key || policyTypeKey || "");
-      setRulesForm(existingRules || {});
+      setRulesForm(normalizeRulesForForm(existingRules || {}));
       if (existingAssignments && existingAssignments.length > 0) {
         setAssignments(mapAssignmentsToEntries(
           existingAssignments,

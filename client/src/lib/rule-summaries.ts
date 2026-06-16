@@ -59,9 +59,20 @@ export function summarizeAttendancePolicy(rules: Record<string, any>): string[] 
       out.push(`Allows clock-in up to ${win} minute${win === 1 ? "" : "s"} early.`);
     }
   }
+  const roundingRule = typeof rules.roundingRule === "string" ? rules.roundingRule : "nearest";
   const round = Number(rules.roundingIntervalMinutes);
-  if (Number.isFinite(round) && round > 0) {
-    out.push(`Times rounded to the nearest ${round} minutes.`);
+  if (roundingRule === "none") {
+    out.push("Clock times are not rounded (exact time).");
+  } else if (Number.isFinite(round) && round > 0) {
+    if (round === 1) {
+      out.push("Clock times kept to the exact minute (no effective rounding).");
+    } else if (roundingRule === "round_up") {
+      out.push(`Times rounded up to the next ${round} minutes.`);
+    } else if (roundingRule === "round_down") {
+      out.push(`Times rounded down to the previous ${round} minutes.`);
+    } else {
+      out.push(`Times rounded to the nearest ${round} minutes.`);
+    }
   }
   const breakAfter = Number(rules.requireBreakAfterHours);
   const breakDur = Number(rules.breakDurationMinutes);

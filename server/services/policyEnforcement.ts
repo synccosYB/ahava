@@ -140,21 +140,19 @@ export function roundTime(date: Date, rule: string, intervalMinutes: number): Da
   if (intervalMs <= 0) return date;
 
   switch (rule) {
-    case "nearest": {
+    // The "nearest" family all round to the configured interval. The legacy
+    // `nearest_15` / `nearest_5` / `nearest_6` values predate the configurable
+    // interval and used to hard-code their step; they now honor
+    // `intervalMinutes` like `nearest` does. Existing policies are unchanged
+    // because the default is still `nearest_15` with a 15-minute interval, so
+    // they keep rounding to 15 minutes — but an admin who sets the interval to
+    // 1 (or any value) now actually gets that interval.
+    case "nearest":
+    case "nearest_15":
+    case "nearest_5":
+    case "nearest_6": {
       const rounded = Math.round(ms / intervalMs) * intervalMs;
       return new Date(rounded);
-    }
-    case "nearest_15": {
-      const iv = 15 * 60 * 1000;
-      return new Date(Math.round(ms / iv) * iv);
-    }
-    case "nearest_5": {
-      const iv = 5 * 60 * 1000;
-      return new Date(Math.round(ms / iv) * iv);
-    }
-    case "nearest_6": {
-      const iv = 6 * 60 * 1000;
-      return new Date(Math.round(ms / iv) * iv);
     }
     case "round_up": {
       const rounded = Math.ceil(ms / intervalMs) * intervalMs;
