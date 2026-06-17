@@ -33,4 +33,23 @@ hire date still live in `employee_pto_settings` (edited from the PTO page's Empl
 
 **How to apply:** changing PTO accrual fields => edit DEFAULT_PTO_RULES + buildPtoPolicyFromRules
 + migration mapping + wizard `getRuleFieldsForType("pto")` in lockstep. Parity is guarded by
-`server/__tests__/ptoPolicyConsolidation.test.ts` (run via tsx).
+`server/__tests__/ptoPolicyConsolidation.test.ts` and `server/__tests__/ptoEngineParity.test.ts`
+(both run via tsx; the latter pins all 4 read surfaces + accrual modes + a static guard that no
+balance-math method reads the legacy table).
+
+**Invariant 3 — `pto_policies` is DORMANT for numbers but kept alive by stale FKs.**
+No balance/accrual number is read from `pto_policies` (all surfaces go through `computeTimeOffBalanceDetailed`
+→ engine). The table survives ONLY as a defensive fallback (`getDefaultPtoPolicy`) + the legacy
+`/api/pto-policies` CRUD endpoints. It is NOT dropped because two FKs point at it:
+`employee_pto_settings.pto_policy_id` and `pto_anniversary_adjustments.pto_policy_id`.
+
+**KNOWN BUG (latent, prod):** the anniversary job (`server/services/ptoAnniversary.ts`) writes the
+engine's unified `policies.id` into `pto_anniversary_adjustments.pto_policy_id`, but that column FKs
+to `pto_policies(id)` → every insert throws `..._pto_policy_id_fkey` violation, which the job's
+per-employee try/catch swallows. So anniversary tier adjustments NEVER persist (no row, no
+`time_off_balances` bump). NOTE separately: anniversary writes to `time_off_balances`, which
+`computeTimeOffBalanceDetailed` does NOT read for vacation totals (it derives totals from the policy)
+— so even if persistence were fixed, anniversary increments wouldn't surface in the main balance
+surfaces without further work. Fixing = drop both FKs (hand-written migration, drift-safe since
+schemaDrift only checks table/col presence) + remove `.references(() => ptoPolicies.id)` in
+`shared/schema.ts`; this CHANGES PTO behavior so it was deferred out of the parity task (task #454).

@@ -593,6 +593,19 @@ export const insertKioskDeviceSchema = createInsertSchema(kioskDevices).omit({
 export type InsertKioskDevice = z.infer<typeof insertKioskDeviceSchema>;
 export type KioskDevice = typeof kioskDevices.$inferSelect;
 
+// LEGACY / DORMANT (task #454): after the PTO consolidation, NO balance/accrual
+// number is read from this table. Every PTO read surface resolves the effective
+// `pto` policy through the unified engine (policies + policy_rules) via
+// storage.getEmployeePtoPolicy → getEffectivePolicy. This table survives only as
+// (a) a defensive last-resort fallback in getEmployeePtoPolicy/getDefaultPtoPolicy
+// when the engine resolves nothing, and (b) the legacy GET /api/pto-policies CRUD
+// endpoints. It is kept (not dropped) because two FKs still point at it:
+// employee_pto_settings.pto_policy_id and pto_anniversary_adjustments.pto_policy_id.
+// NOTE: those FKs are stale — the engine now writes a unified `policies.id` into
+// pto_anniversary_adjustments.pto_policy_id, which violates the FK and silently
+// blocks anniversary persistence. Decoupling those FKs + retiring this table is a
+// follow-up (it would change PTO behavior, out of scope for the parity task).
+// Parity is pinned by server/__tests__/ptoEngineParity.test.ts.
 export const ptoPolicies = pgTable("pto_policies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 200 }).notNull(),
@@ -652,6 +665,9 @@ export type PtoPolicy = typeof ptoPolicies.$inferSelect;
 export const employeePtoSettings = pgTable("employee_pto_settings", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique().references(() => users.id),
+  // LEGACY (task #454): dormant link to pto_policies. Policy assignment now lives
+  // in the unified engine (policy_assignments); this column is no longer the
+  // source of an employee's effective PTO policy. Kept for the legacy FK only.
   ptoPolicyId: varchar("pto_policy_id").references(() => ptoPolicies.id),
   vacationHoursOverride: real("vacation_hours_override"),
   sickHoursOverride: real("sick_hours_override"),
@@ -1519,6 +1535,11 @@ export const ptoAnniversaryAdjustments = pgTable(
     newTierLabel: varchar("new_tier_label", { length: 100 }),
     yearsOfService: integer("years_of_service").notNull(),
     hoursAdded: real("hours_added").notNull(),
+    // STALE FK (task #454): FKs to the dormant pto_policies table, but the
+    // anniversary job writes the engine's unified `policies.id` here — which
+    // violates this FK and silently blocks anniversary persistence in prod.
+    // Decoupling this FK (so the engine id can be stored) is a follow-up; doing
+    // it now would change PTO behavior, which the parity task forbids.
     ptoPolicyId: varchar("pto_policy_id").references(() => ptoPolicies.id),
     notes: text("notes"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
