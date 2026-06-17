@@ -16,6 +16,7 @@ import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFA
 import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeWeeklyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
+import { getLedgerForEmployee, getLedgerForEmployees, summarizeLedger, recomputeLedger } from "./attendanceLedger";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
 import {
   computeAttendanceReconciliation,
@@ -3319,6 +3320,8 @@ export async function registerRoutes(
       }
 
       await checkPostExportModification(record.id, userId);
+      // Keep the canonical attendance ledger warm for this employee-day.
+      void recomputeLedger(userId, [record.workDate]);
       const scheduleWarning = await getScheduleWarning(userId, "clock_out");
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
@@ -3686,6 +3689,12 @@ export async function registerRoutes(
           ...getAuditContext(req),
         });
 
+        // Keep the canonical attendance ledger warm for the affected day(s).
+        await recomputeLedger(
+          existing.employeeId,
+          [existing.workDate, updated?.workDate].filter((d): d is string => !!d),
+        );
+
         res.json(punchLogToApiResponse(updated));
       } catch (error) {
         console.error("Error editing punch:", error);
@@ -3752,6 +3761,9 @@ export async function registerRoutes(
           context: { reason, direct: true, employeeId: deleted.employeeId },
           ...getAuditContext(req),
         });
+
+        // Keep the canonical attendance ledger warm for the deleted punch's day.
+        await recomputeLedger(deleted.employeeId, [deleted.workDate]);
 
         res.json({ deleted: true });
       } catch (error) {
@@ -4976,6 +4988,13 @@ export async function registerRoutes(
         await checkPostExportModification(updated.punchLog.id, reviewer.id);
       }
 
+      // A resolved exception may have created/updated/deleted a punch — refresh
+      // the canonical ledger for the affected employee-day(s).
+      const affectedDates = Array.from(
+        new Set([exception.exceptionDate, updated.punchLog?.workDate].filter(Boolean) as string[]),
+      );
+      void recomputeLedger(exception.employeeId, affectedDates);
+
       return res.json(updated.result);
     } catch (error) {
       console.error("Error resolving attendance exception:", error);
@@ -5285,6 +5304,16 @@ export async function registerRoutes(
         console.error("Failed to write audit log for time_off.edited:", auditError);
       }
 
+      // Keep the ledger warm for both the old and new covered ranges. Editing is
+      // restricted to pending requests today (no approved coverage changes), but
+      // recomputing keeps the ledger correct if that ever changes.
+      void recomputeLedger(userId, [
+        existing.startDate,
+        existing.endDate,
+        parsed.startDate,
+        parsed.endDate,
+      ]);
+
       res.json(updated);
     } catch (error: any) {
       console.error("Error editing time off request:", error);
@@ -5490,29 +5519,23 @@ export async function registerRoutes(
       if (dept) deptMap.set(deptId, dept.name);
     }));
 
+    // Today + week hours come from the canonical attendance ledger (the unified
+    // pay engine's break-deducted, rounded per-day split) — NOT raw
+    // clockOut - clockIn math, which silently disagreed with the timesheet,
+    // reports and payroll. One ledger read covers the week; today is the row for
+    // the current date.
+    const now = new Date();
+    const ledgerByMember = await getLedgerForEmployees(teamMembers, weekStartStr, today, now);
+
     const teamStatus = teamMembers.map(member => {
       const todayRecord = todayAttendance.find(a => a.employeeId === member.id && a.clockIn && !a.clockOut);
-      const todayRecords = todayAttendance.filter(a => a.employeeId === member.id);
       const hasPtoToday = allTimeOff.some(r =>
         r.userId === member.id && (r.status === "approved" || r.status === "partially_approved") && r.startDate <= today && (r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate >= today : r.endDate >= today)
       );
 
-      let todayHours = 0;
-      todayRecords.forEach(r => {
-        if (r.clockIn) {
-          const end = r.clockOut ? new Date(r.clockOut) : new Date();
-          todayHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
-        }
-      });
-
-      let weekHours = 0;
-      const memberWeekRecords = weekAttendance.filter(a => a.employeeId === member.id);
-      memberWeekRecords.forEach(r => {
-        if (r.clockIn) {
-          const end = r.clockOut ? new Date(r.clockOut) : new Date();
-          weekHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
-        }
-      });
+      const memberLedger = ledgerByMember.get(member.id) || [];
+      const todayHours = memberLedger.find(d => d.workDate === today)?.totalHours ?? 0;
+      const weekHours = summarizeLedger(memberLedger).totalHours;
 
       let status = "Clocked Out";
       if (todayRecord) {
@@ -5619,6 +5642,11 @@ export async function registerRoutes(
         return result;
       });
 
+      // Approved PTO changes the ledger's per-day PTO display for the covered
+      // range — refresh those days for the employee.
+      const ptoEnd = finalApprovedEndDate ?? request.endDate;
+      void recomputeLedger(request.userId, [request.startDate, ptoEnd]);
+
       res.json(updated);
     } catch (error) {
       console.error("Error approving time-off request:", error);
@@ -5669,6 +5697,10 @@ export async function registerRoutes(
 
         return result;
       });
+
+      // Defensive: a pending->denied transition doesn't change approved ledger
+      // coverage today, but recompute keeps every PTO status change consistent.
+      void recomputeLedger(request.userId, [request.startDate, request.endDate]);
 
       res.json(updated);
     } catch (error) {
@@ -5899,7 +5931,17 @@ export async function registerRoutes(
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     const weekStartStr = weekStart.toISOString().split("T")[0];
-    const weekAttendance = await storage.getAttendanceByDateRange(weekStartStr, today);
+
+    // Weekly hours come from the canonical attendance ledger (the unified pay
+    // engine's break-deducted, rounded per-day split) — NOT raw clockOut-clockIn
+    // math. One ledger read covers every employee for the week; per-department
+    // totals are summed from each member's ledger.
+    const now = new Date();
+    const ledgerByUser = await getLedgerForEmployees(allUsers, weekStartStr, today, now);
+    const userWeekHours = new Map<string, number>();
+    for (const u of allUsers) {
+      userWeekHours.set(u.id, summarizeLedger(ledgerByUser.get(u.id) || []).totalHours);
+    }
 
     const breakdown = depts.map(dept => {
       const deptUsers = allUsers.filter(u => userDepartmentIds(u).includes(dept.id));
@@ -5910,14 +5952,9 @@ export async function registerRoutes(
       ).length;
 
       let totalHours = 0;
-      let recordCount = 0;
-      weekAttendance.filter(a => deptIds.has(a.employeeId)).forEach(r => {
-        if (r.clockIn) {
-          const end = r.clockOut ? new Date(r.clockOut) : new Date();
-          totalHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
-          recordCount++;
-        }
-      });
+      for (const u of deptUsers) {
+        totalHours += userWeekHours.get(u.id) ?? 0;
+      }
       const avgHrs = deptUsers.length > 0 ? Math.round((totalHours / deptUsers.length) * 10) / 10 : 0;
 
       return {
@@ -6231,49 +6268,33 @@ export async function registerRoutes(
       return res.json({ category, columns, rows });
     }
 
-    // Hours-based categories (attendance, time) share DB aggregation so their
-    // totals stay identical to the per-employee timesheet. `now` is captured
-    // once so in-progress punches are consistent across employees.
-    const [attendanceAgg, daysOffByUser, dailyByUser] = await Promise.all([
-      storage.getAttendanceAggregatesByDateRange(startDate, endDate, finalUserIds, now),
+    // Hours-based categories (attendance, time) read EVERY worked-hours figure —
+    // total hours, days worked AND overtime — from the canonical attendance
+    // ledger (the single materialization of the unified pay engine's per-day
+    // split). This guarantees the report's numbers are byte-for-byte identical to
+    // the per-employee timesheet, the dashboards and the payroll batch, because
+    // they all read the same ledger. `now` is captured once so in-progress
+    // punches are consistent across employees. Days off (PTO) stay sourced from
+    // the authoritative time_off_requests.
+    //
+    // Scoping note (live vs. frozen): this is a LIVE operational read path, so the
+    // ledger recomputes against the CURRENT effective policy — a manager pulling a
+    // report today sees today's thresholds/multipliers. Historical dollar
+    // stability is the job of the payroll batch SNAPSHOT, not live reads.
+    const [daysOffByUser, ledgerByUser] = await Promise.all([
       storage.getTimeOffDaysOffByDateRange(startDate, endDate, finalUserIds, status),
-      storage.getDailyHoursByDateRange(startDate, endDate, finalUserIds, now),
+      getLedgerForEmployees(filteredUsers, startDate, endDate, now),
     ]);
-
-    // Overtime uses the unified pay engine's per-day split (each day's hours
-    // over that employee's daily threshold), NOT the old aggregate
-    // "totalHours - daysWorked * 8" — so reports, the per-employee timesheet
-    // and payroll all agree. We resolve the FULL effective policy (attendance +
-    // payroll + pto) per user so the report honors the payroll OT/double-time
-    // toggles and the holiday-OT-exclusion rule; the single OT column reports
-    // OT + double-time combined. Holiday days are detected from the employee's
-    // active schedule, mirroring the payroll batch / reconciliation logic.
-    const reportDayOfWeek = (dateStr: string): number => {
-      const parts = dateStr.split("-");
-      return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10))).getUTCDay();
-    };
-    // Scoping note (live vs. frozen): this is a LIVE operational read path, so it
-    // intentionally resolves the CURRENT effective policy — a manager pulling a
-    // report today should see today's thresholds/multipliers. Historical dollar
-    // stability is the job of the payroll batch SNAPSHOT (frozen onto each
-    // payroll_batch_record), which closed-period CSV/summary/reconciliation read
-    // back; live reads do not freeze policy.
-    const overtimeByUser = new Map<string, number>();
-    await Promise.all(filteredUsers.map(async (u) => {
-      const policy = await resolvePayCalcPolicy(u);
-      const schedules = await storage.getEmployeeSchedules(u.id);
-      const scheduledDays = schedules.filter(s => s.isActive).map(s => s.dayOfWeek);
-      const days = dailyByUser.get(u.id) || [];
-      const result = computeWeeklyHours(
-        days.map(d => ({
-          date: d.workDate,
-          hours: d.hours,
-          isHoliday: scheduledDays.length > 0 && !scheduledDays.includes(reportDayOfWeek(d.workDate)),
-        })),
-        policy,
-      );
-      overtimeByUser.set(u.id, round2(result.summary.overtimeHours + result.summary.doubleTimeHours));
-    }));
+    // Overtime (including any weekly reclassification) is read straight from the
+    // canonical ledger, which is itself weekly-aware (its per-day split runs
+    // through the engine's computeWeeklyHours over the read range). So the report,
+    // the per-employee timesheet and the dashboards all surface the SAME OT — no
+    // surface re-derives it. The single OT column reports OT + double-time
+    // combined.
+    const ledgerTotalsByUser = new Map<string, ReturnType<typeof summarizeLedger>>();
+    for (const u of filteredUsers) {
+      ledgerTotalsByUser.set(u.id, summarizeLedger(ledgerByUser.get(u.id) || []));
+    }
 
     if (category === "time") {
       const columns: ReportColumn[] = [
@@ -6286,10 +6307,10 @@ export async function registerRoutes(
         { key: "overtime", label: "Overtime", kind: "hours" },
       ];
       const rows = filteredUsers.map(u => {
-        const agg = attendanceAgg.get(u.id);
-        const totalHours = agg?.totalHours ?? 0;
-        const daysWorked = agg?.daysWorked ?? 0;
-        const overtime = overtimeByUser.get(u.id) ?? 0;
+        const totals = ledgerTotalsByUser.get(u.id);
+        const totalHours = totals?.totalHours ?? 0;
+        const daysWorked = totals?.daysWorked ?? 0;
+        const overtime = totals?.overtimeCombined ?? 0;
         const avg = daysWorked > 0 ? totalHours / daysWorked : 0;
         return {
           id: u.id,
@@ -6316,11 +6337,11 @@ export async function registerRoutes(
       { key: "overtime", label: "Overtime", kind: "hours" },
     ];
     const attendanceRows = filteredUsers.map(u => {
-      const agg = attendanceAgg.get(u.id);
-      const totalHours = agg?.totalHours ?? 0;
-      const daysWorked = agg?.daysWorked ?? 0;
+      const totals = ledgerTotalsByUser.get(u.id);
+      const totalHours = totals?.totalHours ?? 0;
+      const daysWorked = totals?.daysWorked ?? 0;
       const daysOff = daysOffByUser.get(u.id) ?? 0;
-      const overtime = overtimeByUser.get(u.id) ?? 0;
+      const overtime = totals?.overtimeCombined ?? 0;
       return {
         id: u.id,
         employeeName: nameOf(u),
@@ -7394,6 +7415,16 @@ export async function registerRoutes(
         return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10))).getUTCDay();
       };
 
+      // Payroll refreshes the canonical attendance ledger for the batch range so
+      // the durable rows that live surfaces read stay current, then computes its
+      // OWN weekly-aware split below (over the exact batch period, grouped by
+      // workweek) and FREEZES the policy snapshot onto each batch record for
+      // closed-period stability. Same engine, computed once per surface scope.
+      const ledgerEmployees = Array.from(new Set([...dayGroups.values()].map(g => g.employeeId)))
+        .map(id => userMap.get(id))
+        .filter((u): u is User => !!u);
+      await getLedgerForEmployees(ledgerEmployees, startDate, endDate);
+
       const payrollExport = await db.transaction(async (tx) => {
         const [created] = await tx.insert(payrollExportsTable).values({
           startDate,
@@ -7478,6 +7509,12 @@ export async function registerRoutes(
             });
           }
 
+          // The batch's per-day split is computed via the weekly-aware engine over
+          // the WHOLE batch period so regular hours over the weekly threshold are
+          // reclassified into overtime (grouped by workweek). This is the same
+          // engine the canonical ledger materializes; payroll computes it directly
+          // here over the exact batch range and FREEZES the snapshot below for
+          // closed-period stability.
           const weekly = computeWeeklyHours(
             dayMetas.map(d => ({ date: d.workDate, hours: d.dayHours, isHoliday: d.isHoliday })),
             payCalc,

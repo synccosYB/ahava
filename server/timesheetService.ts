@@ -1,7 +1,8 @@
 import type { PunchLog, TimeOffRequest, User } from "@shared/schema";
 import { storage } from "./storage";
 import { DEFAULT_ATTENDANCE_RULES } from "./policyEngine";
-import { resolvePayCalcPolicy, splitDailyHours, computeWeeklyHours } from "./payrollEngine";
+import { resolvePayCalcPolicy } from "./payrollEngine";
+import { getLedgerForEmployee, summarizeLedger, type LedgerDay } from "./attendanceLedger";
 
 export type TimesheetStatus =
   | "complete"
@@ -124,20 +125,17 @@ export async function buildEmployeeTimesheet(
     ((r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate : r.endDate) >= startDate),
   );
 
-  // Full effective pay policy (attendance + payroll + pto) drives the split.
+  // Hours/OT come from THE attendance ledger — the single, persisted
+  // materialization of the pay engine (resolvePayCalcPolicy + splitDailyHours
+  // per day, including the daily OT threshold, OT/double-time toggles and the
+  // holiday-OT-exclusion rule). The timesheet adds ONLY display fields
+  // (clock-in/out, break, kiosk sources) from the raw punches; it derives no
+  // attendance/OT math of its own, so it can never disagree with reports,
+  // payroll or the dashboards (which read the same ledger).
   const payCalc = await resolvePayCalcPolicy(employee);
   const otThreshold = payCalc.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
-  // Holiday detection mirrors the payroll batch / reconciliation logic: a day
-  // worked outside the employee's active scheduled days is treated as a holiday,
-  // so holidayOtExclusion (when set) keeps that day's hours all-regular.
-  const schedules = await storage.getEmployeeSchedules(employee.id);
-  const scheduledDays = schedules.filter((s) => s.isActive).map((s) => s.dayOfWeek);
-  const dayOfWeekForDate = (dateStr: string): number => {
-    const parts = dateStr.split("-");
-    return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10))).getUTCDay();
-  };
-  const isHolidayDay = (dateStr: string): boolean =>
-    scheduledDays.length > 0 && !scheduledDays.includes(dayOfWeekForDate(dateStr));
+  const ledgerDays = await getLedgerForEmployee(employee, startDate, endDate, now);
+  const ledgerByDate = new Map<string, LedgerDay>(ledgerDays.map((d) => [d.workDate, d]));
 
   const punchesByDate = new Map<string, PunchLog[]>();
   for (const p of punches) {
@@ -162,11 +160,6 @@ export async function buildEmployeeTimesheet(
   const end = new Date(endDate + "T00:00:00Z");
 
   const entries: TimesheetEntry[] = [];
-  // Worked days (excluding still-open punches, which display 0 OT) feed the
-  // weekly-OT pass below so the per-day Overtime column and the totals row both
-  // reflect weekly overtime — and stay in lockstep with the time report.
-  const workedDays: Array<{ date: string; hours: number; isHoliday: boolean }> = [];
-  const entryByDate = new Map<string, TimesheetEntry>();
 
   for (let cursor = new Date(start); cursor <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
     const dateStr = cursor.toISOString().split("T")[0];
@@ -219,17 +212,23 @@ export async function buildEmployeeTimesheet(
         }
       }
 
-      const dayHours = computeDayHours(datePunches, now);
-      const roundedHours = Math.round(dayHours * 100) / 100;
-      // Single authoritative split. The timesheet's one "Overtime" column shows
-      // OT + double-time combined; holidayOtExclusion (when set) zeroes it out.
-      const split = splitDailyHours(dayHours, payCalc, { isHoliday: isHolidayDay(dateStr) });
-      const dayOvertime = Math.round((split.overtimeHours + split.doubleTimeHours) * 100) / 100;
+      // Hours + combined overtime come straight from the ledger row for this
+      // day (the materialized engine split). Fall back to the raw worked-hours
+      // sum only for a zero/edge day the ledger doesn't persist a row for.
+      const ledgerDay = ledgerByDate.get(dateStr);
+      const roundedHours = ledgerDay
+        ? ledgerDay.totalHours
+        : Math.round(computeDayHours(datePunches, now) * 100) / 100;
+      // The timesheet's one "Overtime" column shows OT + double-time combined;
+      // holidayOtExclusion (when set) already zeroed these in the ledger.
+      const dayOvertime = ledgerDay
+        ? Math.round((ledgerDay.overtimeHours + ledgerDay.doubleTimeHours) * 100) / 100
+        : 0;
 
       let status: TimesheetStatus;
       if (inProgress) status = "in_progress";
       else if (missingPunch) status = "missing_punch";
-      else if (split.status === "overtime") status = "overtime";
+      else if (ledgerDay?.status === "overtime") status = "overtime";
       else status = "complete";
 
       const entry: TimesheetEntry = {
@@ -245,10 +244,6 @@ export async function buildEmployeeTimesheet(
         sources: sourcesForDay,
       };
       entries.push(entry);
-      if (!inProgress) {
-        workedDays.push({ date: dateStr, hours: dayHours, isHoliday: isHolidayDay(dateStr) });
-        entryByDate.set(dateStr, entry);
-      }
     } else if (ptoForDay.length > 0) {
       const primary = ptoForDay[0];
       entries.push({
@@ -279,37 +274,20 @@ export async function buildEmployeeTimesheet(
     }
   }
 
-  // Apply the WEEKLY-OT pass over the worked days so each day's Overtime column
-  // and the totals row include weekly overtime (hours over the weekly threshold
-  // that were still regular after the daily split). This is the SAME engine the
-  // time report and payroll use, so all three agree. Daily OT/DT is preserved;
-  // weekly OT only reclassifies remaining regular hours.
-  const weekly = computeWeeklyHours(workedDays, payCalc);
-  for (const d of weekly.days) {
-    const entry = entryByDate.get(d.date);
-    if (!entry) continue;
-    const combined = Math.round((d.overtimeHours + d.doubleTimeHours) * 100) / 100;
-    entry.overtimeHours = combined;
-    // Don't override a missing-punch flag; otherwise reflect overtime status.
-    if (entry.status === "complete" || entry.status === "overtime") {
-      entry.status = combined > 0 ? "overtime" : "complete";
-    }
-  }
-
-  // Aggregate totals share the unified pay engine so numbers stay consistent
-  // across the per-employee timesheet, the time report and payroll. Overtime is
-  // the weekly-aware total (daily OT/DT summed per day PLUS weekly OT), NOT the
-  // old "totalHours - daysWorked * 8" approximation.
-  const { totalHours, daysWorked } = computeAttendanceTotals(punches, now);
-  const aggregateOvertime = weekly.summary.overtimeHours + weekly.summary.doubleTimeHours;
+  // Range totals come straight from the ledger summary (the single source), so
+  // the totals row matches the time report and payroll exactly. The ledger is
+  // now WEEKLY-AWARE (built via payrollEngine.computeWeeklyHours), so each day's
+  // OT+double-time already includes weekly overtime — no separate weekly pass is
+  // needed here, and per-day rows + totals stay in lockstep with reports/payroll.
+  const ledgerTotals = summarizeLedger(ledgerDays);
 
   return {
     otThresholdDaily: otThreshold,
     entries,
     totals: {
-      totalHours: Math.round(totalHours * 10) / 10,
-      overtimeHours: Math.round(aggregateOvertime * 10) / 10,
-      daysWorked,
+      totalHours: Math.round(ledgerTotals.totalHours * 10) / 10,
+      overtimeHours: Math.round(ledgerTotals.overtimeCombined * 10) / 10,
+      daysWorked: ledgerTotals.daysWorked,
     },
   };
 }

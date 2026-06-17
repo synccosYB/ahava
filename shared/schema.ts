@@ -999,6 +999,51 @@ export const payrollAdjustmentsRelations = relations(payrollAdjustments, ({ one 
   punchLog: one(punchLogs, { fields: [payrollAdjustments.punchLogId], references: [punchLogs.id] }),
 }));
 
+// Task #464: the canonical per-employee-per-day attendance ledger. ONE
+// materialized row per (employee, work_date) holding the unified pay engine's
+// daily split (regular/overtime/double-time + total worked hours), the derived
+// PTO impact for display, the holiday determination and the policy versions used.
+// Written EXCLUSIVELY by server/attendanceLedger.ts (a thin materialization of
+// payrollEngine.splitDailyHours) so the timesheet, reports, dashboards, the
+// attendance APIs and payroll all read identical numbers. See
+// docs/attendance-ledger.md for the data-classification audit and design.
+export const attendanceLedger = pgTable("attendance_ledger", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  workDate: date("work_date").notNull(),
+  regularHours: real("regular_hours").default(0).notNull(),
+  overtimeHours: real("overtime_hours").default(0).notNull(),
+  doubleTimeHours: real("double_time_hours").default(0).notNull(),
+  totalHours: real("total_hours").default(0).notNull(),
+  // Derived, display-only PTO hours attributable to the day (payroll's PTO line
+  // items come from the authoritative time_off_requests, not this column).
+  ptoHours: real("pto_hours").default(0).notNull(),
+  isHoliday: boolean("is_holiday").default(false).notNull(),
+  // A still-open punch contributed live (provisional) hours when this row was
+  // computed — consumers/payroll treat such days as not-yet-final.
+  hasOpenPunch: boolean("has_open_punch").default(false).notNull(),
+  status: varchar("status", { length: 20 }).default("complete").notNull(),
+  sourcePunchCount: integer("source_punch_count").default(0).notNull(),
+  // The effective policy versions used to produce the split (audit/staleness).
+  attendancePolicyVersion: integer("attendance_policy_version"),
+  payrollPolicyVersion: integer("payroll_policy_version"),
+  computedAt: timestamp("computed_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("attendance_ledger_employee_work_date_idx").on(table.employeeId, table.workDate),
+  index("attendance_ledger_work_date_idx").on(table.workDate),
+]);
+
+export const insertAttendanceLedgerSchema = createInsertSchema(attendanceLedger).omit({
+  id: true,
+  computedAt: true,
+});
+export type InsertAttendanceLedger = z.infer<typeof insertAttendanceLedgerSchema>;
+export type AttendanceLedger = typeof attendanceLedger.$inferSelect;
+
+export const attendanceLedgerRelations = relations(attendanceLedger, ({ one }) => ({
+  employee: one(users, { fields: [attendanceLedger.employeeId], references: [users.id] }),
+}));
+
 export const workflows = pgTable("workflows", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 200 }).notNull(),

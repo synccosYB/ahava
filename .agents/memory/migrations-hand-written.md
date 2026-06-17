@@ -24,3 +24,11 @@ snapshot, so it sees nearly every table as "new".
    `verifySchema()` derives expected columns from the Drizzle models and throws
    if the DB is missing any. So model + migration MUST land together or boot fails.
 5. Confirm with `npx tsx scripts/check-schema-drift.ts` ("No schema drift").
+
+**Rebase tip — renaming a migration to dodge an idx collision:** `migrate.ts`
+keys `_migration_log` by **tag** (filename), not idx. If main lands a migration
+at the same idx as yours, `git mv` yours to the next free idx and rebuild the
+journal. The DB still has a row for the OLD tag — that's harmless as long as the
+SQL body is `IF NOT EXISTS` (the table/cols already exist). The new tag is unseen
+so it applies on the next boot. A running instance that booted on the pre-rebase
+journal will NOT have the new tags — restart the app (or it stays drifted).

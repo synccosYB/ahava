@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "../policyEngine";
 import { buildPayCalcPolicy, splitDailyHours, resolvePayCalcPolicy } from "../payrollEngine";
+import { recomputeLedger } from "../attendanceLedger";
 import type { User } from "@shared/schema";
 
 export interface DayOfWeekBonusRule {
@@ -447,6 +448,9 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
         hoursWorked,
         status,
       });
+
+      // Refresh the canonical attendance ledger for the closed employee-day.
+      void recomputeLedger(punch.employeeId, [punch.workDate]);
 
       alerts.push({
         type: "auto_clock_out",
