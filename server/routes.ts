@@ -23,6 +23,7 @@ import {
   computePtoReconciliation,
   applyPtoReconciliation,
   computePayrollVerification,
+  computePayrollDrift,
 } from "./services/reconciliation";
 import { runAlertDetection } from "./services/alerts";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
@@ -7910,6 +7911,33 @@ export async function registerRoutes(
     }
   });
 
+  // Drift detection: compare each batch record's frozen snapshot against a fresh
+  // recompute of the current source data (hours / PTO / bonus). Strictly
+  // read-only — never mutates the snapshot. Recomputed on demand. An audit entry
+  // is written each time a check runs so there's a record of who looked.
+  app.get("/api/payroll/exports/:id/drift", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const result = await computePayrollDrift(String(req.params.id));
+      if (!result) return res.status(404).json({ message: "Payroll export not found" });
+
+      const adminUser = req.authUser as User;
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "payroll_export",
+        targetId: result.exportId,
+        action: "payroll_export.drift_checked",
+        newValue: { driftStatus: result.driftStatus, changedCount: result.changedCount },
+        ...auditCtx,
+      });
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error checking payroll drift:", error);
+      handleRouteError(res, error, "Failed to check payroll drift");
+    }
+  });
+
   app.post("/api/payroll/exports/:id/lock", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
@@ -7920,6 +7948,22 @@ export async function registerRoutes(
       }
 
       const adminUser = req.authUser as User;
+
+      // Guard against locking a batch whose source data has drifted since export.
+      // The caller must explicitly acknowledge the drift to proceed; otherwise we
+      // return 409 with the drift summary so the UI can warn before locking.
+      const acknowledgeDrift = req.body?.acknowledgeDrift === true;
+      const drift = await computePayrollDrift(exp.id);
+      const hasDrift = drift?.driftStatus === "changed";
+      if (hasDrift && !acknowledgeDrift) {
+        return res.status(409).json({
+          message: `Cannot lock: ${drift!.changedCount} record(s) no longer match the current source data.`,
+          driftStatus: drift!.driftStatus,
+          changedCount: drift!.changedCount,
+          requiresAcknowledgement: true,
+        });
+      }
+
       const updated = await storage.updatePayrollExport(exp.id, {
         status: "locked",
         lockedAt: new Date(),
@@ -7931,9 +7975,11 @@ export async function registerRoutes(
         actorUserId: adminUser.id,
         targetType: "payroll_export",
         targetId: exp.id,
-        action: "payroll_export.locked",
+        action: hasDrift ? "payroll_export.locked_with_drift" : "payroll_export.locked",
         oldValue: { status: "exported" },
-        newValue: { status: "locked" },
+        newValue: hasDrift
+          ? { status: "locked", acknowledgedDrift: true, changedCount: drift!.changedCount }
+          : { status: "locked" },
         ...auditCtx,
       });
 

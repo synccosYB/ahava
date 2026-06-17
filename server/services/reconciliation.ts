@@ -20,8 +20,9 @@ import { timeOffBalances, punchLogs } from "@shared/schema";
 import type { User } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import { computePunchHoursWorked } from "../punchHours";
-import { getEffectivePolicy } from "../policyEngine";
+import { getEffectivePolicy, DEFAULT_PAYROLL_RULES } from "../policyEngine";
 import { buildPayCalcPolicy, splitDailyHours, computeWeeklyHours, resolvePayCalcPolicy, DEFAULT_PAY_CALC_POLICY, type PayCalcPolicy } from "../payrollEngine";
+import { evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses } from "./policyEnforcement";
 import { writeAuditLog } from "./audit";
 import { BALANCE_TRACKED_TIME_OFF_TYPES } from "@shared/schema";
 
@@ -598,5 +599,336 @@ export async function computePayrollVerification(exportId: string): Promise<Payr
     recordsChecked,
     discrepancyCount: discrepancies.length,
     discrepancies,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 4. Payroll export DRIFT detection (read-only)
+// ---------------------------------------------------------------------------
+//
+// "Drift" = the exported batch no longer matches the CURRENT source data
+// (punches, exception approvals, manual edits, late PTO changes). This compares
+// the FROZEN snapshot on each `payroll_batch_records` row against a fresh
+// recompute of the same source — across hours (regular / overtime / double-time),
+// PTO, and bonuses — and reports the per-record differences so an admin can
+// decide whether to reopen + re-export or lock the period anyway.
+//
+// CRITICAL: this is strictly READ-ONLY w.r.t. `payroll_batch_records`. It NEVER
+// overwrites, "fixes", or re-syncs a snapshot value — the snapshot is the
+// historical record of what was paid. (Distinct from `applyAttendanceReconciliation`
+// above, which deliberately rewrites `punch_logs`.)
+//
+// Hours are recomputed against the FROZEN policy snapshot on the row (only legacy
+// rows that predate the snapshot columns fall back to the live policy + current
+// schedule), so a later POLICY edit does NOT register as drift — only changes to
+// the SOURCE data do. Bonuses aren't snapshotted, so they are recomputed from the
+// (re-summed) day hours using the current payroll rules.
+
+export type PayrollDriftField =
+  | "regularHours"
+  | "overtimeHours"
+  | "doubleTimeHours"
+  | "ptoHours"
+  | "bonusHours"
+  | "bonusAmount";
+
+export interface PayrollDriftFieldChange {
+  field: PayrollDriftField;
+  label: string;
+  snapshot: number;
+  current: number | null;
+}
+
+export interface PayrollDriftValues {
+  regularHours: number;
+  overtimeHours: number;
+  doubleTimeHours: number;
+  ptoHours: number;
+  bonusHours: number;
+  bonusAmount: number;
+}
+
+export interface PayrollDriftRecord {
+  recordId: string;
+  employeeId: string;
+  employeeName: string;
+  recordType: string;
+  workDate: string;
+  punchLogId: string | null;
+  timeOffRequestId: string | null;
+  issue: string | null;
+  snapshot: PayrollDriftValues;
+  current: PayrollDriftValues | null;
+  changes: PayrollDriftFieldChange[];
+}
+
+export interface PayrollDriftResult {
+  exportId: string;
+  startDate: string;
+  endDate: string;
+  status: string;
+  driftStatus: "matches" | "changed";
+  recordsChecked: number;
+  changedCount: number;
+  changedRecords: PayrollDriftRecord[];
+}
+
+const DRIFT_FIELD_LABELS: Record<PayrollDriftField, string> = {
+  regularHours: "Regular Hours",
+  overtimeHours: "Overtime Hours",
+  doubleTimeHours: "Double-Time Hours",
+  ptoHours: "PTO Hours",
+  bonusHours: "Bonus Hours",
+  bonusAmount: "Bonus $",
+};
+
+const CENTS_EPSILON = 0.005;
+
+function fieldEpsilon(field: PayrollDriftField): number {
+  return field === "bonusAmount" ? CENTS_EPSILON : HOURS_EPSILON;
+}
+
+export function diffDriftValues(
+  snapshot: PayrollDriftValues,
+  current: PayrollDriftValues | null,
+): PayrollDriftFieldChange[] {
+  const fields: PayrollDriftField[] = [
+    "regularHours",
+    "overtimeHours",
+    "doubleTimeHours",
+    "ptoHours",
+    "bonusHours",
+    "bonusAmount",
+  ];
+  const changes: PayrollDriftFieldChange[] = [];
+  for (const field of fields) {
+    const snap = snapshot[field];
+    const curr = current ? current[field] : null;
+    // A missing/uncomputable source (current === null) is itself drift for any
+    // non-zero snapshot value.
+    if (curr === null) {
+      if (Math.abs(snap) > fieldEpsilon(field)) {
+        changes.push({ field, label: DRIFT_FIELD_LABELS[field], snapshot: round2(snap), current: null });
+      }
+      continue;
+    }
+    if (Math.abs(snap - curr) > fieldEpsilon(field)) {
+      changes.push({ field, label: DRIFT_FIELD_LABELS[field], snapshot: round2(snap), current: round2(curr) });
+    }
+  }
+  return changes;
+}
+
+export async function computePayrollDrift(exportId: string): Promise<PayrollDriftResult | null> {
+  const exp = await storage.getPayrollExport(exportId);
+  if (!exp) return null;
+
+  const records = await storage.getPayrollBatchRecords(exportId);
+  const userMap = new Map((await storage.getAllUsers()).map((u) => [u.id, u]));
+
+  // Re-sum punches per employee-day (snapshots are stored per employee-day with
+  // only the primary punch linked), and track the earliest rounded clock-in for
+  // early-arrival bonus recompute. `null` hours marks an incomplete day.
+  const punches = await storage.getAttendanceByDateRange(exp.startDate, exp.endDate);
+  const dayKey = (employeeId: string, workDate: string) => `${employeeId}__${workDate}`;
+  const dayHours = new Map<string, number | null>();
+  const dayEarliestRounded = new Map<string, { at: number; rounded: Date | string | null }>();
+  for (const p of punches) {
+    const key = dayKey(p.employeeId, p.workDate);
+    const existing = dayHours.get(key);
+    if (existing !== null) {
+      const h = computePunchHoursWorked(p);
+      if (h === null) {
+        dayHours.set(key, null);
+      } else {
+        dayHours.set(key, round2((existing ?? 0) + h));
+      }
+    }
+    if (p.clockIn) {
+      const t = new Date(p.clockIn).getTime();
+      const prior = dayEarliestRounded.get(key);
+      if (!prior || t < prior.at) {
+        dayEarliestRounded.set(key, { at: t, rounded: p.roundedClockIn ?? p.clockIn });
+      }
+    }
+  }
+
+  // Holiday detection (current schedules) + per-employee resolved live policy &
+  // payroll rules. The resolved policy is the fallback for legacy rows; payroll
+  // rules drive the (non-snapshotted) bonus recompute.
+  const scheduleCache = new Map<string, number[]>();
+  const scheduledDaysFor = async (employeeId: string): Promise<number[]> => {
+    if (!scheduleCache.has(employeeId)) {
+      const schedules = await storage.getEmployeeSchedules(employeeId);
+      scheduleCache.set(employeeId, schedules.filter((s) => s.isActive).map((s) => s.dayOfWeek));
+    }
+    return scheduleCache.get(employeeId)!;
+  };
+  const resolvedCache = new Map<string, { policy: PayCalcPolicy; payrollRules: Record<string, any> }>();
+  const resolvedFor = async (employeeId: string) => {
+    if (!resolvedCache.has(employeeId)) {
+      const u = userMap.get(employeeId);
+      const [att, pay, pto] = u
+        ? await Promise.all([
+            getEffectivePolicy(u.companyId, employeeId, "attendance", u),
+            getEffectivePolicy(u.companyId, employeeId, "payroll", u),
+            getEffectivePolicy(u.companyId, employeeId, "pto", u),
+          ])
+        : [null, null, null];
+      resolvedCache.set(employeeId, {
+        policy: buildPayCalcPolicy(att?.rules, pay?.rules, pto?.rules, {
+          attendance: att?.version ?? null,
+          payroll: pay?.version ?? null,
+        }),
+        payrollRules: (pay?.rules as Record<string, any>) || DEFAULT_PAYROLL_RULES,
+      });
+    }
+    return resolvedCache.get(employeeId)!;
+  };
+  const getDayOfWeek = (dateStr: string): number => {
+    const parts = dateStr.split("-");
+    return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10))).getUTCDay();
+  };
+
+  const changedRecords: PayrollDriftRecord[] = [];
+  let recordsChecked = 0;
+
+  for (const r of records) {
+    recordsChecked++;
+    const snapshot: PayrollDriftValues = {
+      regularHours: round2(r.regularHours || 0),
+      overtimeHours: round2(r.overtimeHours || 0),
+      doubleTimeHours: round2(r.doubleTimeHours || 0),
+      ptoHours: round2(r.ptoHours || 0),
+      bonusHours: round2(r.bonusHours || 0),
+      bonusAmount: round2(r.bonusAmount || 0),
+    };
+
+    let current: PayrollDriftValues | null = null;
+    let issue: string | null = null;
+
+    if (r.recordType === "attendance") {
+      const key = dayKey(r.employeeId, r.workDate);
+      if (!dayHours.has(key)) {
+        issue = "No source punches found for this employee-day (deleted after export?).";
+      } else {
+        const hours = dayHours.get(key)!;
+        if (hours === null) {
+          issue = "Source punch is incomplete/in-progress.";
+        } else {
+          // Prefer the FROZEN policy snapshot so only source-data changes drift,
+          // not later policy edits. Legacy rows fall back to the live policy.
+          const isSnapshotted = r.otThresholdDaily != null || r.overtimeMultiplier != null;
+          let policy: PayCalcPolicy;
+          let isHoliday: boolean;
+          if (isSnapshotted) {
+            const resolved = (await resolvedFor(r.employeeId)).policy;
+            policy = {
+              ...resolved,
+              otThresholdDaily: r.otThresholdDaily ?? resolved.otThresholdDaily,
+              doubleTimeThresholdDaily: r.doubleTimeThresholdDaily ?? resolved.doubleTimeThresholdDaily,
+              overtimeMultiplier: r.overtimeMultiplier ?? resolved.overtimeMultiplier,
+              doubleTimeMultiplier: r.doubleTimeMultiplier ?? resolved.doubleTimeMultiplier,
+              autoCalculateOT: r.autoCalculateOt ?? resolved.autoCalculateOT,
+              overtimeEnabled: r.overtimeEnabled ?? resolved.overtimeEnabled,
+              doubleTimeEnabled: r.doubleTimeEnabled ?? resolved.doubleTimeEnabled,
+              holidayOtExclusion: r.holidayOtExclusion ?? resolved.holidayOtExclusion,
+            };
+            if (r.isHoliday != null) {
+              isHoliday = r.isHoliday;
+            } else {
+              const sd = await scheduledDaysFor(r.employeeId);
+              isHoliday = sd.length > 0 && !sd.includes(getDayOfWeek(r.workDate));
+            }
+          } else {
+            policy = (await resolvedFor(r.employeeId)).policy;
+            const sd = await scheduledDaysFor(r.employeeId);
+            isHoliday = sd.length > 0 && !sd.includes(getDayOfWeek(r.workDate));
+          }
+          const split = splitDailyHours(hours, policy, { isHoliday });
+
+          // Bonuses are not snapshotted — recompute from the re-summed day hours
+          // using the current payroll rules.
+          const payrollRules = (await resolvedFor(r.employeeId)).payrollRules;
+          const earliestRounded = dayEarliestRounded.get(key)?.rounded ?? null;
+          const dow = evaluateDayOfWeekBonuses(r.workDate, hours, payrollRules);
+          const early = evaluateEarlyArrivalBonuses(r.workDate, earliestRounded, hours, payrollRules);
+
+          current = {
+            regularHours: round2(split.regularHours),
+            overtimeHours: round2(split.overtimeHours),
+            doubleTimeHours: round2(split.doubleTimeHours),
+            ptoHours: 0,
+            bonusHours: round2(dow.bonusHours),
+            bonusAmount: round2(dow.bonusAmount + early.bonusAmount),
+          };
+        }
+      }
+    } else if (r.recordType === "pto" || r.recordType === "pto_cashout") {
+      const reqId = r.timeOffRequestId;
+      const tor = reqId ? await storage.getTimeOffRequest(reqId) : undefined;
+      if (!tor) {
+        issue = "Source time-off request not found (deleted after export?).";
+      } else {
+        const isCashout = r.recordType === "pto_cashout";
+        const categoryMatches = isCashout
+          ? tor.requestCategory === "cashout"
+          : tor.requestCategory !== "cashout";
+        const stillApproved = tor.status === "approved" && categoryMatches;
+        const currentPto = stillApproved ? round2(tor.hoursRequested || 8) : 0;
+        if (!stillApproved) {
+          issue = `Time-off request is no longer approved (status: ${tor.status}).`;
+        }
+        current = {
+          regularHours: 0,
+          overtimeHours: 0,
+          doubleTimeHours: 0,
+          ptoHours: currentPto,
+          bonusHours: 0,
+          bonusAmount: 0,
+        };
+      }
+    } else {
+      // Unknown record type — leave current null (cannot recompute) but only
+      // flag it if the snapshot carried non-zero values.
+      issue = `Unrecognized record type "${r.recordType}".`;
+    }
+
+    const changes = diffDriftValues(snapshot, current);
+    const hasIssueDrift = current === null && issue !== null &&
+      (snapshot.regularHours !== 0 || snapshot.overtimeHours !== 0 ||
+       snapshot.doubleTimeHours !== 0 || snapshot.ptoHours !== 0 ||
+       snapshot.bonusHours !== 0 || snapshot.bonusAmount !== 0 || changes.length > 0);
+
+    if (changes.length > 0 || hasIssueDrift) {
+      changedRecords.push({
+        recordId: r.id,
+        employeeId: r.employeeId,
+        employeeName: userName(userMap.get(r.employeeId)),
+        recordType: r.recordType,
+        workDate: r.workDate,
+        punchLogId: r.punchLogId ?? null,
+        timeOffRequestId: r.timeOffRequestId ?? null,
+        issue,
+        snapshot,
+        current,
+        changes,
+      });
+    }
+  }
+
+  changedRecords.sort(
+    (a, b) => a.workDate.localeCompare(b.workDate) || a.employeeName.localeCompare(b.employeeName),
+  );
+
+  return {
+    exportId,
+    startDate: exp.startDate,
+    endDate: exp.endDate,
+    status: exp.status,
+    driftStatus: changedRecords.length > 0 ? "changed" : "matches",
+    recordsChecked,
+    changedCount: changedRecords.length,
+    changedRecords,
   };
 }

@@ -6,3 +6,4 @@
 - [Departments are a global shared list](departments-global-shared.md) — NOT company-scoped; unique on name alone, company_id kept nullable/unused; don't re-add company scoping.
 - [Unified pay calc engine](pay-calc-engine.md) — server/payrollEngine.ts is the ONE source for reg/OT/DT + pay; split per-day not range; multipliers policy-driven; batch records freeze a policy+rate snapshot per employee-day.
 - [DB-backed calc tests](db-backed-calc-tests.md) — pin PTO policy via employee-level policy_assignments; serialize the shared-DB runner; locked-period guard is route-level (409); anniversary tier raise has an FK bug. `./scripts/test-attendance-payroll.sh`.
+- [Payroll drift detection](payroll-drift-detection.md) — computePayrollDrift compares frozen snapshot vs current source (hours/PTO/bonus), READ-ONLY; hours use frozen policy, bonuses recomputed w/ current rules; lock guard needs acknowledgeDrift.
