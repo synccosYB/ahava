@@ -204,6 +204,7 @@ import {
   type PayPeriodType,
 } from "@shared/correctionCounts";
 import { getEffectivePolicy, buildPtoPolicyFromRules } from "./policyEngine";
+import { resolvePayCalcPolicy, splitDailyHours, DEFAULT_PAY_CALC_POLICY } from "./payrollEngine";
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
@@ -316,7 +317,7 @@ export interface IStorage {
   updateAttendanceRecord(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
 
   clockIn(userId: string, source?: string, roundedTime?: Date, opts?: ClockInOptions): Promise<PunchLog>;
-  clockOut(userId: string, otThresholdDaily?: number): Promise<PunchLog | undefined>;
+  clockOut(userId: string): Promise<PunchLog | undefined>;
   closeOpenPunch(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
   getCurrentAttendance(userId: string): Promise<PunchLog | undefined>;
   getOpenPunchLogs(): Promise<PunchLog[]>;
@@ -402,6 +403,12 @@ export interface IStorage {
     userIds?: string[],
     now?: Date,
   ): Promise<Map<string, { totalHours: number; daysWorked: number }>>;
+  getDailyHoursByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds?: string[],
+    now?: Date,
+  ): Promise<Map<string, Array<{ workDate: string; hours: number }>>>;
   getTimeOffDaysOffByDateRange(
     startDate: string,
     endDate: string,
@@ -1359,8 +1366,15 @@ export class DatabaseStorage implements IStorage {
     return updated ? punchLogToLegacy(updated) : undefined;
   }
 
-  async clockOut(userId: string, otThresholdDaily?: number): Promise<PunchLog | undefined> {
-    const threshold = otThresholdDaily ?? 8;
+  async clockOut(userId: string): Promise<PunchLog | undefined> {
+    // The day's overtime/complete status is derived through THE single pay engine
+    // (resolvePayCalcPolicy + splitDailyHours) so this path never disagrees with
+    // enforceClockOut, the timesheet, reports or payroll. There is NO hard-coded
+    // 8-hour fallback: the OT threshold comes from the employee's effective
+    // policy (and only the engine's DEFAULT_PAY_CALC_POLICY when no employee
+    // record exists, e.g. in isolated tests).
+    const employee = await this.getUser(userId);
+    const policy = employee ? await resolvePayCalcPolicy(employee) : DEFAULT_PAY_CALC_POLICY;
     // Serialize against concurrent clock-outs for the same employee so the
     // "find open punch -> close it" pair is atomic; a second concurrent (or
     // double-tapped) clock-out finds no open punch and no-ops.
@@ -1384,10 +1398,11 @@ export class DatabaseStorage implements IStorage {
       const totalMs = now.getTime() - roundedInMs;
       const breakMs = (current.breakMinutes || 0) * 60 * 1000;
       const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+      const { status } = splitDailyHours(hoursWorked, policy);
 
       const [updated] = await tx
         .update(punchLogs)
-        .set({ clockOut: now, roundedClockOut: now, hoursWorked, status: hoursWorked > threshold ? "overtime" : "complete" })
+        .set({ clockOut: now, roundedClockOut: now, hoursWorked, status })
         .where(eq(punchLogs.id, current.id))
         .returning();
       return updated ? punchLogToLegacy(updated) : undefined;
@@ -2029,8 +2044,10 @@ export class DatabaseStorage implements IStorage {
       .select({
         employeeId: punchLogs.employeeId,
         totalHours: sql<string>`COALESCE(SUM(
-          CASE WHEN ${punchLogs.clockIn} IS NOT NULL
-            THEN GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(${punchLogs.clockOut}, ${nowLiteral}::timestamp) - ${punchLogs.clockIn})) / 3600.0)
+          CASE
+            WHEN ${punchLogs.hoursWorked} IS NOT NULL THEN ${punchLogs.hoursWorked}
+            WHEN ${punchLogs.clockIn} IS NOT NULL
+              THEN GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(${punchLogs.clockOut}, ${nowLiteral}::timestamp) - COALESCE(${punchLogs.roundedClockIn}, ${punchLogs.clockIn}))) / 3600.0 - COALESCE(${punchLogs.breakMinutes}, 0) / 60.0)
             ELSE 0 END
         ), 0)`,
         daysWorked: sql<number>`COUNT(DISTINCT CASE WHEN ${punchLogs.clockIn} IS NOT NULL THEN ${punchLogs.workDate} END)`,
@@ -2044,6 +2061,60 @@ export class DatabaseStorage implements IStorage {
         totalHours: Number(r.totalHours),
         daysWorked: Number(r.daysWorked),
       });
+    }
+    return result;
+  }
+
+  // SQL-side per-day worked-hours, grouped by (employee, work_date), WITHOUT
+  // collapsing the days, so callers can apply the unified pay engine's per-day
+  // overtime split (each day's hours over the daily threshold) instead of the
+  // old aggregate "totalHours - daysWorked * 8" approximation.
+  //
+  // Worked-hours INPUT is the SAME canonical value payroll consumes: the
+  // persisted, break-deducted `hours_worked` (set at clock-out via the engine
+  // and by `computePunchHoursWorked`). Only still-open punches (no stored value
+  // yet) fall back to a live, break-deducted compute, mirroring `storage.clockOut`
+  // exactly. This guarantees reports/timesheet and payroll can never drift on
+  // break deductions or rounding.
+  async getDailyHoursByDateRange(
+    startDate: string,
+    endDate: string,
+    userIds?: string[],
+    now: Date = new Date(),
+  ): Promise<Map<string, Array<{ workDate: string; hours: number }>>> {
+    const result = new Map<string, Array<{ workDate: string; hours: number }>>();
+    if (userIds && userIds.length === 0) return result;
+
+    const conds: SQL[] = [
+      gte(punchLogs.workDate, startDate),
+      lte(punchLogs.workDate, endDate),
+    ];
+    if (userIds && userIds.length > 0) {
+      conds.push(inArray(punchLogs.employeeId, userIds));
+    }
+
+    const nowLiteral = now.toISOString().replace("T", " ").replace("Z", "");
+
+    const rows = await db
+      .select({
+        employeeId: punchLogs.employeeId,
+        workDate: punchLogs.workDate,
+        hours: sql<string>`COALESCE(SUM(
+          CASE
+            WHEN ${punchLogs.hoursWorked} IS NOT NULL THEN ${punchLogs.hoursWorked}
+            WHEN ${punchLogs.clockIn} IS NOT NULL
+              THEN GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(${punchLogs.clockOut}, ${nowLiteral}::timestamp) - COALESCE(${punchLogs.roundedClockIn}, ${punchLogs.clockIn}))) / 3600.0 - COALESCE(${punchLogs.breakMinutes}, 0) / 60.0)
+            ELSE 0 END
+        ), 0)`,
+      })
+      .from(punchLogs)
+      .where(and(...conds))
+      .groupBy(punchLogs.employeeId, punchLogs.workDate);
+
+    for (const r of rows) {
+      const arr = result.get(r.employeeId) || [];
+      arr.push({ workDate: String(r.workDate), hours: Number(r.hours) });
+      result.set(r.employeeId, arr);
     }
     return result;
   }

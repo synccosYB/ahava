@@ -112,8 +112,10 @@ interface PayrollDiscrepancy {
   issue: string;
   storedRegular: number;
   storedOvertime: number;
+  storedDoubleTime: number;
   computedRegular: number | null;
   computedOvertime: number | null;
+  computedDoubleTime: number | null;
 }
 interface PayrollVerificationResult {
   exportId: string;
@@ -706,8 +708,8 @@ function PayrollTab() {
                   <TableRow>
                     <TableHead>Employee</TableHead>
                     <TableHead>Date</TableHead>
-                    <TableHead className="text-right">Stored reg / OT</TableHead>
-                    <TableHead className="text-right">Computed reg / OT</TableHead>
+                    <TableHead className="text-right">Stored reg / OT / DT</TableHead>
+                    <TableHead className="text-right">Computed reg / OT / DT</TableHead>
                     <TableHead>Issue</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -720,10 +722,10 @@ function PayrollTab() {
                       <TableCell>{d.employeeName}</TableCell>
                       <TableCell>{d.workDate}</TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {fmtHours(d.storedRegular)} / {fmtHours(d.storedOvertime)}
+                        {fmtHours(d.storedRegular)} / {fmtHours(d.storedOvertime)} / {fmtHours(d.storedDoubleTime)}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {fmtHours(d.computedRegular)} / {fmtHours(d.computedOvertime)}
+                        {fmtHours(d.computedRegular)} / {fmtHours(d.computedOvertime)} / {fmtHours(d.computedDoubleTime)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{d.issue}</TableCell>
                     </TableRow>

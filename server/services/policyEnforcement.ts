@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "../policyEngine";
+import { buildPayCalcPolicy, splitDailyHours, resolvePayCalcPolicy } from "../payrollEngine";
 import type { User } from "@shared/schema";
 
 export interface DayOfWeekBonusRule {
@@ -282,7 +283,6 @@ export function enforceClockOut(
   const alerts: PolicyAlert[] = [];
   const roundingRule = rules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
   const roundingInterval = rules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
-  const otThresholdDaily = rules.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
   const requireBreakAfterHours = rules.requireBreakAfterHours ?? DEFAULT_ATTENDANCE_RULES.requireBreakAfterHours;
   const breakDurationMinutes = rules.breakDurationMinutes ?? DEFAULT_ATTENDANCE_RULES.breakDurationMinutes;
 
@@ -310,40 +310,20 @@ export function enforceClockOut(
     });
   }
 
-  const overtimeMultiplier = payrollRules.overtimeMultiplier ?? DEFAULT_PAYROLL_RULES.overtimeMultiplier;
-  const doubleTimeMultiplier = payrollRules.doubleTimeMultiplier ?? DEFAULT_PAYROLL_RULES.doubleTimeMultiplier;
-  const doubleTimeThresholdDaily = payrollRules.doubleTimeThresholdDaily ?? DEFAULT_PAYROLL_RULES.doubleTimeThresholdDaily;
-  // Per-rule on/off toggles. Treat missing flags as `true` so existing
-  // payroll policies (which were saved before these toggles existed) keep
-  // computing overtime / double-time exactly as they used to.
-  const autoCalculateOT = payrollRules.autoCalculateOT !== false;
-  const overtimeEnabled = payrollRules.overtimeEnabled !== false;
-  const doubleTimeEnabled = payrollRules.doubleTimeEnabled !== false;
-
-  let overtimeHours = 0;
-  let doubleTimeHours = 0;
-  let status = "complete";
-
-  if (autoCalculateOT && overtimeEnabled && hoursWorked > otThresholdDaily) {
-    status = "overtime";
-    const totalOtHours = hoursWorked - otThresholdDaily;
-
-    if (doubleTimeEnabled && doubleTimeThresholdDaily && hoursWorked > doubleTimeThresholdDaily) {
-      doubleTimeHours = Math.round((hoursWorked - doubleTimeThresholdDaily) * 100) / 100;
-      overtimeHours = Math.round((doubleTimeThresholdDaily - otThresholdDaily) * 100) / 100;
-    } else {
-      overtimeHours = Math.round(totalOtHours * 100) / 100;
-    }
-  }
+  // Single source of truth for the daily regular/OT/DT split: the pay engine.
+  // The on/off toggles + thresholds + multipliers all come from the resolved
+  // attendance + payroll rules (no hard-coded numbers here).
+  const payCalc = buildPayCalcPolicy(rules, payrollRules);
+  const split = splitDailyHours(hoursWorked, payCalc);
 
   return {
     roundedTime,
-    hoursWorked,
-    overtimeHours,
-    doubleTimeHours,
-    overtimeMultiplier,
-    doubleTimeMultiplier,
-    status,
+    hoursWorked: split.hoursWorked,
+    overtimeHours: split.overtimeHours,
+    doubleTimeHours: split.doubleTimeHours,
+    overtimeMultiplier: payCalc.overtimeMultiplier,
+    doubleTimeMultiplier: payCalc.doubleTimeMultiplier,
+    status: split.status,
     alerts,
   };
 }
@@ -456,8 +436,10 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
         roundingIntervalMinutes: roundingInterval,
       });
 
-      const otThreshold = rules.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
-      const status = hoursWorked > otThreshold ? "overtime" : "complete";
+      // Status comes from THE single pay engine (full effective policy), so an
+      // auto clock-out never disagrees with a manual clock-out / payroll / reports.
+      const payCalc = await resolvePayCalcPolicy(user);
+      const { status } = splitDailyHours(hoursWorked, payCalc);
 
       await storage.updatePunchLog(punch.id, {
         clockOut: autoClockOutActual,

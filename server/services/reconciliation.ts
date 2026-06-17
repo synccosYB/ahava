@@ -20,7 +20,8 @@ import { timeOffBalances, punchLogs } from "@shared/schema";
 import type { User } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import { computePunchHoursWorked } from "../punchHours";
-import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "../policyEngine";
+import { getEffectivePolicy } from "../policyEngine";
+import { buildPayCalcPolicy, splitDailyHours, resolvePayCalcPolicy, DEFAULT_PAY_CALC_POLICY, type PayCalcPolicy } from "../payrollEngine";
 import { writeAuditLog } from "./audit";
 import { BALANCE_TRACKED_TIME_OFF_TYPES } from "@shared/schema";
 
@@ -62,22 +63,17 @@ export interface AttendanceReconciliationResult {
   items: AttendanceDiffItem[];
 }
 
-async function buildOtThresholdResolver() {
-  const cache = new Map<string, number>();
+async function buildPolicyResolver() {
+  const cache = new Map<string, PayCalcPolicy>();
   const userMap = new Map((await storage.getAllUsers()).map((u) => [u.id, u]));
   return {
     userMap,
-    async otThresholdFor(employeeId: string): Promise<number> {
+    async policyFor(employeeId: string): Promise<PayCalcPolicy> {
       if (cache.has(employeeId)) return cache.get(employeeId)!;
       const u = userMap.get(employeeId);
-      let threshold = DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
-      if (u) {
-        const policy = await getEffectivePolicy(u.companyId, employeeId, "attendance", u);
-        const rules = (policy?.rules as { otThresholdDaily?: number } | undefined) || DEFAULT_ATTENDANCE_RULES;
-        threshold = rules.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
-      }
-      cache.set(employeeId, threshold);
-      return threshold;
+      const policy = u ? await resolvePayCalcPolicy(u) : DEFAULT_PAY_CALC_POLICY;
+      cache.set(employeeId, policy);
+      return policy;
     },
   };
 }
@@ -87,7 +83,7 @@ export async function computeAttendanceReconciliation(
   endDate: string,
 ): Promise<AttendanceReconciliationResult> {
   const punches = await storage.getAttendanceByDateRange(startDate, endDate);
-  const { userMap, otThresholdFor } = await buildOtThresholdResolver();
+  const { userMap, policyFor } = await buildPolicyResolver();
 
   const items: AttendanceDiffItem[] = [];
   let scanned = 0;
@@ -100,8 +96,8 @@ export async function computeAttendanceReconciliation(
     scanned++;
 
     const stored = p.hoursWorked ?? 0;
-    const threshold = await otThresholdFor(p.employeeId);
-    const computedStatus = computed > threshold ? "overtime" : "complete";
+    const policy = await policyFor(p.employeeId);
+    const computedStatus = splitDailyHours(computed, policy).status;
     const storedStatus = p.status ?? "complete";
 
     const hoursDrift = Math.abs(stored - computed) > HOURS_EPSILON;
@@ -137,7 +133,7 @@ export async function applyAttendanceReconciliation(
   actorUserId: string,
   ctx: { ipAddress?: string; userAgent?: string },
 ): Promise<{ applied: number; skipped: number; changes: AttendanceDiffItem[] }> {
-  const { userMap, otThresholdFor } = await buildOtThresholdResolver();
+  const { userMap, policyFor } = await buildPolicyResolver();
   const changes: AttendanceDiffItem[] = [];
   let skipped = 0;
 
@@ -153,8 +149,8 @@ export async function applyAttendanceReconciliation(
       continue;
     }
     const stored = p.hoursWorked ?? 0;
-    const threshold = await otThresholdFor(p.employeeId);
-    const computedStatus = computed > threshold ? "overtime" : "complete";
+    const policy = await policyFor(p.employeeId);
+    const computedStatus = splitDailyHours(computed, policy).status;
     const storedStatus = p.status ?? "complete";
 
     const hoursDrift = Math.abs(stored - computed) > HOURS_EPSILON;
@@ -375,8 +371,10 @@ export interface PayrollDiscrepancy {
   issue: string;
   storedRegular: number;
   storedOvertime: number;
+  storedDoubleTime: number;
   computedRegular: number | null;
   computedOvertime: number | null;
+  computedDoubleTime: number | null;
 }
 
 export interface PayrollVerificationResult {
@@ -394,7 +392,63 @@ export async function computePayrollVerification(exportId: string): Promise<Payr
   if (!exp) return null;
 
   const records = await storage.getPayrollBatchRecords(exportId);
-  const { userMap, otThresholdFor } = await buildOtThresholdResolver();
+  const userMap = new Map((await storage.getAllUsers()).map((u) => [u.id, u]));
+
+  // Batch records are stored per employee-day (only the primary punch is
+  // linked), so recompute each day's hours by SUMMING all source punches for
+  // that employee on that date, then split with the SAME policy that was frozen
+  // onto the row. `null` marks a day with an incomplete/in-progress punch.
+  const punches = await storage.getAttendanceByDateRange(exp.startDate, exp.endDate);
+  const dayHours = new Map<string, number | null>();
+  const dayKey = (employeeId: string, workDate: string) => `${employeeId}__${workDate}`;
+  for (const p of punches) {
+    const key = dayKey(p.employeeId, p.workDate);
+    const existing = dayHours.get(key);
+    if (existing === null) continue; // already flagged incomplete
+    const h = computePunchHoursWorked(p);
+    if (h === null) {
+      dayHours.set(key, null);
+      continue;
+    }
+    dayHours.set(key, round2((existing ?? 0) + h));
+  }
+
+  // Holiday detection (current schedules) + per-employee resolved policy used as
+  // the fallback for legacy rows that predate the snapshot columns.
+  const scheduleCache = new Map<string, number[]>();
+  const scheduledDaysFor = async (employeeId: string): Promise<number[]> => {
+    if (!scheduleCache.has(employeeId)) {
+      const schedules = await storage.getEmployeeSchedules(employeeId);
+      scheduleCache.set(employeeId, schedules.filter((s) => s.isActive).map((s) => s.dayOfWeek));
+    }
+    return scheduleCache.get(employeeId)!;
+  };
+  const resolvedPolicyCache = new Map<string, PayCalcPolicy>();
+  const resolvedPolicyFor = async (employeeId: string): Promise<PayCalcPolicy> => {
+    if (!resolvedPolicyCache.has(employeeId)) {
+      const u = userMap.get(employeeId);
+      const [att, pay, pto] = u
+        ? await Promise.all([
+            getEffectivePolicy(u.companyId, employeeId, "attendance", u),
+            getEffectivePolicy(u.companyId, employeeId, "payroll", u),
+            getEffectivePolicy(u.companyId, employeeId, "pto", u),
+          ])
+        : [null, null, null];
+      resolvedPolicyCache.set(
+        employeeId,
+        buildPayCalcPolicy(att?.rules, pay?.rules, pto?.rules, {
+          attendance: att?.version ?? null,
+          payroll: pay?.version ?? null,
+        }),
+      );
+    }
+    return resolvedPolicyCache.get(employeeId)!;
+  };
+
+  const getDayOfWeek = (dateStr: string): number => {
+    const parts = dateStr.split("-");
+    return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10))).getUTCDay();
+  };
 
   const discrepancies: PayrollDiscrepancy[] = [];
   let recordsChecked = 0;
@@ -407,6 +461,7 @@ export async function computePayrollVerification(exportId: string): Promise<Payr
 
     const storedRegular = r.regularHours || 0;
     const storedOvertime = r.overtimeHours || 0;
+    const storedDoubleTime = r.doubleTimeHours || 0;
     const base = {
       employeeId: r.employeeId,
       employeeName: userName(userMap.get(r.employeeId)),
@@ -414,57 +469,83 @@ export async function computePayrollVerification(exportId: string): Promise<Payr
       punchLogId: r.punchLogId ?? null,
       storedRegular: round2(storedRegular),
       storedOvertime: round2(storedOvertime),
+      storedDoubleTime: round2(storedDoubleTime),
     };
 
-    if (!r.punchLogId) {
+    const key = dayKey(r.employeeId, r.workDate);
+    if (!dayHours.has(key)) {
       discrepancies.push({
         ...base,
-        issue: "Batch record has no linked punch (cannot verify against source).",
+        issue: "No source punches found for this employee-day (deleted after export?).",
         computedRegular: null,
         computedOvertime: null,
+        computedDoubleTime: null,
       });
       continue;
     }
 
-    const punch = await storage.getPunchLog(r.punchLogId);
-    if (!punch) {
-      discrepancies.push({
-        ...base,
-        issue: "Source punch was deleted after export.",
-        computedRegular: null,
-        computedOvertime: null,
-      });
-      continue;
-    }
-
-    const hours = computePunchHoursWorked(punch);
+    const hours = dayHours.get(key)!;
     if (hours === null) {
       discrepancies.push({
         ...base,
         issue: "Source punch is incomplete/in-progress.",
         computedRegular: null,
         computedOvertime: null,
+        computedDoubleTime: null,
       });
       continue;
     }
 
-    const threshold = await otThresholdFor(r.employeeId);
-    let computedRegular = hours;
-    let computedOvertime = 0;
-    if (hours > threshold) {
-      computedRegular = threshold;
-      computedOvertime = round2(hours - threshold);
+    // Prefer the policy SNAPSHOT frozen on the row so a CLOSED historical period
+    // verifies against EXACTLY what was exported, independent of any later edit
+    // to the live policy or the employee's schedule. A row is "snapshotted" when
+    // the numeric knobs are present; for those rows every input to the split —
+    // thresholds, multipliers, the on/off toggles AND the holiday flag — comes
+    // from the row itself. Only legacy rows (all snapshot cols null) fall back to
+    // the current effective policy + current schedule for a best-effort recompute.
+    const isSnapshotted = r.otThresholdDaily != null || r.overtimeMultiplier != null;
+    let policy: PayCalcPolicy;
+    let isHoliday: boolean;
+    if (isSnapshotted) {
+      const resolved = await resolvedPolicyFor(r.employeeId);
+      policy = {
+        ...resolved,
+        otThresholdDaily: r.otThresholdDaily ?? resolved.otThresholdDaily,
+        doubleTimeThresholdDaily: r.doubleTimeThresholdDaily ?? resolved.doubleTimeThresholdDaily,
+        overtimeMultiplier: r.overtimeMultiplier ?? resolved.overtimeMultiplier,
+        doubleTimeMultiplier: r.doubleTimeMultiplier ?? resolved.doubleTimeMultiplier,
+        // Toggles snapshotted in migration 0056; legacy snapshot rows (0055-era)
+        // lack them, so fall back to the resolved policy's toggles for those.
+        autoCalculateOT: r.autoCalculateOt ?? resolved.autoCalculateOT,
+        overtimeEnabled: r.overtimeEnabled ?? resolved.overtimeEnabled,
+        doubleTimeEnabled: r.doubleTimeEnabled ?? resolved.doubleTimeEnabled,
+        holidayOtExclusion: r.holidayOtExclusion ?? resolved.holidayOtExclusion,
+      };
+      // Holiday flag frozen on the row (0056); legacy snapshot rows recompute it
+      // from the CURRENT schedule as a best-effort fallback.
+      if (r.isHoliday != null) {
+        isHoliday = r.isHoliday;
+      } else {
+        const scheduledDays = await scheduledDaysFor(r.employeeId);
+        isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeek(r.workDate));
+      }
+    } else {
+      policy = await resolvedPolicyFor(r.employeeId);
+      const scheduledDays = await scheduledDaysFor(r.employeeId);
+      isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeek(r.workDate));
     }
-    computedRegular = round2(computedRegular);
+    const split = splitDailyHours(hours, policy, { isHoliday });
 
-    const regDrift = Math.abs(computedRegular - storedRegular) > HOURS_EPSILON;
-    const otDrift = Math.abs(computedOvertime - storedOvertime) > HOURS_EPSILON;
-    if (regDrift || otDrift) {
+    const regDrift = Math.abs(split.regularHours - storedRegular) > HOURS_EPSILON;
+    const otDrift = Math.abs(split.overtimeHours - storedOvertime) > HOURS_EPSILON;
+    const dtDrift = Math.abs(split.doubleTimeHours - storedDoubleTime) > HOURS_EPSILON;
+    if (regDrift || otDrift || dtDrift) {
       discrepancies.push({
         ...base,
-        issue: "Exported hours no longer match the engine's recompute of the source punch.",
-        computedRegular,
-        computedOvertime,
+        issue: "Exported hours no longer match the engine's recompute of the source punches.",
+        computedRegular: split.regularHours,
+        computedOvertime: split.overtimeHours,
+        computedDoubleTime: split.doubleTimeHours,
       });
     }
   }

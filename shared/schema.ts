@@ -900,7 +900,27 @@ export const payrollBatchRecords = pgTable("payroll_batch_records", {
   workDate: date("work_date").notNull(),
   regularHours: real("regular_hours").default(0),
   overtimeHours: real("overtime_hours").default(0),
+  doubleTimeHours: real("double_time_hours").default(0),
   ptoHours: real("pto_hours").default(0),
+  // Frozen snapshot of the pay-affecting policy values at batch-creation time so
+  // a historical period recomputes identically even after the live policy is
+  // edited (see server/payrollEngine.ts). Null on legacy rows created before
+  // task #84 — consumers fall back to the current effective policy for those.
+  otThresholdDaily: real("ot_threshold_daily"),
+  doubleTimeThresholdDaily: real("double_time_threshold_daily"),
+  overtimeMultiplier: real("overtime_multiplier"),
+  doubleTimeMultiplier: real("double_time_multiplier"),
+  hourlyRate: real("hourly_rate"),
+  policyVersion: integer("policy_version"),
+  // Frozen on/off toggles + the holiday determination at batch-creation time.
+  // Together with the numeric knobs above these let reconciliation recompute a
+  // closed period's split IDENTICALLY without re-reading the (possibly changed)
+  // live policy or the employee's current schedule. Null on legacy rows.
+  autoCalculateOt: boolean("auto_calculate_ot"),
+  overtimeEnabled: boolean("overtime_enabled"),
+  doubleTimeEnabled: boolean("double_time_enabled"),
+  holidayOtExclusion: boolean("holiday_ot_exclusion"),
+  isHoliday: boolean("is_holiday"),
   bonusAmount: real("bonus_amount").default(0).notNull(),
   bonusHours: real("bonus_hours").default(0).notNull(),
   bonusDescription: text("bonus_description"),

@@ -25,6 +25,8 @@ export interface EffectivePolicy {
   policyId: string;
   policyName: string;
   policyTypeKey: string;
+  /** Version of the resolved policy, for snapshotting / version-aware recompute. */
+  version: number;
   assignmentLevel:
     | "global"
     | "division"
@@ -210,6 +212,7 @@ export async function getEffectivePolicy(
     policyId: resolvedPolicy.id,
     policyName: resolvedPolicy.name,
     policyTypeKey,
+    version: resolvedPolicy.version,
     assignmentLevel,
     rules: (rule?.rules as Record<string, any>) || {},
   };

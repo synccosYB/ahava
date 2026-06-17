@@ -13,6 +13,7 @@ import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
+import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
@@ -6232,10 +6233,45 @@ export async function registerRoutes(
     // Hours-based categories (attendance, time) share DB aggregation so their
     // totals stay identical to the per-employee timesheet. `now` is captured
     // once so in-progress punches are consistent across employees.
-    const [attendanceAgg, daysOffByUser] = await Promise.all([
+    const [attendanceAgg, daysOffByUser, dailyByUser] = await Promise.all([
       storage.getAttendanceAggregatesByDateRange(startDate, endDate, finalUserIds, now),
       storage.getTimeOffDaysOffByDateRange(startDate, endDate, finalUserIds, status),
+      storage.getDailyHoursByDateRange(startDate, endDate, finalUserIds, now),
     ]);
+
+    // Overtime uses the unified pay engine's per-day split (each day's hours
+    // over that employee's daily threshold), NOT the old aggregate
+    // "totalHours - daysWorked * 8" — so reports, the per-employee timesheet
+    // and payroll all agree. We resolve the FULL effective policy (attendance +
+    // payroll + pto) per user so the report honors the payroll OT/double-time
+    // toggles and the holiday-OT-exclusion rule; the single OT column reports
+    // OT + double-time combined. Holiday days are detected from the employee's
+    // active schedule, mirroring the payroll batch / reconciliation logic.
+    const reportDayOfWeek = (dateStr: string): number => {
+      const parts = dateStr.split("-");
+      return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10))).getUTCDay();
+    };
+    // Scoping note (live vs. frozen): this is a LIVE operational read path, so it
+    // intentionally resolves the CURRENT effective policy — a manager pulling a
+    // report today should see today's thresholds/multipliers. Historical dollar
+    // stability is the job of the payroll batch SNAPSHOT (frozen onto each
+    // payroll_batch_record), which closed-period CSV/summary/reconciliation read
+    // back; live reads do not freeze policy.
+    const overtimeByUser = new Map<string, number>();
+    await Promise.all(filteredUsers.map(async (u) => {
+      const policy = await resolvePayCalcPolicy(u);
+      const schedules = await storage.getEmployeeSchedules(u.id);
+      const scheduledDays = schedules.filter(s => s.isActive).map(s => s.dayOfWeek);
+      const days = dailyByUser.get(u.id) || [];
+      const summary = summarizeDailyHours(
+        days.map(d => ({
+          hours: d.hours,
+          isHoliday: scheduledDays.length > 0 && !scheduledDays.includes(reportDayOfWeek(d.workDate)),
+        })),
+        policy,
+      );
+      overtimeByUser.set(u.id, round2(summary.overtimeHours + summary.doubleTimeHours));
+    }));
 
     if (category === "time") {
       const columns: ReportColumn[] = [
@@ -6251,7 +6287,7 @@ export async function registerRoutes(
         const agg = attendanceAgg.get(u.id);
         const totalHours = agg?.totalHours ?? 0;
         const daysWorked = agg?.daysWorked ?? 0;
-        const overtime = Math.max(0, totalHours - daysWorked * 8);
+        const overtime = overtimeByUser.get(u.id) ?? 0;
         const avg = daysWorked > 0 ? totalHours / daysWorked : 0;
         return {
           id: u.id,
@@ -6282,7 +6318,7 @@ export async function registerRoutes(
       const totalHours = agg?.totalHours ?? 0;
       const daysWorked = agg?.daysWorked ?? 0;
       const daysOff = daysOffByUser.get(u.id) ?? 0;
-      const overtime = Math.max(0, totalHours - daysWorked * 8);
+      const overtime = overtimeByUser.get(u.id) ?? 0;
       return {
         id: u.id,
         employeeName: nameOf(u),
@@ -7294,7 +7330,67 @@ export async function registerRoutes(
         r => r.status === "approved" && r.requestCategory === "cashout" && r.startDate <= endDate && r.endDate >= startDate
       );
 
-      const totalRecordCount = attendanceRecords.length + approvedTimeOff.length + approvedCashouts.length;
+      // Group attendance punches by (employee, work date) so overtime /
+      // double-time are split at the DAY level via the unified pay engine
+      // (matching the timesheet & reports) instead of per-punch. One batch
+      // record is written per employee-day.
+      type DayGroup = { employeeId: string; workDate: string; punches: typeof attendanceRecords };
+      const dayGroups = new Map<string, DayGroup>();
+      for (const record of attendanceRecords) {
+        const key = `${record.employeeId}__${record.workDate}`;
+        let g = dayGroups.get(key);
+        if (!g) {
+          g = { employeeId: record.employeeId, workDate: record.workDate, punches: [] };
+          dayGroups.set(key, g);
+        }
+        g.punches.push(record);
+      }
+
+      const totalRecordCount = dayGroups.size + approvedTimeOff.length + approvedCashouts.length;
+
+      // Per-employee resolution caches: the frozen pay-engine snapshot, the raw
+      // payroll rules (for bonus evaluation), the hourly rate, and the active
+      // scheduled days (for holiday detection). Resolved once per employee.
+      const empResolutionCache = new Map<string, {
+        payCalc: PayCalcPolicy;
+        payrollRules: Record<string, any>;
+        rate: number;
+        scheduledDays: number[];
+      }>();
+      const resolveEmp = async (employeeId: string) => {
+        const cached = empResolutionCache.get(employeeId);
+        if (cached) return cached;
+        const empUser = userMap.get(employeeId);
+        const [att, pay, pto] = await Promise.all([
+          empUser ? getEffectivePolicy(empUser.companyId, employeeId, "attendance", empUser) : Promise.resolve(null),
+          empUser ? getEffectivePolicy(empUser.companyId, employeeId, "payroll", empUser) : Promise.resolve(null),
+          empUser ? getEffectivePolicy(empUser.companyId, employeeId, "pto", empUser) : Promise.resolve(null),
+        ]);
+        const payCalc = buildPayCalcPolicy(att?.rules, pay?.rules, pto?.rules, {
+          attendance: att?.version ?? null,
+          payroll: pay?.version ?? null,
+        });
+        const profile = await storage.getEmploymentProfile(employeeId);
+        let rate = 0;
+        if (profile) {
+          if (profile.hourlyRate) rate = profile.hourlyRate;
+          else if (profile.dailySalary) rate = profile.dailySalary / 8;
+          else if (profile.weeklySalary) rate = profile.weeklySalary / 40;
+        }
+        const schedules = await storage.getEmployeeSchedules(employeeId);
+        const resolved = {
+          payCalc,
+          payrollRules: (pay?.rules as Record<string, any>) || DEFAULT_PAYROLL_RULES,
+          rate,
+          scheduledDays: schedules.filter(s => s.isActive).map(s => s.dayOfWeek),
+        };
+        empResolutionCache.set(employeeId, resolved);
+        return resolved;
+      };
+      const getDayOfWeekForDate = (dateStr: string): number => {
+        const parts = dateStr.split("-");
+        return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10))).getUTCDay();
+      };
 
       const payrollExport = await db.transaction(async (tx) => {
         const [created] = await tx.insert(payrollExportsTable).values({
@@ -7313,50 +7409,74 @@ export async function registerRoutes(
           reopenedBy: null,
         }).returning();
 
-        for (const record of attendanceRecords) {
-          const hours = record.hoursWorked || 0;
-          const hasIssue = !record.clockIn || (!record.clockOut && record.status !== "in-progress");
+        for (const g of dayGroups.values()) {
+          const { payCalc, payrollRules, rate, scheduledDays } = await resolveEmp(g.employeeId);
 
-          const empUser = userMap.get(record.employeeId);
-          const empAttPolicy = empUser ? await getEffectivePolicy(empUser.companyId, record.employeeId, "attendance", empUser) : null;
-          const empAttRules = empAttPolicy?.rules || DEFAULT_ATTENDANCE_RULES;
-          const otThreshold = empAttRules.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
-
-          let regHours = hours;
-          let otHours = 0;
-          if (hours > otThreshold) {
-            regHours = otThreshold;
-            otHours = Math.round((hours - otThreshold) * 100) / 100;
+          let dayHours = 0;
+          let earliestClockIn: Date | null = null;
+          let earliestRounded: Date | string | null = null;
+          let primaryPunchId: string | null = null;
+          let hasIssue = false;
+          for (const p of g.punches) {
+            dayHours += p.hoursWorked || 0;
+            if (!p.clockIn || (!p.clockOut && p.status !== "in-progress")) hasIssue = true;
+            if (p.clockIn) {
+              const t = new Date(p.clockIn);
+              if (!earliestClockIn || t < earliestClockIn) {
+                earliestClockIn = t;
+                earliestRounded = p.roundedClockIn ?? p.clockIn;
+                primaryPunchId = p.id;
+              }
+            }
+            if (primaryPunchId === null) primaryPunchId = p.id;
           }
+          dayHours = round2(dayHours);
 
-          const empPayrollPolicy = empUser ? await getEffectivePolicy(empUser.companyId, record.employeeId, "payroll", empUser) : null;
-          const empPayrollRules = empPayrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
-          const bonusResult = evaluateDayOfWeekBonuses(record.workDate, hours, empPayrollRules);
-          const earlyResult = evaluateEarlyArrivalBonuses(record.workDate, record.roundedClockIn ?? record.clockIn, hours, empPayrollRules);
-          const combinedBonusAmount = Math.round((bonusResult.bonusAmount + earlyResult.bonusAmount) * 100) / 100;
+          // Holiday = worked on a non-scheduled day (mirrors the CSV export's
+          // pay-type logic). When the policy excludes holiday hours from OT,
+          // splitDailyHours keeps them all regular.
+          const isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeekForDate(g.workDate));
+          const split = splitDailyHours(dayHours, payCalc, { isHoliday });
+
+          const bonusResult = evaluateDayOfWeekBonuses(g.workDate, dayHours, payrollRules);
+          const earlyResult = evaluateEarlyArrivalBonuses(g.workDate, earliestRounded, dayHours, payrollRules);
+          const combinedBonusAmount = round2(bonusResult.bonusAmount + earlyResult.bonusAmount);
           const combinedDescriptions = [...bonusResult.descriptions, ...earlyResult.descriptions];
 
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,
-            employeeId: record.employeeId,
-            punchLogId: record.id,
+            employeeId: g.employeeId,
+            punchLogId: primaryPunchId,
             timeOffRequestId: null,
             recordType: "attendance",
-            workDate: record.workDate,
-            regularHours: regHours,
-            overtimeHours: otHours,
+            workDate: g.workDate,
+            regularHours: split.regularHours,
+            overtimeHours: split.overtimeHours,
+            doubleTimeHours: split.doubleTimeHours,
             ptoHours: 0,
+            otThresholdDaily: payCalc.otThresholdDaily,
+            doubleTimeThresholdDaily: payCalc.doubleTimeThresholdDaily,
+            overtimeMultiplier: payCalc.overtimeMultiplier,
+            doubleTimeMultiplier: payCalc.doubleTimeMultiplier,
+            hourlyRate: rate,
+            policyVersion: payCalc.payrollPolicyVersion,
+            autoCalculateOt: payCalc.autoCalculateOT,
+            overtimeEnabled: payCalc.overtimeEnabled,
+            doubleTimeEnabled: payCalc.doubleTimeEnabled,
+            holidayOtExclusion: payCalc.holidayOtExclusion,
+            isHoliday,
             bonusAmount: combinedBonusAmount,
             bonusHours: bonusResult.bonusHours,
             bonusDescription: combinedDescriptions.length > 0 ? combinedDescriptions.join("; ") : null,
             hasIssues: hasIssue,
-            issueDescription: hasIssue ? `Missing punch data on ${record.workDate}` : null,
+            issueDescription: hasIssue ? `Missing punch data on ${g.workDate}` : null,
           });
         }
 
         for (const tor of approvedTimeOff) {
           const ptoHours = tor.hoursRequested || 8;
           const effectiveStart = tor.startDate > startDate ? tor.startDate : startDate;
+          const { rate } = await resolveEmp(tor.userId);
 
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,
@@ -7367,7 +7487,9 @@ export async function registerRoutes(
             workDate: effectiveStart,
             regularHours: 0,
             overtimeHours: 0,
+            doubleTimeHours: 0,
             ptoHours,
+            hourlyRate: rate,
             hasIssues: false,
             issueDescription: null,
           });
@@ -7375,6 +7497,7 @@ export async function registerRoutes(
 
         for (const co of approvedCashouts) {
           const cashoutHours = co.hoursRequested || 8;
+          const { rate } = await resolveEmp(co.userId);
 
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,
@@ -7385,7 +7508,9 @@ export async function registerRoutes(
             workDate: co.startDate,
             regularHours: 0,
             overtimeHours: 0,
+            doubleTimeHours: 0,
             ptoHours: cashoutHours,
+            hourlyRate: rate,
             hasIssues: false,
             issueDescription: null,
           });
@@ -7400,13 +7525,13 @@ export async function registerRoutes(
         targetType: "payroll_export",
         targetId: payrollExport.id,
         action: "payroll_export.created",
-        newValue: { startDate, endDate, recordCount: attendanceRecords.length + approvedTimeOff.length + approvedCashouts.length },
+        newValue: { startDate, endDate, recordCount: totalRecordCount },
         ...auditCtx,
       });
 
       res.status(201).json({
         ...payrollExport,
-        recordCount: attendanceRecords.length + approvedTimeOff.length,
+        recordCount: totalRecordCount,
         overlapWarning,
       });
     } catch (error) {
@@ -7448,7 +7573,26 @@ export async function registerRoutes(
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
 
-      const summary = new Map<string, { employeeId: string; employeeName: string; regularHours: number; overtimeHours: number; ptoHours: number; bonusHours: number; bonusAmount: number; hasIssues: boolean }>();
+      // Resolve a per-record hourly rate: prefer the snapshot frozen at batch
+      // creation, fall back to the current employment profile for legacy rows
+      // (created before the snapshot existed).
+      const rateFallbackCache = new Map<string, number>();
+      const resolveRate = async (r: typeof records[number]): Promise<number> => {
+        if (r.hourlyRate != null) return r.hourlyRate;
+        if (!rateFallbackCache.has(r.employeeId)) {
+          const profile = await storage.getEmploymentProfile(r.employeeId);
+          let rate = 0;
+          if (profile) {
+            if (profile.hourlyRate) rate = profile.hourlyRate;
+            else if (profile.dailySalary) rate = profile.dailySalary / 8;
+            else if (profile.weeklySalary) rate = profile.weeklySalary / 40;
+          }
+          rateFallbackCache.set(r.employeeId, rate);
+        }
+        return rateFallbackCache.get(r.employeeId)!;
+      };
+
+      const summary = new Map<string, { employeeId: string; employeeName: string; regularHours: number; overtimeHours: number; doubleTimeHours: number; ptoHours: number; bonusHours: number; bonusAmount: number; grossPay: number; hasIssues: boolean }>();
 
       for (const r of records) {
         if (!summary.has(r.employeeId)) {
@@ -7458,18 +7602,32 @@ export async function registerRoutes(
             employeeName: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Unknown",
             regularHours: 0,
             overtimeHours: 0,
+            doubleTimeHours: 0,
             ptoHours: 0,
             bonusHours: 0,
             bonusAmount: 0,
+            grossPay: 0,
             hasIssues: false,
           });
         }
         const emp = summary.get(r.employeeId)!;
-        emp.regularHours += r.regularHours || 0;
-        emp.overtimeHours += r.overtimeHours || 0;
-        emp.ptoHours += r.ptoHours || 0;
+        const reg = r.regularHours || 0;
+        const ot = r.overtimeHours || 0;
+        const dt = r.doubleTimeHours || 0;
+        const pto = r.ptoHours || 0;
+        const bonus = r.bonusAmount || 0;
+        emp.regularHours += reg;
+        emp.overtimeHours += ot;
+        emp.doubleTimeHours += dt;
+        emp.ptoHours += pto;
         emp.bonusHours += r.bonusHours || 0;
-        emp.bonusAmount += r.bonusAmount || 0;
+        emp.bonusAmount += bonus;
+        // Gross pay applies the (snapshotted) OT/DT multipliers; PTO pays at base.
+        const rate = await resolveRate(r);
+        const otMult = r.overtimeMultiplier ?? DEFAULT_PAYROLL_RULES.overtimeMultiplier;
+        const dtMult = r.doubleTimeMultiplier ?? DEFAULT_PAYROLL_RULES.doubleTimeMultiplier;
+        const worked = computeGrossPay({ regularHours: reg, overtimeHours: ot, doubleTimeHours: dt }, rate, { overtimeMultiplier: otMult, doubleTimeMultiplier: dtMult });
+        emp.grossPay = round2(emp.grossPay + worked + pto * rate + bonus);
         if (r.hasIssues) emp.hasIssues = true;
       }
 
@@ -7567,8 +7725,11 @@ export async function registerRoutes(
         const profile = await getProfile(r.employeeId);
         const schedules = await getSchedules(r.employeeId);
 
-        let hourlyRate = 0;
-        if (profile) {
+        // Prefer the hourly rate frozen onto the record at batch creation so
+        // historical exports never drift when a profile's pay rate later
+        // changes; fall back to the current profile for legacy rows.
+        let hourlyRate = r.hourlyRate ?? 0;
+        if (r.hourlyRate == null && profile) {
           if (profile.hourlyRate) {
             hourlyRate = profile.hourlyRate;
           } else if (profile.dailySalary) {
@@ -7580,8 +7741,21 @@ export async function registerRoutes(
 
         const bonusHours = r.bonusHours || 0;
         const bonusAmount = r.bonusAmount || 0;
-        const totalHours = (r.regularHours || 0) + (r.overtimeHours || 0) + (r.ptoHours || 0) + bonusHours;
-        const amount = totalHours * hourlyRate + bonusAmount;
+        const regHours = r.regularHours || 0;
+        const otHours = r.overtimeHours || 0;
+        const dtHours = r.doubleTimeHours || 0;
+        const ptoHours = r.ptoHours || 0;
+        // Paid hours include OT/DT/PTO/bonus hours at face value; the dollar
+        // amount applies the (snapshotted) OT/DT premium multipliers.
+        const totalHours = regHours + otHours + dtHours + ptoHours + bonusHours;
+        const otMult = r.overtimeMultiplier ?? DEFAULT_PAYROLL_RULES.overtimeMultiplier;
+        const dtMult = r.doubleTimeMultiplier ?? DEFAULT_PAYROLL_RULES.doubleTimeMultiplier;
+        const workedPay = computeGrossPay(
+          { regularHours: regHours, overtimeHours: otHours, doubleTimeHours: dtHours },
+          hourlyRate,
+          { overtimeMultiplier: otMult, doubleTimeMultiplier: dtMult },
+        );
+        const amount = round2(workedPay + ptoHours * hourlyRate + bonusAmount);
 
         const jsDayOfWeek = getDayOfWeek(r.workDate);
         const scheduledDays = schedules.filter(s => s.isActive).map(s => s.dayOfWeek);
