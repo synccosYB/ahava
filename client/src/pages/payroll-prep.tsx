@@ -20,6 +20,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, CheckCircle, XCircle, Unlock, Eye, Info } from "lucide-react";
+import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { PayrollExport, PayrollBatchRecord } from "@shared/schema";
@@ -219,9 +220,12 @@ export default function PayrollPrepPage() {
               <Skeleton className="h-8 w-full" />
             </div>
           ) : batches.length === 0 ? (
-            <p className="p-8 text-center text-muted-foreground" data-testid="text-no-batches">
-              No payroll batches. Create one to get started.
-            </p>
+            <EmptyState
+              icon={FileText}
+              title="No payroll batches"
+              description="Create a batch to validate and export payroll for a pay period."
+              testId="text-no-batches"
+            />
           ) : (
             <Table>
               <TableHeader>
@@ -302,9 +306,12 @@ export default function PayrollPrepPage() {
               <Skeleton className="h-8 w-full" />
             </div>
           ) : sortedDetailRecords.length === 0 ? (
-            <p className="py-8 text-center text-muted-foreground" data-testid="text-no-detail-records">
-              No records in this batch.
-            </p>
+            <EmptyState
+              icon={FileText}
+              title="No records in this batch"
+              description="This batch has no payroll records for the selected period."
+              testId="text-no-detail-records"
+            />
           ) : (
             <Table>
               <TableHeader>

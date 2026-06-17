@@ -20,11 +20,13 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, Trash2, Clock, AlertCircle } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useToast } from "@/hooks/use-toast";
-import { formatHoursMinutes } from "@/lib/utils";
+import { formatHoursMinutes, formatDate, formatTime12 } from "@/lib/utils";
+import { EmptyState } from "@/components/empty-state";
 
 type Punch = {
   id: string;
@@ -74,16 +76,6 @@ function fromLocalInput(value: string): string | null {
   const d = new Date(value);
   if (isNaN(d.getTime())) return null;
   return d.toISOString();
-}
-
-function formatTime(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "—";
-  return d.toLocaleString([], {
-    month: "short", day: "numeric",
-    hour: "numeric", minute: "2-digit",
-  });
 }
 
 export function AttendancePunchTable({ title = "Punch Records" }: { title?: string }) {
@@ -256,13 +248,17 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
             <Skeleton className="h-10 w-full" />
           </div>
         ) : isError ? (
-          <p className="text-destructive text-center py-8" data-testid="text-punch-error">
-            Failed to load punch records.
-          </p>
+          <Alert variant="destructive" className="my-4" data-testid="text-punch-error">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>Failed to load punch records.</AlertDescription>
+          </Alert>
         ) : punches.length === 0 ? (
-          <p className="text-muted-foreground text-center py-8" data-testid="text-no-punches">
-            No punches found for the selected filters.
-          </p>
+          <EmptyState
+            icon={Clock}
+            title="No punches found"
+            description="No punch records match the selected filters. Try a different employee, location, or date range."
+            testId="text-no-punches"
+          />
         ) : (
           <Table>
             <TableHeader>
@@ -284,9 +280,9 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
                   <TableCell className="font-medium" data-testid={`text-punch-employee-${p.id}`}>
                     {p.employeeName}
                   </TableCell>
-                  <TableCell data-testid={`text-punch-date-${p.id}`}>{p.workDate}</TableCell>
-                  <TableCell data-testid={`text-punch-in-${p.id}`}>{formatTime(p.clockIn)}</TableCell>
-                  <TableCell data-testid={`text-punch-out-${p.id}`}>{formatTime(p.clockOut)}</TableCell>
+                  <TableCell data-testid={`text-punch-date-${p.id}`}>{formatDate(p.workDate) || "—"}</TableCell>
+                  <TableCell data-testid={`text-punch-in-${p.id}`}>{formatTime12(p.clockIn) || "—"}</TableCell>
+                  <TableCell data-testid={`text-punch-out-${p.id}`}>{formatTime12(p.clockOut) || "—"}</TableCell>
                   <TableCell className="tabular-nums" data-testid={`text-punch-hours-${p.id}`}>
                     {p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—"}
                   </TableCell>
@@ -333,7 +329,7 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
           <DialogHeader>
             <DialogTitle>Edit Punch</DialogTitle>
             <DialogDescription>
-              {editPunch ? `${editPunch.employeeName} — ${editPunch.workDate}` : ""}
+              {editPunch ? `${editPunch.employeeName} — ${formatDate(editPunch.workDate)}` : ""}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -386,7 +382,7 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
             <AlertDialogTitle>Delete this punch?</AlertDialogTitle>
             <AlertDialogDescription>
               {deletePunchTarget
-                ? `This permanently removes the punch for ${deletePunchTarget.employeeName} on ${deletePunchTarget.workDate}. This cannot be undone.`
+                ? `This permanently removes the punch for ${deletePunchTarget.employeeName} on ${formatDate(deletePunchTarget.workDate)}. This cannot be undone.`
                 : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -9,8 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Download } from "lucide-react";
-import { formatHoursMinutes } from "@/lib/utils";
+import { Download, CalendarDays, AlertCircle } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { EmptyState } from "@/components/empty-state";
+import { formatHoursMinutes, formatDate, formatTime12 } from "@/lib/utils";
 
 export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "none";
 
@@ -144,11 +146,23 @@ export function EmployeeTimesheetTable({
     data.entries.length === 0 ||
     data.entries.every((e) => e.status === "none");
 
-  if (isError || hasNoPunches) {
+  if (isError) {
     return (
-      <p className="text-sm text-muted-foreground py-4" data-testid="text-timesheet-empty">
-        No punches have been recorded for this employee in the selected date range.
-      </p>
+      <Alert variant="destructive" className="my-4" data-testid="alert-timesheet-error">
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription>Failed to load the timesheet. Please try again.</AlertDescription>
+      </Alert>
+    );
+  }
+
+  if (hasNoPunches) {
+    return (
+      <EmptyState
+        icon={CalendarDays}
+        title="No timesheet data"
+        description="No punches have been recorded for this employee in the selected date range."
+        testId="text-timesheet-empty"
+      />
     );
   }
 
@@ -211,13 +225,13 @@ export function EmployeeTimesheetTable({
           <TableBody>
             {data.entries.map((e) => (
               <TableRow key={e.date} data-testid={`row-timesheet-${e.date}`}>
-                <TableCell className="text-sm font-medium">{e.date}</TableCell>
+                <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
                 <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
-                  {e.clockIn ? new Date(e.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
+                  {e.clockIn ? formatTime12(e.clockIn) : "—"}
                 </TableCell>
                 <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
-                  {e.clockOut ? new Date(e.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
+                  {e.clockOut ? formatTime12(e.clockOut) : "—"}
                 </TableCell>
                 <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
                 <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>

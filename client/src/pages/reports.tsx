@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes } from "@/lib/utils";
+import { formatHoursMinutes, formatDate, formatTime12 } from "@/lib/utils";
+import { EmptyState } from "@/components/empty-state";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -119,15 +120,12 @@ function formatCell(value: unknown, kind: ReportColumn["kind"], mode: "display" 
   }
   if (kind === "date") {
     // Date-only string (YYYY-MM-DD) — render without timezone shifting.
-    const s = String(value);
-    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (m) return `${m[2]}/${m[3]}/${m[1]}`;
-    return s;
+    return formatDate(String(value)) || String(value);
   }
   if (kind === "datetime") {
     const d = new Date(String(value));
     if (isNaN(d.getTime())) return String(value);
-    return mode === "csv" ? d.toISOString() : d.toLocaleString();
+    return mode === "csv" ? d.toISOString() : `${formatDate(d)} ${formatTime12(d)}`;
   }
   return String(value);
 }
@@ -403,9 +401,12 @@ function StandardReport({
                   </TableBody>
                 </Table>
               ) : (
-                <p className="text-muted-foreground text-center py-4" data-testid="text-no-report-data">
-                  No data found for the selected criteria.
-                </p>
+                <EmptyState
+                  icon={FileText}
+                  title="No data found"
+                  description="No records match the selected criteria. Try adjusting the date range or filters."
+                  testId="text-no-report-data"
+                />
               )}
             </CardContent>
           </Card>
@@ -451,7 +452,12 @@ function AuditReport() {
               {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
             </div>
           ) : !logs || logs.length === 0 ? (
-            <p className="text-muted-foreground text-center py-4" data-testid="text-no-audit-data">No audit logs found.</p>
+            <EmptyState
+              icon={FileSearch}
+              title="No audit logs"
+              description="Audit activity will appear here as actions are recorded."
+              testId="text-no-audit-data"
+            />
           ) : (
             <Table>
               <TableHeader>
@@ -470,7 +476,7 @@ function AuditReport() {
                     <TableCell>{log.targetType}</TableCell>
                     <TableCell className="text-xs font-mono">{log.targetId.substring(0, 8)}...</TableCell>
                     <TableCell>{log.ipAddress || "—"}</TableCell>
-                    <TableCell>{log.createdAt ? new Date(log.createdAt).toLocaleString() : "—"}</TableCell>
+                    <TableCell>{log.createdAt ? `${formatDate(log.createdAt)} ${formatTime12(log.createdAt)}` : "—"}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

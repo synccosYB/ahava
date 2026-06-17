@@ -5,6 +5,47 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ * ATTENDANCE DISPLAY STANDARD
+ * ─────────────────────────────────────────────────────────────────────────
+ * How already-computed attendance values are *displayed* across all
+ * attendance screens (My Attendance, Reports, Payroll Prep, Punch Records,
+ * Requests & Approvals, Employee Timesheet, Profile, Kiosk). This is a
+ * presentation contract only — it never changes how values are calculated.
+ *
+ * • Dates         → `formatDate`        → MM/DD/YYYY (timezone-safe for
+ *                                          plain YYYY-MM-DD calendar dates).
+ * • Date ranges   → `formatDateRange`   → "MM/DD/YYYY – MM/DD/YYYY".
+ * • Times         → `formatTime12`      → 12-hour "1:42 PM".
+ *                   `formatTime12FromHHmm` for "HH:mm" schedule strings.
+ * • Hours         → `formatHoursMinutes`→ "Xh Ym" everywhere ON SCREEN.
+ *                   Raw decimal hours are allowed ONLY in CSV / payroll
+ *                   exports, never in the rendered UI.
+ * • Currency      → `formatCurrency`    → "$0.00".
+ * • Missing value → render "—" (em dash), not blank, "N/A", or "0".
+ *
+ * Overtime terminology: use the full word "Overtime" in body text, badges,
+ * and labels. The abbreviation "OT" is permitted ONLY in dense table column
+ * headers (e.g. Payroll Prep "OT Hours"). Overtime emphasis color is amber
+ * (text-amber-500 / bg-amber-500).
+ *
+ * Status badges (shared palette): Complete → green (bg-green-600),
+ * Overtime → amber (bg-amber-500), In Progress → outline,
+ * Missing Punch → destructive, PTO → blue outline.
+ *
+ * Loading / empty / error states:
+ * • Loading → `Skeleton` rows.
+ * • Empty   → the shared `EmptyState` component
+ *             (`client/src/components/empty-state.tsx`).
+ * • Error   → destructive `Alert` (inline) and/or a toast for mutations.
+ *
+ * The Kiosk intentionally uses larger, tablet-optimized formatters (full
+ * weekday dates, seconds on the live clock) and is exempt from the compact
+ * formatters above while still following the same terminology + status rules.
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+
 export function formatCurrency(value: number | null | undefined): string {
   if (value == null) return "—";
   return new Intl.NumberFormat("en-US", {

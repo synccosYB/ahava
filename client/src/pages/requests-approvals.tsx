@@ -17,6 +17,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { formatDate, formatDateRange } from "@/lib/utils";
 import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText, Search, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { CorrectionStatusBadge } from "@/components/correction-status-badge";
+import { EmptyState } from "@/components/empty-state";
+import { EXCEPTION_TYPE_OPTIONS, formatExceptionTypeLabel } from "@/lib/exceptionLabels";
 import type { TimeOffRequest, AttendanceException, Department, Location, TimeOffBalanceBucket } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload, timeOnDateToISO } from "@/lib/exceptionTimeInfo";
 import { computeGeofenceBbox, DEFAULT_GEOFENCE_RADIUS_METERS, type GeofenceMapData } from "@/lib/geofenceMap";
@@ -84,21 +87,6 @@ const PTO_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "fmla", label: "FMLA" },
   { value: "unpaid", label: "Unpaid Leave" },
 ];
-
-const EXCEPTION_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: "missing_punch", label: "Missing Punch" },
-  { value: "time_correction", label: "Time Correction" },
-  { value: "punch_removal", label: "Punch Removal" },
-  { value: "forgotten_clock_in", label: "Forgotten Clock In" },
-  { value: "forgotten_clock_out", label: "Forgotten Clock Out" },
-  { value: "geofence", label: "Out of Area" },
-];
-
-function formatExceptionTypeLabel(type: string): string {
-  const found = EXCEPTION_TYPE_OPTIONS.find(o => o.value === type);
-  if (found) return found.label;
-  return type.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-}
 
 function rangesOverlap(startA: string | null | undefined, endA: string | null | undefined, startB: string, endB: string): boolean {
   // Inclusive overlap of [startA, endA] with [startB, endB]. If only one side
@@ -601,10 +589,12 @@ function ProcessedTab() {
         </div>
       ) : filteredCount === 0 ? (
         <Card>
-          <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-processed">
-            {hasAnyFilter
-              ? "No requests match these filters."
-              : "No processed requests found."}
+          <CardContent className="p-0">
+            <EmptyState
+              icon={hasAnyFilter ? Filter : ClipboardList}
+              title={hasAnyFilter ? "No requests match these filters." : "No processed requests found."}
+              testId="text-no-processed"
+            />
           </CardContent>
         </Card>
       ) : (
@@ -946,14 +936,14 @@ function AllPendingTab() {
       ) : filteredCount === 0 ? (
         hasActive ? (
           <Card>
-            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pending-filtered">
-              No requests match these filters.
+            <CardContent className="p-0">
+              <EmptyState icon={Filter} title="No requests match these filters." testId="text-no-pending-filtered" />
             </CardContent>
           </Card>
         ) : (
           <Card>
-            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pending">
-              All caught up! No pending requests.
+            <CardContent className="p-0">
+              <EmptyState icon={ClipboardList} title="All caught up!" description="No pending requests." testId="text-no-pending" />
             </CardContent>
           </Card>
         )
@@ -1039,14 +1029,14 @@ function PtoRequestsTab() {
       ) : filtered.length === 0 ? (
         hasActive ? (
           <Card>
-            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pto-requests-filtered">
-              No requests match these filters.
+            <CardContent className="p-0">
+              <EmptyState icon={Filter} title="No requests match these filters." testId="text-no-pto-requests-filtered" />
             </CardContent>
           </Card>
         ) : (
           <Card>
-            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-pto-requests">
-              All caught up! No pending PTO requests.
+            <CardContent className="p-0">
+              <EmptyState icon={Calendar} title="All caught up!" description="No pending PTO requests." testId="text-no-pto-requests" />
             </CardContent>
           </Card>
         )
@@ -1167,14 +1157,14 @@ function ExceptionsTab() {
       ) : filteredPending.length === 0 ? (
         hasActive ? (
           <Card>
-            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-exception-requests-filtered">
-              No requests match these filters.
+            <CardContent className="p-0">
+              <EmptyState icon={Filter} title="No requests match these filters." testId="text-no-exception-requests-filtered" />
             </CardContent>
           </Card>
         ) : (
           <Card>
-            <CardContent className="p-8 text-center text-muted-foreground" data-testid="text-no-exception-requests">
-              All caught up! No pending attendance exceptions.
+            <CardContent className="p-0">
+              <EmptyState icon={ClipboardList} title="All caught up!" description="No pending attendance exceptions." testId="text-no-exception-requests" />
             </CardContent>
           </Card>
         )
@@ -1198,9 +1188,17 @@ function ExceptionsTab() {
         {decidedLoading ? (
           <Skeleton className="h-32 w-full" />
         ) : totalDecided === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="text-no-decided">No recently decided exceptions.</p>
+          <Card>
+            <CardContent className="p-0">
+              <EmptyState icon={ClipboardList} title="No recently decided exceptions." testId="text-no-decided" />
+            </CardContent>
+          </Card>
         ) : filteredDecided.length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="text-no-decided-filtered">No decided exceptions match these filters.</p>
+          <Card>
+            <CardContent className="p-0">
+              <EmptyState icon={Filter} title="No decided exceptions match these filters." testId="text-no-decided-filtered" />
+            </CardContent>
+          </Card>
         ) : (
           <Card>
             <CardContent className="p-0">
@@ -1223,9 +1221,11 @@ function ExceptionsTab() {
                       </TableCell>
                       <TableCell className="text-sm">{formatDate(ex.exceptionDate)}</TableCell>
                       <TableCell>
-                        <Badge variant={ex.status === "approved" ? "default" : "destructive"} className={ex.status === "approved" ? "bg-green-600" : ""}>
-                          {ex.status.charAt(0).toUpperCase() + ex.status.slice(1)}
-                        </Badge>
+                        <CorrectionStatusBadge
+                          status={ex.status}
+                          testIdSuffix={ex.id}
+                          isRemoval={ex.type === "punch_removal"}
+                        />
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{ex.reviewerName}</TableCell>
                     </TableRow>

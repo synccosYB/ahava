@@ -15,7 +15,11 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
-import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench, MessageSquare, Lock, Unlock, Trash2 } from "lucide-react";
+import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench, MessageSquare, Lock, Unlock, Trash2, CalendarDays } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { EmptyState } from "@/components/empty-state";
+import { CorrectionStatusBadge } from "@/components/correction-status-badge";
+import { formatExceptionTypeLabel } from "@/lib/exceptionLabels";
 import type { AttendanceRecord, AttendanceException } from "@shared/schema";
 import { parseExceptionTimeInfo } from "@/lib/exceptionTimeInfo";
 import {
@@ -417,13 +421,17 @@ export default function MyAttendance() {
               {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
             </div>
           ) : isError ? (
-            <p className="text-center text-destructive py-8 text-sm" data-testid="text-error">
-              Failed to load attendance records. Please try again.
-            </p>
+            <Alert variant="destructive" data-testid="text-error">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>Failed to load attendance records. Please try again.</AlertDescription>
+            </Alert>
           ) : !records || records.length === 0 ? (
-            <p className="text-center text-muted-foreground py-8 text-sm" data-testid="text-no-records">
-              No attendance records found for this date range.
-            </p>
+            <EmptyState
+              icon={CalendarDays}
+              title="No attendance records"
+              description="No records found for this date range. Try selecting a different range."
+              testId="text-no-records"
+            />
           ) : (
             <Table>
               <TableHeader>
@@ -1071,42 +1079,8 @@ function CorrectionFormBody({
 // removal-aware wording). Used by both the attendance table's resolved cell and
 // the "My Correction Requests" card so the two never drift apart.
 function correctionStatusBadge(status: string, testIdSuffix: string, isRemoval = false) {
-  if (status === "pending") {
-    return (
-      <Badge
-        variant="secondary"
-        className="bg-amber-100 text-amber-800 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-200"
-        data-testid={`badge-verdict-pending-${testIdSuffix}`}
-      >
-        {isRemoval ? "Removal pending" : "Pending"}
-      </Badge>
-    );
-  }
-  if (status === "approved") {
-    return (
-      <Badge
-        className="bg-green-600 hover:bg-green-600"
-        data-testid={`badge-verdict-approved-${testIdSuffix}`}
-      >
-        {isRemoval ? "Removal approved" : "Approved"}
-      </Badge>
-    );
-  }
-  if (status === "denied") {
-    return (
-      <Badge variant="destructive" data-testid={`badge-verdict-denied-${testIdSuffix}`}>
-        {isRemoval ? "Removal denied" : "Denied"}
-      </Badge>
-    );
-  }
   return (
-    <Badge
-      variant="outline"
-      className="text-muted-foreground"
-      data-testid={`badge-verdict-cancelled-${testIdSuffix}`}
-    >
-      {isRemoval ? "Removal cancelled" : "Cancelled"}
-    </Badge>
+    <CorrectionStatusBadge status={status} testIdSuffix={testIdSuffix} isRemoval={isRemoval} />
   );
 }
 
@@ -1361,15 +1335,23 @@ function PunchCorrectionForm({ myExceptions, exceptionsLoading, pendingDates, pe
                 {[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}
               </div>
             ) : !myExceptions || myExceptions.length === 0 ? (
-              <p className="text-center text-muted-foreground py-4 text-sm" data-testid="text-no-corrections">
-                No correction requests yet.
-              </p>
+              <EmptyState
+                icon={Wrench}
+                title="No correction requests yet"
+                description="When you ask to fix a punch, your requests and their status will appear here."
+                testId="text-no-corrections"
+              />
             ) : (
               <div className="space-y-3">
                 {myExceptions.map((ex) => (
                   <div key={ex.id} className="rounded-md border p-3" data-testid={`card-correction-${ex.id}`}>
                     <div className="flex items-center justify-between gap-2 mb-1">
-                      {correctionStatusBadge(ex.status, ex.id, ex.type === "punch_removal")}
+                      <div className="flex items-center gap-2">
+                        {correctionStatusBadge(ex.status, ex.id, ex.type === "punch_removal")}
+                        <Badge variant="outline" className="text-xs" data-testid={`badge-correction-type-${ex.id}`}>
+                          {formatExceptionTypeLabel(ex.type)}
+                        </Badge>
+                      </div>
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-muted-foreground">{formatDate(ex.exceptionDate)}</span>
                         {ex.status === "pending" && onEdit && (
