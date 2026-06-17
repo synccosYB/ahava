@@ -423,6 +423,9 @@ export const DEFAULT_ATTENDANCE_RULES = {
   autoClockOutAfterHours: 16,
   requireBreakAfterHours: 6,
   breakDurationMinutes: 30,
+  // Punch-integrity (task #450): when false (default), the shared validator
+  // rejects future-dated clock-in/out times. Set true to permit them.
+  allowFuturePunches: false,
 };
 
 export const DEFAULT_PTO_RULES = {

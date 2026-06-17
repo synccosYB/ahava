@@ -30,7 +30,12 @@
 #                                          + DST real-elapsed-time), attendance
 #                                          totals, buildPtoPolicyFromRules.
 #     - punchSources.test.ts               canonical punch-method classification.
+#     - punchValidation.test.ts            shared punch-integrity validator (per
+#                                          rejection case: impossible/future/
+#                                          overlap/duplicate-open).
 #   DB-backed:
+#     - punchIntegrityRoute.test.ts        punch-edit route rejects bad edits
+#                                          (400) + recomputes hours on a valid edit.
 #     - services/clockInIntegration.test.ts  clock-in punch lifecycle.
 #     - services/duplicateOpenPunch.test.ts  concurrent clock-in -> one open punch.
 #     - services/exceptionResolveRoute.test.ts exception resolve honors OT threshold.
@@ -78,10 +83,12 @@ TEST_FILES=(
   "server/services/__tests__/punchLogTimes.test.ts"
   "server/__tests__/punchHoursCalc.test.ts"
   "server/__tests__/punchSources.test.ts"
+  "server/__tests__/punchValidation.test.ts"
   # DB-backed: attendance / punch lifecycle
   "server/services/__tests__/clockInIntegration.test.ts"
   "server/services/__tests__/duplicateOpenPunch.test.ts"
   "server/services/__tests__/exceptionResolveRoute.test.ts"
+  "server/__tests__/punchIntegrityRoute.test.ts"
   # DB-backed: PTO
   "server/__tests__/ptoBalanceCalc.test.ts"
   "server/__tests__/ptoEmployeeAssignment.test.ts"

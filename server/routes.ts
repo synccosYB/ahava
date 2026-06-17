@@ -18,6 +18,7 @@ import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDai
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
 import { getLedgerForEmployee, getLedgerForEmployees, summarizeLedger, recomputeLedger } from "./attendanceLedger";
+import { validatePunchIntegrity, type ExistingPunchForValidation } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
 import {
   computeAttendanceReconciliation,
@@ -276,6 +277,97 @@ function describeFinalizedPayroll(exports: PayrollExport[]): string {
   return exports
     .map((e) => `${e.startDate} – ${e.endDate} (${e.status})`)
     .join(", ");
+}
+
+/**
+ * Finalized (exported/locked) payroll exports that already include the given
+ * employee AND whose date range covers `workDate`. Used to block CREATING a new
+ * punch (e.g. via an approved forgotten-clock-in correction) inside a period
+ * that has already been finalized — the punch-id-based guard above only catches
+ * edits/deletes of punches that are already referenced by payroll, so a brand
+ * new punch needs this date-coverage check instead.
+ */
+async function findFinalizedPayrollExportsForEmployeeDate(
+  employeeId: string,
+  workDate: string,
+  executor: DbOrTx = db,
+): Promise<PayrollExport[]> {
+  const rows = await executor
+    .select({ exp: payrollExportsTable })
+    .from(payrollBatchRecordsTable)
+    .innerJoin(payrollExportsTable, eq(payrollExportsTable.id, payrollBatchRecordsTable.payrollExportId))
+    .where(and(
+      eq(payrollBatchRecordsTable.employeeId, employeeId),
+      inArray(payrollExportsTable.status, [...FINALIZED_PAYROLL_STATUSES]),
+      lte(payrollExportsTable.startDate, workDate),
+      gte(payrollExportsTable.endDate, workDate),
+    ));
+  const byId = new Map<string, PayrollExport>();
+  for (const r of rows) byId.set(r.exp.id, r.exp);
+  return [...byId.values()];
+}
+
+/** Shift a YYYY-MM-DD date string by `deltaDays` (UTC), returning YYYY-MM-DD. */
+function shiftDateStr(dateStr: string, deltaDays: number): string {
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().split("T")[0];
+}
+
+/**
+ * Load the employee's neighbouring punches needed for overlap / duplicate-open
+ * detection. Fetches a window spanning the involved work dates ± 1 day so an
+ * overnight or cross-midnight shift can still be compared. Falls back to today
+ * when no dates are known (live clock-in/out).
+ */
+async function loadPunchesForValidation(
+  employeeId: string,
+  candidateDates: (string | null | undefined)[],
+): Promise<ExistingPunchForValidation[]> {
+  const dates = candidateDates.filter((d): d is string => !!d).sort();
+  if (dates.length === 0) {
+    dates.push(new Date().toISOString().split("T")[0]);
+  }
+  const start = shiftDateStr(dates[0], -1);
+  const end = shiftDateStr(dates[dates.length - 1], 1);
+  const punches = await storage.getAttendanceRecords(employeeId, start, end);
+  return punches.map((p) => ({ id: p.id, clockIn: p.clockIn, clockOut: p.clockOut }));
+}
+
+/**
+ * Whether the attendance policy rules permit future-dated punches. Defaults to
+ * false (disallow) when the key is absent — only an explicit `true` opts in.
+ */
+function allowFuturePunchFromRules(rules: Record<string, any> | null | undefined): boolean {
+  return rules?.allowFuturePunches === true;
+}
+
+/**
+ * Run the shared punch-integrity validator for one proposed punch. Gathers the
+ * employee's neighbouring punches itself, then returns the structured result.
+ * Routes turn `{ ok: false }` into a 400 with the human-readable reason.
+ */
+async function validateProposedPunch(opts: {
+  employeeId: string;
+  clockIn: Date | string | null | undefined;
+  clockOut?: Date | string | null | undefined;
+  punchId?: string | null;
+  candidateDates?: (string | null | undefined)[];
+  allowFuturePunch: boolean;
+  now?: Date;
+}): Promise<{ ok: boolean; reason?: string }> {
+  const existingPunches = await loadPunchesForValidation(
+    opts.employeeId,
+    opts.candidateDates ?? [],
+  );
+  return validatePunchIntegrity({
+    punchId: opts.punchId ?? null,
+    clockIn: opts.clockIn,
+    clockOut: opts.clockOut,
+    existingPunches,
+    now: opts.now,
+    allowFuturePunch: opts.allowFuturePunch,
+  });
 }
 
 export const requireRole = (...roles: string[]): RequestHandler => {
@@ -3047,6 +3139,19 @@ export async function registerRoutes(
         return kioskError(res, 403, "policy_blocked", enforcement.rejectionMessage || "Clock-in not allowed right now.");
       }
 
+      // Shared punch-integrity validation (backstop for the DB open-punch guard).
+      const kioskInIntegrity = await validateProposedPunch({
+        employeeId: user.id,
+        clockIn: now,
+        clockOut: undefined,
+        candidateDates: [now.toISOString().split("T")[0]],
+        allowFuturePunch: allowFuturePunchFromRules(attRules),
+        now,
+      });
+      if (!kioskInIntegrity.ok) {
+        return kioskError(res, 400, "invalid_punch", kioskInIntegrity.reason || "That punch isn't valid.");
+      }
+
       const { latitude: punchLatitude, longitude: punchLongitude } =
         parsePunchCoords(parsed.data);
 
@@ -3124,6 +3229,21 @@ export async function registerRoutes(
       const breakMinutes = lastRecord.breakMinutes || 0;
 
       const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, attRules, payrollRules, user, attendancePolicy?.policyName);
+
+      // Shared punch-integrity validation: the closing time must be after the
+      // open clock-in and not future-dated.
+      const kioskOutIntegrity = await validateProposedPunch({
+        employeeId: user.id,
+        clockIn: lastRecord.clockIn,
+        clockOut: now,
+        punchId: lastRecord.id,
+        candidateDates: [lastRecord.workDate, now.toISOString().split("T")[0]],
+        allowFuturePunch: allowFuturePunchFromRules(attRules),
+        now,
+      });
+      if (!kioskOutIntegrity.ok) {
+        return kioskError(res, 400, "invalid_punch", kioskOutIntegrity.reason || "That punch isn't valid.");
+      }
 
       const updated = await storage.closeOpenPunch(lastRecord.id, {
         clockOut: now,
@@ -3289,6 +3409,20 @@ export async function registerRoutes(
         return res.status(403).json({ message: enforcement.rejectionMessage });
       }
 
+      // Shared punch-integrity validation (backstop for the DB open-punch guard;
+      // also catches an overlap with another punch on the same day).
+      const integrity = await validateProposedPunch({
+        employeeId: userId,
+        clockIn: now,
+        clockOut: undefined,
+        candidateDates: [now.toISOString().split("T")[0]],
+        allowFuturePunch: allowFuturePunchFromRules(rules),
+        now,
+      });
+      if (!integrity.ok) {
+        return res.status(400).json({ message: integrity.reason });
+      }
+
       const { latitude: punchLatitude, longitude: punchLongitude } =
         parsePunchCoords(req.body);
 
@@ -3359,6 +3493,21 @@ export async function registerRoutes(
 
       const attPolicy = getResolvedPolicy(req, "attendance");
       const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, rules, payrollRules, user, attPolicy?.policyName);
+
+      // Shared punch-integrity validation: the closing time must be after the
+      // open clock-in and not future-dated.
+      const integrity = await validateProposedPunch({
+        employeeId: userId,
+        clockIn: current.clockIn,
+        clockOut: now,
+        punchId: current.id,
+        candidateDates: [current.workDate, now.toISOString().split("T")[0]],
+        allowFuturePunch: allowFuturePunchFromRules(rules),
+        now,
+      });
+      if (!integrity.ok) {
+        return res.status(400).json({ message: integrity.reason });
+      }
 
       const record = await storage.closeOpenPunch(current.id, {
         clockOut: now,
@@ -3682,17 +3831,21 @@ export async function registerRoutes(
               ? new Date(existing.clockOut)
               : null;
 
-        if (newClockIn && isNaN(newClockIn.getTime())) {
-          return res.status(400).json({ message: "Invalid clock-in time" });
-        }
-        if (newClockOut && isNaN(newClockOut.getTime())) {
-          return res.status(400).json({ message: "Invalid clock-out time" });
-        }
-        if (!newClockIn) {
-          return res.status(400).json({ message: "A punch must have a clock-in time" });
-        }
-        if (newClockOut && newClockOut <= newClockIn) {
-          return res.status(400).json({ message: "Clock-out must be after clock-in" });
+        // Block edits to a punch already baked into a finalized (exported/locked)
+        // payroll batch — changing its hours would silently desync payroll. The
+        // manager must reopen the affected batch first.
+        const finalizedExports = await findFinalizedPayrollExportsForPunch(punchId);
+        if (finalizedExports.length > 0) {
+          return res.status(409).json({
+            message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before editing the punch.`,
+            code: "PAYROLL_FINALIZED",
+            payrollExports: finalizedExports.map((e) => ({
+              id: e.id,
+              startDate: e.startDate,
+              endDate: e.endDate,
+              status: e.status,
+            })),
+          });
         }
 
         const attendancePolicy = await getEffectivePolicy(
@@ -3712,6 +3865,29 @@ export async function registerRoutes(
         const roundingRule = attRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
         const roundingInterval =
           attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+
+        // Shared punch-integrity validation: reject impossible/unparseable times,
+        // zero/negative duration, future-dating, duplicate open shift, or an
+        // overlap with another of this employee's punches.
+        const integrity = await validateProposedPunch({
+          employeeId: existing.employeeId,
+          clockIn: newClockIn,
+          clockOut: newClockOut,
+          punchId,
+          candidateDates: [
+            existing.workDate,
+            newClockIn ? newClockIn.toISOString().split("T")[0] : undefined,
+          ],
+          allowFuturePunch: allowFuturePunchFromRules(attRules),
+        });
+        if (!integrity.ok) {
+          return res.status(400).json({ message: integrity.reason });
+        }
+        // The validator guarantees a non-null, valid clock-in once we get here;
+        // narrow the type for the rounding/enforcement code below.
+        if (!newClockIn) {
+          return res.status(400).json({ message: "A punch must have a clock-in time." });
+        }
 
         const update: Partial<InsertPunchLog> = {
           clockIn: newClockIn,
@@ -4827,6 +5003,97 @@ export async function registerRoutes(
       );
       const exceptionAttRules = exceptionAttendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
       const exceptionPayrollRules = exceptionPayrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+
+      // --- Shared punch-integrity + locked-payroll validation -------------
+      // Approving a correction creates/edits a punch on the employee's behalf,
+      // so the resulting punch must pass the SAME integrity rules as any other
+      // write path (impossible/future/overlapping times) and must not touch a
+      // finalized payroll period. punch_removal is handled by its own block
+      // above; deny was already returned earlier.
+      const correctionAllowFuture = allowFuturePunchFromRules(exceptionAttRules);
+      const payrollLockResponse = (exports: PayrollExport[], verb: string) =>
+        res.status(409).json({
+          message: `This punch is part of finalized payroll (${describeFinalizedPayroll(exports)}). Reopen the affected payroll batch before ${verb}.`,
+          code: "PAYROLL_FINALIZED",
+          payrollExports: exports.map((e) => ({
+            id: e.id,
+            startDate: e.startDate,
+            endDate: e.endDate,
+            status: e.status,
+          })),
+        });
+
+      if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+        const dateLock = await findFinalizedPayrollExportsForEmployeeDate(
+          exception.employeeId,
+          exception.exceptionDate,
+        );
+        if (dateLock.length > 0) {
+          return payrollLockResponse(dateLock, "adding this punch");
+        }
+        const integrity = await validateProposedPunch({
+          employeeId: exception.employeeId,
+          clockIn: correctedTimestamp || new Date(),
+          clockOut: undefined,
+          candidateDates: [exception.exceptionDate],
+          allowFuturePunch: correctionAllowFuture,
+        });
+        if (!integrity.ok) {
+          return res.status(400).json({ message: integrity.reason });
+        }
+      } else if (exception.type === "forgotten_clock_out") {
+        const target = await loadTargetedPunch();
+        if (target) {
+          const punchLock = await findFinalizedPayrollExportsForPunch(target.id);
+          if (punchLock.length > 0) {
+            return payrollLockResponse(punchLock, "correcting this punch");
+          }
+          const integrity = await validateProposedPunch({
+            employeeId: exception.employeeId,
+            clockIn: target.clockIn,
+            clockOut: correctedTimestamp || new Date(),
+            punchId: target.id,
+            candidateDates: [exception.exceptionDate, target.workDate],
+            allowFuturePunch: correctionAllowFuture,
+          });
+          if (!integrity.ok) {
+            return res.status(400).json({ message: integrity.reason });
+          }
+        }
+      } else if (exception.type === "time_correction") {
+        const target = await loadTargetedPunch();
+        if (target) {
+          const punchLock = await findFinalizedPayrollExportsForPunch(target.id);
+          if (punchLock.length > 0) {
+            return payrollLockResponse(punchLock, "correcting this punch");
+          }
+          // Derive the punch's proposed final state exactly as the transaction
+          // below will (explicit corrected in/out win; otherwise the legacy
+          // single `correctedTime` maps to the open side).
+          let propClockIn: Date | string | null = target.clockIn;
+          let propClockOut: Date | string | null = target.clockOut;
+          const explicitIn = correctedClockIn ? new Date(correctedClockIn) : null;
+          const explicitOut = correctedClockOut ? new Date(correctedClockOut) : null;
+          if (!explicitIn && !explicitOut && correctedTimestamp) {
+            if (!target.clockOut) propClockIn = correctedTimestamp;
+            else propClockOut = correctedTimestamp;
+          } else {
+            if (explicitIn) propClockIn = explicitIn;
+            if (explicitOut) propClockOut = explicitOut;
+          }
+          const integrity = await validateProposedPunch({
+            employeeId: exception.employeeId,
+            clockIn: propClockIn,
+            clockOut: propClockOut,
+            punchId: target.id,
+            candidateDates: [exception.exceptionDate, target.workDate],
+            allowFuturePunch: correctionAllowFuture,
+          });
+          if (!integrity.ok) {
+            return res.status(400).json({ message: integrity.reason });
+          }
+        }
+      }
 
       // Approving a correction creates or edits a punch on the employee's
       // behalf and tags it as the "manager" method. We intentionally do NOT
