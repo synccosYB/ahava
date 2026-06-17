@@ -921,6 +921,12 @@ export const payrollBatchRecords = pgTable("payroll_batch_records", {
   doubleTimeEnabled: boolean("double_time_enabled"),
   holidayOtExclusion: boolean("holiday_ot_exclusion"),
   isHoliday: boolean("is_holiday"),
+  // Weekly-OT snapshot: frozen at batch creation so a closed period recomputes
+  // weekly overtime IDENTICALLY even after the live policy changes. Null on
+  // legacy rows (pre weekly-OT) — those recompute daily-only (weekly disabled).
+  otThresholdWeekly: real("ot_threshold_weekly"),
+  weeklyOvertimeEnabled: boolean("weekly_overtime_enabled"),
+  workweekStartDay: integer("workweek_start_day"),
   bonusAmount: real("bonus_amount").default(0).notNull(),
   bonusHours: real("bonus_hours").default(0).notNull(),
   bonusDescription: text("bonus_description"),

@@ -3,6 +3,8 @@ import { punchLogs, users, policies, policyRules, policyAssignments, policyTypes
 import { eq, and, lte, gte, isNull, ne, desc, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "../policyEngine";
+import { resolvePayCalcPolicy, workweekStartFor, computeWeeklyHours, round2 } from "../payrollEngine";
+import { computePunchHoursWorked } from "../punchHours";
 import { runLifecycleAlertDetection } from "./lifecycleAlerts";
 
 export type AlertType =
@@ -61,18 +63,29 @@ export async function detectMissingClockOuts(): Promise<GeneratedAlert[]> {
 export async function detectOvertimeThreshold(): Promise<GeneratedAlert[]> {
   const alerts: GeneratedAlert[] = [];
   const now = new Date();
-  const dayOfWeek = now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
-  const weekStart = monday.toISOString().split("T")[0];
   const today = now.toISOString().split("T")[0];
+  const getDayOfWeekForDate = (dateStr: string): number => {
+    const [y, m, d] = dateStr.split("-").map((s) => parseInt(s, 10));
+    return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  };
 
   const allUsers = await storage.getAllUsers();
 
   for (const user of allUsers) {
     const attendancePolicy = await getEffectivePolicy(user.companyId, user.id, "attendance", user);
-    const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
-    const thresholdHours = rules.otThresholdWeekly ?? DEFAULT_ATTENDANCE_RULES.otThresholdWeekly;
+    // Resolve the SAME pay-calc policy the payroll engine uses so the alert's
+    // threshold, the enable switch, and the workweek boundary line up exactly
+    // with how weekly overtime is actually paid.
+    const policy = await resolvePayCalcPolicy(user);
+    // Skip when auto-OT or weekly OT is off, or there's no positive threshold —
+    // there is no weekly-overtime concept to alert on in those cases.
+    if (!policy.autoCalculateOT || !policy.weeklyOvertimeEnabled) continue;
+    const thresholdHours = policy.otThresholdWeekly;
+    if (!thresholdHours || thresholdHours <= 0) continue;
+
+    // Workweek start comes from the policy (default Sunday) instead of a
+    // hardcoded Monday, so the alert window matches the pay window.
+    const weekStart = workweekStartFor(today, policy.workweekStartDay);
 
     const records = await db
       .select()
@@ -85,23 +98,41 @@ export async function detectOvertimeThreshold(): Promise<GeneratedAlert[]> {
         )
       );
 
-    let weekHours = 0;
+    // Feed the SAME engine that pays overtime: per employee-day, break-deducted
+    // worked hours (computePunchHoursWorked) with the holiday flag, then run
+    // computeWeeklyHours. This guarantees the alert and the paycheck agree —
+    // daily OT/DT is counted first, holiday-excluded days drop out of the weekly
+    // threshold, and only the resulting weekly OT triggers the warning.
+    const scheduledDays = (await storage.getEmployeeSchedules(user.id))
+      .filter((s) => s.isActive)
+      .map((s) => s.dayOfWeek);
+    const hoursByDate = new Map<string, number>();
     for (const r of records) {
-      if (r.hoursWorked) weekHours += r.hoursWorked;
-      else if (r.clockIn) {
-        const end = r.clockOut ? new Date(r.clockOut) : new Date();
-        weekHours += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
-      }
+      const h = computePunchHoursWorked(r);
+      if (h == null) continue; // incomplete/in-progress day — not yet payable
+      hoursByDate.set(r.workDate, round2((hoursByDate.get(r.workDate) ?? 0) + h));
     }
+    const days = Array.from(hoursByDate.entries()).map(([date, hours]) => ({
+      date,
+      hours,
+      isHoliday: scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeekForDate(date)),
+    }));
+    const weekly = computeWeeklyHours(days, policy);
+    const weeklyOt = weekly.summary.weeklyOvertimeHours;
 
-    if (weekHours >= thresholdHours) {
+    if (weeklyOt > 0) {
+      // Eligible regular hours that crossed the threshold = threshold + weeklyOt
+      // (weeklyOt = eligibleRegular - threshold). Severity escalates the same way
+      // the old alert did: 25% over the threshold → critical.
+      const weeklyRegularWorked = round2(thresholdHours + weeklyOt);
       alerts.push({
         type: "overtime_threshold",
-        severity: weekHours >= thresholdHours * 1.25 ? "critical" : "high",
+        severity: weeklyOt >= thresholdHours * 0.25 ? "critical" : "high",
         employeeId: user.id,
-        message: `Weekly hours (${Math.round(weekHours * 10) / 10}h) exceed threshold (${thresholdHours}h)`,
+        message: `Weekly hours (${weeklyRegularWorked}h) exceed threshold (${thresholdHours}h)`,
         details: {
-          weekHours: Math.round(weekHours * 10) / 10,
+          weekHours: weeklyRegularWorked,
+          weeklyOvertimeHours: weeklyOt,
           threshold: thresholdHours,
           weekStart,
           policyName: attendancePolicy?.policyName || "Default",

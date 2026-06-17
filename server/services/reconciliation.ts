@@ -21,7 +21,7 @@ import type { User } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import { computePunchHoursWorked } from "../punchHours";
 import { getEffectivePolicy } from "../policyEngine";
-import { buildPayCalcPolicy, splitDailyHours, resolvePayCalcPolicy, DEFAULT_PAY_CALC_POLICY, type PayCalcPolicy } from "../payrollEngine";
+import { buildPayCalcPolicy, splitDailyHours, computeWeeklyHours, resolvePayCalcPolicy, DEFAULT_PAY_CALC_POLICY, type PayCalcPolicy } from "../payrollEngine";
 import { writeAuditLog } from "./audit";
 import { BALANCE_TRACKED_TIME_OFF_TYPES } from "@shared/schema";
 
@@ -453,10 +453,83 @@ export async function computePayrollVerification(exportId: string): Promise<Payr
   const discrepancies: PayrollDiscrepancy[] = [];
   let recordsChecked = 0;
 
-  for (const r of records) {
-    // Only attendance-derived rows are recomputable from punch logs; PTO and
-    // cash-out rows are snapshots of approved requests and are out of scope.
-    if (r.recordType !== "attendance") continue;
+  // Only attendance-derived rows are recomputable from punch logs; PTO and
+  // cash-out rows are snapshots of approved requests and are out of scope.
+  const attendanceRecords = records.filter((r) => r.recordType === "attendance");
+
+  // Recompute the WEEKLY-aware split per employee. Records are grouped by
+  // employee so weekly overtime is reconciled across the same workweek it was
+  // exported on: daily OT/DT first, then regular hours over the frozen weekly
+  // threshold reclassified to OT. The result is keyed per employee-day and
+  // looked up in the per-record reporting loop below.
+  const recordsByEmployee = new Map<string, typeof attendanceRecords>();
+  for (const r of attendanceRecords) {
+    const arr = recordsByEmployee.get(r.employeeId);
+    if (arr) arr.push(r);
+    else recordsByEmployee.set(r.employeeId, [r]);
+  }
+  const splitByKey = new Map<string, { regularHours: number; overtimeHours: number; doubleTimeHours: number }>();
+
+  for (const [employeeId, empRecords] of recordsByEmployee) {
+    const resolved = await resolvedPolicyFor(employeeId);
+    // Prefer the policy SNAPSHOT frozen on the rows so a CLOSED historical period
+    // verifies against EXACTLY what was exported, independent of any later edit
+    // to the live policy or the employee's schedule. A row is "snapshotted" when
+    // the numeric knobs are present; for those rows every input to the split —
+    // thresholds, multipliers, the on/off toggles AND the holiday flag — comes
+    // from the row. Snapshot rows that PREDATE weekly OT (weekly cols all null)
+    // recompute weekly-DISABLED so their historical dollars never shift. Only
+    // fully-legacy rows (no snapshot at all) fall back to the live policy.
+    const sample = empRecords.find((r) => r.otThresholdDaily != null || r.overtimeMultiplier != null);
+    const hasWeeklySnapshot = empRecords.some(
+      (r) => r.otThresholdWeekly != null || r.weeklyOvertimeEnabled != null || r.workweekStartDay != null,
+    );
+    let policy: PayCalcPolicy;
+    if (sample) {
+      policy = {
+        ...resolved,
+        otThresholdDaily: sample.otThresholdDaily ?? resolved.otThresholdDaily,
+        doubleTimeThresholdDaily: sample.doubleTimeThresholdDaily ?? resolved.doubleTimeThresholdDaily,
+        overtimeMultiplier: sample.overtimeMultiplier ?? resolved.overtimeMultiplier,
+        doubleTimeMultiplier: sample.doubleTimeMultiplier ?? resolved.doubleTimeMultiplier,
+        autoCalculateOT: sample.autoCalculateOt ?? resolved.autoCalculateOT,
+        overtimeEnabled: sample.overtimeEnabled ?? resolved.overtimeEnabled,
+        doubleTimeEnabled: sample.doubleTimeEnabled ?? resolved.doubleTimeEnabled,
+        holidayOtExclusion: sample.holidayOtExclusion ?? resolved.holidayOtExclusion,
+        otThresholdWeekly: sample.otThresholdWeekly ?? resolved.otThresholdWeekly,
+        weeklyOvertimeEnabled: hasWeeklySnapshot ? (sample.weeklyOvertimeEnabled ?? resolved.weeklyOvertimeEnabled) : false,
+        workweekStartDay: sample.workweekStartDay ?? resolved.workweekStartDay,
+      };
+    } else {
+      policy = resolved;
+    }
+
+    // Only days with COMPLETE source punches participate in the weekly split;
+    // missing/incomplete days are reported separately in the loop below.
+    const days: Array<{ date: string; hours: number; isHoliday: boolean }> = [];
+    for (const r of empRecords) {
+      const hours = dayHours.get(dayKey(r.employeeId, r.workDate));
+      if (hours == null) continue;
+      let isHoliday: boolean;
+      if (sample && r.isHoliday != null) {
+        isHoliday = r.isHoliday;
+      } else {
+        const scheduledDays = await scheduledDaysFor(r.employeeId);
+        isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeek(r.workDate));
+      }
+      days.push({ date: r.workDate, hours, isHoliday });
+    }
+    const weekly = computeWeeklyHours(days, policy);
+    for (const d of weekly.days) {
+      splitByKey.set(dayKey(employeeId, d.date), {
+        regularHours: d.regularHours,
+        overtimeHours: d.overtimeHours,
+        doubleTimeHours: d.doubleTimeHours,
+      });
+    }
+  }
+
+  for (const r of attendanceRecords) {
     recordsChecked++;
 
     const storedRegular = r.regularHours || 0;
@@ -496,45 +569,8 @@ export async function computePayrollVerification(exportId: string): Promise<Payr
       continue;
     }
 
-    // Prefer the policy SNAPSHOT frozen on the row so a CLOSED historical period
-    // verifies against EXACTLY what was exported, independent of any later edit
-    // to the live policy or the employee's schedule. A row is "snapshotted" when
-    // the numeric knobs are present; for those rows every input to the split —
-    // thresholds, multipliers, the on/off toggles AND the holiday flag — comes
-    // from the row itself. Only legacy rows (all snapshot cols null) fall back to
-    // the current effective policy + current schedule for a best-effort recompute.
-    const isSnapshotted = r.otThresholdDaily != null || r.overtimeMultiplier != null;
-    let policy: PayCalcPolicy;
-    let isHoliday: boolean;
-    if (isSnapshotted) {
-      const resolved = await resolvedPolicyFor(r.employeeId);
-      policy = {
-        ...resolved,
-        otThresholdDaily: r.otThresholdDaily ?? resolved.otThresholdDaily,
-        doubleTimeThresholdDaily: r.doubleTimeThresholdDaily ?? resolved.doubleTimeThresholdDaily,
-        overtimeMultiplier: r.overtimeMultiplier ?? resolved.overtimeMultiplier,
-        doubleTimeMultiplier: r.doubleTimeMultiplier ?? resolved.doubleTimeMultiplier,
-        // Toggles snapshotted in migration 0056; legacy snapshot rows (0055-era)
-        // lack them, so fall back to the resolved policy's toggles for those.
-        autoCalculateOT: r.autoCalculateOt ?? resolved.autoCalculateOT,
-        overtimeEnabled: r.overtimeEnabled ?? resolved.overtimeEnabled,
-        doubleTimeEnabled: r.doubleTimeEnabled ?? resolved.doubleTimeEnabled,
-        holidayOtExclusion: r.holidayOtExclusion ?? resolved.holidayOtExclusion,
-      };
-      // Holiday flag frozen on the row (0056); legacy snapshot rows recompute it
-      // from the CURRENT schedule as a best-effort fallback.
-      if (r.isHoliday != null) {
-        isHoliday = r.isHoliday;
-      } else {
-        const scheduledDays = await scheduledDaysFor(r.employeeId);
-        isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeek(r.workDate));
-      }
-    } else {
-      policy = await resolvedPolicyFor(r.employeeId);
-      const scheduledDays = await scheduledDaysFor(r.employeeId);
-      isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeek(r.workDate));
-    }
-    const split = splitDailyHours(hours, policy, { isHoliday });
+    const split = splitByKey.get(key);
+    if (!split) continue; // defensive: every complete day was split above
 
     const regDrift = Math.abs(split.regularHours - storedRegular) > HOURS_EPSILON;
     const otDrift = Math.abs(split.overtimeHours - storedOvertime) > HOURS_EPSILON;

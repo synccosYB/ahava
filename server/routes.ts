@@ -13,7 +13,7 @@ import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
-import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
+import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeWeeklyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
@@ -6263,14 +6263,15 @@ export async function registerRoutes(
       const schedules = await storage.getEmployeeSchedules(u.id);
       const scheduledDays = schedules.filter(s => s.isActive).map(s => s.dayOfWeek);
       const days = dailyByUser.get(u.id) || [];
-      const summary = summarizeDailyHours(
+      const result = computeWeeklyHours(
         days.map(d => ({
+          date: d.workDate,
           hours: d.hours,
           isHoliday: scheduledDays.length > 0 && !scheduledDays.includes(reportDayOfWeek(d.workDate)),
         })),
         policy,
       );
-      overtimeByUser.set(u.id, round2(summary.overtimeHours + summary.doubleTimeHours));
+      overtimeByUser.set(u.id, round2(result.summary.overtimeHours + result.summary.doubleTimeHours));
     }));
 
     if (category === "time") {
@@ -7409,68 +7410,113 @@ export async function registerRoutes(
           reopenedBy: null,
         }).returning();
 
+        // Group employee-days by employee so WEEKLY overtime can be applied
+        // across the workweek (daily OT/DT first, then regular hours over the
+        // weekly threshold reclassified to OT). The distribution is deterministic
+        // so payroll reconciliation reproduces the exact same per-day rows.
+        const groupsByEmployee = new Map<string, DayGroup[]>();
         for (const g of dayGroups.values()) {
-          const { payCalc, payrollRules, rate, scheduledDays } = await resolveEmp(g.employeeId);
+          const arr = groupsByEmployee.get(g.employeeId);
+          if (arr) arr.push(g);
+          else groupsByEmployee.set(g.employeeId, [g]);
+        }
 
-          let dayHours = 0;
-          let earliestClockIn: Date | null = null;
-          let earliestRounded: Date | string | null = null;
-          let primaryPunchId: string | null = null;
-          let hasIssue = false;
-          for (const p of g.punches) {
-            dayHours += p.hoursWorked || 0;
-            if (!p.clockIn || (!p.clockOut && p.status !== "in-progress")) hasIssue = true;
-            if (p.clockIn) {
-              const t = new Date(p.clockIn);
-              if (!earliestClockIn || t < earliestClockIn) {
-                earliestClockIn = t;
-                earliestRounded = p.roundedClockIn ?? p.clockIn;
-                primaryPunchId = p.id;
+        for (const [employeeId, groups] of groupsByEmployee) {
+          const { payCalc, payrollRules, rate, scheduledDays } = await resolveEmp(employeeId);
+
+          type DayMeta = {
+            workDate: string;
+            dayHours: number;
+            isHoliday: boolean;
+            primaryPunchId: string | null;
+            hasIssue: boolean;
+            bonusAmount: number;
+            bonusHours: number;
+            bonusDescription: string | null;
+          };
+          const dayMetas: DayMeta[] = [];
+          for (const g of groups) {
+            let dayHours = 0;
+            let earliestClockIn: Date | null = null;
+            let earliestRounded: Date | string | null = null;
+            let primaryPunchId: string | null = null;
+            let hasIssue = false;
+            for (const p of g.punches) {
+              dayHours += p.hoursWorked || 0;
+              if (!p.clockIn || (!p.clockOut && p.status !== "in-progress")) hasIssue = true;
+              if (p.clockIn) {
+                const t = new Date(p.clockIn);
+                if (!earliestClockIn || t < earliestClockIn) {
+                  earliestClockIn = t;
+                  earliestRounded = p.roundedClockIn ?? p.clockIn;
+                  primaryPunchId = p.id;
+                }
               }
+              if (primaryPunchId === null) primaryPunchId = p.id;
             }
-            if (primaryPunchId === null) primaryPunchId = p.id;
+            dayHours = round2(dayHours);
+
+            // Holiday = worked on a non-scheduled day (mirrors the CSV export's
+            // pay-type logic). When the policy excludes holiday hours from OT,
+            // the engine keeps them all regular AND out of the weekly threshold.
+            const isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeekForDate(g.workDate));
+            const bonusResult = evaluateDayOfWeekBonuses(g.workDate, dayHours, payrollRules);
+            const earlyResult = evaluateEarlyArrivalBonuses(g.workDate, earliestRounded, dayHours, payrollRules);
+            const combinedBonusAmount = round2(bonusResult.bonusAmount + earlyResult.bonusAmount);
+            const combinedDescriptions = [...bonusResult.descriptions, ...earlyResult.descriptions];
+
+            dayMetas.push({
+              workDate: g.workDate,
+              dayHours,
+              isHoliday,
+              primaryPunchId,
+              hasIssue,
+              bonusAmount: combinedBonusAmount,
+              bonusHours: bonusResult.bonusHours,
+              bonusDescription: combinedDescriptions.length > 0 ? combinedDescriptions.join("; ") : null,
+            });
           }
-          dayHours = round2(dayHours);
 
-          // Holiday = worked on a non-scheduled day (mirrors the CSV export's
-          // pay-type logic). When the policy excludes holiday hours from OT,
-          // splitDailyHours keeps them all regular.
-          const isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeekForDate(g.workDate));
-          const split = splitDailyHours(dayHours, payCalc, { isHoliday });
+          const weekly = computeWeeklyHours(
+            dayMetas.map(d => ({ date: d.workDate, hours: d.dayHours, isHoliday: d.isHoliday })),
+            payCalc,
+          );
+          const splitByDate = new Map(weekly.days.map(d => [d.date, d]));
 
-          const bonusResult = evaluateDayOfWeekBonuses(g.workDate, dayHours, payrollRules);
-          const earlyResult = evaluateEarlyArrivalBonuses(g.workDate, earliestRounded, dayHours, payrollRules);
-          const combinedBonusAmount = round2(bonusResult.bonusAmount + earlyResult.bonusAmount);
-          const combinedDescriptions = [...bonusResult.descriptions, ...earlyResult.descriptions];
-
-          await tx.insert(payrollBatchRecordsTable).values({
-            payrollExportId: created.id,
-            employeeId: g.employeeId,
-            punchLogId: primaryPunchId,
-            timeOffRequestId: null,
-            recordType: "attendance",
-            workDate: g.workDate,
-            regularHours: split.regularHours,
-            overtimeHours: split.overtimeHours,
-            doubleTimeHours: split.doubleTimeHours,
-            ptoHours: 0,
-            otThresholdDaily: payCalc.otThresholdDaily,
-            doubleTimeThresholdDaily: payCalc.doubleTimeThresholdDaily,
-            overtimeMultiplier: payCalc.overtimeMultiplier,
-            doubleTimeMultiplier: payCalc.doubleTimeMultiplier,
-            hourlyRate: rate,
-            policyVersion: payCalc.payrollPolicyVersion,
-            autoCalculateOt: payCalc.autoCalculateOT,
-            overtimeEnabled: payCalc.overtimeEnabled,
-            doubleTimeEnabled: payCalc.doubleTimeEnabled,
-            holidayOtExclusion: payCalc.holidayOtExclusion,
-            isHoliday,
-            bonusAmount: combinedBonusAmount,
-            bonusHours: bonusResult.bonusHours,
-            bonusDescription: combinedDescriptions.length > 0 ? combinedDescriptions.join("; ") : null,
-            hasIssues: hasIssue,
-            issueDescription: hasIssue ? `Missing punch data on ${g.workDate}` : null,
-          });
+          for (const meta of dayMetas) {
+            const split = splitByDate.get(meta.workDate);
+            await tx.insert(payrollBatchRecordsTable).values({
+              payrollExportId: created.id,
+              employeeId,
+              punchLogId: meta.primaryPunchId,
+              timeOffRequestId: null,
+              recordType: "attendance",
+              workDate: meta.workDate,
+              regularHours: split ? split.regularHours : 0,
+              overtimeHours: split ? split.overtimeHours : 0,
+              doubleTimeHours: split ? split.doubleTimeHours : 0,
+              ptoHours: 0,
+              otThresholdDaily: payCalc.otThresholdDaily,
+              doubleTimeThresholdDaily: payCalc.doubleTimeThresholdDaily,
+              overtimeMultiplier: payCalc.overtimeMultiplier,
+              doubleTimeMultiplier: payCalc.doubleTimeMultiplier,
+              hourlyRate: rate,
+              policyVersion: payCalc.payrollPolicyVersion,
+              autoCalculateOt: payCalc.autoCalculateOT,
+              overtimeEnabled: payCalc.overtimeEnabled,
+              doubleTimeEnabled: payCalc.doubleTimeEnabled,
+              holidayOtExclusion: payCalc.holidayOtExclusion,
+              isHoliday: meta.isHoliday,
+              otThresholdWeekly: payCalc.otThresholdWeekly,
+              weeklyOvertimeEnabled: payCalc.weeklyOvertimeEnabled,
+              workweekStartDay: payCalc.workweekStartDay,
+              bonusAmount: meta.bonusAmount,
+              bonusHours: meta.bonusHours,
+              bonusDescription: meta.bonusDescription,
+              hasIssues: meta.hasIssue,
+              issueDescription: meta.hasIssue ? `Missing punch data on ${meta.workDate}` : null,
+            });
+          }
         }
 
         for (const tor of approvedTimeOff) {

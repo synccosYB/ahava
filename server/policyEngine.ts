@@ -416,6 +416,8 @@ export const DEFAULT_ATTENDANCE_RULES = {
   roundingIntervalMinutes: 15,
   otThresholdDaily: 8,
   otThresholdWeekly: 40,
+  weeklyOvertimeEnabled: true,
+  workweekStartDay: 0,
   allowedPunchSources: [...DEFAULT_ALLOWED_PUNCH_SOURCES],
   autoClockOutEnabled: false,
   autoClockOutAfterHours: 16,

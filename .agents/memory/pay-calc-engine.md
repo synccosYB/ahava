@@ -69,6 +69,35 @@ break minutes. **How to apply:** never re-derive worked hours from raw clock tim
 pay/report surface; prefer persisted `hours_worked`, fall back to the break-deducted live
 formula only for open punches.
 
+## Weekly overtime lives in the engine too (`computeWeeklyHours`)
+
+Weekly OT (hours over a weekly threshold, default 40) is computed ONLY by the engine's
+`computeWeeklyHours(days, policy)` — never inline in a consumer. It splits each day with
+`splitDailyHours` FIRST (daily OT/DT preserved), then groups days into workweeks
+(`workweekStartFor(date, workweekStartDay)`, default Sunday) and reclassifies REGULAR
+hours over `otThresholdWeekly` into OT. No hour is double-counted: weekly OT only ever
+comes from hours still regular after the daily split. Distribution is latest-day-first so
+it's deterministic (batch create and reconciliation reproduce identical per-day rows).
+Holiday-excluded days stay all-regular AND out of the weekly threshold. Gated by
+`autoCalculateOT && weeklyOvertimeEnabled && otThresholdWeekly > 0`. Policy knobs:
+`otThresholdWeekly`, `weeklyOvertimeEnabled`, `workweekStartDay` (attendance rules).
+
+**Why:** `summarizeDailyHours` only does the daily split; reports/timesheet/payroll each
+needed weekly OT and would have drifted if any computed it themselves. All range consumers
+now call `computeWeeklyHours`; `summary.overtimeHours` already INCLUDES weekly OT (plus
+daily OT), and `summary.weeklyOvertimeHours` is the weekly-only subset.
+
+**Deliberate behavioral change:** `weeklyOvertimeEnabled` defaults TRUE (FLSA), so it
+changes LIVE reports/timesheets/alerts immediately. Existing payroll BATCHES are
+unaffected because the 3 weekly cols are snapshotted onto each row; rows that predate
+weekly OT have NULL weekly cols and reconciliation recomputes them weekly-DISABLED, so
+historical dollars never shift. The overtime alert (`alerts.ts detectOvertimeThreshold`)
+must run the SAME `computeWeeklyHours` engine as pay — not its own raw weekly sum — or
+the warning diverges from the paycheck (e.g. raw summing counts holiday-excluded days and
+ignores daily-OT-first reclassification). It builds per employee-day break-deducted hours
+(`computePunchHoursWorked`) + holiday flag, calls `computeWeeklyHours`, and fires off
+`summary.weeklyOvertimeHours > 0` using the resolved policy threshold + `workweekStartDay`.
+
 ## Live vs. frozen scoping (deliberate)
 
 Live operational read paths (reports, per-employee timesheet, dashboards) intentionally

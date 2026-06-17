@@ -1,7 +1,7 @@
 import type { PunchLog, TimeOffRequest, User } from "@shared/schema";
 import { storage } from "./storage";
 import { DEFAULT_ATTENDANCE_RULES } from "./policyEngine";
-import { resolvePayCalcPolicy, splitDailyHours } from "./payrollEngine";
+import { resolvePayCalcPolicy, splitDailyHours, computeWeeklyHours } from "./payrollEngine";
 
 export type TimesheetStatus =
   | "complete"
@@ -162,6 +162,11 @@ export async function buildEmployeeTimesheet(
   const end = new Date(endDate + "T00:00:00Z");
 
   const entries: TimesheetEntry[] = [];
+  // Worked days (excluding still-open punches, which display 0 OT) feed the
+  // weekly-OT pass below so the per-day Overtime column and the totals row both
+  // reflect weekly overtime — and stay in lockstep with the time report.
+  const workedDays: Array<{ date: string; hours: number; isHoliday: boolean }> = [];
+  const entryByDate = new Map<string, TimesheetEntry>();
 
   for (let cursor = new Date(start); cursor <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
     const dateStr = cursor.toISOString().split("T")[0];
@@ -227,7 +232,7 @@ export async function buildEmployeeTimesheet(
       else if (split.status === "overtime") status = "overtime";
       else status = "complete";
 
-      entries.push({
+      const entry: TimesheetEntry = {
         date: dateStr,
         dayOfWeek,
         clockIn: firstIn ? firstIn.toISOString() : null,
@@ -238,7 +243,12 @@ export async function buildEmployeeTimesheet(
         status,
         ptoType: null,
         sources: sourcesForDay,
-      });
+      };
+      entries.push(entry);
+      if (!inProgress) {
+        workedDays.push({ date: dateStr, hours: dayHours, isHoliday: isHolidayDay(dateStr) });
+        entryByDate.set(dateStr, entry);
+      }
     } else if (ptoForDay.length > 0) {
       const primary = ptoForDay[0];
       entries.push({
@@ -269,13 +279,29 @@ export async function buildEmployeeTimesheet(
     }
   }
 
-  // Aggregate totals share the unified pay engine's per-day overtime model so
-  // numbers stay consistent across the per-employee timesheet, the time report
-  // and payroll: overtime is summed per day (each day's hours over the daily
-  // threshold), NOT the old "totalHours - daysWorked * 8" approximation (which
-  // let a long day net against a short day).
+  // Apply the WEEKLY-OT pass over the worked days so each day's Overtime column
+  // and the totals row include weekly overtime (hours over the weekly threshold
+  // that were still regular after the daily split). This is the SAME engine the
+  // time report and payroll use, so all three agree. Daily OT/DT is preserved;
+  // weekly OT only reclassifies remaining regular hours.
+  const weekly = computeWeeklyHours(workedDays, payCalc);
+  for (const d of weekly.days) {
+    const entry = entryByDate.get(d.date);
+    if (!entry) continue;
+    const combined = Math.round((d.overtimeHours + d.doubleTimeHours) * 100) / 100;
+    entry.overtimeHours = combined;
+    // Don't override a missing-punch flag; otherwise reflect overtime status.
+    if (entry.status === "complete" || entry.status === "overtime") {
+      entry.status = combined > 0 ? "overtime" : "complete";
+    }
+  }
+
+  // Aggregate totals share the unified pay engine so numbers stay consistent
+  // across the per-employee timesheet, the time report and payroll. Overtime is
+  // the weekly-aware total (daily OT/DT summed per day PLUS weekly OT), NOT the
+  // old "totalHours - daysWorked * 8" approximation.
   const { totalHours, daysWorked } = computeAttendanceTotals(punches, now);
-  const aggregateOvertime = entries.reduce((sum, e) => sum + (e.overtimeHours || 0), 0);
+  const aggregateOvertime = weekly.summary.overtimeHours + weekly.summary.doubleTimeHours;
 
   return {
     otThresholdDaily: otThreshold,
