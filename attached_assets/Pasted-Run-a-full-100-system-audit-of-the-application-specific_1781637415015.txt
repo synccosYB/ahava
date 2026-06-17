@@ -1,0 +1,120 @@
+Run a full 100% system audit of the application, specifically focused on:
+
+Clocking in/out, attendance records, hour calculations, overtime, PTO, payroll prep/export, policy calculations, UX/UI, consistency, and single source of truth.
+
+This should be audit-only first. Do not change code yet unless asked.
+
+Audit the entire app end-to-end:
+
+Clock In / Clock Out Flow
+Employee clock in/out
+Kiosk clock in/out
+Admin/manual punch edits
+Correction requests
+Missed punch handling
+Duplicate punch prevention
+Overnight shifts
+Breaks and meal rules
+Schedule warnings
+Location/device/kiosk restrictions
+Calculations
+Total hours
+Regular hours
+Overtime
+PTO hours
+Unpaid/paid breaks
+Daily/weekly totals
+Rounding rules
+Payroll-ready totals
+Edge cases: missing clock-out, crossing midnight, DST, multiple shifts same day, edited punches
+Policy Engine
+Which policies apply to each employee
+Assignment priority: company/location/department/role/user
+Conflict resolution
+Effective dates
+Historical recalculation rules
+Whether employee profiles clearly show connected policies
+Single Source of Truth
+Identify the canonical source for:
+Raw punches
+Adjusted punches
+Approved corrections
+Attendance summaries
+Payroll export totals
+PTO balances
+Policy-derived calculations
+Flag duplicate/conflicting tables, fields, or calculated values.
+Verify UI does not calculate differently than backend.
+Verify reports, dashboards, payroll exports, and employee views all use the same source.
+Consistency Audit
+Same employee should show same hours everywhere.
+Same date range should produce same totals everywhere.
+Same status labels everywhere.
+Same time zone handling everywhere.
+Same formatting for hours, dates, names, locations, departments, and statuses.
+Same permissions logic across all attendance/payroll screens.
+
+UX/UI Audit
+Review all screens related to attendance:
+
+Employee attendance page
+Manager/admin attendance page
+Payroll page/export
+Policy setup wizard
+Employee profile policy display
+Kiosk page
+Correction request screens
+Dashboards and reports
+
+Check for:
+
+Confusing labels
+Disabled fields without explanation
+Missing helper text
+Inconsistent buttons/actions
+Unclear status
+Poor empty states
+Loading/error states
+Mobile/kiosk usability
+Admin vs employee experience gaps
+Permissions / Security
+Employees only see their own attendance.
+Managers only see allowed teams/departments/locations.
+Admins can manage policies and corrections.
+Payroll access is properly restricted.
+No permission mismatch like policy management requiring one permission but dropdown data requiring another.
+Audit logs exist for punch edits, corrections, approvals, policy changes, and payroll exports.
+Data Integrity
+No orphan punches
+No invalid user/location/department references
+No negative hours unless intentionally allowed
+No impossible clock events
+No duplicate active shifts
+No payroll export using unapproved or stale data
+No PTO balance mismatch
+Testing Gaps
+Identify missing tests for:
+Clock in/out
+Overnight shifts
+Overtime
+PTO
+Correction approvals
+Payroll export
+Policy priority
+Time zone/DST
+Permissions
+Deliverables
+Provide the audit as:
+Executive summary
+Critical issues
+High issues
+Medium issues
+Low/UX polish
+Single-source-of-truth map
+Data flow diagram in text form
+Files/routes/components involved
+Exact evidence with file names and line references
+Recommended fixes
+Suggested task breakdown for Replit implementation
+
+The goal is to tighten the entire attendance, time clock, policy, and payroll-calculation system before issues become production problems.
