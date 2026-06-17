@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb, unique, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, date, boolean, real, jsonb, unique, index, uniqueIndex, bigserial } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import {
@@ -426,6 +426,62 @@ export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
 });
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
+
+// Immutable, append-only attendance & payroll ledger. Every change that affects
+// an employee's recorded time, PTO, or payroll is captured here with a
+// before/after snapshot and (where applicable) the net hours delta. This is
+// deliberately SEPARATE from `audit_logs` (a generic, system-wide admin audit
+// trail) and from `punch_logs` (mutable current state): the ledger is a
+// purpose-built, never-updated, never-deleted financial record of how the
+// numbers that feed payroll changed over time. Rows are INSERT-only — there is
+// no update/delete path in storage. The `sequence` bigserial gives a strict
+// monotonic append order even for multiple rows written inside one transaction
+// (where `created_at` would share the transaction timestamp).
+export const attendanceChangeLedger = pgTable("attendance_change_ledger", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sequence: bigserial("sequence", { mode: "number" }).notNull(),
+  // High-level bucket the three history views filter on: attendance | pto | payroll.
+  category: varchar("category", { length: 20 }).notNull(),
+  // Specific event, e.g. clock_in, clock_out, punch_edit, punch_delete,
+  // correction_requested, correction_approved, correction_rejected,
+  // pto_approved, pto_denied, pto_balance_adjusted, ot_recalculated,
+  // payroll_exported, payroll_locked, payroll_unlocked,
+  // payroll_reconciliation_flagged.
+  eventType: varchar("event_type", { length: 60 }).notNull(),
+  // The employee whose time/pay this entry impacts.
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  // Who triggered the change. Null for system/background jobs.
+  actorUserId: varchar("actor_user_id").references(() => users.id),
+  // The underlying record this entry describes, for traceability.
+  entityType: varchar("entity_type", { length: 50 }).notNull(),
+  entityId: varchar("entity_id", { length: 255 }),
+  // The work/effective date this change applies to (helps the per-day views).
+  workDate: date("work_date"),
+  // Net change in recorded hours, when meaningful (e.g. punch edit, OT recalc).
+  hoursDelta: real("hours_delta"),
+  beforeValue: jsonb("before_value"),
+  afterValue: jsonb("after_value"),
+  context: jsonb("context"),
+  source: varchar("source", { length: 30 }),
+  ipAddress: varchar("ip_address", { length: 45 }),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => ({
+  employeeIdx: index("attendance_change_ledger_employee_id_idx").on(t.employeeId),
+  categoryIdx: index("attendance_change_ledger_category_idx").on(t.category),
+  entityIdx: index("attendance_change_ledger_entity_id_idx").on(t.entityId),
+  workDateIdx: index("attendance_change_ledger_work_date_idx").on(t.workDate),
+  createdAtIdx: index("attendance_change_ledger_created_at_idx").on(t.createdAt),
+  sequenceIdx: index("attendance_change_ledger_sequence_idx").on(t.sequence),
+}));
+
+export const insertAttendanceChangeLedgerSchema = createInsertSchema(attendanceChangeLedger).omit({
+  id: true,
+  sequence: true,
+  createdAt: true,
+});
+export type InsertAttendanceChangeLedger = z.infer<typeof insertAttendanceChangeLedgerSchema>;
+export type AttendanceChangeLedger = typeof attendanceChangeLedger.$inferSelect;
 
 export const timeOffRequests = pgTable("time_off_requests", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

@@ -31,6 +31,8 @@ import {
   auditLogs,
   type AuditLog,
   type InsertAuditLog,
+  attendanceChangeLedger,
+  type AttendanceChangeLedger,
   timeOffRequests,
   type TimeOffRequest,
   type InsertTimeOffRequest,
@@ -550,6 +552,7 @@ export interface IStorage {
   updateSystemAlert(id: string, data: Partial<SystemAlert>): Promise<SystemAlert | undefined>;
   getAuditLogsFiltered(filters: { actorUserId?: string; action?: string; targetType?: string; startDate?: string; endDate?: string; search?: string; limit?: number; offset?: number }): Promise<{ logs: AuditLog[]; total: number }>;
   getAuditLogsByUser(userId: string, options?: { limit?: number; offset?: number; startDate?: string; endDate?: string }): Promise<{ logs: AuditLog[]; total: number }>;
+  getLedgerEntriesByEmployee(employeeId: string, options?: { category?: string; startDate?: string; endDate?: string; limit?: number; offset?: number }): Promise<{ entries: AttendanceChangeLedger[]; total: number }>;
 
   createUser(user: UpsertUser): Promise<User>;
   updateUser(id: string, data: Partial<UpsertUser>): Promise<User | undefined>;
@@ -3182,6 +3185,42 @@ export class DatabaseStorage implements IStorage {
       .offset(off);
 
     return { logs, total: totalResult?.count || 0 };
+  }
+
+  async getLedgerEntriesByEmployee(
+    employeeId: string,
+    options: { category?: string; startDate?: string; endDate?: string; limit?: number; offset?: number } = {},
+  ): Promise<{ entries: AttendanceChangeLedger[]; total: number }> {
+    const conditions: any[] = [eq(attendanceChangeLedger.employeeId, employeeId)];
+    if (options.category) {
+      conditions.push(eq(attendanceChangeLedger.category, options.category));
+    }
+    if (options.startDate) {
+      conditions.push(gte(attendanceChangeLedger.createdAt, new Date(options.startDate)));
+    }
+    if (options.endDate) {
+      const endDate = new Date(options.endDate);
+      endDate.setDate(endDate.getDate() + 1);
+      conditions.push(lte(attendanceChangeLedger.createdAt, endDate));
+    }
+    const whereClause = and(...conditions);
+    const lim = options.limit ?? 25;
+    const off = options.offset ?? 0;
+
+    const [totalResult] = await db
+      .select({ count: count() })
+      .from(attendanceChangeLedger)
+      .where(whereClause);
+
+    const entries = await db
+      .select()
+      .from(attendanceChangeLedger)
+      .where(whereClause)
+      .orderBy(desc(attendanceChangeLedger.sequence))
+      .limit(lim)
+      .offset(off);
+
+    return { entries, total: totalResult?.count || 0 };
   }
 
   async createUser(user: UpsertUser): Promise<User> {

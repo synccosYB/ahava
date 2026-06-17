@@ -12,6 +12,7 @@ import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Depart
 import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
+import { writeLedgerEntry, getLedgerContext, hoursDelta } from "./services/ledger";
 import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeWeeklyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
@@ -211,6 +212,20 @@ async function checkPostExportModification(punchLogId: string, modifiedBy: strin
           status: "pending",
           reviewedBy: null,
           reviewedAt: null,
+        });
+
+        await writeLedgerEntry({
+          category: "payroll",
+          eventType: "payroll_reconciliation_flagged",
+          employeeId: record.employeeId,
+          actorUserId: modifiedBy,
+          entityType: "payroll_export",
+          entityId: record.payrollExport.id,
+          workDate: punchLog?.workDate ?? null,
+          beforeValue: null,
+          afterValue: { status: "pending", punchLogId },
+          context: { reason: "Record modified after payroll export", punchLogId },
+          source: "system",
         });
       }
     }
@@ -3068,6 +3083,20 @@ export async function registerRoutes(
         await createPolicyAlerts(enforcement.alerts);
       }
 
+      await writeLedgerEntry({
+        category: "attendance",
+        eventType: "clock_in",
+        employeeId: user.id,
+        actorUserId: user.id,
+        entityType: "punch_log",
+        entityId: record.id,
+        workDate: record.workDate,
+        beforeValue: null,
+        afterValue: { clockIn: record.clockIn, status: record.status },
+        source: "kiosk",
+        ...getLedgerContext(req),
+      });
+
       const scheduleWarning = await getScheduleWarning(user.id, "clock_in");
       try {
         (globalThis as any).__broadcastAttendanceUpdate?.({
@@ -3117,6 +3146,22 @@ export async function registerRoutes(
       }
 
       await checkPostExportModification(lastRecord.id, user.id);
+
+      await writeLedgerEntry({
+        category: "attendance",
+        eventType: "clock_out",
+        employeeId: user.id,
+        actorUserId: user.id,
+        entityType: "punch_log",
+        entityId: lastRecord.id,
+        workDate: lastRecord.workDate,
+        hoursDelta: hoursDelta(null, updated?.hoursWorked),
+        beforeValue: { clockOut: null, hoursWorked: lastRecord.hoursWorked, status: lastRecord.status },
+        afterValue: { clockOut: updated?.clockOut, hoursWorked: updated?.hoursWorked, status: updated?.status },
+        source: "kiosk",
+        ...getLedgerContext(req),
+      });
+
       const scheduleWarning = await getScheduleWarning(user.id, "clock_out");
       try {
         (globalThis as any).__broadcastAttendanceUpdate?.({
@@ -3268,6 +3313,20 @@ export async function registerRoutes(
         await createPolicyAlerts(enforcement.alerts);
       }
 
+      await writeLedgerEntry({
+        category: "attendance",
+        eventType: "clock_in",
+        employeeId: userId,
+        actorUserId: userId,
+        entityType: "punch_log",
+        entityId: record.id,
+        workDate: record.workDate,
+        beforeValue: null,
+        afterValue: { clockIn: record.clockIn, status: record.status },
+        source,
+        ...getLedgerContext(req),
+      });
+
       const scheduleWarning = await getScheduleWarning(userId, "clock_in");
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
@@ -3322,6 +3381,22 @@ export async function registerRoutes(
       await checkPostExportModification(record.id, userId);
       // Keep the canonical attendance ledger warm for this employee-day.
       void recomputeLedger(userId, [record.workDate]);
+
+      await writeLedgerEntry({
+        category: "attendance",
+        eventType: "clock_out",
+        employeeId: userId,
+        actorUserId: userId,
+        entityType: "punch_log",
+        entityId: record.id,
+        workDate: record.workDate,
+        hoursDelta: hoursDelta(null, record.hoursWorked),
+        beforeValue: { clockOut: null, hoursWorked: current.hoursWorked, status: current.status },
+        afterValue: { clockOut: record.clockOut, hoursWorked: record.hoursWorked, status: record.status },
+        source,
+        ...getLedgerContext(req),
+      });
+
       const scheduleWarning = await getScheduleWarning(userId, "clock_out");
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
@@ -3695,6 +3770,27 @@ export async function registerRoutes(
           [existing.workDate, updated?.workDate].filter((d): d is string => !!d),
         );
 
+        await writeLedgerEntry({
+          category: "attendance",
+          eventType: "punch_edit",
+          employeeId: existing.employeeId,
+          actorUserId: actor.id,
+          entityType: "punch_log",
+          entityId: punchId,
+          workDate: updated?.workDate ?? existing.workDate,
+          hoursDelta: hoursDelta(existing.hoursWorked, updated?.hoursWorked),
+          beforeValue: oldValue,
+          afterValue: {
+            clockIn: updated?.clockIn,
+            clockOut: updated?.clockOut,
+            hoursWorked: updated?.hoursWorked,
+            status: updated?.status,
+          },
+          context: { reason: reason || null, direct: true },
+          source: "manager",
+          ...getLedgerContext(req),
+        });
+
         res.json(punchLogToApiResponse(updated));
       } catch (error) {
         console.error("Error editing punch:", error);
@@ -3764,6 +3860,28 @@ export async function registerRoutes(
 
         // Keep the canonical attendance ledger warm for the deleted punch's day.
         await recomputeLedger(deleted.employeeId, [deleted.workDate]);
+
+        await writeLedgerEntry({
+          category: "attendance",
+          eventType: "punch_delete",
+          employeeId: deleted.employeeId,
+          actorUserId: actor.id,
+          entityType: "punch_log",
+          entityId: punchId,
+          workDate: deleted.workDate,
+          hoursDelta: hoursDelta(deleted.hoursWorked, null),
+          beforeValue: {
+            clockIn: deleted.clockIn,
+            clockOut: deleted.clockOut,
+            hoursWorked: deleted.hoursWorked,
+            workDate: deleted.workDate,
+            status: deleted.status,
+          },
+          afterValue: null,
+          context: { reason, direct: true },
+          source: "manager",
+          ...getLedgerContext(req),
+        });
 
         res.json({ deleted: true });
       } catch (error) {
@@ -3989,6 +4107,20 @@ export async function registerRoutes(
             ...auditCtx,
           }, tx);
         }
+
+        await writeLedgerEntry({
+          category: "attendance",
+          eventType: "correction_requested",
+          employeeId: userId,
+          actorUserId: userId,
+          entityType: "attendance_exception",
+          entityId: created.id,
+          workDate: exceptionDate,
+          beforeValue: null,
+          afterValue: { type, status: "pending", punchLogId: resolvedPunchLogId },
+          context: { reason, type },
+          ...getLedgerContext(req),
+        }, tx);
 
         return { exception: created } as const;
       });
@@ -4587,6 +4719,21 @@ export async function registerRoutes(
             ...auditCtx,
           }, tx);
 
+          await writeLedgerEntry({
+            category: "attendance",
+            eventType: "correction_rejected",
+            employeeId: exception.employeeId,
+            actorUserId: reviewer.id,
+            entityType: "attendance_exception",
+            entityId: exceptionId,
+            workDate: exception.exceptionDate,
+            beforeValue: { status: "pending" },
+            afterValue: { status: "denied" },
+            context: { reviewNotes, type: exception.type },
+            source: "manager",
+            ...getLedgerContext(req),
+          }, tx);
+
           return result;
         });
 
@@ -4979,6 +5126,32 @@ export async function registerRoutes(
             ...(correctedTime ? { approvedTime: correctedTime } : {}),
           },
           ...auditCtx,
+        }, tx);
+
+        await writeLedgerEntry({
+          category: "attendance",
+          eventType: "correction_approved",
+          employeeId: exception.employeeId,
+          actorUserId: reviewer.id,
+          entityType: "attendance_exception",
+          entityId: exceptionId,
+          workDate: exception.exceptionDate,
+          hoursDelta: punchLog ? hoursDelta(null, punchLog.hoursWorked) : null,
+          beforeValue: { status: "pending" },
+          afterValue: {
+            status: "approved",
+            punchLogId: punchLog?.id ?? null,
+            ...(punchLog ? { clockIn: punchLog.clockIn, clockOut: punchLog.clockOut, hoursWorked: punchLog.hoursWorked } : {}),
+          },
+          context: {
+            type: exception.type,
+            reviewNotes,
+            ...(correctedClockIn ? { approvedClockIn: correctedClockIn } : {}),
+            ...(correctedClockOut ? { approvedClockOut: correctedClockOut } : {}),
+            ...(correctedTime ? { approvedTime: correctedTime } : {}),
+          },
+          source: "manager",
+          ...getLedgerContext(req),
         }, tx);
 
         return { result, punchLog };
@@ -5639,6 +5812,21 @@ export async function registerRoutes(
           ...auditCtx,
         }, tx);
 
+        await writeLedgerEntry({
+          category: "pto",
+          eventType: isPartial ? "pto_partially_approved" : "pto_approved",
+          employeeId: request.userId,
+          actorUserId: user.id,
+          entityType: "time_off_request",
+          entityId: requestId,
+          workDate: request.startDate,
+          beforeValue: { status: "pending" },
+          afterValue: { status, hoursApproved: finalHoursApproved ?? request.hoursRequested, approvedEndDate: finalApprovedEndDate ?? request.endDate },
+          context: { comment, type: request.type, hoursRequested: request.hoursRequested },
+          source: "manager",
+          ...getLedgerContext(req),
+        }, tx);
+
         return result;
       });
 
@@ -5693,6 +5881,21 @@ export async function registerRoutes(
           newValue: { status: "denied" },
           context: { comment, employeeId: request.userId, type: request.type, hours: request.hoursRequested },
           ...auditCtx,
+        }, tx);
+
+        await writeLedgerEntry({
+          category: "pto",
+          eventType: "pto_denied",
+          employeeId: request.userId,
+          actorUserId: user.id,
+          entityType: "time_off_request",
+          entityId: requestId,
+          workDate: request.startDate,
+          beforeValue: { status: "pending" },
+          afterValue: { status: "denied" },
+          context: { comment, type: request.type, hoursRequested: request.hoursRequested },
+          source: "manager",
+          ...getLedgerContext(req),
         }, tx);
 
         return result;
@@ -6418,6 +6621,19 @@ export async function registerRoutes(
         ...getAuditContext(req),
       });
 
+      await writeLedgerEntry({
+        category: "pto",
+        eventType: existing ? "pto_settings_updated" : "pto_settings_created",
+        employeeId: parsed.data.userId,
+        actorUserId: req.authUser.id,
+        entityType: "employee_pto_settings",
+        entityId: parsed.data.userId,
+        beforeValue: existing ?? null,
+        afterValue: settings ?? null,
+        source: "manager",
+        ...getLedgerContext(req),
+      });
+
       res.json(settings);
     } catch (error) {
       console.error("Error saving employee PTO settings:", error);
@@ -6427,16 +6643,32 @@ export async function registerRoutes(
 
   app.patch("/api/employee-pto-settings/:userId", requireAuth, requirePermission("pto.manage_policies"), async (req: any, res) => {
     try {
-      const settings = await storage.updateEmployeePtoSettings(String(req.params.userId), req.body);
+      const ptoUserId = String(req.params.userId);
+      const before = await storage.getEmployeePtoSettings(ptoUserId);
+      const settings = await storage.updateEmployeePtoSettings(ptoUserId, req.body);
       if (!settings) return res.status(404).json({ message: "Employee PTO settings not found" });
 
       await writeAuditLog({
         actorUserId: req.authUser.id,
         action: "employee_pto.balance_adjusted",
-        targetId: String(req.params.userId),
+        targetId: ptoUserId,
         targetType: "employee_pto_settings",
         newValue: { changes: req.body },
         ...getAuditContext(req),
+      });
+
+      await writeLedgerEntry({
+        category: "pto",
+        eventType: "pto_balance_adjusted",
+        employeeId: ptoUserId,
+        actorUserId: req.authUser.id,
+        entityType: "employee_pto_settings",
+        entityId: ptoUserId,
+        beforeValue: before ?? null,
+        afterValue: settings,
+        context: { changes: req.body },
+        source: "manager",
+        ...getLedgerContext(req),
       });
 
       res.json(settings);
@@ -6598,6 +6830,42 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching employee audit logs:", error);
       handleRouteError(res, error, "Failed to fetch employee audit logs");
+    }
+  });
+
+  app.get("/api/ledger/employee/:userId", requireAuth, requirePermission("audit.view"), async (req: any, res) => {
+    try {
+      const requester = req.authUser as User;
+      const { userId } = req.params;
+
+      if (userId !== requester.id) {
+        if (requester.role !== "admin" && requester.role !== "manager") {
+          return res.status(403).json({ message: "Not authorized to view this employee's ledger." });
+        }
+        const teamIds = await getTeamUserIds(requester);
+        if (!teamIds.has(userId)) {
+          return res.status(403).json({ message: "Not authorized to view this employee's ledger." });
+        }
+      }
+
+      const target = await storage.getUser(userId);
+      if (!target) return res.status(404).json({ message: "Employee not found." });
+      if (target.id === SUPER_ADMIN_USER_ID && requester.id !== SUPER_ADMIN_USER_ID) {
+        return res.status(404).json({ message: "Employee not found." });
+      }
+
+      const limit = Math.min(parseInt((req.query.limit as string) || "25", 10) || 25, 200);
+      const offset = Math.max(parseInt((req.query.offset as string) || "0", 10) || 0, 0);
+      const startDate = req.query.startDate as string | undefined;
+      const endDate = req.query.endDate as string | undefined;
+      const categoryRaw = req.query.category as string | undefined;
+      const category = categoryRaw && categoryRaw !== "all" ? categoryRaw : undefined;
+
+      const result = await storage.getLedgerEntriesByEmployee(userId, { category, startDate, endDate, limit, offset });
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching employee ledger:", error);
+      handleRouteError(res, error, "Failed to fetch employee ledger");
     }
   });
 
@@ -7939,6 +8207,25 @@ export async function registerRoutes(
         ...auditCtx,
       });
 
+      const ledgerCtx = getLedgerContext(req);
+      await Promise.all(
+        Array.from(employeeRecords.keys()).map((employeeId) =>
+          writeLedgerEntry({
+            category: "payroll",
+            eventType: "payroll_exported",
+            employeeId,
+            actorUserId: adminUser.id,
+            entityType: "payroll_export",
+            entityId: exp.id,
+            beforeValue: null,
+            afterValue: { status: "exported" },
+            context: { startDate: exp.startDate, endDate: exp.endDate },
+            source: "admin",
+            ...ledgerCtx,
+          }),
+        ),
+      );
+
       res.setHeader("Content-Type", "text/csv");
       res.setHeader("Content-Disposition", `attachment; filename="payroll_${exp.startDate}_to_${exp.endDate}.csv"`);
       res.send(csv);
@@ -8020,6 +8307,27 @@ export async function registerRoutes(
         ...auditCtx,
       });
 
+      const lockRecords = await storage.getPayrollBatchRecords(exp.id);
+      const lockEmployeeIds = Array.from(new Set(lockRecords.map(r => r.employeeId)));
+      const lockLedgerCtx = getLedgerContext(req);
+      await Promise.all(
+        lockEmployeeIds.map((employeeId) =>
+          writeLedgerEntry({
+            category: "payroll",
+            eventType: "payroll_locked",
+            employeeId,
+            actorUserId: adminUser.id,
+            entityType: "payroll_export",
+            entityId: exp.id,
+            beforeValue: { status: "exported" },
+            afterValue: { status: "locked" },
+            context: { startDate: exp.startDate, endDate: exp.endDate },
+            source: "admin",
+            ...lockLedgerCtx,
+          }),
+        ),
+      );
+
       res.json(updated);
     } catch (error) {
       console.error("Error locking payroll batch:", error);
@@ -8044,15 +8352,37 @@ export async function registerRoutes(
       });
 
       const auditCtx = getAuditContext(req);
+      const prevStatus = exp.status;
       await writeAuditLog({
         actorUserId: adminUser.id,
         targetType: "payroll_export",
         targetId: exp.id,
         action: "payroll_export.reopened",
-        oldValue: { status: exp.status },
+        oldValue: { status: prevStatus },
         newValue: { status: "reopened" },
         ...auditCtx,
       });
+
+      const reopenRecords = await storage.getPayrollBatchRecords(exp.id);
+      const reopenEmployeeIds = Array.from(new Set(reopenRecords.map(r => r.employeeId)));
+      const reopenLedgerCtx = getLedgerContext(req);
+      await Promise.all(
+        reopenEmployeeIds.map((employeeId) =>
+          writeLedgerEntry({
+            category: "payroll",
+            eventType: "payroll_reopened",
+            employeeId,
+            actorUserId: adminUser.id,
+            entityType: "payroll_export",
+            entityId: exp.id,
+            beforeValue: { status: prevStatus },
+            afterValue: { status: "reopened" },
+            context: { startDate: exp.startDate, endDate: exp.endDate },
+            source: "admin",
+            ...reopenLedgerCtx,
+          }),
+        ),
+      );
 
       res.json(updated);
     } catch (error) {

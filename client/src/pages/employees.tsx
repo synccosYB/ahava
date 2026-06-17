@@ -3987,8 +3987,155 @@ function EmployeeAuditHistory({ userId }: { userId: string }) {
     <div className="space-y-6" data-testid="employee-history-tab">
       <EmployeeTimesheetCard userId={userId} />
       <IdentityHistoryCard userId={userId} />
+      <EmployeeLedgerTable userId={userId} />
       <EmployeeAuditLogTable userId={userId} />
     </div>
+  );
+}
+
+const LEDGER_PAGE_SIZE = 25;
+
+type LedgerEntry = {
+  id: number;
+  sequence: number;
+  category: string;
+  eventType: string;
+  entityType: string;
+  workDate: string | null;
+  hoursDelta: number | null;
+  source: string | null;
+  createdAt: string | null;
+};
+
+type EmployeeLedgerResponse = { entries: LedgerEntry[]; total: number };
+
+const LEDGER_CATEGORY_OPTIONS = [
+  { value: "all", label: "All categories" },
+  { value: "attendance", label: "Attendance" },
+  { value: "hours", label: "Hours" },
+  { value: "pto", label: "PTO" },
+  { value: "payroll", label: "Payroll" },
+];
+
+const LEDGER_CATEGORY_LABELS: Record<string, string> = {
+  attendance: "Attendance",
+  hours: "Hours",
+  pto: "PTO",
+  payroll: "Payroll",
+};
+
+function formatLedgerEvent(eventType: string): string {
+  return eventType
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+function EmployeeLedgerTable({ userId }: { userId: string }) {
+  const [category, setCategory] = useState("all");
+  const [pageSize, setPageSize] = useState(LEDGER_PAGE_SIZE);
+
+  const { data, isLoading } = useQuery<EmployeeLedgerResponse>({
+    queryKey: ["/api/ledger/employee", userId, category, pageSize],
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: String(pageSize), offset: "0" });
+      if (category !== "all") params.set("category", category);
+      const res = await fetch(
+        `/api/ledger/employee/${userId}?${params.toString()}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Failed to load ledger");
+      return res.json();
+    },
+  });
+
+  const entries = data?.entries || [];
+  const total = data?.total || 0;
+  const hasMore = entries.length < total;
+
+  return (
+    <Card data-testid="card-ledger-history">
+      <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
+        <CardTitle>Attendance &amp; Payroll Ledger</CardTitle>
+        <Select
+          value={category}
+          onValueChange={(v) => {
+            setCategory(v);
+            setPageSize(LEDGER_PAGE_SIZE);
+          }}
+        >
+          <SelectTrigger className="w-[180px]" data-testid="select-ledger-category">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {LEDGER_CATEGORY_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value} data-testid={`option-ledger-category-${opt.value}`}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        ) : entries.length === 0 ? (
+          <p className="text-muted-foreground text-center py-4" data-testid="text-no-ledger">No ledger entries found.</p>
+        ) : (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Category</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Event</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Work date</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Hours Δ</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Recorded</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {entries.map((entry) => (
+                  <TableRow key={entry.id} data-testid={`row-ledger-${entry.id}`}>
+                    <TableCell className="align-top">
+                      {LEDGER_CATEGORY_LABELS[entry.category] || entry.category}
+                    </TableCell>
+                    <TableCell className="font-medium align-top" data-testid={`text-ledger-event-${entry.id}`}>
+                      {formatLedgerEvent(entry.eventType)}
+                    </TableCell>
+                    <TableCell className="align-top">{entry.workDate || "—"}</TableCell>
+                    <TableCell className="align-top text-right" data-testid={`text-ledger-delta-${entry.id}`}>
+                      {entry.hoursDelta === null || entry.hoursDelta === undefined
+                        ? "—"
+                        : `${entry.hoursDelta > 0 ? "+" : ""}${entry.hoursDelta.toFixed(2)}`}
+                    </TableCell>
+                    <TableCell className="align-top">
+                      {entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div className="flex items-center justify-between text-xs text-muted-foreground mt-3">
+              <span data-testid="text-ledger-count">
+                Showing {entries.length} of {total}
+              </span>
+              {hasMore && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPageSize((c) => c + LEDGER_PAGE_SIZE)}
+                  data-testid="button-ledger-load-more"
+                >
+                  Show more
+                </Button>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

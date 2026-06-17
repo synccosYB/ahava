@@ -24,6 +24,7 @@ import { getEffectivePolicy, DEFAULT_PAYROLL_RULES } from "../policyEngine";
 import { buildPayCalcPolicy, splitDailyHours, computeWeeklyHours, resolvePayCalcPolicy, DEFAULT_PAY_CALC_POLICY, type PayCalcPolicy } from "../payrollEngine";
 import { evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses } from "./policyEnforcement";
 import { writeAuditLog } from "./audit";
+import { writeLedgerEntry } from "./ledger";
 import { BALANCE_TRACKED_TIME_OFF_TYPES } from "@shared/schema";
 
 const HOURS_EPSILON = 0.005;
@@ -204,6 +205,27 @@ export async function applyAttendanceReconciliation(
       },
       ...ctx,
     });
+
+    await Promise.all(
+      changes.map((c) =>
+        writeLedgerEntry({
+          category: "hours",
+          eventType: "ot_recalculated",
+          employeeId: c.employeeId,
+          actorUserId,
+          entityType: "punch_log",
+          entityId: c.punchLogId,
+          workDate: c.workDate,
+          hoursDelta: c.hoursDelta,
+          beforeValue: { hoursWorked: c.storedHours, status: c.storedStatus },
+          afterValue: { hoursWorked: c.computedHours, status: c.computedStatus },
+          context: { reconciliation: true },
+          source: "system",
+          ipAddress: ctx.ipAddress,
+          userAgent: ctx.userAgent,
+        }),
+      ),
+    );
   }
 
   return { applied: changes.length, skipped, changes };
