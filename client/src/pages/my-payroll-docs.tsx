@@ -27,6 +27,7 @@ type PayrollDoc = {
   netPay: number | null;
   fileName: string | null;
   fileSize: number | null;
+  payrollCompanyName: string | null;
   uploaderName: string;
   uploadedAt: string;
 };
@@ -147,6 +148,7 @@ export default function MyPayrollDocsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Document</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Payroll Company</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Period</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Gross Pay</TableHead>
@@ -164,6 +166,9 @@ export default function MyPayrollDocsPage() {
                         <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
                         {doc.documentName}
                       </div>
+                    </TableCell>
+                    <TableCell data-testid={`text-doc-payroll-company-${doc.id}`}>
+                      {doc.payrollCompanyName || <span className="text-muted-foreground">—</span>}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={CATEGORY_COLORS[doc.documentCategory] || ""} data-testid={`badge-doc-type-${doc.id}`}>

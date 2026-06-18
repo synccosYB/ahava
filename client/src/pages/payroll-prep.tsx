@@ -484,6 +484,7 @@ export default function PayrollPrepPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Payroll Company</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Regular</TableHead>
@@ -501,6 +502,9 @@ export default function PayrollPrepPage() {
                   return (
                     <TableRow key={r.id} data-testid={`row-batch-record-${r.id}`}>
                       <TableCell data-testid={`text-record-employee-${r.id}`}>{r.employeeName}</TableCell>
+                      <TableCell data-testid={`text-record-payroll-company-${r.id}`}>
+                        {r.payrollCompanyName || <span className="text-muted-foreground">—</span>}
+                      </TableCell>
                       <TableCell className="tabular-nums" data-testid={`text-record-date-${r.id}`}>{formatDate(r.workDate)}</TableCell>
                       <TableCell><Badge variant="outline">{formatRecordType(r.recordType)}</Badge></TableCell>
                       <TableCell className="tabular-nums text-right">{formatHoursMinutes(r.regularHours || 0)}</TableCell>
@@ -541,7 +545,7 @@ export default function PayrollPrepPage() {
                   );
                 })}
                 <TableRow className="font-medium border-t-2" data-testid="row-batch-detail-totals">
-                  <TableCell colSpan={3}>Totals</TableCell>
+                  <TableCell colSpan={4}>Totals</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-regular">{formatHoursMinutes(detailTotals.regular)}</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-overtime">{formatHoursMinutes(detailTotals.overtime)}</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-pto">{formatHoursMinutes(detailTotals.pto)}</TableCell>

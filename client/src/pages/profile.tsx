@@ -46,6 +46,7 @@ interface ProfileDetails {
   payType: string;
   hireDate: string | null;
   overtimeEligible: boolean;
+  payrollCompanyName: string | null;
 }
 
 function initials(first: string, last: string) {
@@ -587,6 +588,10 @@ export default function ProfilePage() {
               <Field
                 label="Pay Type"
                 value={formatLabel(profile!.payType)}
+              />
+              <Field
+                label="Payroll Company"
+                value={profile!.payrollCompanyName || "—"}
               />
               <Field
                 label="Hire Date"

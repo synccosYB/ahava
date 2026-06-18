@@ -2147,13 +2147,24 @@ export async function registerRoutes(
     return createCertificationHandler(req, res, String(req.params.id));
   });
 
+  // Resolve an employee's CURRENT payroll-company name (payroll-only assignment,
+  // independent of dept/location). Pay-stub/tax-form documents are uploaded files
+  // with no frozen snapshot, so we surface the employee's live payroll company.
+  const resolvePayrollCompanyName = async (employeeId: string): Promise<string | null> => {
+    const prof = await storage.getEmploymentProfile(employeeId);
+    if (!prof?.payrollCompanyId) return null;
+    const company = await storage.getCompany(prof.payrollCompanyId);
+    return company?.name ?? null;
+  };
+
   app.get("/api/payroll-documents/my", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
       const docs = await storage.getPayrollDocumentsByEmployee(userId);
+      const payrollCompanyName = await resolvePayrollCompanyName(userId);
       const enriched = await Promise.all(docs.map(async (doc) => {
         const uploader = doc.uploadedBy ? await storage.getUser(doc.uploadedBy) : null;
-        return { ...doc, uploaderName: uploader ? `${uploader.firstName} ${uploader.lastName}` : "System" };
+        return { ...doc, uploaderName: uploader ? `${uploader.firstName} ${uploader.lastName}` : "System", payrollCompanyName };
       }));
       res.json(enriched);
     } catch (error) {
@@ -2164,13 +2175,18 @@ export async function registerRoutes(
   app.get("/api/payroll-documents", requireAuth, requirePermission("payroll.view_all"), async (_req, res) => {
     try {
       const docs = await storage.getAllPayrollDocuments();
+      const companyNameByEmployee = new Map<string, string | null>();
       const enriched = await Promise.all(docs.map(async (doc) => {
         const employee = await storage.getUser(doc.employeeId);
         const uploader = doc.uploadedBy ? await storage.getUser(doc.uploadedBy) : null;
+        if (!companyNameByEmployee.has(doc.employeeId)) {
+          companyNameByEmployee.set(doc.employeeId, await resolvePayrollCompanyName(doc.employeeId));
+        }
         return {
           ...doc,
           employeeName: employee ? `${employee.firstName} ${employee.lastName}` : "Unknown",
           uploaderName: uploader ? `${uploader.firstName} ${uploader.lastName}` : "System",
+          payrollCompanyName: companyNameByEmployee.get(doc.employeeId) ?? null,
         };
       }));
       res.json(enriched);
@@ -2660,10 +2676,11 @@ export async function registerRoutes(
 
       const emp = await storage.getEmploymentProfile(userId);
 
-      const [company, location, department] = await Promise.all([
+      const [company, location, department, payrollCompany] = await Promise.all([
         user.companyId ? storage.getCompany(user.companyId) : null,
         user.locationId ? storage.getLocation(user.locationId) : null,
         user.departmentId ? storage.getDepartment(user.departmentId) : null,
+        emp?.payrollCompanyId ? storage.getCompany(emp.payrollCompanyId) : null,
       ]);
 
       const year = new Date().getFullYear();
@@ -2684,6 +2701,9 @@ export async function registerRoutes(
         companyName: company?.name ?? "—",
         locationName: location?.name ?? "—",
         departmentName: department?.name ?? "—",
+
+        payrollCompanyId: emp?.payrollCompanyId ?? null,
+        payrollCompanyName: payrollCompany?.name ?? null,
 
         employmentType: emp?.employmentType ?? "—",
         taxClassification: emp?.taxClassification ?? "W-2",
@@ -2813,6 +2833,7 @@ export async function registerRoutes(
         "holidayPayEnabled",
         "voluntaryPayEnabled",
         "taxClassification",
+        "payrollCompanyId",
         "hireDate",
         "terminationDate",
       ] as const;
@@ -6630,6 +6651,17 @@ export async function registerRoutes(
     for (const u of filteredUsers) {
       taxByUser.set(u.id, profileMap.get(u.id)?.taxClassification || "W-2");
     }
+
+    // Per-employee payroll company (a payroll-only assignment independent of the
+    // org dept/location). Resolve the id → name once via a companies lookup so
+    // the report and its CSV can show the employer name; blank when unset.
+    const allCompaniesForReport = await storage.getAllCompanies();
+    const companyNameById = new Map(allCompaniesForReport.map(c => [c.id, c.name]));
+    const payrollCompanyByUser = new Map<string, string>();
+    for (const u of filteredUsers) {
+      const pcId = profileMap.get(u.id)?.payrollCompanyId;
+      payrollCompanyByUser.set(u.id, pcId ? (companyNameById.get(pcId) || "") : "");
+    }
     if (taxClassifications && taxClassifications.length > 0) {
       const set = new Set(taxClassifications);
       filteredUsers = filteredUsers.filter(u => set.has(taxByUser.get(u.id) as any || "W-2"));
@@ -6770,6 +6802,7 @@ export async function registerRoutes(
       const columns: ReportColumn[] = [
         { key: "employeeName", label: "Employee", kind: "text" },
         { key: "taxClassification", label: "Tax Class", kind: "text" },
+        { key: "payrollCompany", label: "Payroll Company", kind: "text" },
         { key: "department", label: "Department", kind: "text" },
         { key: "daysWorked", label: "Days Worked", kind: "number" },
         { key: "totalHours", label: "Total Hours", kind: "hours" },
@@ -6786,6 +6819,7 @@ export async function registerRoutes(
           id: u.id,
           employeeName: nameOf(u),
           taxClassification: taxByUser.get(u.id) || "W-2",
+          payrollCompany: payrollCompanyByUser.get(u.id) || "",
           department: deptOf(u),
           daysWorked,
           totalHours: Math.round(totalHours * 10) / 10,
@@ -6800,6 +6834,7 @@ export async function registerRoutes(
     const attendanceColumns: ReportColumn[] = [
       { key: "employeeName", label: "Employee", kind: "text" },
       { key: "taxClassification", label: "Tax Class", kind: "text" },
+      { key: "payrollCompany", label: "Payroll Company", kind: "text" },
       { key: "department", label: "Department", kind: "text" },
       { key: "totalHours", label: "Total Hours", kind: "hours" },
       { key: "daysWorked", label: "Days Worked", kind: "number" },
@@ -6816,6 +6851,7 @@ export async function registerRoutes(
         id: u.id,
         employeeName: nameOf(u),
         taxClassification: taxByUser.get(u.id) || "W-2",
+        payrollCompany: payrollCompanyByUser.get(u.id) || "",
         department: deptOf(u),
         totalHours: Math.round(totalHours * 10) / 10,
         daysWorked,
@@ -7914,7 +7950,20 @@ export async function registerRoutes(
         payrollRules: Record<string, any>;
         rate: number;
         scheduledDays: number[];
+        payrollCompanyId: string | null;
+        payrollCompanyName: string | null;
       }>();
+      // Small per-batch cache so resolving the payroll company name never
+      // re-queries the same company across employees.
+      const companyNameCache = new Map<string, string | null>();
+      const resolveCompanyName = async (companyId: string | null): Promise<string | null> => {
+        if (!companyId) return null;
+        if (companyNameCache.has(companyId)) return companyNameCache.get(companyId)!;
+        const company = await storage.getCompany(companyId);
+        const name = company?.name ?? null;
+        companyNameCache.set(companyId, name);
+        return name;
+      };
       const resolveEmp = async (employeeId: string) => {
         const cached = empResolutionCache.get(employeeId);
         if (cached) return cached;
@@ -7935,12 +7984,16 @@ export async function registerRoutes(
           else if (profile.dailySalary) rate = profile.dailySalary / 8;
           else if (profile.weeklySalary) rate = profile.weeklySalary / 40;
         }
+        const payrollCompanyId = profile?.payrollCompanyId ?? null;
+        const payrollCompanyName = await resolveCompanyName(payrollCompanyId);
         const schedules = await storage.getEmployeeSchedules(employeeId);
         const resolved = {
           payCalc,
           payrollRules: (pay?.rules as Record<string, any>) || DEFAULT_PAYROLL_RULES,
           rate,
           scheduledDays: schedules.filter(s => s.isActive).map(s => s.dayOfWeek),
+          payrollCompanyId,
+          payrollCompanyName,
         };
         empResolutionCache.set(employeeId, resolved);
         return resolved;
@@ -7989,7 +8042,7 @@ export async function registerRoutes(
         }
 
         for (const [employeeId, groups] of groupsByEmployee) {
-          const { payCalc, payrollRules, rate, scheduledDays } = await resolveEmp(employeeId);
+          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName } = await resolveEmp(employeeId);
 
           type DayMeta = {
             workDate: string;
@@ -8083,6 +8136,8 @@ export async function registerRoutes(
               otThresholdWeekly: payCalc.otThresholdWeekly,
               weeklyOvertimeEnabled: payCalc.weeklyOvertimeEnabled,
               workweekStartDay: payCalc.workweekStartDay,
+              payrollCompanyId,
+              payrollCompanyName,
               bonusAmount: meta.bonusAmount,
               bonusHours: meta.bonusHours,
               bonusDescription: meta.bonusDescription,
@@ -8095,7 +8150,7 @@ export async function registerRoutes(
         for (const tor of approvedTimeOff) {
           const ptoHours = tor.hoursRequested || 8;
           const effectiveStart = tor.startDate > startDate ? tor.startDate : startDate;
-          const { rate } = await resolveEmp(tor.userId);
+          const { rate, payrollCompanyId, payrollCompanyName } = await resolveEmp(tor.userId);
 
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,
@@ -8109,6 +8164,8 @@ export async function registerRoutes(
             doubleTimeHours: 0,
             ptoHours,
             hourlyRate: rate,
+            payrollCompanyId,
+            payrollCompanyName,
             hasIssues: false,
             issueDescription: null,
           });
@@ -8116,7 +8173,7 @@ export async function registerRoutes(
 
         for (const co of approvedCashouts) {
           const cashoutHours = co.hoursRequested || 8;
-          const { rate } = await resolveEmp(co.userId);
+          const { rate, payrollCompanyId, payrollCompanyName } = await resolveEmp(co.userId);
 
           await tx.insert(payrollBatchRecordsTable).values({
             payrollExportId: created.id,
@@ -8130,6 +8187,8 @@ export async function registerRoutes(
             doubleTimeHours: 0,
             ptoHours: cashoutHours,
             hourlyRate: rate,
+            payrollCompanyId,
+            payrollCompanyName,
             hasIssues: false,
             issueDescription: null,
           });
@@ -8168,13 +8227,40 @@ export async function registerRoutes(
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
 
-      const enriched = records.map(r => {
+      // Resolve a payroll-company name per record: prefer the snapshot frozen at
+      // batch creation; fall back to the employee's current employment profile
+      // for legacy rows (created before the snapshot existed).
+      const companyNameCache = new Map<string, string | null>();
+      const profilePayrollCompanyCache = new Map<string, string | null>();
+      const resolveSnapshotFallbackName = async (r: typeof records[number]): Promise<string | null> => {
+        if (r.payrollCompanyName) return r.payrollCompanyName;
+        if (r.payrollCompanyId) {
+          if (!companyNameCache.has(r.payrollCompanyId)) {
+            const c = await storage.getCompany(r.payrollCompanyId);
+            companyNameCache.set(r.payrollCompanyId, c?.name ?? null);
+          }
+          return companyNameCache.get(r.payrollCompanyId)!;
+        }
+        if (!profilePayrollCompanyCache.has(r.employeeId)) {
+          const profile = await storage.getEmploymentProfile(r.employeeId);
+          let name: string | null = null;
+          if (profile?.payrollCompanyId) {
+            const c = await storage.getCompany(profile.payrollCompanyId);
+            name = c?.name ?? null;
+          }
+          profilePayrollCompanyCache.set(r.employeeId, name);
+        }
+        return profilePayrollCompanyCache.get(r.employeeId)!;
+      };
+
+      const enriched = await Promise.all(records.map(async r => {
         const user = userMap.get(r.employeeId);
         return {
           ...r,
           employeeName: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Unknown",
+          payrollCompanyName: await resolveSnapshotFallbackName(r),
         };
-      });
+      }));
 
       res.json(enriched);
     } catch (error) {
@@ -8289,6 +8375,27 @@ export async function registerRoutes(
         return scheduleCache.get(userId)!;
       };
 
+      // Resolve the payroll-company name for a record: prefer the snapshot frozen
+      // at batch creation, fall back to the live employment profile for legacy
+      // rows so historical exports never drift when an employee's payroll company
+      // is later changed.
+      const companyNameCache = new Map<string, string | null>();
+      const resolveCompanyName = async (companyId: string | null | undefined): Promise<string | null> => {
+        if (!companyId) return null;
+        if (!companyNameCache.has(companyId)) {
+          const c = await storage.getCompany(companyId);
+          companyNameCache.set(companyId, c?.name ?? null);
+        }
+        return companyNameCache.get(companyId)!;
+      };
+      const getPayrollCompanyName = async (r: typeof records[number], profile: Awaited<ReturnType<typeof getProfile>>): Promise<string> => {
+        if (r.payrollCompanyName) return r.payrollCompanyName;
+        const fromSnapshotId = await resolveCompanyName(r.payrollCompanyId);
+        if (fromSnapshotId) return fromSnapshotId;
+        const fromProfile = await resolveCompanyName(profile?.payrollCompanyId);
+        return fromProfile ?? "";
+      };
+
       const formatDateWorked = (dateStr: string): string => {
         const parts = dateStr.split("-");
         const year = parseInt(parts[0], 10);
@@ -8334,7 +8441,7 @@ export async function registerRoutes(
         approvedExceptionsForBatch.map(e => e.punchLogId).filter(Boolean) as string[]
       );
 
-      type DayRow = { employeeName: string; taxClassification: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
+      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
       const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
@@ -8343,6 +8450,7 @@ export async function registerRoutes(
         const department = user?.departmentId ? (deptMap.get(user.departmentId) || "") : "";
         const profile = await getProfile(r.employeeId);
         const schedules = await getSchedules(r.employeeId);
+        const payrollCompany = await getPayrollCompanyName(r, profile);
 
         // Prefer the hourly rate frozen onto the record at batch creation so
         // historical exports never drift when a profile's pay rate later
@@ -8409,6 +8517,7 @@ export async function registerRoutes(
           empDays.set(dateKey, {
             employeeName,
             taxClassification: profile?.taxClassification || "W-2",
+            payrollCompany,
             amount,
             payType,
             department,
@@ -8430,7 +8539,7 @@ export async function registerRoutes(
       }
 
       let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
-      csv += "Employee Name,Tax Classification,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
+      csv += "Employee Name,Tax Classification,Payroll Company,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
 
       for (const [, dayMap] of employeeRecords) {
         const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
@@ -8441,7 +8550,7 @@ export async function registerRoutes(
         for (const row of rows) {
           const bonusAmtCell = row.bonusAmount > 0 ? formatAmountCurrency(row.bonusAmount) : "";
           const bonusDescCell = row.bonusDescriptions.length > 0 ? escapeCSV(row.bonusDescriptions.join("; ")) : "";
-          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
+          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
           totalAmount += row.amount;
           totalPaidHours += row.paidHours;
           totalBonusAmount += row.bonusAmount;
@@ -8449,8 +8558,9 @@ export async function registerRoutes(
 
         const empName = rows[0].employeeName;
         const taxClass = rows[0].taxClassification;
+        const payrollCompany = rows[0].payrollCompany;
         const totalBonusCell = totalBonusAmount > 0 ? formatAmountCurrency(totalBonusAmount) : "";
-        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
       }
 
       const adminUser = req.authUser as User;

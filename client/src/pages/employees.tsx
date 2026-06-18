@@ -1780,6 +1780,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     weeklySalary: "",
     holidayPayEnabled: false,
     overtimeEligible: false,
+    payrollCompanyId: "none",
   });
 
   const openPayDialog = () => {
@@ -1790,6 +1791,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       weeklySalary: profile?.weeklySalary != null ? String(profile.weeklySalary) : "",
       holidayPayEnabled: !!profile?.holidayPayEnabled,
       overtimeEligible: !!profile?.overtimeEligible,
+      payrollCompanyId: profile?.payrollCompanyId || "none",
     });
     setEditPayOpen(true);
   };
@@ -1813,6 +1815,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         hourlyRate: payForm.payType === "hourly" ? parseFloat(payForm.hourlyRate) : null,
         dailySalary: payForm.payType === "daily" ? parseFloat(payForm.dailySalary) : null,
         weeklySalary: payForm.payType === "salary" ? parseFloat(payForm.weeklySalary) : null,
+        payrollCompanyId: payForm.payrollCompanyId === "none" ? null : payForm.payrollCompanyId,
       };
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, body);
     },
@@ -2414,6 +2417,14 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                   {profile?.holidayPayEnabled ? "Enabled" : "Disabled"}
                 </p>
               </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Payroll Company</Label>
+                <p className="font-medium" data-testid="text-profile-payroll-company">
+                  {profile?.payrollCompanyId
+                    ? (divisions?.find((d) => d.id === profile.payrollCompanyId)?.name || "—")
+                    : "—"}
+                </p>
+              </div>
             </CardContent>
           </Card>
           <Dialog open={editPayOpen} onOpenChange={setEditPayOpen}>
@@ -2510,6 +2521,28 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     data-testid="checkbox-pay-overtime"
                   />
                   <Label htmlFor="checkbox-pay-overtime">Overtime Eligible</Label>
+                </div>
+                <div className="space-y-2">
+                  <Label>Payroll Company</Label>
+                  <Select
+                    value={payForm.payrollCompanyId}
+                    onValueChange={(v) => setPayForm((f) => ({ ...f, payrollCompanyId: v }))}
+                  >
+                    <SelectTrigger data-testid="select-payroll-company">
+                      <SelectValue placeholder="None" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">None</SelectItem>
+                      {divisions?.map((d) => (
+                        <SelectItem key={d.id} value={d.id} data-testid={`option-payroll-company-${d.id}`}>
+                          {d.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Used for payroll reporting only — independent of department/location assignment.
+                  </p>
                 </div>
               </div>
               <DialogFooter>

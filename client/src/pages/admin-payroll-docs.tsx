@@ -31,6 +31,7 @@ type PayrollDoc = {
   fileName: string | null;
   fileSize: number | null;
   employeeName: string;
+  payrollCompanyName: string | null;
   uploaderName: string;
   uploadedAt: string;
 };
@@ -301,6 +302,7 @@ export default function AdminPayrollDocsPage() {
                 <TableRow>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Document</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Payroll Company</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Period</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Gross Pay</TableHead>
@@ -321,6 +323,9 @@ export default function AdminPayrollDocsPage() {
                       </div>
                     </TableCell>
                     <TableCell data-testid={`text-doc-employee-${doc.id}`}>{doc.employeeName}</TableCell>
+                    <TableCell data-testid={`text-doc-payroll-company-${doc.id}`}>
+                      {doc.payrollCompanyName || <span className="text-muted-foreground">—</span>}
+                    </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={CATEGORY_COLORS[doc.documentCategory] || ""} data-testid={`badge-doc-type-${doc.id}`}>
                         {CATEGORY_LABELS[doc.documentCategory] || doc.documentCategory}

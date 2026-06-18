@@ -292,6 +292,11 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   voluntaryPayEnabled: boolean("voluntary_pay_enabled").default(false).notNull(),
   taxClassification: varchar("tax_classification", { length: 10 }).default("W-2").notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
+  // Payroll-only company (Task #475): which company this employee belongs to for
+  // payroll identification. Deliberately INDEPENDENT of the assignment-derived
+  // company (users.companyId / department & location assignments). Nullable —
+  // existing employees fall back to a blank placeholder, not an error.
+  payrollCompanyId: varchar("payroll_company_id").references(() => companies.id),
   hireDate: date("hire_date"),
   terminationDate: date("termination_date"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -999,6 +1004,13 @@ export const payrollBatchRecords = pgTable("payroll_batch_records", {
   otThresholdWeekly: real("ot_threshold_weekly"),
   weeklyOvertimeEnabled: boolean("weekly_overtime_enabled"),
   workweekStartDay: integer("workweek_start_day"),
+  // Frozen payroll-company snapshot (Task #475): the employee's payroll company
+  // (id + resolved name) at batch-creation time, so editing the employee's
+  // payroll company later never relabels already-exported historical rows. Null
+  // on legacy rows / employees with no payroll company — consumers fall back to
+  // the live employment profile for those.
+  payrollCompanyId: varchar("payroll_company_id").references(() => companies.id),
+  payrollCompanyName: varchar("payroll_company_name", { length: 255 }),
   bonusAmount: real("bonus_amount").default(0).notNull(),
   bonusHours: real("bonus_hours").default(0).notNull(),
   bonusDescription: text("bonus_description"),

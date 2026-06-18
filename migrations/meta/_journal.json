@@ -421,6 +421,13 @@
       "when": 1780300700000,
       "tag": "0059_attendance_change_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1780300800000,
+      "tag": "0060_payroll_company_per_employee",
+      "breakpoints": true
     }
   ]
 }
