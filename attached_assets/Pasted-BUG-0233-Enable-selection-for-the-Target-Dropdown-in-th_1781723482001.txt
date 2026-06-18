@@ -1,0 +1,97 @@
+BUG-0233
+Enable selection for the "Target" Dropdown in the "Create New Policy" window at the "Assignment" step
+Bug
+In Progress
+Critical
+Close
+Mark Ready for Review
+Resolve
+Status
+In Progress
+Priority
+Critical
+Assigned To
+Unassigned
+Description
+
+**Steps to Reproduce:**
+1. Navigate to the "Create New Policy" window within the application.
+2. Proceed to the "Assignment" step.
+3. Attempt to interact with the "Target" dropdown to select an assignment.
+
+**Expected Behavior:**
+The "Target" dropdown in the "Assignment" step should allow users to select an assignment for all policy types (e.g., PTO, Leave, Attendance, etc.) enabling smooth progression to subsequent steps.
+
+**Actual Behavior:**
+The "Target" dropdown appears disabled, preventing assignment selection for all policy types. As a result, users cannot proceed to the next steps to test or set up the policy correctly.
+
+**Additional Context:**
+This issue occurs universally for all policy types, creating a bottleneck in the policy creation workflow. Resolving this is critical to ensuring proper testing and setup of policies.
+
+Resolution
+
+Task #312 is merged and resolved. Here's what it fixed:
+
+The problem: In the Create New Policy wizard, the "Target" dropdown was permanently unusable for some admins — the Level options (Company / Location / Department / Employee / Role) showed up disabled, so you couldn't assign a policy to anyone.
+
+Why it happened: Each Level pulled its list from a separate endpoint that required a granular view permission (company.view, locations.view, departments.view, users.view). But opening the policy wizard itself only requires being an admin. So any admin who didn't happen to hold one of those view permissions got a silent 403 → empty list → disabled Level. Only the Super Admin worked, because it bypasses permission checks.
+
+The fix: A single consolidated endpoint (/api/policy-assignment-targets) now loads all five target lists at once, gated by the same admin check that lets you open the wizard in the first place. On top of that, Levels no longer disable themselves when a list is empty — they stay clickable and show a helpful "No X options are available" message instead of silently locking you out.
+
+Net result: every admin who can open the policy wizard can now actually pick targets and assign policies. No action needed on your side — it's live after the next deploy.
+
+Two optional follow-ups were proposed alongside it (not yet done): #313 (drive policy management off permissions instead of the legacy admin flag) and #314 (an automated test so this can't silently break again). Want me to queue either of those, or are you good?
+
+Resolved 15 days ago
+
+AI Analysis
+
+### Analysis of Bug Report:
+
+1. **Affected Part of the App:**
+   - The "Target" dropdown in the "Assignment" step of the "Create New Policy" workflow is non-functional (disabled) for all policy types. This directly impacts users' ability to configure policies and advance to the subsequent steps in the policy creation process.
+
+2. **Root Cause Analysis:**
+   - Without a screenshot or console log, it is likely the dropdown is disabled due to one of the following reasons:
+     - **UI State Issues:** The dropdown logic may be unintentionally tied to a prerequisite condition (e.g., untriggered initialization, missing data for list population, or incorrect state binding).
+     - **Configuration/Permissions:** The dropdown may be disabled due to incorrect default settings for policies or user role permissions not granting access to interact with the dropdown.
+     - **API Dependency:** If the dropdown relies on API data to populate assignment options, the API request might be failing or returning an empty response, leaving the dropdown in a disabled state.
+     - **Validation Issues:** Early validation logic may be incorrectly preventing dropdown interaction based on either incomplete input from the prior steps or misconfigured policy flags.
+
+3. **Recommended Fix or Next Steps:**
+   - **Debugging Path:**
+     - Verify the dropdown's enablement logic in the front-end code to check if certain conditions are unintentionally preventing interaction (e.g., missing states, flags, or user inputs).
+     - Confirm if API calls are triggering to fetch assignment data for the dropdown. If they fail, investigate backend issues or adjust error-handling logic to allow the dropdown interaction despite empty results.
+     - Check user role and permissions to ensure the dropdown interaction is not restricted unintentionally for the current user profile.
+
+   - **Resolution Suggestions:**
+     - If the dropdown requires prior data initialization, update the error-handling logic to enable interaction regardless of missing or partial data.
+     - Add logs or indicators in the UI to inform users if backend data dependencies (like assignments) fail to load. Gracefully allow proceeding once loaded or manual selection is available.
+     - Ensure validation rules in the "Assignment" step are configured to enable dropdown interaction universally for all policy types by default, regardless of prior selections.
+     
+   - **Testing Plan:**
+     - Verify the fix on staging by testing the dropdown for each policy type (PTO, Leave, Attendance, etc.) to confirm its functionality.
+     - Test edge cases, such as empty assignment data or user roles with restricted access, to ensure the dropdown consistently works as expected.
+
+---
+
+```json
+{"severity": "critical", "category": "functionality"}
+```
+
+https://synccos.space/rules-controls
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36
+Shlomy Shpilman
+shloimy@synkdex.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (1)
+
+Shloimy Spielmanteam
+13 days ago
+The "Target" dropdown loads now, However the system doesn't allow a selection when selecting it just closes the the Dropdown without a selection
+

@@ -1,0 +1,76 @@
+BUG-0261
+Employee roles and permissions
+Bug
+Ready for Review
+High
+Close
+Resolve
+Status
+Ready for Review
+Priority
+High
+Assigned To
+Unassigned
+Description
+
+**Steps to Reproduce:**
+1. Navigate to the "Employee" page in the application.
+2. Open the "Basic Info" tab.
+3. Click the dropdown menu to select a role for an employee.
+
+**Expected Behavior:**
+The role dropdown should fetch options dynamically from the "Role and Permission" module in the system. Selecting a role should apply permissions that are configurable through the "Role and Permission" module.
+
+**Actual Behavior:**
+The role dropdown contains hardcoded options, and selecting a role applies permissions that are also hardcoded and cannot be edited through the "Role and Permission" module.
+
+**Additional Context:**
+The system includes a "Role and Permission" module, but its functionality is not integrated with the role selection process on the Employee page. This discrepancy limits flexibility and maintainability, as changes to roles and permissions require manual updates to the hardcoded logic instead of leveraging the existing module.
+
+AI Analysis
+
+### Analysis of Bug Report: "Employee roles and permissions"
+
+1. **Affected Part of the App:**
+   - **Role Selection Dropdown** and its integration with the backend "Role and Permission" module on the "Employee" page under the **Basic Info tab**.
+
+2. **Root Cause Analysis:**
+   - The dropdown for selecting employee roles is not dynamically fetching role options from the backend "Role and Permission" module. Instead, it uses hardcoded role options.
+   - The hardcoded assignment of permissions bypasses the intended configurability offered by the "Role and Permission" module, creating a disconnect between UI functionality and backend logic.
+   - This issue likely stems from a lack of API integration or failure to retrieve the list of roles dynamically from the backend. This could be due to:
+     - Missing or incomplete API endpoint implementation for fetching roles.
+     - Failure to connect the dropdown component with dynamic data fetching logic.
+     - Hardcoded placeholder data in the frontend during development that hasn't been replaced.
+
+3. **Recommendations:**
+   - **API Integration:**
+     - Ensure a functioning API endpoint exists in the "Role and Permission" module to provide a list of available roles.
+     - If an API exists, retrieve the roles dynamically via API calls and populate the dropdown with the response.
+   - **Frontend Updates:**
+     - Update the frontend dropdown logic to remove hardcoded role options.
+     - Use data binding or API responses to populate the role list dynamically when the page loads.
+   - **Testing and QA:**
+     - Validate that changes to roles and permissions in the "Role and Permission" module are reflected on the "Employee" page.
+     - Ensure role selection applies the correct permissions dynamically without manual updates to hardcoded logic.
+
+```json
+{"severity": "high", "category": "functionality"}
+```
+
+Screenshot
+
+Screenshot
+https://synccos.space/employees
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36
+Shloimy Spilman
+shloimy@synkdex.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+

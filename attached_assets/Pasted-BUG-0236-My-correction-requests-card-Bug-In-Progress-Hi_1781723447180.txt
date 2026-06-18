@@ -1,0 +1,77 @@
+BUG-0236
+My correction requests card
+Bug
+In Progress
+High
+Close
+Mark Ready for Review
+Resolve
+Status
+In Progress
+Priority
+High
+Assigned To
+Unassigned
+Description
+
+**Steps to Reproduce:**
+1. Navigate to the "My Attendance" page in the application.
+2. Locate the "My Correction Requests" card.
+3. Observe the list of correction requests displayed within the card.
+
+**Expected Behavior:**
+The "My Correction Requests" card should display only the correction requests submitted by the active, logged-in user.
+
+**Actual Behavior:**
+The "My Correction Requests" card displays all correction requests in the system, including those submitted by other users, instead of filtering them to show only the requests of the active user.
+
+**Additional Context:**
+- This issue may involve missing or incorrect filtering logic for user-specific data.
+- The system does not appear to validate which user is logged in when loading the requests.
+- Potential data privacy concerns arise if users can see requests they should not have access to.
+
+AI Analysis
+
+### Analysis:
+
+#### 1. **Affected Part of the Application:**
+   - The issue lies in the **"My Correction Requests" card** under "My Attendance" page. This is where correction requests for the logged-in user are supposed to be displayed.
+
+#### 2. **Root Cause Analysis:**
+   - **Backend Filtering Issue:** Based on the provided information, the application's backend service is likely not applying user-specific filtering when fetching correction requests. Instead, it retrieves and displays all correction requests from the database.
+   - **Lack of Authentication Context Validation:** The frontend may not be passing the logged-in user’s credentials (e.g., user ID or token) correctly to the backend or the backend may not validate and filter data based on the provided user credentials.
+   - **Data Privacy Risk:** By exposing other users' correction requests, the system violates user access policies, leading to potential data privacy breaches.
+
+#### 3. **Recommended Fix:**
+   - **Backend Changes:**
+     - Modify the API handling correction request data retrieval. Ensure it applies a filtering layer (e.g., `WHERE userId = loggedInUserId`) so that only the correction requests corresponding to the logged-in user are fetched.
+     - Validate the logged-in user’s session or token to ensure proper authorization.
+   - **Frontend Changes:**
+     - If the frontend is failing to pass the logged-in user’s context (user ID or token) in API requests, ensure that it includes this information in the request payload.
+   - **Testing:**
+     - Test the endpoint to verify that only user-specific correction requests are returned.
+     - Validate the system against scenarios where unauthorized access might occur, ensuring no cross-user data leakage.
+
+---
+
+```json
+{"severity": "high", "category": "data"}
+```
+
+Screenshot
+
+Screenshot
+https://synccos.space/attendance
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36
+Shloimy Spielman
+shlomaspielman@gmail.com
+Client: Ahava Medical (synccos.space)
+Open in Replit
+Linked Projects
+
+Ahava Medical - Yisroel Ber Lebowitz
+Open in Replit
+Replies (0)
+
+No replies yet
+
