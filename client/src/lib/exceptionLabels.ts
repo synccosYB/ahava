@@ -12,6 +12,7 @@ export const EXCEPTION_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "forgotten_clock_in", label: "Forgotten Clock In" },
   { value: "forgotten_clock_out", label: "Forgotten Clock Out" },
   { value: "geofence", label: "Out of Area" },
+  { value: "punch_overlap", label: "Overlapping Punch" },
 ];
 
 export function formatExceptionTypeLabel(type: string): string {

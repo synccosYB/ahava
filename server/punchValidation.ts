@@ -55,12 +55,49 @@ export interface PunchValidationInput {
   now?: Date;
   /** When true, future-dated punches are permitted. Defaults to false. */
   allowFuturePunch?: boolean;
+  /**
+   * IANA timezone (e.g. "America/New_York") used to render the timestamps in
+   * the human-readable rejection / flag reasons. When omitted (or invalid) the
+   * messages fall back to explicit UTC. Only the message text is affected — the
+   * underlying comparisons are always absolute-time.
+   */
+  timezone?: string;
+  /**
+   * How to treat an overlap / duplicate-open conflict with ANOTHER of the
+   * employee's punches:
+   *   - "block" (default): the conflict is a hard rejection (`ok: false`). Used
+   *     when starting a NEW shift (clock-in) or editing a punch — overlapping
+   *     punches must never be created in the first place.
+   *   - "flag": the conflict is NOT a rejection. `ok` stays true and the first
+   *     conflict found is returned in `overlap` so the caller can record the
+   *     close and raise a manager-facing exception instead. Used when CLOSING an
+   *     already-open punch (clock-out), so an employee can never be trapped
+   *     clocked-in just because their open punch overlaps another shift.
+   *
+   * Note: the genuinely-blocking integrity rules (missing/unparseable times,
+   * zero/negative duration, future-dating) ALWAYS block regardless of this.
+   */
+  overlapPolicy?: "block" | "flag";
+}
+
+/** A non-blocking overlap / duplicate-open conflict surfaced for reconciliation. */
+export interface PunchOverlapInfo {
+  /** Human-readable description of the conflict (timezone-rendered). */
+  reason: string;
+  /** Id of the neighbouring punch that conflicts, when known. */
+  conflictingPunchId: string | null;
+  kind: "overlap" | "duplicate_open";
 }
 
 export interface PunchValidationResult {
   ok: boolean;
   /** Human-readable rejection reason (only set when `ok` is false). */
   reason?: string;
+  /**
+   * Present when `overlapPolicy` is "flag" and a non-blocking overlap /
+   * duplicate-open conflict was detected. `ok` is still true in this case.
+   */
+  overlap?: PunchOverlapInfo;
 }
 
 const VALID = { ok: true } as const;
@@ -71,8 +108,29 @@ function toDate(value: Date | string | null | undefined): Date | null | undefine
   return value instanceof Date ? value : new Date(value);
 }
 
-/** Compact, timezone-explicit timestamp for rejection messages (e.g. "2026-06-17 09:30 UTC"). */
-export function formatPunchTime(date: Date): string {
+/**
+ * Human-readable timestamp for rejection / flag messages. When a valid IANA
+ * `timezone` is supplied the time is rendered in that local/business timezone
+ * (e.g. "Jun 16, 2026, 2:05 PM EST") so staff working in EST/local time can
+ * read it; otherwise it falls back to an explicit-UTC form.
+ */
+export function formatPunchTime(date: Date, timezone?: string): string {
+  if (timezone) {
+    try {
+      return new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+        timeZoneName: "short",
+      }).format(date);
+    } catch {
+      // Invalid timezone string — fall through to the UTC form below.
+    }
+  }
   return date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
 }
 
@@ -84,6 +142,8 @@ export function formatPunchTime(date: Date): string {
 export function validatePunchIntegrity(input: PunchValidationInput): PunchValidationResult {
   const now = input.now ?? new Date();
   const allowFuture = input.allowFuturePunch ?? false;
+  const tz = input.timezone;
+  const overlapPolicy = input.overlapPolicy ?? "block";
 
   // --- clock-in: required + parseable -------------------------------------
   const clockInParsed = toDate(input.clockIn);
@@ -109,7 +169,7 @@ export function validatePunchIntegrity(input: PunchValidationInput): PunchValida
   if (clockOut && clockOut.getTime() <= clockIn.getTime()) {
     return {
       ok: false,
-      reason: `Clock-out (${formatPunchTime(clockOut)}) must be after clock-in (${formatPunchTime(clockIn)}) — a punch can't have a zero or negative duration.`,
+      reason: `Clock-out (${formatPunchTime(clockOut, tz)}) must be after clock-in (${formatPunchTime(clockIn, tz)}) — a punch can't have a zero or negative duration.`,
     };
   }
 
@@ -119,13 +179,13 @@ export function validatePunchIntegrity(input: PunchValidationInput): PunchValida
     if (clockIn.getTime() > nowMs) {
       return {
         ok: false,
-        reason: `Clock-in (${formatPunchTime(clockIn)}) is in the future. Future-dated punches are not allowed.`,
+        reason: `Clock-in (${formatPunchTime(clockIn, tz)}) is in the future. Future-dated punches are not allowed.`,
       };
     }
     if (clockOut && clockOut.getTime() > nowMs) {
       return {
         ok: false,
-        reason: `Clock-out (${formatPunchTime(clockOut)}) is in the future. Future-dated punches are not allowed.`,
+        reason: `Clock-out (${formatPunchTime(clockOut, tz)}) is in the future. Future-dated punches are not allowed.`,
       };
     }
   }
@@ -134,6 +194,11 @@ export function validatePunchIntegrity(input: PunchValidationInput): PunchValida
   const newStart = clockIn.getTime();
   const newEnd = clockOut ? clockOut.getTime() : Infinity;
   const newIsOpen = newEnd === Infinity;
+
+  // When `overlapPolicy` is "flag" we don't reject on the first conflict — we
+  // capture it and let the caller (clock-out) record the close + raise a
+  // manager-facing exception. The first conflict found wins.
+  let flagged: PunchOverlapInfo | undefined;
 
   for (const ex of input.existingPunches) {
     if (input.punchId && ex.id === input.punchId) continue;
@@ -151,22 +216,30 @@ export function validatePunchIntegrity(input: PunchValidationInput): PunchValida
 
     // Two open shifts can never coexist — flag this first with a specific msg.
     if (newIsOpen && exIsOpen) {
-      return {
-        ok: false,
-        reason: `This employee already has an open shift (clocked in at ${formatPunchTime(exInParsed)}) with no clock-out. Close it before starting another.`,
-      };
+      const reason = `This employee already has an open shift (clocked in at ${formatPunchTime(exInParsed, tz)}) with no clock-out. Close it before starting another.`;
+      if (overlapPolicy === "flag") {
+        if (!flagged) flagged = { reason, conflictingPunchId: ex.id, kind: "duplicate_open" };
+        continue;
+      }
+      return { ok: false, reason };
     }
 
     // Half-open interval overlap: [newStart, newEnd) ∩ [exStart, exEnd).
     if (newStart < exEnd && exStart < newEnd) {
       const exDescription = exIsOpen
-        ? `an open shift starting ${formatPunchTime(exInParsed)}`
-        : `a shift from ${formatPunchTime(exInParsed)} to ${formatPunchTime(new Date(exEnd))}`;
-      return {
-        ok: false,
-        reason: `This punch overlaps ${exDescription} for the same employee. Shifts can't overlap.`,
-      };
+        ? `an open shift starting ${formatPunchTime(exInParsed, tz)}`
+        : `a shift from ${formatPunchTime(exInParsed, tz)} to ${formatPunchTime(new Date(exEnd), tz)}`;
+      const reason = `This punch overlaps ${exDescription} for the same employee. Shifts can't overlap.`;
+      if (overlapPolicy === "flag") {
+        if (!flagged) flagged = { reason, conflictingPunchId: ex.id, kind: "overlap" };
+        continue;
+      }
+      return { ok: false, reason };
     }
+  }
+
+  if (flagged) {
+    return { ok: true, overlap: flagged };
   }
 
   return VALID;

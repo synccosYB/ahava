@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   validatePunchIntegrity,
+  formatPunchTime,
   type ExistingPunchForValidation,
 } from "../punchValidation";
 
@@ -190,4 +191,133 @@ test("accepts back-to-back shifts that only touch at the boundary", () => {
     now: new Date("2026-06-17T23:00:00Z"),
   });
   assert.equal(r.ok, true);
+});
+
+// --- Task #482: overlapPolicy "flag" (clock-out must never hard-block) -------
+
+test("flag policy: overlap with a closed shift does NOT block — ok stays true and overlap is reported", () => {
+  const existing: ExistingPunchForValidation[] = [
+    {
+      id: "p1",
+      clockIn: new Date("2026-06-16T18:05:00Z"),
+      clockOut: new Date("2026-06-16T18:24:00Z"),
+    },
+  ];
+  // The production case: an open punch started inside the closed shift and is
+  // now being closed. Closing it overlaps p1.
+  const r = validatePunchIntegrity({
+    punchId: "open",
+    clockIn: new Date("2026-06-16T18:23:43Z"),
+    clockOut: new Date("2026-06-16T18:30:00Z"),
+    existingPunches: existing,
+    now: new Date("2026-06-16T23:00:00Z"),
+    overlapPolicy: "flag",
+  });
+  assert.equal(r.ok, true);
+  assert.ok(r.overlap, "overlap should be reported");
+  assert.equal(r.overlap!.kind, "overlap");
+  assert.equal(r.overlap!.conflictingPunchId, "p1");
+  assert.match(r.overlap!.reason, /overlaps/i);
+});
+
+test("flag policy: duplicate open shift is reported, not blocked", () => {
+  const existing: ExistingPunchForValidation[] = [
+    { id: "p1", clockIn: new Date("2026-06-17T08:00:00Z"), clockOut: null },
+  ];
+  const r = validatePunchIntegrity({
+    clockIn: new Date("2026-06-17T09:00:00Z"),
+    clockOut: undefined,
+    existingPunches: existing,
+    now: NOW,
+    overlapPolicy: "flag",
+  });
+  assert.equal(r.ok, true);
+  assert.ok(r.overlap);
+  assert.equal(r.overlap!.kind, "duplicate_open");
+  assert.equal(r.overlap!.conflictingPunchId, "p1");
+});
+
+test("flag policy STILL blocks genuine integrity errors (negative duration)", () => {
+  const r = validatePunchIntegrity({
+    clockIn: new Date("2026-06-17T17:00:00Z"),
+    clockOut: new Date("2026-06-17T09:00:00Z"),
+    existingPunches: NONE,
+    now: NOW,
+    overlapPolicy: "flag",
+  });
+  assert.equal(r.ok, false);
+  assert.ok(!r.overlap);
+  assert.match(r.reason!, /must be after clock-in/i);
+});
+
+test("flag policy: no conflict returns a clean ok with no overlap", () => {
+  const r = validatePunchIntegrity({
+    punchId: "open",
+    clockIn: new Date("2026-06-17T09:00:00Z"),
+    clockOut: new Date("2026-06-17T17:00:00Z"),
+    existingPunches: NONE,
+    now: NOW,
+    overlapPolicy: "flag",
+  });
+  assert.equal(r.ok, true);
+  assert.ok(!r.overlap);
+});
+
+test("block policy (default) still rejects an overlap", () => {
+  const existing: ExistingPunchForValidation[] = [
+    {
+      id: "p1",
+      clockIn: new Date("2026-06-17T09:00:00Z"),
+      clockOut: new Date("2026-06-17T13:00:00Z"),
+    },
+  ];
+  const r = validatePunchIntegrity({
+    clockIn: new Date("2026-06-17T12:00:00Z"),
+    clockOut: new Date("2026-06-17T15:00:00Z"),
+    existingPunches: existing,
+    now: NOW,
+    overlapPolicy: "block",
+  });
+  assert.equal(r.ok, false);
+  assert.ok(!r.overlap);
+});
+
+// --- Task #482: timezone-rendered messages (local time, not raw UTC) ---------
+
+test("formatPunchTime renders a valid timezone in local/business time", () => {
+  const d = new Date("2026-06-16T22:24:00Z"); // 6:24 PM EDT
+  const s = formatPunchTime(d, "America/New_York");
+  assert.match(s, /6:24\s?PM/i);
+  assert.match(s, /EDT|EST/);
+  assert.doesNotMatch(s, /UTC/);
+});
+
+test("formatPunchTime falls back to explicit UTC with no timezone", () => {
+  const d = new Date("2026-06-16T22:24:00Z");
+  assert.equal(formatPunchTime(d), "2026-06-16 22:24 UTC");
+});
+
+test("formatPunchTime falls back to UTC on an invalid timezone", () => {
+  const d = new Date("2026-06-16T22:24:00Z");
+  assert.equal(formatPunchTime(d, "Not/AZone"), "2026-06-16 22:24 UTC");
+});
+
+test("validator messages use the supplied timezone", () => {
+  const existing: ExistingPunchForValidation[] = [
+    {
+      id: "p1",
+      clockIn: new Date("2026-06-17T13:00:00Z"),
+      clockOut: new Date("2026-06-17T21:00:00Z"),
+    },
+  ];
+  const r = validatePunchIntegrity({
+    clockIn: new Date("2026-06-17T14:00:00Z"),
+    clockOut: new Date("2026-06-17T16:00:00Z"),
+    existingPunches: existing,
+    now: NOW,
+    timezone: "America/New_York",
+  });
+  assert.equal(r.ok, false);
+  assert.doesNotMatch(r.reason!, /UTC/);
+  assert.match(r.reason!, /AM|PM/);
 });

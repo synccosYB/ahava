@@ -18,7 +18,7 @@ import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDai
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
 import { getLedgerForEmployee, getLedgerForEmployees, summarizeLedger, recomputeLedger } from "./attendanceLedger";
-import { validatePunchIntegrity, type ExistingPunchForValidation } from "./punchValidation";
+import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
 import {
   computeAttendanceReconciliation,
@@ -55,6 +55,7 @@ import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, type GeofenceMapData } from "./services/geofence";
+import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation } from "./services/punchOverlap";
 import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
@@ -355,7 +356,9 @@ async function validateProposedPunch(opts: {
   candidateDates?: (string | null | undefined)[];
   allowFuturePunch: boolean;
   now?: Date;
-}): Promise<{ ok: boolean; reason?: string }> {
+  timezone?: string;
+  overlapPolicy?: "block" | "flag";
+}): Promise<PunchValidationResult> {
   const existingPunches = await loadPunchesForValidation(
     opts.employeeId,
     opts.candidateDates ?? [],
@@ -367,6 +370,8 @@ async function validateProposedPunch(opts: {
     existingPunches,
     now: opts.now,
     allowFuturePunch: opts.allowFuturePunch,
+    timezone: opts.timezone,
+    overlapPolicy: opts.overlapPolicy,
   });
 }
 
@@ -3161,6 +3166,7 @@ export async function registerRoutes(
       }
 
       // Shared punch-integrity validation (backstop for the DB open-punch guard).
+      // Clock-in STILL blocks on overlap — overlapping shifts must never be created.
       const kioskInIntegrity = await validateProposedPunch({
         employeeId: user.id,
         clockIn: now,
@@ -3168,6 +3174,7 @@ export async function registerRoutes(
         candidateDates: [now.toISOString().split("T")[0]],
         allowFuturePunch: allowFuturePunchFromRules(attRules),
         now,
+        timezone: await resolveEmployeeTimezone(user.id),
       });
       if (!kioskInIntegrity.ok) {
         return kioskError(res, 400, "invalid_punch", kioskInIntegrity.reason || "That punch isn't valid.");
@@ -3251,8 +3258,12 @@ export async function registerRoutes(
 
       const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, attRules, payrollRules, user, attendancePolicy?.policyName);
 
+      const timezone = await resolveEmployeeTimezone(user.id);
+
       // Shared punch-integrity validation: the closing time must be after the
-      // open clock-in and not future-dated.
+      // open clock-in and not future-dated. An OVERLAP with another shift must
+      // NOT block the clock-out (the employee would be stuck clocked in) — it's
+      // flagged for a manager and the close is still recorded.
       const kioskOutIntegrity = await validateProposedPunch({
         employeeId: user.id,
         clockIn: lastRecord.clockIn,
@@ -3261,6 +3272,8 @@ export async function registerRoutes(
         candidateDates: [lastRecord.workDate, now.toISOString().split("T")[0]],
         allowFuturePunch: allowFuturePunchFromRules(attRules),
         now,
+        timezone,
+        overlapPolicy: "flag",
       });
       if (!kioskOutIntegrity.ok) {
         return kioskError(res, 400, "invalid_punch", kioskOutIntegrity.reason || "That punch isn't valid.");
@@ -3280,6 +3293,19 @@ export async function registerRoutes(
       // no-ops cleanly instead of re-closing it.
       if (!updated) {
         return kioskError(res, 409, "not_clocked_in", "You're not currently clocked in.");
+      }
+
+      // Overlap detected but the close succeeded — raise a manager-facing
+      // exception + alert so the duplicate/overlap can be reconciled. Never
+      // breaks the clock-out.
+      if (kioskOutIntegrity.overlap) {
+        await flagPunchOverlapForReconciliation({
+          userId: user.id,
+          punchLogId: updated.id,
+          workDate: updated.workDate,
+          punchTime: updated.clockOut ?? now,
+          overlap: kioskOutIntegrity.overlap,
+        });
       }
 
       if (enforcement.alerts.length > 0) {
@@ -3431,7 +3457,8 @@ export async function registerRoutes(
       }
 
       // Shared punch-integrity validation (backstop for the DB open-punch guard;
-      // also catches an overlap with another punch on the same day).
+      // also catches an overlap with another punch on the same day). Clock-in
+      // STILL blocks on overlap — overlapping shifts must never be created.
       const integrity = await validateProposedPunch({
         employeeId: userId,
         clockIn: now,
@@ -3439,6 +3466,7 @@ export async function registerRoutes(
         candidateDates: [now.toISOString().split("T")[0]],
         allowFuturePunch: allowFuturePunchFromRules(rules),
         now,
+        timezone: await resolveEmployeeTimezone(userId),
       });
       if (!integrity.ok) {
         return res.status(400).json({ message: integrity.reason });
@@ -3515,8 +3543,12 @@ export async function registerRoutes(
       const attPolicy = getResolvedPolicy(req, "attendance");
       const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, rules, payrollRules, user, attPolicy?.policyName);
 
+      const timezone = await resolveEmployeeTimezone(userId);
+
       // Shared punch-integrity validation: the closing time must be after the
-      // open clock-in and not future-dated.
+      // open clock-in and not future-dated. An OVERLAP with another shift must
+      // NOT block the clock-out (the employee would be stuck clocked in) — it's
+      // flagged for a manager and the close is still recorded.
       const integrity = await validateProposedPunch({
         employeeId: userId,
         clockIn: current.clockIn,
@@ -3525,6 +3557,8 @@ export async function registerRoutes(
         candidateDates: [current.workDate, now.toISOString().split("T")[0]],
         allowFuturePunch: allowFuturePunchFromRules(rules),
         now,
+        timezone,
+        overlapPolicy: "flag",
       });
       if (!integrity.ok) {
         return res.status(400).json({ message: integrity.reason });
@@ -3542,6 +3576,19 @@ export async function registerRoutes(
       // instead of re-closing an already-closed punch.
       if (!record) {
         return res.status(409).json({ message: "You're already clocked out." });
+      }
+
+      // Overlap detected but the close succeeded — raise a manager-facing
+      // exception + alert so the duplicate/overlap can be reconciled. Never
+      // breaks the clock-out.
+      if (integrity.overlap) {
+        await flagPunchOverlapForReconciliation({
+          userId,
+          punchLogId: record.id,
+          workDate: record.workDate,
+          punchTime: record.clockOut ?? now,
+          overlap: integrity.overlap,
+        });
       }
 
       if (enforcement.alerts.length > 0) {
@@ -3900,6 +3947,7 @@ export async function registerRoutes(
             newClockIn ? newClockIn.toISOString().split("T")[0] : undefined,
           ],
           allowFuturePunch: allowFuturePunchFromRules(attRules),
+          timezone: await resolveEmployeeTimezone(existing.employeeId),
         });
         if (!integrity.ok) {
           return res.status(400).json({ message: integrity.reason });
@@ -5058,6 +5106,7 @@ export async function registerRoutes(
           clockOut: undefined,
           candidateDates: [exception.exceptionDate],
           allowFuturePunch: correctionAllowFuture,
+          timezone: await resolveEmployeeTimezone(exception.employeeId),
         });
         if (!integrity.ok) {
           return res.status(400).json({ message: integrity.reason });
@@ -5076,6 +5125,7 @@ export async function registerRoutes(
             punchId: target.id,
             candidateDates: [exception.exceptionDate, target.workDate],
             allowFuturePunch: correctionAllowFuture,
+            timezone: await resolveEmployeeTimezone(exception.employeeId),
           });
           if (!integrity.ok) {
             return res.status(400).json({ message: integrity.reason });
@@ -5109,6 +5159,7 @@ export async function registerRoutes(
             punchId: target.id,
             candidateDates: [exception.exceptionDate, target.workDate],
             allowFuturePunch: correctionAllowFuture,
+            timezone: await resolveEmployeeTimezone(exception.employeeId),
           });
           if (!integrity.ok) {
             return res.status(400).json({ message: integrity.reason });

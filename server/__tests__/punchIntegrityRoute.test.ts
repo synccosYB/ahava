@@ -22,7 +22,7 @@ import { db } from "../db";
 import { storage } from "../storage";
 import { registerRoutes } from "../routes";
 import { generateToken } from "../middleware/auth";
-import { users, punchLogs, attendanceLedger } from "@shared/schema";
+import { users, punchLogs, attendanceLedger, attendanceChangeLedger, attendanceExceptions, systemAlerts } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
 const REVIEWER_ID = "admin-dev-001";
@@ -32,6 +32,7 @@ type Fixture = {
   baseUrl: string;
   reviewerToken: string;
   employeeId: string;
+  employeeToken: string;
   cleanup: () => Promise<void>;
 };
 
@@ -39,6 +40,9 @@ async function purgeLeftovers() {
   const all = await db.select().from(users);
   const stale = all.filter((u) => u.email?.startsWith(EMAIL_PREFIX));
   for (const u of stale) {
+    await db.delete(systemAlerts).where(eq(systemAlerts.employeeId, u.id));
+    await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, u.id));
+    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, u.id));
     await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, u.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, u.id));
     await db.delete(users).where(eq(users.id, u.id));
@@ -76,14 +80,24 @@ async function setupFixture(label: string): Promise<Fixture> {
     })
     .returning();
 
+  const employeeToken = generateToken({
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    companyId: employee.companyId,
+  });
+
   const cleanup = async () => {
+    await db.delete(systemAlerts).where(eq(systemAlerts.employeeId, employee.id));
+    await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, employee.id));
+    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, employee.id));
     await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, employee.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, employee.id));
     await db.delete(users).where(eq(users.id, employee.id));
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   };
 
-  return { baseUrl, reviewerToken, employeeId: employee.id, cleanup };
+  return { baseUrl, reviewerToken, employeeId: employee.id, employeeToken, cleanup };
 }
 
 async function makePunch(
@@ -232,4 +246,105 @@ test("edit accepted: valid times update the punch AND recompute hours", async (t
   // Hours must have been recomputed from 4 -> 8 by the edit path.
   assert.equal(Number(after?.hoursWorked), 8);
   assert.equal(Number(body.totalHours), 8);
+});
+
+async function clockOut(fx: Fixture) {
+  const res = await fetch(`${fx.baseUrl}/api/attendance/clock-out`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${fx.employeeToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ source: "web" }),
+  });
+  const body = await res.json().catch(() => ({}));
+  return { status: res.status, body };
+}
+
+// --- Task #482: clock-out must succeed even when the close overlaps another
+// shift, and must raise a manager-facing punch_overlap exception + alert. ------
+
+test("clock-out NOT blocked by an overlapping shift: close recorded + overlap flagged", async (t) => {
+  const fx = await setupFixture("clockoutoverlap");
+  t.after(fx.cleanup);
+
+  // Build the real-world case relative to NOW so the close isn't future-dated:
+  // a closed shift, plus an open punch starting inside it.
+  const now = Date.now();
+  const closedIn = new Date(now - 2 * 60 * 60 * 1000); // 2h ago
+  const closedOut = new Date(now - 30 * 60 * 1000); // 30m ago
+  const openIn = new Date(now - 60 * 60 * 1000); // 1h ago — inside the closed shift
+  const workDate = new Date(now).toISOString().split("T")[0];
+
+  // The earlier closed shift.
+  const closedId = await makePunch(
+    fx.employeeId,
+    workDate,
+    closedIn.toISOString(),
+    closedOut.toISOString(),
+    1.5,
+  );
+  // The currently-open punch that overlaps the closed shift.
+  const openId = await makePunch(
+    fx.employeeId,
+    workDate,
+    openIn.toISOString(),
+    null,
+    null,
+  );
+
+  const { status } = await clockOut(fx);
+  // The clock-out must SUCCEED — the employee is never trapped clocked in.
+  assert.equal(status, 200);
+
+  // The open punch is now closed.
+  const closed = await storage.getPunchLog(openId);
+  assert.ok(closed?.clockOut, "the open punch was closed");
+
+  // A manager-facing punch_overlap exception was raised, linked to the punch.
+  const exceptions = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.employeeId, fx.employeeId));
+  const overlapEx = exceptions.find((e) => e.type === "punch_overlap");
+  assert.ok(overlapEx, "expected a punch_overlap exception");
+  assert.equal(overlapEx!.status, "pending");
+  assert.equal(overlapEx!.punchLogId, openId);
+
+  // And a system alert.
+  const alerts = await db
+    .select()
+    .from(systemAlerts)
+    .where(eq(systemAlerts.employeeId, fx.employeeId));
+  assert.ok(
+    alerts.some((a) => a.type === "punch_overlap"),
+    "expected a punch_overlap system alert",
+  );
+
+  // The unrelated closed shift is untouched.
+  const stillClosed = await storage.getPunchLog(closedId);
+  assert.ok(stillClosed, "closed shift still present");
+});
+
+test("clock-out with no overlap does NOT raise an exception", async (t) => {
+  const fx = await setupFixture("clockoutclean");
+  t.after(fx.cleanup);
+
+  const now = Date.now();
+  const openIn = new Date(now - 60 * 60 * 1000); // 1h ago
+  const workDate = new Date(now).toISOString().split("T")[0];
+
+  await makePunch(fx.employeeId, workDate, openIn.toISOString(), null, null);
+
+  const { status } = await clockOut(fx);
+  assert.equal(status, 200);
+
+  const exceptions = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.employeeId, fx.employeeId));
+  assert.ok(
+    !exceptions.some((e) => e.type === "punch_overlap"),
+    "no punch_overlap exception should be raised for a clean clock-out",
+  );
 });
