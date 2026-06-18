@@ -428,6 +428,13 @@
       "when": 1780300800000,
       "tag": "0060_payroll_company_per_employee",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1780300900000,
+      "tag": "0061_reconcile_dangling_open_punches",
+      "breakpoints": true
     }
   ]
 }

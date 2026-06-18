@@ -94,3 +94,81 @@ test("clock-in is allowed again after clocking out", async (t) => {
   await assert.doesNotReject(() => storage.clockIn(TEST_USER_ID, "test"));
   assert.equal(await countOpenPunches(), 1, "exactly one open punch after re-clock-in");
 });
+
+// --- task #476: the 409 "already clocked in" guard and the open-punch /
+// integrity definition must agree, regardless of the row's status value. -----
+
+async function insertOpenPunch(status: string) {
+  const now = new Date();
+  const dateStr = now.toISOString().split("T")[0];
+  const [row] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: TEST_USER_ID,
+      workDate: dateStr,
+      clockIn: now,
+      roundedClockIn: now,
+      status,
+      source: "test",
+      approved: true,
+    })
+    .returning();
+  return row;
+}
+
+test("getCurrentAttendance detects a kiosk open punch (status 'present')", async (t) => {
+  await cleanupTestPunches();
+  t.after(cleanupTestPunches);
+
+  // The kiosk stamps open punches 'present', not 'in-progress'. The 409 guard
+  // must still see them as open, or a web clock-in slips past it into a 400.
+  await insertOpenPunch("present");
+
+  const current = await storage.getCurrentAttendance(TEST_USER_ID);
+  assert.ok(current, "a 'present' open punch must surface as currently clocked in");
+  assert.equal(await countOpenPunches(), 1);
+});
+
+test("getCurrentAttendance detects a dangling open punch (non-open status)", async (t) => {
+  await cleanupTestPunches();
+  t.after(cleanupTestPunches);
+
+  // A leftover row with clock_out NULL but a non-open status (e.g. from an
+  // interrupted/auto clock-out). Previously invisible to the status-keyed 409
+  // guard yet rejected by the integrity validator -> stuck state.
+  await insertOpenPunch("complete");
+
+  const current = await storage.getCurrentAttendance(TEST_USER_ID);
+  assert.ok(current, "a dangling open punch must surface as currently clocked in");
+
+  // The underlying clock-in detection agrees: it rejects rather than creating a
+  // second open punch (the route turns this into a 409, never a silent pass).
+  await assert.rejects(
+    () => storage.clockIn(TEST_USER_ID, "test"),
+    (err: unknown) => err instanceof DuplicateOpenPunchError,
+    "clocking in over a dangling open punch must be rejected, not duplicated",
+  );
+  assert.equal(await countOpenPunches(), 1, "still exactly one open punch");
+});
+
+test("a dangling open punch can still be clocked out (no stuck state)", async (t) => {
+  await cleanupTestPunches();
+  t.after(cleanupTestPunches);
+
+  // Make the open clock-in ~1h ago so clock-out yields positive hours.
+  const clockInAt = new Date(Date.now() - 60 * 60 * 1000);
+  const dateStr = clockInAt.toISOString().split("T")[0];
+  await db.insert(punchLogs).values({
+    employeeId: TEST_USER_ID,
+    workDate: dateStr,
+    clockIn: clockInAt,
+    roundedClockIn: clockInAt,
+    status: "complete", // dangling: open row with a non-open status
+    source: "test",
+    approved: true,
+  });
+
+  const closed = await storage.clockOut(TEST_USER_ID);
+  assert.ok(closed, "a dangling open punch must be closable, not 'not clocked in'");
+  assert.equal(await countOpenPunches(), 0, "no open punches remain after clock-out");
+});

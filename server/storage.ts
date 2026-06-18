@@ -1413,10 +1413,26 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getCurrentAttendance(userId: string): Promise<PunchLog | undefined> {
+    // THE canonical "is this employee currently clocked in?" check. An open
+    // punch is defined PURELY by clock-in present + clock-out absent — the SAME
+    // predicate used by the DB partial unique index (migration 0048), the shared
+    // punch-integrity validator, the clock-in/clock-out storage methods, and the
+    // kiosk clock-out path. It deliberately does NOT filter on status: the web
+    // path stamps "in-progress" while the kiosk stamps "present" for the very
+    // same open state, and a dangling row (clock_out NULL with some other status
+    // from an interrupted/auto clock-out) is still genuinely open. Keying on
+    // status here let those rows pass the 409 "already clocked in" guard while
+    // the integrity validator rejected the next clock-in with a 400 and clock-out
+    // claimed "not clocked in" — a stuck state where the employee was locked out
+    // of both actions (task #476).
     const [record] = await db
       .select()
       .from(punchLogs)
-      .where(and(eq(punchLogs.employeeId, userId), eq(punchLogs.status, "in-progress")))
+      .where(and(
+        eq(punchLogs.employeeId, userId),
+        isNotNull(punchLogs.clockIn),
+        isNull(punchLogs.clockOut),
+      ))
       .orderBy(desc(punchLogs.clockIn))
       .limit(1);
     return record ? punchLogToLegacy(record) : undefined;
@@ -1454,7 +1470,10 @@ export class DatabaseStorage implements IStorage {
     for (const r of records) {
       if (r.hoursWorked) {
         total += r.hoursWorked;
-      } else if (r.status === "in-progress" && r.clockIn) {
+      } else if (r.clockIn && !r.clockOut) {
+        // Open punch (clock-in, no clock-out) — accrue live elapsed hours. Use
+        // the canonical open-punch predicate, not status, so a kiosk "present"
+        // open punch counts the same as a web "in-progress" one (task #476).
         const elapsed = (Date.now() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
         total += Math.round(elapsed * 100) / 100;
       }
@@ -1478,7 +1497,9 @@ export class DatabaseStorage implements IStorage {
     for (const r of records) {
       if (r.hoursWorked) {
         total += r.hoursWorked;
-      } else if (r.status === "in-progress" && r.clockIn) {
+      } else if (r.clockIn && !r.clockOut) {
+        // Open punch (clock-in, no clock-out) — accrue live elapsed hours, using
+        // the canonical open-punch predicate rather than status (task #476).
         const elapsed = (Date.now() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
         total += Math.round(elapsed * 100) / 100;
       }
