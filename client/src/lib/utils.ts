@@ -73,6 +73,34 @@ export function formatTime12(value: Date | string | null | undefined): string {
 }
 
 /**
+ * Format a Date or ISO timestamp as a 12-hour time string with AM/PM in a
+ * specific IANA timezone (e.g. "1:42 PM" rendered in "America/New_York").
+ * Falls back to the viewer's local time when the timezone is missing/invalid.
+ * Returns an empty string for missing/invalid input.
+ */
+export function formatTime12InTz(
+  value: Date | string | null | undefined,
+  timezone?: string | null,
+): string {
+  if (!value) return "";
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return "";
+  if (timezone) {
+    try {
+      return new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }).format(d);
+    } catch {
+      // Invalid timezone — fall through to local-time formatting below.
+    }
+  }
+  return formatTime12(d);
+}
+
+/**
  * Format an "HH:mm" 24-hour time string as a 12-hour time string with AM/PM
  * (e.g. "13:42" -> "1:42 PM"). Returns the input unchanged when it cannot be
  * parsed, and "" for missing input.

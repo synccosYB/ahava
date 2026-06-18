@@ -581,6 +581,22 @@ export type TimeOffBalanceBucket = {
   remaining: number;
 };
 
+// Side-by-side data for a `punch_overlap` attendance exception: the closing
+// punch (linked via punchLogId) and the conflicting punch it overlaps, rendered
+// in the employee's business timezone. Times are ISO strings (or null for an
+// open/missing punch).
+export type OverlapPunchSummary = {
+  id: string;
+  clockIn: string | null;
+  clockOut: string | null;
+};
+
+export type OverlapPunchPair = {
+  timezone: string;
+  closing: OverlapPunchSummary | null;
+  conflicting: OverlapPunchSummary | null;
+};
+
 export type TimeOffBalanceDetailed = {
   vacation: TimeOffBalanceBucket;
   sick: TimeOffBalanceBucket;

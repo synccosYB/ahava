@@ -36,6 +36,18 @@ export async function resolveEmployeeTimezone(userId: string): Promise<string> {
 }
 
 /**
+ * The conflicting punch id is embedded in a `punch_overlap` exception's reason
+ * as `(conflicting punch: <id>)` (see `flagPunchOverlapForReconciliation`). This
+ * parses it back out so the manager review queue can load and show that punch
+ * alongside the closing punch. Returns null when no id is present.
+ */
+export function parseConflictingPunchId(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  const match = /\(conflicting punch:\s*([^)]+)\)/i.exec(reason);
+  return match ? match[1].trim() : null;
+}
+
+/**
  * Record a manager-facing exception + system alert for an overlap / duplicate
  * conflict detected while CLOSING a punch. Returns the created exception id (or
  * null on failure). Never throws — the clock-out has already succeeded by the

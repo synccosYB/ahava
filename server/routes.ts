@@ -8,7 +8,7 @@ import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBa
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
-import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport } from "@shared/schema";
+import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport, OverlapPunchPair, OverlapPunchSummary } from "@shared/schema";
 import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
@@ -55,7 +55,7 @@ import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, type GeofenceMapData } from "./services/geofence";
-import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation } from "./services/punchOverlap";
+import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
@@ -4669,6 +4669,63 @@ export async function registerRoutes(
     });
   }
 
+  // For `punch_overlap` exceptions, load BOTH conflicting punches (the closing
+  // punch linked via punchLogId + the conflicting punch whose id is embedded in
+  // the reason) so the manager review queue can show them side-by-side and let a
+  // manager edit/delete either one. Times are returned as ISO strings plus the
+  // employee's business timezone so the client can render in local/business time.
+  async function attachOverlapPunchesToExceptions<
+    T extends { id: string; type: string; employeeId: string; punchLogId?: string | null; reason?: string | null },
+  >(rows: T[]): Promise<Array<T & { overlapPunches?: OverlapPunchPair | null }>> {
+    const overlapRows = rows.filter(r => r.type === "punch_overlap");
+    if (overlapRows.length === 0) {
+      return rows.map(r => ({ ...r, overlapPunches: null }));
+    }
+    // Collect every punch id we need to load (closing + conflicting), de-duped.
+    const punchIds = new Set<string>();
+    for (const r of overlapRows) {
+      if (r.punchLogId) punchIds.add(r.punchLogId);
+      const conflictId = parseConflictingPunchId(r.reason);
+      if (conflictId) punchIds.add(conflictId);
+    }
+    const punchById = new Map<string, PunchLog>();
+    await Promise.all(
+      Array.from(punchIds).map(async id => {
+        const p = await storage.getPunchLog(id);
+        if (p) punchById.set(id, p);
+      }),
+    );
+    // Resolve each distinct employee's business timezone once.
+    const tzByEmployee = new Map<string, string>();
+    await Promise.all(
+      Array.from(new Set(overlapRows.map(r => r.employeeId))).map(async empId => {
+        tzByEmployee.set(empId, await resolveEmployeeTimezone(empId));
+      }),
+    );
+    const toSummary = (id: string | null | undefined): OverlapPunchSummary | null => {
+      if (!id) return null;
+      const p = punchById.get(id);
+      if (!p) return null;
+      return {
+        id: p.id,
+        clockIn: p.clockIn ? new Date(p.clockIn).toISOString() : null,
+        clockOut: p.clockOut ? new Date(p.clockOut).toISOString() : null,
+      };
+    };
+    return rows.map(r => {
+      if (r.type !== "punch_overlap") return { ...r, overlapPunches: null };
+      const conflictId = parseConflictingPunchId(r.reason);
+      return {
+        ...r,
+        overlapPunches: {
+          timezone: tzByEmployee.get(r.employeeId) ?? "America/New_York",
+          closing: toSummary(r.punchLogId),
+          conflicting: toSummary(conflictId),
+        },
+      };
+    });
+  }
+
   app.get("/api/attendance/exceptions", requireAuth, async (req: any, res) => {
     try {
       const userId = req.authUser.id;
@@ -4708,7 +4765,7 @@ export async function registerRoutes(
             correctionCount90d: summary,
           };
         });
-        const withKiosk = await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched));
+        const withKiosk = await attachOverlapPunchesToExceptions(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched)));
         if (pagination.paginated) {
           return res.json({ data: withKiosk, total, limit: pagination.limit, offset: pagination.offset });
         }
@@ -4716,7 +4773,7 @@ export async function registerRoutes(
       }
 
       const exceptions = await storage.getAttendanceExceptionsByEmployee(userId);
-      res.json(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(exceptions)));
+      res.json(await attachOverlapPunchesToExceptions(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(exceptions))));
     } catch (error) {
       console.error("Error fetching attendance exceptions:", error);
       handleRouteError(res, error, "Failed to fetch attendance exceptions");
@@ -4821,7 +4878,7 @@ export async function registerRoutes(
           managerNames: display.managerNames,
         };
       });
-      res.json(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched)));
+      res.json(await attachOverlapPunchesToExceptions(await attachGeofenceMapToExceptions(await attachKioskNamesToExceptions(enriched))));
     } catch (error) {
       console.error("Error fetching pending exceptions:", error);
       handleRouteError(res, error, "Failed to fetch pending exceptions");

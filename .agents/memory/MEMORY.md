@@ -12,3 +12,4 @@
 - [Punch integrity validator](punch-integrity-validator.md) — server/punchValidation.ts is the ONE check for impossible/overlapping/future/dup-open punches; EVERY write path routes via validateProposedPunch; locked-payroll guard is separate 409.
 - [Canonical open-punch definition](open-punch-definition.md) — "open shift" = clock_in NOT NULL AND clock_out NULL EVERYWHERE; never key on status (kiosk='present', web='in-progress'); status-keyed detection caused the stuck clock-in 400.
 - [Migration runner recovery & gotchas](migration-recovery.md) — a partially-applied migration "burns" its tag forever; recover with a NEW tag (add columns before FKs), never edit _migration_log; dev server only re-runs migrations on workflow restart.
+- [Punch-overlap exception linkage](punch-overlap-linkage.md) — punch_overlap exception links closing punch via punchLogId but the CONFLICTING punch id lives ONLY in the reason text "(conflicting punch: <id>)"; parse it back, no column.

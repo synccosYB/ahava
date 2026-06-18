@@ -13,17 +13,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { formatDate, formatDateRange } from "@/lib/utils";
-import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText, Search, Trash2 } from "lucide-react";
+import { Check, X, ClipboardList, Filter, RotateCcw, Building2, MapPin, UserCheck, Calendar, Clock, AlertTriangle, User, FileText, Search, Trash2, Pencil } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { CorrectionStatusBadge } from "@/components/correction-status-badge";
 import { EmptyState } from "@/components/empty-state";
 import { EXCEPTION_TYPE_OPTIONS, formatExceptionTypeLabel } from "@/lib/exceptionLabels";
-import type { TimeOffRequest, AttendanceException, Department, Location, TimeOffBalanceBucket } from "@shared/schema";
+import type { TimeOffRequest, AttendanceException, Department, Location, TimeOffBalanceBucket, OverlapPunchPair, OverlapPunchSummary } from "@shared/schema";
 import { parseExceptionTimeInfo, buildTimeCorrectionPayload, timeOnDateToISO } from "@/lib/exceptionTimeInfo";
 import { computeGeofenceBbox, DEFAULT_GEOFENCE_RADIUS_METERS, type GeofenceMapData } from "@/lib/geofenceMap";
-import { formatTime12FromHHmm } from "@/lib/utils";
+import { formatTime12FromHHmm, formatTime12InTz } from "@/lib/utils";
 import {
   isHighCorrectionCount,
   HIGH_CORRECTION_THRESHOLD,
@@ -75,6 +76,7 @@ type EnrichedException = AttendanceException & {
   correctionCounts?: CorrectionCountSummary;
   correctionCount90d?: CorrectionCountSummary;
   geofence?: GeofenceMapData | null;
+  overlapPunches?: OverlapPunchPair | null;
 };
 
 const PTO_TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -1534,6 +1536,249 @@ function GeofenceExceptionMap({ geo, exceptionId }: { geo: GeofenceMapData; exce
   );
 }
 
+// ISO timestamp -> value for <input type="datetime-local"> in the viewer's
+// local time. Mirrors the helpers in AttendancePunchTable.
+function isoToLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function localInputToIso(value: string): string | null {
+  if (!value) return null;
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+// One side of the overlap comparison: a single punch with inline edit/delete so
+// a manager can reconcile the conflict without leaving the review queue.
+function OverlapPunchCard({
+  punch,
+  timezone,
+  label,
+  emphasis,
+  exceptionId,
+}: {
+  punch: OverlapPunchSummary | null;
+  timezone: string;
+  label: string;
+  emphasis: "closing" | "conflicting";
+  exceptionId: string;
+}) {
+  const { toast } = useToast();
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editClockIn, setEditClockIn] = useState("");
+  const [editClockOut, setEditClockOut] = useState("");
+  const [reason, setReason] = useState("");
+
+  const tone =
+    emphasis === "closing"
+      ? "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800"
+      : "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800";
+  const labelTone =
+    emphasis === "closing"
+      ? "text-blue-700 dark:text-blue-400"
+      : "text-amber-700 dark:text-amber-400";
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/pending"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/attendance/punches"] });
+  };
+
+  const editMutation = useMutation({
+    mutationFn: async () => {
+      if (!punch) return;
+      await apiRequest("PATCH", `/api/attendance/punches/${punch.id}`, {
+        clockIn: localInputToIso(editClockIn),
+        clockOut: localInputToIso(editClockOut),
+        reason: reason.trim(),
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "Punch updated" });
+      invalidate();
+      setEditOpen(false);
+    },
+    onError: (err: Error) => handleMutationError(err, toast),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!punch) return;
+      await apiRequest("DELETE", `/api/attendance/punches/${punch.id}`, { reason: reason.trim() });
+    },
+    onSuccess: () => {
+      toast({ title: "Punch deleted" });
+      invalidate();
+      setDeleteOpen(false);
+    },
+    onError: (err: Error) => handleMutationError(err, toast),
+  });
+
+  const openEdit = () => {
+    if (!punch) return;
+    setEditClockIn(isoToLocalInput(punch.clockIn));
+    setEditClockOut(isoToLocalInput(punch.clockOut));
+    setReason("");
+    setEditOpen(true);
+  };
+
+  const openDelete = () => {
+    setReason("");
+    setDeleteOpen(true);
+  };
+
+  return (
+    <div className={`rounded-lg border p-3 space-y-2 ${tone}`} data-testid={`box-overlap-${emphasis}-${exceptionId}`}>
+      <div className={`text-[10px] font-bold uppercase ${labelTone}`}>{label}</div>
+      {punch ? (
+        <>
+          <div className="text-sm font-mono font-bold" data-testid={`text-overlap-${emphasis}-times-${exceptionId}`}>
+            {punch.clockIn ? formatTime12InTz(punch.clockIn, timezone) : "—"} – {punch.clockOut ? formatTime12InTz(punch.clockOut, timezone) : "still open"}
+          </div>
+          <div className="flex gap-2 pt-1">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={openEdit}
+              data-testid={`button-overlap-edit-${emphasis}-${exceptionId}`}
+            >
+              <Pencil className="h-3 w-3 mr-1" /> Edit
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-destructive hover:text-destructive"
+              onClick={openDelete}
+              data-testid={`button-overlap-delete-${emphasis}-${exceptionId}`}
+            >
+              <Trash2 className="h-3 w-3 mr-1" /> Delete
+            </Button>
+          </div>
+        </>
+      ) : (
+        <div className="text-xs text-muted-foreground" data-testid={`text-overlap-${emphasis}-missing-${exceptionId}`}>
+          This punch no longer exists.
+        </div>
+      )}
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent data-testid={`dialog-overlap-edit-${emphasis}-${exceptionId}`}>
+          <DialogHeader>
+            <DialogTitle>Edit Punch</DialogTitle>
+            <DialogDescription>Adjust the punch times to resolve the overlap.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label htmlFor={`overlap-edit-in-${emphasis}-${exceptionId}`}>Clock In</Label>
+              <Input
+                id={`overlap-edit-in-${emphasis}-${exceptionId}`}
+                type="datetime-local"
+                value={editClockIn}
+                onChange={(e) => setEditClockIn(e.target.value)}
+                data-testid={`input-overlap-edit-in-${emphasis}-${exceptionId}`}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`overlap-edit-out-${emphasis}-${exceptionId}`}>Clock Out</Label>
+              <Input
+                id={`overlap-edit-out-${emphasis}-${exceptionId}`}
+                type="datetime-local"
+                value={editClockOut}
+                onChange={(e) => setEditClockOut(e.target.value)}
+                data-testid={`input-overlap-edit-out-${emphasis}-${exceptionId}`}
+              />
+              <p className="text-xs text-muted-foreground">Leave clock-out empty to mark the punch as still in progress.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`overlap-edit-reason-${emphasis}-${exceptionId}`}>Reason (optional)</Label>
+              <Textarea
+                id={`overlap-edit-reason-${emphasis}-${exceptionId}`}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Why is this punch being changed?"
+                data-testid={`input-overlap-edit-reason-${emphasis}-${exceptionId}`}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)} data-testid={`button-overlap-edit-cancel-${emphasis}-${exceptionId}`}>
+              Cancel
+            </Button>
+            <Button onClick={() => editMutation.mutate()} disabled={editMutation.isPending} data-testid={`button-overlap-edit-save-${emphasis}-${exceptionId}`}>
+              {editMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent data-testid={`dialog-overlap-delete-${emphasis}-${exceptionId}`}>
+          <DialogHeader>
+            <DialogTitle>Delete this punch?</DialogTitle>
+            <DialogDescription>This permanently removes the punch. This cannot be undone.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <Label htmlFor={`overlap-delete-reason-${emphasis}-${exceptionId}`}>Reason (optional)</Label>
+            <Textarea
+              id={`overlap-delete-reason-${emphasis}-${exceptionId}`}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Why is this punch being deleted?"
+              data-testid={`input-overlap-delete-reason-${emphasis}-${exceptionId}`}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)} data-testid={`button-overlap-delete-cancel-${emphasis}-${exceptionId}`}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending} data-testid={`button-overlap-delete-confirm-${emphasis}-${exceptionId}`}>
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function PunchOverlapComparison({
+  overlap,
+  exceptionDate,
+  exceptionId,
+}: {
+  overlap: OverlapPunchPair;
+  exceptionDate: string;
+  exceptionId: string;
+}) {
+  return (
+    <div className="mt-2 space-y-2" data-testid={`overlap-comparison-${exceptionId}`}>
+      <div className="text-xs text-muted-foreground">{formatDate(exceptionDate)}</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-[480px]">
+        <OverlapPunchCard
+          punch={overlap.closing}
+          timezone={overlap.timezone}
+          label="Closing punch"
+          emphasis="closing"
+          exceptionId={exceptionId}
+        />
+        <OverlapPunchCard
+          punch={overlap.conflicting}
+          timezone={overlap.timezone}
+          label="Conflicting punch"
+          emphasis="conflicting"
+          exceptionId={exceptionId}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ExceptionCard({ exception }: { exception: EnrichedException }) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -1554,6 +1799,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   // routed through approval (otherwise the backend defaults to "now").
   const isForgottenClockOut = exception.type === "forgotten_clock_out";
   const isRemoval = exception.type === "punch_removal";
+  const isOverlap = exception.type === "punch_overlap";
   // Both time_correction and forgotten_clock_out route corrected times through
   // approval. The manager can now always edit (counter-approve) those times —
   // they pre-fill with whatever the employee requested, or empty when the
@@ -1670,7 +1916,13 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
               </p>
             )}
 
-            {isRemoval ? (
+            {isOverlap && exception.overlapPunches ? (
+              <PunchOverlapComparison
+                overlap={exception.overlapPunches}
+                exceptionDate={exception.exceptionDate}
+                exceptionId={exception.id}
+              />
+            ) : isRemoval ? (
               <div className="max-w-[400px] mt-2 space-y-2">
                 <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3" data-testid={`box-removal-target-${exception.id}`}>
                   <div className="text-[10px] font-bold uppercase text-red-600 mb-1">Punch to remove</div>
