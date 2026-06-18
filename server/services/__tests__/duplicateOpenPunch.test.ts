@@ -120,8 +120,9 @@ test("getCurrentAttendance detects a kiosk open punch (status 'present')", async
   await cleanupTestPunches();
   t.after(cleanupTestPunches);
 
-  // The kiosk stamps open punches 'present', not 'in-progress'. The 409 guard
-  // must still see them as open, or a web clock-in slips past it into a 400.
+  // Legacy kiosk rows were stamped 'present' rather than the unified
+  // 'in-progress' (task #477). The 409 guard must still see those historical
+  // open rows as open, or a web clock-in slips past it into a 400.
   await insertOpenPunch("present");
 
   const current = await storage.getCurrentAttendance(TEST_USER_ID);

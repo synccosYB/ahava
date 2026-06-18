@@ -3182,7 +3182,7 @@ export async function registerRoutes(
         // double-tap can't create two open punches. The unique index is the
         // backstop if two requests still slip through.
         record = await storage.clockIn(user.id, "kiosk", enforcement.roundedTime, {
-          status: "present",
+          status: "in-progress",
           kioskDeviceId: kioskDevice.id,
           punchLatitude,
           punchLongitude,
@@ -3934,7 +3934,7 @@ export async function registerRoutes(
           update.clockOut = null;
           update.roundedClockOut = null;
           update.hoursWorked = null;
-          update.status = "present";
+          update.status = "in-progress";
         }
 
         const oldValue = {
@@ -5133,7 +5133,7 @@ export async function registerRoutes(
             employeeId: exception.employeeId,
             workDate: exception.exceptionDate,
             clockIn: correctedTimestamp || new Date(),
-            status: "present",
+            status: "in-progress",
             source: "manager",
             approved: true,
           }).returning();

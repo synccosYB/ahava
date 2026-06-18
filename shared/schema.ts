@@ -321,7 +321,7 @@ export const punchLogs = pgTable("punch_logs", {
   roundedClockOut: timestamp("rounded_clock_out"),
   breakMinutes: integer("break_minutes").default(0),
   hoursWorked: real("hours_worked"),
-  status: varchar("status", { length: 20 }).default("present").notNull(),
+  status: varchar("status", { length: 20 }).default("in-progress").notNull(),
   notes: text("notes"),
   source: varchar("source", { length: 20 }).default("web").notNull(),
   kioskDeviceId: varchar("kiosk_device_id"),

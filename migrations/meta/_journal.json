@@ -435,6 +435,13 @@
       "when": 1780300900000,
       "tag": "0061_reconcile_dangling_open_punches",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1780301000000,
+      "tag": "0062_normalize_open_punch_status",
+      "breakpoints": true
     }
   ]
 }
