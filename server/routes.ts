@@ -6079,14 +6079,16 @@ export async function registerRoutes(
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     const weekStartStr = weekStart.toISOString().split("T")[0];
-    const weekAttendance = await storage.getAttendanceByDateRange(weekStartStr, today);
 
-    const uniqueDeptIds = [...new Set(teamMembers.map(m => m.departmentId).filter(Boolean))] as string[];
-    const deptMap = new Map<string, string>();
-    await Promise.all(uniqueDeptIds.map(async (deptId) => {
-      const dept = await storage.getDepartment(deptId);
-      if (dept) deptMap.set(deptId, dept.name);
-    }));
+    // Resolve department + location names for every membership the team has,
+    // using the M2M membership helpers (an employee can belong to more than one
+    // department/location). These also feed the client's filter dropdowns.
+    const [allDepartments, allLocations] = await Promise.all([
+      storage.getAllDepartments(),
+      storage.getAllLocations(),
+    ]);
+    const deptNameById = new Map(allDepartments.map(d => [d.id, d.name]));
+    const locNameById = new Map(allLocations.map(l => [l.id, l.name]));
 
     // Today + week hours come from the canonical attendance ledger (the unified
     // pay engine's break-deducted, rounded per-day split) — NOT raw
@@ -6096,7 +6098,10 @@ export async function registerRoutes(
     const now = new Date();
     const ledgerByMember = await getLedgerForEmployees(teamMembers, weekStartStr, today, now);
 
-    const teamStatus = teamMembers.map(member => {
+    const usedDeptIds = new Set<string>();
+    const usedLocIds = new Set<string>();
+
+    const members = teamMembers.map(member => {
       const todayRecord = todayAttendance.find(a => a.employeeId === member.id && a.clockIn && !a.clockOut);
       const hasPtoToday = allTimeOff.some(r =>
         r.userId === member.id && (r.status === "approved" || r.status === "partially_approved") && r.startDate <= today && (r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate >= today : r.endDate >= today)
@@ -6106,25 +6111,45 @@ export async function registerRoutes(
       const todayHours = memberLedger.find(d => d.workDate === today)?.totalHours ?? 0;
       const weekHours = summarizeLedger(memberLedger).totalHours;
 
+      const isClockedIn = !!todayRecord;
       let status = "Clocked Out";
-      if (todayRecord) {
-        const clockInTime = new Date(todayRecord.clockIn!);
+      if (isClockedIn) {
+        const clockInTime = new Date(todayRecord!.clockIn!);
         status = `Clocked In (${clockInTime.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })})`;
       }
+
+      const deptIds = userDepartmentIds(member);
+      const locIds = userLocationIds(member);
+      deptIds.forEach(id => usedDeptIds.add(id));
+      locIds.forEach(id => usedLocIds.add(id));
+
+      const deptNames = deptIds.map(id => deptNameById.get(id)).filter(Boolean) as string[];
+      const locNames = locIds.map(id => locNameById.get(id)).filter(Boolean) as string[];
 
       return {
         id: member.id,
         firstName: member.firstName,
         lastName: member.lastName,
-        departmentName: member.departmentId ? (deptMap.get(member.departmentId) ?? "Unassigned") : "Unassigned",
+        departmentIds: deptIds,
+        departmentName: deptNames.length > 0 ? deptNames.join(", ") : "Unassigned",
+        locationIds: locIds,
+        locationName: locNames.length > 0 ? locNames.join(", ") : "Unassigned",
         status,
+        isClockedIn,
         hasPtoToday,
         todayHours: Math.round(todayHours * 10) / 10,
         weekHours: Math.round(weekHours * 10) / 10,
       };
     });
 
-    res.json(teamStatus);
+    const departmentOptions = Array.from(usedDeptIds)
+      .map(id => ({ id, name: deptNameById.get(id) || "Unknown" }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const locationOptions = Array.from(usedLocIds)
+      .map(id => ({ id, name: locNameById.get(id) || "Unknown" }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ members, departments: departmentOptions, locations: locationOptions });
   });
 
   const approvalSchema = z.object({
