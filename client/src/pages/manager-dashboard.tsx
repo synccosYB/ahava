@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 import { formatHoursMinutes } from "@/lib/utils";
 import { Link, useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -78,6 +79,33 @@ export default function ManagerDashboardPage() {
   const { data: teamStatus, isLoading: teamLoading } = useQuery<TeamStatusResponse>({
     queryKey: ["/api/manager/team-status"],
   });
+
+  // Live-update the team list + KPI cards as employees punch in/out via /ws.
+  // Filter/sort/search/pagination state lives in local state, so refreshing the
+  // underlying query data does not reset what the manager is looking at.
+  useEffect(() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          const isAttendance =
+            msg?.event === "attendance_update" ||
+            msg?.type === "attendance_update" ||
+            msg?.type === "kiosk_punch" ||
+            msg?.data?.type === "attendance_update" ||
+            msg?.data?.type === "kiosk_punch";
+          if (isAttendance) {
+            queryClient.invalidateQueries({ queryKey: ["/api/manager/team-status"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/manager/team-stats"] });
+          }
+        } catch {}
+      };
+    } catch {}
+    return () => { try { ws?.close(); } catch {} };
+  }, []);
 
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);

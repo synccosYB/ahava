@@ -3511,6 +3511,13 @@ export async function registerRoutes(
       });
 
       const scheduleWarning = await getScheduleWarning(userId, "clock_in");
+      try {
+        (globalThis as any).__broadcastAttendanceUpdate?.({
+          type: "attendance_update",
+          employeeId: userId,
+          status: "clock_in",
+        });
+      } catch {}
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
       console.error("Error clocking in:", error);
@@ -3615,6 +3622,13 @@ export async function registerRoutes(
       });
 
       const scheduleWarning = await getScheduleWarning(userId, "clock_out");
+      try {
+        (globalThis as any).__broadcastAttendanceUpdate?.({
+          type: "attendance_update",
+          employeeId: userId,
+          status: "clock_out",
+        });
+      } catch {}
       res.json({ ...punchLogToApiResponse(record), ...(scheduleWarning ? { scheduleWarning } : {}) });
     } catch (error) {
       console.error("Error clocking out:", error);
