@@ -1,0 +1,789 @@
+Team Overview
+Monitor your team's attendance and status
+
+Team Size
+
+238
+
+Clocked In
+
+1
+
+Using PTO
+
+0
+
+Team Status
+Employee	Department	Status	Today	This Week
+Yoel Bochner	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Aharoni Daniel zev	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Alicea Peter	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Shloimy Spilman	Dept1	
+Clocked Out
+0h 0m	0h 0m
+Shloma Spielman	Dept1	
+Clocked Out
+0h 0m	0h 0m
+Alvarez Jennis	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Anton Brianna	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Arellano Harlet	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Argudo Yvonne	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Aricapa Jorge	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Test Emp	Dept1	
+Clocked Out
+0h 0m	0h 0m
+Adelman Shaina	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Baena Marieth	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Baksh Ovalle Fazeila	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Balbuena Janielys	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Balken Miriam	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Bantu Mukesh	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Basch Chava	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Bassul Yekisiel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Blatner Miriam	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Bochner Malky	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Bolanos Elisa	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Borukhov Edward	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Boulouf Osorno Diana	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Braithwaite Arusha	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Brenes Edwin	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Caamano Ariana	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Cabo Chie	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Cadena Jasmin	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Caesar Orin	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Camacho Trina	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Canda Maribel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Cardona Keinya	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Castillo Kathleen	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Catalan Kimberly	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Chicas Irma	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Choinski jack	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Chrissol Dernyse	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Colon Sable	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Cordero ruth	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Cortez Tabatha	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Criollo Odalys	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Cruz Diana	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Danturi Kavya	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+De Jesus Aileen	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Diaz alison	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Dixon Jock	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Dropkin Tikva	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Eisma Madison	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Elbaum Faigy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Elyas Bracha	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Espinal Massiel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Este Yasuri	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Falkowitz gitty	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Fantauzzi KATIRIA	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Fantnor John	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Feiner Leah	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Feldman Belle	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Figueroa Melinda	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Fleischman Leah	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Fogel yoel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Franco Abraham	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Friedman Rachel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Fulop Etty	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Fulop Samuel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Galicia Tanya	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Garcia Carmen	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Garcia Jacqueline	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Garcia Janette	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Garcia Jelloby	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Garcia Luisa	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Garcia Roselaine	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gavilan Ana	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gelbstein Udy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gershengoren Rem	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gibber Mollie	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gilmore Steven	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gjona Marini	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gold Tzvi	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Goldenberg Malky	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Goldstein Jennifer	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gomez Michelle	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gonzalez Amanda	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gonzalez Jazminn	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Goodman Chaya	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Goodman Chaya Leah	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Gotlib Menachem	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Greenfeld Chavy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Greenfield Volvy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Greenwald Abigail	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Greenwald Yocheved	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Grunwald Esther	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Guillcatanda Jack	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Guillermo Alderete	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Guttman Joel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Hernandez Anderson	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Heyliger Jeanette	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Hogan Tamara	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Hook Courtney	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Iglicki Nicole	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Inoa Anny	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Jacobowitz Debby	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Jankite Gabrielle	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Jeje Titilope	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Johannes Amen RA	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Johnson Ruth	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Johnson Tionna	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Jung Peter	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Kamal Abdelrahman	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Katz Devora	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Katz Molly	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Katz Zev	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Keda Nassim	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Klein Joel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Klein Sarah R.	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Klein Frieda	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Knapp Nikia	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Lebovits Samuel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Lebron Nevaeh	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Lefkovits Rachel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Leifer Malky	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Leo Diego	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Lewis Victoria	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Liachtenstein Kreindy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Lichtenstein Gitty	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Lichtman Chanie	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Liu Antong	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Logu Renata	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Loicascio Jordan	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Lopez Aurora	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Lora Johanna	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Maisonet Jaydalynn	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Malicaj Argjend	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Maqsood Maheen	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Mejia Jose	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Menjivar Iris	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Mistry Heli	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Moncada Pinto Pedro	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Montalvo Theresa	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Moses malique	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Moskowitz Nathen	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Motovich Rebecca	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Munoz Keren	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Murcia Angelique	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Nunez Claritza	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Nunez Stephanie	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Oberlander Esther	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Ocampo Kim	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Ohra Anthony	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Opio George	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Osorio Angel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Otero Leril	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Ovalle Hillary	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Parsram eli	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Patel Jeny	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Paz Karla	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Paz Maryolin	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Perez Aurora	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Perez Estefanya	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Perry-Grant Ninotshka	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Phillip Erris	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Pifko Devorah	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Pinilla jonathan	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Pinzon Shalese	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Pollak Raizy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Porgesz Malka	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Portugal Abraham	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Posen Rachy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Quinones Jocelyn	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Quiroz Daniela	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Ramirez Claudia	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Rausman Miriam	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Reynoso cortes Ana	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Richardson Myia	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Rimler Tzvi	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Ripley Ruth	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Rivera Mejia Karla	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Robin Soffer2	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Rochlitz Gitty	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Rodriguez Alfredo	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Romero Mayah	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Rosa Ariana	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Rottenberg Menashe	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Salinas Angeloo	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Sanchez Georgina	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Sanchez Gisselle	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Sander mantzy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Santana Renny	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schapira Miriam	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schauder Israel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schlesinger Gitty	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schon Yehuda	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schreiber pinchus	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schwartz Chana	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schwartz yaakov	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schwatz Hannah	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Schwiers Robin	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Seidenfeld Mindy	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Serrano Jillian	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Shawon Mohammed	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Sheiner Samuel	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Shqutaj Anxhela	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Simpson Danielle	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Singer gitty	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Singh Cameron	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Sloshay Malka	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Soto Yashira	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Spira Nachman	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Statfeld Tehila	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Stern Miriam	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Stytzr Adam	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Tate Jaret	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Tejada Natalie	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Terrero Franchesca	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Tibrcio smeling	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Troche Veronica	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Tropp Hadassah	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Valdez Justin	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Vasquez-Estevez Martha	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Velez Kayla	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Velez melanie	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Vera Paola	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Vogel Chaya	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Wallace Celene	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Weingarten Leah	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Weiss Rivky	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Wenger Sheva	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Wilamowsky kayla	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Wolofsky Tzipora	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Zaman Namira	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Zelefsky Sharon	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+perez Katharine	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+schwimer Chany	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+test joel	Vision	
+Clocked Out
+0h 0m	0h 0m
+Yisroel Ber lebowitz	Unassigned	
+Clocked In (2:48 PM)
+3h 0m	3h 0m
+Lebovits Israel	Dept1	
+Clocked Out
+0h 0m	0h 0m
+Eliezer Mertz	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Grullon Ivelises	Unassigned	
+Clocked Out
+0h 0m	0h 0m
+Punch Records
+Employee
+All employees
+Location
+All locations
+Start
+06/16/2026
+End
+06/29/2026
+Employee	Date	Clock In	Clock Out	Hours	Location	Actions
+Yisroel Ber lebowitz	06/29/2026	10:48 AM	—	—	Main	
+
+
+Yisroel Ber lebowitz	06/25/2026	8:37 AM	3:09 PM	6h 30m	Main	
+
+
+Lebovits Israel	06/18/2026	4:47 PM	5:36 PM	0h 45m	Sumner Ahava	
+
+
+Yisroel Ber lebowitz	06/18/2026	3:39 PM	11:58 AM	20h 15m	Main	
+
+
+Yisroel Ber lebowitz	06/18/2026	3:38 PM	3:38 PM	0h 0m	Main	
+
+
+Lebovits Israel	06/18/2026	3:00 PM	3:51 PM	0h 45m	Sumner Ahava	
+
+
+Test Emp	06/17/2026	4:52 PM	4:53 PM	0h 0m	Main	
+
+
+Test Emp	06/17/2026	4:42 PM	4:42 PM	0h 0m	Main	
+
+
+Test Emp	06/17/2026	4:39 PM	4:41 PM	0h 0m	Main	
+
+
+Test Emp	06/17/2026	4:38 PM	4:39 PM	0h 0m	Main	
+
+
+Test Emp	06/17/2026	10:31 AM	4:35 PM	6h 0m	Main	
+
+
+Eliezer Mertz	06/16/2026	2:54 PM	—	—	Sumner Ahava	
+
+
+Lebovits Israel	06/16/2026	2:05 PM	2:24 PM	0h 30m	Sumner Ahava	
+
+
+Yisroel Ber lebowitz	06/16/2026	1:27 PM	4:13 PM	26h 45m	Main	
+
+
+Yisroel Ber lebowitz	06/16/2026	1:24 PM	1:25 PM	0h 0m	Main	
+
+
+Yisroel Ber lebowitz	06/16/2026	1:19 PM	1:20 PM	0h 0m	Main	
+
+
