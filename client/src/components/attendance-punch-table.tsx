@@ -25,7 +25,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useToast } from "@/hooks/use-toast";
-import { formatHoursMinutes, formatDate, formatTime12 } from "@/lib/utils";
+import { formatHoursMinutes, formatDate, formatTime12InTz } from "@/lib/utils";
 import { EmptyState } from "@/components/empty-state";
 
 type Punch = {
@@ -39,6 +39,9 @@ type Punch = {
   status: string | null;
   source: string | null;
   locationNames: string[];
+  // Each row's business/location timezone so punch times render in the medical
+  // center's wall-clock time, not the viewer's device timezone.
+  timezone?: string | null;
 };
 
 type Option = { id: string; name: string };
@@ -281,8 +284,8 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
                     {p.employeeName}
                   </TableCell>
                   <TableCell data-testid={`text-punch-date-${p.id}`}>{formatDate(p.workDate) || "—"}</TableCell>
-                  <TableCell data-testid={`text-punch-in-${p.id}`}>{formatTime12(p.clockIn) || "—"}</TableCell>
-                  <TableCell data-testid={`text-punch-out-${p.id}`}>{formatTime12(p.clockOut) || "—"}</TableCell>
+                  <TableCell data-testid={`text-punch-in-${p.id}`}>{formatTime12InTz(p.clockIn, p.timezone) || "—"}</TableCell>
+                  <TableCell data-testid={`text-punch-out-${p.id}`}>{formatTime12InTz(p.clockOut, p.timezone) || "—"}</TableCell>
                   <TableCell className="tabular-nums" data-testid={`text-punch-hours-${p.id}`}>
                     {p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—"}
                   </TableCell>

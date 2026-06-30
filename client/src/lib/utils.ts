@@ -220,25 +220,58 @@ export function liveElapsedSeconds(
  * formatted end time, a compact human end-date label (e.g. "Apr 28"), and
  * the number of full calendar days between the work date and the end date.
  */
+function ymdPartsInTz(
+  d: Date,
+  timezone?: string | null,
+): { year: number; month: number; monthIndex: number; day: number } {
+  if (timezone) {
+    try {
+      const s = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(d); // "YYYY-MM-DD"
+      const [y, m, da] = s.split("-").map(Number);
+      if (Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(da)) {
+        return { year: y, month: m, monthIndex: m - 1, day: da };
+      }
+    } catch {
+      // Invalid timezone — fall through to local components.
+    }
+  }
+  return {
+    year: d.getFullYear(),
+    month: d.getMonth() + 1,
+    monthIndex: d.getMonth(),
+    day: d.getDate(),
+  };
+}
+
 export function getOvernightShiftInfo(
   workDate: string | null | undefined,
   clockOut: string | Date | null | undefined,
+  timezone?: string | null,
 ): { endDate: string; endTime: string; endDateLabel: string; daysSpan: number } | null {
   if (!workDate || !clockOut) return null;
   const out = clockOut instanceof Date ? clockOut : new Date(clockOut);
   if (isNaN(out.getTime())) return null;
-  const yyyy = out.getFullYear();
-  const mm = String(out.getMonth() + 1).padStart(2, "0");
-  const dd = String(out.getDate()).padStart(2, "0");
-  const endDate = `${yyyy}-${mm}-${dd}`;
+  // Resolve the end-of-shift calendar day in the business/location timezone so
+  // an overnight shift is detected (and labelled) consistently regardless of
+  // the viewing device's timezone. Falls back to local components when no
+  // timezone is resolvable.
+  const parts = ymdPartsInTz(out, timezone);
+  const mm = String(parts.month).padStart(2, "0");
+  const dd = String(parts.day).padStart(2, "0");
+  const endDate = `${parts.year}-${mm}-${dd}`;
   if (endDate <= workDate) return null;
-  const endTime = formatTime12(out);
+  const endTime = formatTime12InTz(out, timezone);
   const [wy, wmo, wda] = workDate.split("-").map(Number);
   let daysSpan = 1;
   let endDateLabel = endDate;
   if (Number.isFinite(wy) && Number.isFinite(wmo) && Number.isFinite(wda)) {
     const startLocal = new Date(wy, wmo - 1, wda);
-    const endLocal = new Date(yyyy, out.getMonth(), out.getDate());
+    const endLocal = new Date(parts.year, parts.monthIndex, parts.day);
     daysSpan = Math.max(
       1,
       Math.round((endLocal.getTime() - startLocal.getTime()) / 86_400_000),

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours, getOvernightShiftInfo, formatTime12, formatDate } from "@/lib/utils";
+import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours, getOvernightShiftInfo, formatTime12InTz, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -23,7 +23,12 @@ interface DashboardStatus {
   ptoBalance: { vacation: number; sick: number; personal: number };
   allowedPunchSources?: string[];
   geofenceEnabled?: boolean;
+  timezone?: string | null;
 }
+
+// The records endpoint stamps each row with the employee's business timezone so
+// punch times render in the medical center's wall-clock, not the device's tz.
+type DashboardRecord = AttendanceRecord & { timezone?: string | null };
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -72,7 +77,7 @@ export default function Dashboard() {
     isError: recordsError,
     refetch: refetchRecords,
     isFetching: recordsFetching,
-  } = useQuery<AttendanceRecord[]>({
+  } = useQuery<DashboardRecord[]>({
     queryKey: ["/api/attendance/records"],
     refetchOnWindowFocus: true,
     retry: 3,
@@ -175,7 +180,7 @@ export default function Dashboard() {
                   {status?.isClockedIn && status.currentRecord?.clockIn && (
                     <>
                       <p className="text-xs text-muted-foreground" data-testid="text-clocked-in-since">
-                        Since {formatTime12(status.currentRecord.clockIn)}
+                        Since {formatTime12InTz(status.currentRecord.clockIn, status.timezone)}
                       </p>
                       <p className="text-xs font-medium tabular-nums text-green-700 dark:text-green-400" data-testid="text-live-elapsed">
                         {elapsedLabel}
@@ -294,7 +299,7 @@ export default function Dashboard() {
               </TableHeader>
               <TableBody>
                 {recentActivity.map((record) => {
-                  const overnightInfo = getOvernightShiftInfo(record.date, record.clockOut);
+                  const overnightInfo = getOvernightShiftInfo(record.date, record.clockOut, record.timezone);
                   return (
                   <TableRow key={record.id} data-testid={`row-activity-${record.id}`}>
                     <TableCell className="font-medium text-sm">
@@ -334,11 +339,11 @@ export default function Dashboard() {
                     </TableCell>
                     <TableCell className="text-sm">
                       {record.clockIn
-                        ? formatTime12(record.clockIn)
+                        ? formatTime12InTz(record.clockIn, record.timezone)
                         : "—"}
                       {record.clockOut ? (
                         <>
-                          {` – ${formatTime12(record.clockOut)}`}
+                          {` – ${formatTime12InTz(record.clockOut, record.timezone)}`}
                           {overnightInfo && (
                             <span
                               className="ml-1 text-xs text-muted-foreground"

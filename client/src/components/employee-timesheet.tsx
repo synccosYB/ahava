@@ -12,7 +12,7 @@ import {
 import { Download, CalendarDays, AlertCircle } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { EmptyState } from "@/components/empty-state";
-import { formatHoursMinutes, formatDate, formatTime12 } from "@/lib/utils";
+import { formatHoursMinutes, formatDate, formatTime12InTz } from "@/lib/utils";
 
 export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "none";
 
@@ -51,6 +51,9 @@ export type TimesheetResponse = {
     overtimeHours: number;
     daysWorked: number;
   };
+  // Business/location timezone so clock-in/out render in the medical center's
+  // wall-clock time, not the viewer's device timezone.
+  timezone?: string | null;
 };
 
 function defaultTimesheetRange() {
@@ -171,8 +174,8 @@ export function EmployeeTimesheetTable({
     const rows = data.entries.map((e) => [
       e.date,
       e.dayOfWeek,
-      e.clockIn ? new Date(e.clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—",
-      e.clockOut ? new Date(e.clockOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—",
+      e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "—",
+      e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "—",
       String(e.breakMinutes || 0),
       e.totalHours != null ? formatHoursMinutes(e.totalHours) : "—",
       formatHoursMinutes(e.overtimeHours || 0),
@@ -228,10 +231,10 @@ export function EmployeeTimesheetTable({
                 <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
                 <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
-                  {e.clockIn ? formatTime12(e.clockIn) : "—"}
+                  {e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "—"}
                 </TableCell>
                 <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
-                  {e.clockOut ? formatTime12(e.clockOut) : "—"}
+                  {e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "—"}
                 </TableCell>
                 <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
                 <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>

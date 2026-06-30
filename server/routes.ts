@@ -3088,7 +3088,8 @@ export async function registerRoutes(
     } : null;
     const allowedPunchSources = await getKioskAllowedSourcesForUser(user);
     const geofenceEnabled = (await storage.getEmployeeGeofencedAddresses(user.id)).length > 0;
-    return res.json({ employee: { ...sanitizeUserForKiosk(user, deptName, allowedPunchSources), geofenceEnabled }, lastRecord: kioskLastRecord });
+    const timezone = await resolveEmployeeTimezone(user.id);
+    return res.json({ employee: { ...sanitizeUserForKiosk(user, deptName, allowedPunchSources), geofenceEnabled }, lastRecord: kioskLastRecord, timezone });
   }));
 
   app.get("/api/kiosk/search", wrapKiosk(async (req, res) => {
@@ -3126,7 +3127,8 @@ export async function registerRoutes(
     } : null;
     const allowedPunchSources = await getKioskAllowedSourcesForUser(user);
     const geofenceEnabled = (await storage.getEmployeeGeofencedAddresses(user.id)).length > 0;
-    return res.json({ employee: { ...sanitizeUserForKiosk(user, deptName, allowedPunchSources), geofenceEnabled }, lastRecord: kioskLastRecord });
+    const timezone = await resolveEmployeeTimezone(user.id);
+    return res.json({ employee: { ...sanitizeUserForKiosk(user, deptName, allowedPunchSources), geofenceEnabled }, lastRecord: kioskLastRecord, timezone });
   }));
 
   app.post("/api/kiosk/punch", wrapKiosk(async (req, res) => {
@@ -3241,6 +3243,7 @@ export async function registerRoutes(
       return res.json({
         record: { id: record.id, type: "clock_in", timestamp: record.clockIn },
         employee: sanitizeUserForKiosk(user, deptName),
+        timezone: await resolveEmployeeTimezone(user.id),
         ...(scheduleWarning ? { scheduleWarning } : {}),
       });
     } else {
@@ -3340,6 +3343,7 @@ export async function registerRoutes(
       return res.json({
         record: { id: updated?.id, type: "clock_out", timestamp: updated?.clockOut },
         employee: sanitizeUserForKiosk(user, deptName),
+        timezone,
         ...(scheduleWarning ? { scheduleWarning } : {}),
       });
     }
@@ -3420,6 +3424,9 @@ export async function registerRoutes(
         // allowed for this employee.
         allowedPunchSources,
         geofenceEnabled,
+        // Business/location timezone so punch times render in the medical
+        // center's wall-clock time regardless of the viewing device's timezone.
+        timezone: await resolveEmployeeTimezone(userId),
       };
 
       if (userRole === "admin" || userRole === "manager") {
@@ -3731,6 +3738,10 @@ export async function registerRoutes(
         if (d) kioskNameById.set(id, d.name);
       }
 
+      // All records belong to this one employee, so resolve their business
+      // timezone once and stamp it on each row for consistent punch rendering.
+      const timezone = await resolveEmployeeTimezone(userId);
+
       res.json(records.map(r => {
         const name = r.kioskDeviceId ? (kioskNameById.get(r.kioskDeviceId) ?? null) : null;
         return {
@@ -3738,6 +3749,7 @@ export async function registerRoutes(
           wasCorrected: correctedIds.has(r.id),
           kioskDeviceName: name,
           kiosk: r.kioskDeviceId && name ? { id: r.kioskDeviceId, name } : null,
+          timezone,
         };
       }));
     } catch (error) {
@@ -3839,6 +3851,14 @@ export async function registerRoutes(
       }
 
       const userById = new Map(scope.users.map((u) => [u.id, u]));
+
+      // Resolve each employee's business timezone once (punches span multiple
+      // employees here) so every row renders in its own location's wall-clock.
+      const tzByEmployee = new Map<string, string>();
+      for (const empId of new Set(punches.map((p) => p.employeeId))) {
+        tzByEmployee.set(empId, await resolveEmployeeTimezone(empId));
+      }
+
       const data = punches.map((p) => {
         const u = userById.get(p.employeeId);
         const empLocNames = u ? userLocationIds(u).map((id) => locNameById.get(id) || "Unknown") : [];
@@ -3855,6 +3875,7 @@ export async function registerRoutes(
           status: p.status,
           source: p.source,
           locationNames: empLocNames,
+          timezone: tzByEmployee.get(p.employeeId) ?? null,
         };
       });
 
@@ -4195,6 +4216,9 @@ export async function registerRoutes(
         otThresholdDaily: result.otThresholdDaily,
         entries: result.entries,
         totals: result.totals,
+        // Business/location timezone so clock-in/out render in the medical
+        // center's wall-clock time, not the viewer's device timezone.
+        timezone: await resolveEmployeeTimezone(employeeId),
       });
     } catch (error) {
       console.error("Error fetching employee timesheet:", error);
@@ -12013,6 +12037,7 @@ export async function registerRoutes(
         attemptId: attempt.id,
         employee: sanitizeUserForKiosk(user, deptName, allowedPunchSources),
         lastRecord: kioskLastRecord,
+        timezone: await resolveEmployeeTimezone(user.id),
       });
     }
     return res.json({
@@ -12074,6 +12099,7 @@ export async function registerRoutes(
       overrideId: override.id,
       employee: sanitizeUserForKiosk(target, deptName, allowedPunchSources),
       lastRecord: kioskLastRecord,
+      timezone: await resolveEmployeeTimezone(target.id),
     });
   }));
 

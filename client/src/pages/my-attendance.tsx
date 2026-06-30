@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { formatHoursMinutes, getOvernightShiftInfo, formatTime12, formatTime12FromHHmm, formatDate } from "@/lib/utils";
+import { formatHoursMinutes, getOvernightShiftInfo, formatTime12InTz, formatTime12FromHHmm, formatDate } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -98,7 +98,9 @@ export default function MyAttendance() {
     missingPunch: false,
   });
 
-  const { data: records, isLoading, isError } = useQuery<AttendanceRecord[]>({
+  // The records endpoint stamps each row with the employee's business timezone so
+  // punch times render in the medical center's wall-clock, not the device's tz.
+  const { data: records, isLoading, isError } = useQuery<Array<AttendanceRecord & { timezone?: string | null }>>({
     queryKey: ["/api/attendance/records", startDate, endDate],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -246,8 +248,8 @@ export default function MyAttendance() {
     const headers = ["Date", "Clock In", "Clock Out", "Break (min)", "Source", "Total Hours", "Status"];
     const rows = records.map((r) => [
       r.date,
-      r.clockIn ? formatTime12(r.clockIn) : "",
-      r.clockOut ? formatTime12(r.clockOut) : "",
+      r.clockIn ? formatTime12InTz(r.clockIn, r.timezone) : "",
+      r.clockOut ? formatTime12InTz(r.clockOut, r.timezone) : "",
       r.breakMinutes || 0,
       r.kiosk?.name
         ? `Kiosk — ${r.kiosk.name}`
@@ -483,7 +485,7 @@ export default function MyAttendance() {
                   const isInProgress = record.status === "in-progress" || !record.clockOut;
                   const pendingException = pendingForRow.get(record.id);
                   const hasPending = !!pendingException;
-                  const overnightInfo = getOvernightShiftInfo(record.date, record.clockOut);
+                  const overnightInfo = getOvernightShiftInfo(record.date, record.clockOut, record.timezone);
                   const resolvedEx = latestResolvedByDate.get(record.date);
                   const reopenGrantedUnused =
                     resolvedEx?.reopenStatus === "granted" && !resolvedEx?.reopenConsumedAt;
@@ -534,14 +536,14 @@ export default function MyAttendance() {
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">
                         {record.clockIn
-                          ? formatTime12(record.clockIn)
+                          ? formatTime12InTz(record.clockIn, record.timezone)
                           : "—"}
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">
                         {record.clockOut
                           ? (
                             <span className="inline-flex items-baseline gap-1">
-                              <span>{formatTime12(record.clockOut)}</span>
+                              <span>{formatTime12InTz(record.clockOut, record.timezone)}</span>
                               {overnightInfo && (
                                 <span
                                   className="text-xs text-muted-foreground"

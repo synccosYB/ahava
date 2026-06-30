@@ -111,22 +111,41 @@ function formatTime(date: Date) {
   });
 }
 
-function formatDate(date: Date) {
-  return date.toLocaleDateString("en-US", {
+function formatDate(date: Date, timezone?: string | null) {
+  const opts: Intl.DateTimeFormatOptions = {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
-  });
+  };
+  if (timezone) {
+    try {
+      return date.toLocaleDateString("en-US", { ...opts, timeZone: timezone });
+    } catch {
+      // Invalid timezone — fall back to the device's local date below.
+    }
+  }
+  return date.toLocaleDateString("en-US", opts);
 }
 
-function formatShortTime(date: Date | string) {
+// Renders a punch time in the business/location timezone so kiosk screens show
+// the medical center's wall-clock time regardless of the tablet's own timezone.
+// Falls back to the device's local time when no valid timezone is provided.
+function formatShortTime(date: Date | string, timezone?: string | null) {
   const d = typeof date === "string" ? new Date(date) : date;
-  return d.toLocaleTimeString("en-US", {
+  const opts: Intl.DateTimeFormatOptions = {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
-  });
+  };
+  if (timezone) {
+    try {
+      return d.toLocaleTimeString("en-US", { ...opts, timeZone: timezone });
+    } catch {
+      // Invalid timezone — fall back to the device's local time below.
+    }
+  }
+  return d.toLocaleTimeString("en-US", opts);
 }
 
 function getInitials(firstName: string, lastName: string) {
@@ -140,6 +159,9 @@ export default function KioskPage() {
   );
   const [employee, setEmployee] = useState<KioskEmployee | null>(null);
   const [lastRecord, setLastRecord] = useState<KioskLastRecord | null>(null);
+  // Business/location timezone for the identified employee, so punch times render
+  // in the medical center's wall-clock time regardless of the tablet's timezone.
+  const [timezone, setTimezone] = useState<string | null>(null);
   const [punchType, setPunchType] = useState<"clock_in" | "clock_out">("clock_in");
   const [punchTime, setPunchTime] = useState<Date | null>(null);
   const [scheduleWarning, setScheduleWarning] = useState<string | null>(null);
@@ -188,6 +210,7 @@ export default function KioskPage() {
     setScreen(getKioskDeviceId() ? "home" : "pairing");
     setEmployee(null);
     setLastRecord(null);
+    setTimezone(null);
     setPunchType("clock_in");
     setPunchTime(null);
     setScheduleWarning(null);
@@ -248,9 +271,10 @@ export default function KioskPage() {
     setLastActivity(Date.now());
   }, []);
 
-  const handleEmployeeFound = useCallback((emp: KioskEmployee, record: KioskLastRecord | null) => {
+  const handleEmployeeFound = useCallback((emp: KioskEmployee, record: KioskLastRecord | null, tz?: string | null) => {
     setEmployee(emp);
     setLastRecord(record);
+    setTimezone(tz ?? null);
     const isClockedIn = record?.type === "clock_in";
     setPunchType(isClockedIn ? "clock_out" : "clock_in");
     setScreen("confirm");
@@ -286,6 +310,7 @@ export default function KioskPage() {
         return;
       }
       setPunchTime(new Date(data.record.timestamp));
+      if (data.timezone) setTimezone(data.timezone);
       setScheduleWarning(data.scheduleWarning || null);
       setScreen("success");
     } catch {
@@ -331,9 +356,9 @@ export default function KioskPage() {
       )}
       {screen === "face" && (
         <FaceScreen
-          onEmployeeFound={(emp, rec, attemptId) => {
+          onEmployeeFound={(emp, rec, attemptId, tz) => {
             setLastFaceAttemptId(attemptId);
-            handleEmployeeFound(emp, rec);
+            handleEmployeeFound(emp, rec, tz);
           }}
           onFailure={(attemptId) => {
             setFaceFailureCount((n) => n + 1);
@@ -358,6 +383,7 @@ export default function KioskPage() {
         <ConfirmScreen
           employee={employee}
           lastRecord={lastRecord}
+          timezone={timezone}
           punchType={punchType}
           now={now}
           onPunch={handlePunch}
@@ -371,6 +397,7 @@ export default function KioskPage() {
           employee={employee}
           punchType={punchType}
           punchTime={punchTime}
+          timezone={timezone}
           scheduleWarning={scheduleWarning}
         />
       )}
@@ -422,7 +449,7 @@ function FaceScreen({
   onCancel,
   failureCount,
 }: {
-  onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null, attemptId: string) => void;
+  onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null, attemptId: string, timezone?: string | null) => void;
   onFailure: (attemptId: string | null) => void;
   onSupervisorOverride: () => void;
   onUsePin: () => void;
@@ -453,7 +480,7 @@ function FaceScreen({
           return;
         }
         if (data.outcome === "auto_approved" && data.employee) {
-          onEmployeeFound(data.employee, data.lastRecord || null, data.attemptId);
+          onEmployeeFound(data.employee, data.lastRecord || null, data.attemptId, data.timezone ?? null);
           return;
         }
         setError(FRIENDLY_ERROR_BY_CODE[data.outcome] || "Face login failed. Please try again.");
@@ -533,7 +560,7 @@ function SupervisorOverrideScreen({
   onActivity,
 }: {
   attemptId: string | null;
-  onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null) => void;
+  onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null, timezone?: string | null) => void;
   onCancel: () => void;
   onActivity: () => void;
 }) {
@@ -582,7 +609,7 @@ function SupervisorOverrideScreen({
         setBusy(false);
         return;
       }
-      onEmployeeFound(data.employee, data.lastRecord || null);
+      onEmployeeFound(data.employee, data.lastRecord || null, data.timezone ?? null);
     } catch {
       setError(FRIENDLY_ERROR_BY_CODE.network);
       setBusy(false);
@@ -679,7 +706,7 @@ function IdentifyScreen({
   onActivity,
   onUseFace,
 }: {
-  onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null) => void;
+  onEmployeeFound: (emp: KioskEmployee, record: KioskLastRecord | null, timezone?: string | null) => void;
   onCancel: () => void;
   onActivity: () => void;
   onUseFace?: () => void;
@@ -726,7 +753,7 @@ function IdentifyScreen({
         setPin("");
         return;
       }
-      onEmployeeFound(data.employee, data.lastRecord || null);
+      onEmployeeFound(data.employee, data.lastRecord || null, data.timezone ?? null);
     } catch {
       setPinError(FRIENDLY_ERROR_BY_CODE.network);
       setPin("");
@@ -761,7 +788,7 @@ function IdentifyScreen({
         setPinError(friendlyError(data, "We couldn't load that employee. Please try again."));
         return;
       }
-      onEmployeeFound(data.employee, data.lastRecord || null);
+      onEmployeeFound(data.employee, data.lastRecord || null, data.timezone ?? null);
     } catch {
       setPinError(FRIENDLY_ERROR_BY_CODE.network);
     }
@@ -873,6 +900,7 @@ function IdentifyScreen({
 function ConfirmScreen({
   employee,
   lastRecord,
+  timezone,
   punchType,
   now,
   onPunch,
@@ -882,6 +910,7 @@ function ConfirmScreen({
 }: {
   employee: KioskEmployee;
   lastRecord: KioskLastRecord | null;
+  timezone?: string | null;
   punchType: "clock_in" | "clock_out";
   now: Date;
   onPunch: () => void;
@@ -913,7 +942,7 @@ function ConfirmScreen({
         </p>
         {lastRecord?.timestamp && (
           <p className="kiosk-status-time" data-testid="text-last-punch">
-            Last punch: {formatShortTime(lastRecord.timestamp)}
+            Last punch: {formatShortTime(lastRecord.timestamp, timezone)}
           </p>
         )}
       </div>
@@ -1032,11 +1061,13 @@ function SuccessScreen({
   employee,
   punchType,
   punchTime,
+  timezone,
   scheduleWarning,
 }: {
   employee: KioskEmployee;
   punchType: "clock_in" | "clock_out";
   punchTime: Date | null;
+  timezone?: string | null;
   scheduleWarning: string | null;
 }) {
   const [countdown, setCountdown] = useState(5);
@@ -1067,10 +1098,10 @@ function SuccessScreen({
       </p>
 
       <p className={`kiosk-success-time ${isClockIn ? "time-green" : "time-red"}`} data-testid="text-success-time">
-        {punchTime ? formatShortTime(punchTime) : ""}
+        {punchTime ? formatShortTime(punchTime, timezone) : ""}
       </p>
       <p className="kiosk-success-date" data-testid="text-success-date">
-        {punchTime ? formatDate(punchTime) : ""}
+        {punchTime ? formatDate(punchTime, timezone) : ""}
       </p>
 
       {scheduleWarning && (
