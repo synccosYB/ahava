@@ -30,6 +30,9 @@
 #                                          + DST real-elapsed-time), attendance
 #                                          totals, buildPtoPolicyFromRules.
 #     - punchSources.test.ts               canonical punch-method classification.
+#     - punchTimeDisplayTz.test.ts         punch times render in clinic wall-clock
+#                                          tz (formatTime12InTz / overnight-shift
+#                                          detection / resolveEmployeeTimezone).
 #     - punchValidation.test.ts            shared punch-integrity validator (per
 #                                          rejection case: impossible/future/
 #                                          overlap/duplicate-open).
@@ -84,6 +87,7 @@ TEST_FILES=(
   "server/__tests__/punchHoursCalc.test.ts"
   "server/__tests__/punchSources.test.ts"
   "server/__tests__/punchValidation.test.ts"
+  "server/__tests__/punchTimeDisplayTz.test.ts"
   # DB-backed: attendance / punch lifecycle
   "server/services/__tests__/clockInIntegration.test.ts"
   "server/services/__tests__/duplicateOpenPunch.test.ts"

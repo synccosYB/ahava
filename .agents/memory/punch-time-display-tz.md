@@ -29,3 +29,10 @@ the clinic's wall-clock time for the same punch, or attendance looks wrong.
 **How to apply:** any NEW surface that displays a punch time must thread the
 server-resolved timezone through and format with the tz-aware helpers — never
 render a raw UTC timestamp with the viewer's local formatter.
+
+**Pinned by:** `server/__tests__/punchTimeDisplayTz.test.ts` (pure-logic, no DB —
+storage stubbed) covers `formatTime12InTz` wall-clock + fallback,
+`getOvernightShiftInfo` tz-dependent overnight detection, and
+`resolveEmployeeTimezone` location→company→default order. It's in the
+`./scripts/test-attendance-payroll.sh` suite. A server test importing the client
+`utils.ts` works fine under tsx (only deps are clsx/tailwind-merge).

@@ -45,6 +45,7 @@ Total: **144 tests across 22 files, all passing.**
 | Punch lifecycle — clock-in actual vs rounded persistence | `storage.clockIn` | `clockInIntegration.test.ts` |
 | Punch lifecycle — single open punch under concurrency | `storage.clockIn` | `duplicateOpenPunch.test.ts` |
 | Punch method classification | `punchSources` | `punchSources.test.ts` |
+| Punch times render in clinic wall-clock tz (not viewer tz) | `client utils` / `punchOverlap` | `punchTimeDisplayTz.test.ts` |
 | Exception resolve honors configured OT threshold | `routes.ts` exception resolve | `exceptionResolveRoute.test.ts` |
 | Atomic PTO-balance / approval races | `storage.ts` increments | `concurrentUpdates.test.ts` |
 
