@@ -26,7 +26,7 @@
  *
  * See docs/attendance-ledger.md for the full data-classification audit + design.
  */
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   attendanceLedger,
@@ -455,6 +455,69 @@ export async function getLedgerForEmployees(
       result.set(employee.id, computed);
     }),
   );
+
+  return result;
+}
+
+export interface HoursRollup {
+  /** Sum of total worked hours over [startDate, endDate]. */
+  weekHours: number;
+  /** Total worked hours attributable to the single `todayDate`. */
+  todayHours: number;
+}
+
+/**
+ * READ-ONLY per-employee hour rollups straight from the PERSISTED ledger rows —
+ * a single grouped SQL aggregation, NO recompute and NO write-through. This is
+ * the cheap "sort by hours" path for very large rosters: it lets Team Overview
+ * order thousands of filtered employees by today/week hours without doing a full
+ * recompute-through ledger pass for every row on each request.
+ *
+ * Trade-off vs. `getLedgerForEmployees`: these numbers are exactly the durable
+ * persisted record (kept fresh by the `recomputeLedger` write-hooks on clock-out,
+ * punch edits, exception resolution, auto-clock-out and PTO changes), so they
+ * match the canonical ledger EXCEPT for the live-elapsing portion of a currently
+ * open punch (frozen at last recompute) and employees never yet materialized
+ * (treated as 0). That is acceptable for ORDERING; callers that need exact
+ * display numbers still recompute-through the visible page via
+ * `getLedgerForEmployees`.
+ */
+export async function getPersistedHoursRollup(
+  employeeIds: string[],
+  startDate: string,
+  endDate: string,
+  todayDate: string,
+): Promise<Map<string, HoursRollup>> {
+  const result = new Map<string, HoursRollup>();
+  if (employeeIds.length === 0) return result;
+
+  // Chunk the IN list to stay well under Postgres' bind-parameter ceiling for
+  // multi-thousand-employee scopes.
+  const CHUNK = 1000;
+  for (let i = 0; i < employeeIds.length; i += CHUNK) {
+    const chunk = employeeIds.slice(i, i + CHUNK);
+    const rows = await db
+      .select({
+        employeeId: attendanceLedger.employeeId,
+        weekHours: sql<number>`coalesce(sum(${attendanceLedger.totalHours}), 0)`,
+        todayHours: sql<number>`coalesce(sum(case when ${attendanceLedger.workDate} = ${todayDate} then ${attendanceLedger.totalHours} else 0 end), 0)`,
+      })
+      .from(attendanceLedger)
+      .where(
+        and(
+          inArray(attendanceLedger.employeeId, chunk),
+          gte(attendanceLedger.workDate, startDate),
+          lte(attendanceLedger.workDate, endDate),
+        ),
+      )
+      .groupBy(attendanceLedger.employeeId);
+    for (const r of rows) {
+      result.set(r.employeeId, {
+        weekHours: round2(Number(r.weekHours)),
+        todayHours: round2(Number(r.todayHours)),
+      });
+    }
+  }
 
   return result;
 }

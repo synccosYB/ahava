@@ -17,7 +17,7 @@ import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFA
 import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeWeeklyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
-import { getLedgerForEmployee, getLedgerForEmployees, summarizeLedger, recomputeLedger } from "./attendanceLedger";
+import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, summarizeLedger, recomputeLedger } from "./attendanceLedger";
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
 import {
@@ -6227,18 +6227,23 @@ export async function registerRoutes(
 
     let pageMembers: EnrichedMember[];
     if (sortsByHours) {
-      // Sorting by hours needs the ledger for the whole filtered set, but still
-      // avoids reading the ledger for members excluded by the filters.
-      const ledgerByMember = await getLedgerForEmployees(
-        filtered.map(m => userById.get(m.id)!).filter(Boolean),
+      // Sorting by hours over a multi-thousand-employee scope used to recompute
+      // the attendance ledger for EVERY filtered row on every request. Instead,
+      // order by a cheap READ-ONLY rollup straight from the persisted ledger
+      // (one grouped SQL aggregation, no per-employee recompute). The persisted
+      // rows are kept fresh by the recompute write-hooks, so the ordering matches
+      // the canonical ledger; the EXACT display numbers for the visible page are
+      // still recompute-through'd below, identical to the non-hours branch.
+      const rollup = await getPersistedHoursRollup(
+        filtered.map(m => m.id),
         weekStartStr,
         today,
-        now,
+        today,
       );
       for (const m of filtered) {
-        const memberLedger = ledgerByMember.get(m.id) || [];
-        m.todayHours = Math.round((memberLedger.find(d => d.workDate === today)?.totalHours ?? 0) * 10) / 10;
-        m.weekHours = Math.round(summarizeLedger(memberLedger).totalHours * 10) / 10;
+        const r = rollup.get(m.id);
+        m.todayHours = Math.round((r?.todayHours ?? 0) * 10) / 10;
+        m.weekHours = Math.round((r?.weekHours ?? 0) * 10) / 10;
       }
       filtered.sort((a, b) => {
         const primary = sortKey === "today"
@@ -6247,6 +6252,19 @@ export async function registerRoutes(
         return (primary || byName(a, b)) * dir;
       });
       pageMembers = filtered.slice(page * pageSize, page * pageSize + pageSize);
+      // Recompute-through ONLY the visible page so its hours are exact (matches
+      // timesheet/payroll) even for live-elapsing open punches the rollup froze.
+      const ledgerByMember = await getLedgerForEmployees(
+        pageMembers.map(m => userById.get(m.id)!).filter(Boolean),
+        weekStartStr,
+        today,
+        now,
+      );
+      for (const m of pageMembers) {
+        const memberLedger = ledgerByMember.get(m.id) || [];
+        m.todayHours = Math.round((memberLedger.find(d => d.workDate === today)?.totalHours ?? 0) * 10) / 10;
+        m.weekHours = Math.round(summarizeLedger(memberLedger).totalHours * 10) / 10;
+      }
     } else {
       filtered.sort((a, b) => {
         const primary = sortKey === "status"

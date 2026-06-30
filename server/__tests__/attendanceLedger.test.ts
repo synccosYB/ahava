@@ -22,7 +22,7 @@ const { db } = await import("../db.js");
 const { users, punchLogs, employeeSchedules, attendanceLedger } = await import("@shared/schema");
 const { eq, and } = await import("drizzle-orm");
 const { resolvePayCalcPolicy, splitDailyHours, round2 } = await import("../payrollEngine.js");
-const { getLedgerForEmployee, summarizeLedger, recomputeLedger } = await import("../attendanceLedger.js");
+const { getLedgerForEmployee, summarizeLedger, recomputeLedger, getPersistedHoursRollup } = await import("../attendanceLedger.js");
 const { buildEmployeeTimesheet } = await import("../timesheetService.js");
 
 let passed = 0;
@@ -210,6 +210,29 @@ async function main() {
       .from(attendanceLedger)
       .where(eq(attendanceLedger.employeeId, user.id));
     check("persisted rows match computed", persisted.length === ledger.length);
+
+    // (6b) The READ-ONLY rollup (the cheap "sort by hours" path) reads the
+    // PERSISTED rows and agrees with the recompute-through ledger totals. weekHours
+    // == sum of all days; todayHours == that single day's total (9 for 2025-01-09).
+    const rollup = await getPersistedHoursRollup([user.id], startDate, endDate, "2025-01-09");
+    const r = rollup.get(user.id);
+    check("rollup row exists", !!r);
+    check(
+      "rollup weekHours == ledger total",
+      round2(r!.weekHours) === round2(totals.totalHours),
+      `${r!.weekHours} vs ${totals.totalHours}`,
+    );
+    check(
+      "rollup todayHours == that day's ledger total",
+      round2(r!.todayHours) === round2(ledgerByDate.get("2025-01-09")!.totalHours),
+      `${r!.todayHours} vs ${ledgerByDate.get("2025-01-09")!.totalHours}`,
+    );
+    // A day with no persisted rows contributes 0 today-hours.
+    const rollupEmptyToday = await getPersistedHoursRollup([user.id], startDate, endDate, "2025-01-10");
+    check("rollup todayHours 0 for empty day", rollupEmptyToday.get(user.id)?.todayHours === 0);
+    // An unknown employee simply has no rollup entry (treated as 0 by callers).
+    const rollupUnknown = await getPersistedHoursRollup(["00000000-0000-0000-0000-000000000000"], startDate, endDate, "2025-01-09");
+    check("rollup empty for unknown employee", rollupUnknown.size === 0);
 
     // (7) Recompute hook on a punch EDIT updates the PERSISTED ledger row WITHOUT
     // a fresh read — this is exactly what the punch PATCH route does after a DB
