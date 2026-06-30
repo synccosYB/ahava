@@ -54,6 +54,11 @@ type TeamStatusResponse = {
   members: TeamMemberStatus[];
   departments: Option[];
   locations: Option[];
+  total: number;
+  totalAll: number;
+  absentCount: number;
+  page: number;
+  pageSize: number;
 };
 
 const ALL = "all";
@@ -62,22 +67,11 @@ const PAGE_SIZE = 25;
 type SortKey = "name" | "status" | "today" | "week";
 type SortDir = "asc" | "desc";
 
-// A member's effective day-status used for the status filter + "yet to clock in".
-function memberStatus(m: TeamMemberStatus): "clocked_in" | "pto" | "clocked_out" {
-  if (m.isClockedIn) return "clocked_in";
-  if (m.hasPtoToday) return "pto";
-  return "clocked_out";
-}
-
 export default function ManagerDashboardPage() {
   const [, setLocation] = useLocation();
 
   const { data: stats, isLoading: statsLoading } = useQuery<TeamStats>({
     queryKey: ["/api/manager/team-stats"],
-  });
-
-  const { data: teamStatus, isLoading: teamLoading } = useQuery<TeamStatusResponse>({
-    queryKey: ["/api/manager/team-status"],
   });
 
   // Live-update the team list + KPI cards as employees punch in/out via /ws.
@@ -116,56 +110,49 @@ export default function ManagerDashboardPage() {
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [page, setPage] = useState(0);
 
-  const members = teamStatus?.members ?? [];
+  // Server-driven filtering/sorting/pagination so the page stays fast for very
+  // large teams. The query key carries every parameter so changing a filter,
+  // sort or page issues a fresh request for just that slice.
+  const teamStatusParams = useMemo(() => ({
+    search: debouncedSearch.trim(),
+    department: departmentFilter,
+    location: locationFilter,
+    status: statusFilter,
+    sort: sortKey,
+    dir: sortDir,
+    page,
+    pageSize: PAGE_SIZE,
+  }), [debouncedSearch, departmentFilter, locationFilter, statusFilter, sortKey, sortDir, page]);
+
+  const { data: teamStatus, isLoading: teamLoading } = useQuery<TeamStatusResponse>({
+    queryKey: ["/api/manager/team-status", teamStatusParams],
+    queryFn: async () => {
+      const qs = new URLSearchParams({
+        search: teamStatusParams.search,
+        department: teamStatusParams.department,
+        location: teamStatusParams.location,
+        status: teamStatusParams.status,
+        sort: teamStatusParams.sort,
+        dir: teamStatusParams.dir,
+        page: String(teamStatusParams.page),
+        pageSize: String(teamStatusParams.pageSize),
+      });
+      const res = await fetch(`/api/manager/team-status?${qs.toString()}`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      return res.json();
+    },
+    placeholderData: (prev) => prev,
+  });
+
+  const pageRows = teamStatus?.members ?? [];
   const departments = teamStatus?.departments ?? [];
   const locations = teamStatus?.locations ?? [];
+  const total = teamStatus?.total ?? 0;
+  const totalAll = teamStatus?.totalAll ?? 0;
+  const absentCount = teamStatus?.absentCount ?? 0;
 
-  const filtered = useMemo(() => {
-    const q = debouncedSearch.trim().toLowerCase();
-    let list = members.filter((m) => {
-      if (q) {
-        const name = `${m.firstName ?? ""} ${m.lastName ?? ""}`.toLowerCase();
-        if (!name.includes(q)) return false;
-      }
-      if (departmentFilter !== ALL && !m.departmentIds.includes(departmentFilter)) return false;
-      if (locationFilter !== ALL && !m.locationIds.includes(locationFilter)) return false;
-      if (statusFilter === "absent") {
-        if (memberStatus(m) !== "clocked_out") return false;
-      } else if (statusFilter !== ALL) {
-        if (memberStatus(m) !== statusFilter) return false;
-      }
-      return true;
-    });
-
-    const dir = sortDir === "asc" ? 1 : -1;
-    list = [...list].sort((a, b) => {
-      switch (sortKey) {
-        case "name": {
-          const an = `${a.firstName ?? ""} ${a.lastName ?? ""}`.trim().toLowerCase();
-          const bn = `${b.firstName ?? ""} ${b.lastName ?? ""}`.trim().toLowerCase();
-          return an.localeCompare(bn) * dir;
-        }
-        case "status":
-          return a.status.localeCompare(b.status) * dir;
-        case "today":
-          return (a.todayHours - b.todayHours) * dir;
-        case "week":
-          return (a.weekHours - b.weekHours) * dir;
-        default:
-          return 0;
-      }
-    });
-    return list;
-  }, [members, debouncedSearch, departmentFilter, locationFilter, statusFilter, sortKey, sortDir]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
-  const pageRows = filtered.slice(currentPage * PAGE_SIZE, currentPage * PAGE_SIZE + PAGE_SIZE);
-
-  const absentCount = useMemo(
-    () => members.filter((m) => memberStatus(m) === "clocked_out").length,
-    [members],
-  );
 
   // Reset to first page whenever the result set changes.
   const resetPage = () => setPage(0);
@@ -318,7 +305,7 @@ export default function ManagerDashboardPage() {
             </div>
           </div>
 
-          {!teamLoading && members.length > 0 && (
+          {!teamLoading && totalAll > 0 && (
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <Button
                 type="button"
@@ -330,7 +317,7 @@ export default function ManagerDashboardPage() {
                 Yet to clock in today: {absentCount}
               </Button>
               <span className="text-muted-foreground" data-testid="text-team-result-count">
-                Showing {filtered.length} of {members.length}
+                Showing {total} of {totalAll}
               </span>
             </div>
           )}
@@ -341,14 +328,14 @@ export default function ManagerDashboardPage() {
               <Skeleton className="h-10 w-full" />
               <Skeleton className="h-10 w-full" />
             </div>
-          ) : members.length === 0 ? (
+          ) : totalAll === 0 ? (
             <EmptyState
               icon={Users}
               title="No team members found"
               description="There are no employees in your team scope yet."
               testId="text-no-team"
             />
-          ) : filtered.length === 0 ? (
+          ) : total === 0 ? (
             <EmptyState
               icon={Search}
               title="No matches"

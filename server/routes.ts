@@ -6078,6 +6078,24 @@ export async function registerRoutes(
     const user = (req as any).authUser as User;
     const today = new Date().toISOString().split("T")[0];
 
+    // --- Query params (search/filter/sort/page) -----------------------------
+    // Server-side filtering + sorting + pagination keeps Team Overview fast for
+    // very large teams: cheap fields (name, department, location, status) come
+    // from data we already load in bulk, and the expensive per-employee
+    // attendance-ledger read is only done for the rows actually returned (or,
+    // when sorting by hours, only the filtered set) — never the whole team.
+    const ALL = "all";
+    const q = String(req.query.search ?? "").trim().toLowerCase();
+    const departmentFilter = String(req.query.department ?? ALL);
+    const locationFilter = String(req.query.location ?? ALL);
+    const statusFilter = String(req.query.status ?? ALL);
+    const sortKey = (["name", "status", "today", "week"].includes(String(req.query.sort))
+      ? String(req.query.sort)
+      : "name") as "name" | "status" | "today" | "week";
+    const sortDir = String(req.query.dir) === "desc" ? "desc" : "asc";
+    const page = Math.max(0, parseInt(String(req.query.page ?? "0"), 10) || 0);
+    const pageSize = Math.min(200, Math.max(1, parseInt(String(req.query.pageSize ?? "25"), 10) || 25));
+
     let teamMembers: User[];
     if (user.role === "admin") {
       teamMembers = (await storage.getAllUsers()).filter(u => u.id !== user.id);
@@ -6104,26 +6122,35 @@ export async function registerRoutes(
     const deptNameById = new Map(allDepartments.map(d => [d.id, d.name]));
     const locNameById = new Map(allLocations.map(l => [l.id, l.name]));
 
-    // Today + week hours come from the canonical attendance ledger (the unified
-    // pay engine's break-deducted, rounded per-day split) — NOT raw
-    // clockOut - clockIn math, which silently disagreed with the timesheet,
-    // reports and payroll. One ledger read covers the week; today is the row for
-    // the current date.
-    const now = new Date();
-    const ledgerByMember = await getLedgerForEmployees(teamMembers, weekStartStr, today, now);
-
+    const userById = new Map(teamMembers.map(m => [m.id, m]));
     const usedDeptIds = new Set<string>();
     const usedLocIds = new Set<string>();
 
-    const members = teamMembers.map(member => {
+    // Lightweight enrichment WITHOUT the ledger. Status (clocked in / PTO /
+    // clocked out) is derived from today's attendance + approved time-off, both
+    // already loaded in bulk above, so we can filter & sort by status, name,
+    // department and location before touching the ledger.
+    type EnrichedMember = {
+      id: string;
+      firstName: string | null;
+      lastName: string | null;
+      departmentIds: string[];
+      departmentName: string;
+      locationIds: string[];
+      locationName: string;
+      status: string;
+      isClockedIn: boolean;
+      hasPtoToday: boolean;
+      effectiveStatus: "clocked_in" | "pto" | "clocked_out";
+      todayHours: number;
+      weekHours: number;
+    };
+
+    const enriched: EnrichedMember[] = teamMembers.map(member => {
       const todayRecord = todayAttendance.find(a => a.employeeId === member.id && a.clockIn && !a.clockOut);
       const hasPtoToday = allTimeOff.some(r =>
         r.userId === member.id && (r.status === "approved" || r.status === "partially_approved") && r.startDate <= today && (r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate >= today : r.endDate >= today)
       );
-
-      const memberLedger = ledgerByMember.get(member.id) || [];
-      const todayHours = memberLedger.find(d => d.workDate === today)?.totalHours ?? 0;
-      const weekHours = summarizeLedger(memberLedger).totalHours;
 
       const isClockedIn = !!todayRecord;
       let status = "Clocked Out";
@@ -6131,6 +6158,9 @@ export async function registerRoutes(
         const clockInTime = new Date(todayRecord!.clockIn!);
         status = `Clocked In (${clockInTime.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })})`;
       }
+      const effectiveStatus: EnrichedMember["effectiveStatus"] = isClockedIn
+        ? "clocked_in"
+        : hasPtoToday ? "pto" : "clocked_out";
 
       const deptIds = userDepartmentIds(member);
       const locIds = userLocationIds(member);
@@ -6151,11 +6181,14 @@ export async function registerRoutes(
         status,
         isClockedIn,
         hasPtoToday,
-        todayHours: Math.round(todayHours * 10) / 10,
-        weekHours: Math.round(weekHours * 10) / 10,
+        effectiveStatus,
+        todayHours: 0,
+        weekHours: 0,
       };
     });
 
+    // Filter dropdown options reflect the WHOLE team scope (not the filtered
+    // result) so the dropdowns stay stable as filters are applied.
     const departmentOptions = Array.from(usedDeptIds)
       .map(id => ({ id, name: deptNameById.get(id) || "Unknown" }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -6163,7 +6196,91 @@ export async function registerRoutes(
       .map(id => ({ id, name: locNameById.get(id) || "Unknown" }))
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    res.json({ members, departments: departmentOptions, locations: locationOptions });
+    // Counts across the full team scope (independent of the active filters).
+    const absentCount = enriched.filter(m => m.effectiveStatus === "clocked_out").length;
+
+    const filtered = enriched.filter(m => {
+      if (q) {
+        const name = `${m.firstName ?? ""} ${m.lastName ?? ""}`.toLowerCase();
+        if (!name.includes(q)) return false;
+      }
+      if (departmentFilter !== ALL && !m.departmentIds.includes(departmentFilter)) return false;
+      if (locationFilter !== ALL && !m.locationIds.includes(locationFilter)) return false;
+      if (statusFilter === "absent") {
+        if (m.effectiveStatus !== "clocked_out") return false;
+      } else if (statusFilter !== ALL) {
+        if (m.effectiveStatus !== statusFilter) return false;
+      }
+      return true;
+    });
+
+    const total = filtered.length;
+    const dir = sortDir === "asc" ? 1 : -1;
+    const byName = (a: EnrichedMember, b: EnrichedMember) => {
+      const an = `${a.firstName ?? ""} ${a.lastName ?? ""}`.trim().toLowerCase();
+      const bn = `${b.firstName ?? ""} ${b.lastName ?? ""}`.trim().toLowerCase();
+      return an.localeCompare(bn);
+    };
+
+    const now = new Date();
+    const sortsByHours = sortKey === "today" || sortKey === "week";
+
+    let pageMembers: EnrichedMember[];
+    if (sortsByHours) {
+      // Sorting by hours needs the ledger for the whole filtered set, but still
+      // avoids reading the ledger for members excluded by the filters.
+      const ledgerByMember = await getLedgerForEmployees(
+        filtered.map(m => userById.get(m.id)!).filter(Boolean),
+        weekStartStr,
+        today,
+        now,
+      );
+      for (const m of filtered) {
+        const memberLedger = ledgerByMember.get(m.id) || [];
+        m.todayHours = Math.round((memberLedger.find(d => d.workDate === today)?.totalHours ?? 0) * 10) / 10;
+        m.weekHours = Math.round(summarizeLedger(memberLedger).totalHours * 10) / 10;
+      }
+      filtered.sort((a, b) => {
+        const primary = sortKey === "today"
+          ? (a.todayHours - b.todayHours)
+          : (a.weekHours - b.weekHours);
+        return (primary || byName(a, b)) * dir;
+      });
+      pageMembers = filtered.slice(page * pageSize, page * pageSize + pageSize);
+    } else {
+      filtered.sort((a, b) => {
+        const primary = sortKey === "status"
+          ? a.status.localeCompare(b.status)
+          : byName(a, b);
+        return (primary || byName(a, b)) * dir;
+      });
+      pageMembers = filtered.slice(page * pageSize, page * pageSize + pageSize);
+      // Only read the ledger for the rows we are actually returning.
+      const ledgerByMember = await getLedgerForEmployees(
+        pageMembers.map(m => userById.get(m.id)!).filter(Boolean),
+        weekStartStr,
+        today,
+        now,
+      );
+      for (const m of pageMembers) {
+        const memberLedger = ledgerByMember.get(m.id) || [];
+        m.todayHours = Math.round((memberLedger.find(d => d.workDate === today)?.totalHours ?? 0) * 10) / 10;
+        m.weekHours = Math.round(summarizeLedger(memberLedger).totalHours * 10) / 10;
+      }
+    }
+
+    const members = pageMembers.map(({ effectiveStatus, ...rest }) => rest);
+
+    res.json({
+      members,
+      departments: departmentOptions,
+      locations: locationOptions,
+      total,
+      totalAll: enriched.length,
+      absentCount,
+      page,
+      pageSize,
+    });
   });
 
   const approvalSchema = z.object({
