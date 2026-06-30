@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes, formatDate, formatTime12 } from "@/lib/utils";
+import { formatHoursMinutes, formatDate, formatTime12, formatTime12InTz } from "@/lib/utils";
 import { EmptyState } from "@/components/empty-state";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -111,7 +111,12 @@ const EXCEPTION_STATUS_OPTIONS = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
-function formatCell(value: unknown, kind: ReportColumn["kind"], mode: "display" | "csv" = "display"): string {
+function formatCell(
+  value: unknown,
+  kind: ReportColumn["kind"],
+  mode: "display" | "csv" = "display",
+  timezone?: string | null,
+): string {
   if (value === null || value === undefined || value === "") {
     return mode === "display" ? "—" : "";
   }
@@ -125,7 +130,12 @@ function formatCell(value: unknown, kind: ReportColumn["kind"], mode: "display" 
   if (kind === "datetime") {
     const d = new Date(String(value));
     if (isNaN(d.getTime())) return String(value);
-    return mode === "csv" ? d.toISOString() : `${formatDate(d)} ${formatTime12(d)}`;
+    if (mode === "csv") return d.toISOString();
+    // Punch times (e.g. clock-in/out) carry the clinic/business timezone so the
+    // wall-clock time matches the clinic, not the viewer's browser. Other
+    // datetimes fall back to local formatting.
+    const time = timezone ? formatTime12InTz(String(value), timezone) : formatTime12(d);
+    return `${formatDate(d)} ${time}`;
   }
   return String(value);
 }
@@ -391,7 +401,7 @@ function StandardReport({
                               data-testid={`cell-report-${col.key}-${row.id}`}
                             >
                               <span className={isOvertime ? "text-amber-500 font-bold" : ""}>
-                                {formatCell(row[col.key], col.kind)}
+                                {formatCell(row[col.key], col.kind, "display", row.timezone as string | null | undefined)}
                               </span>
                             </TableCell>
                           );

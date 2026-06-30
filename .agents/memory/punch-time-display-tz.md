@@ -36,3 +36,12 @@ storage stubbed) covers `formatTime12InTz` wall-clock + fallback,
 `resolveEmployeeTimezone` location→company→default order. It's in the
 `./scripts/test-attendance-payroll.sh` suite. A server test importing the client
 `utils.ts` works fine under tsx (only deps are clsx/tailwind-merge).
+
+**Server-pre-formatted exception:** the manager dashboard team-status label
+(`GET /api/manager/team-status`) ships a fully-built `status` string ("Clocked In
+(h:mm AM)"). It is the one place the SERVER formats the punch time — done with
+`toLocaleTimeString({ timeZone })` using the per-employee resolved tz, not the
+container tz. The reports page is the generic-column variant: punch rows
+(missing-punches) carry a per-row `timezone` field and the client `formatCell`
+uses `formatTime12InTz` for `datetime` cells only when a row tz is present
+(non-punch datetimes like audit `reviewedAt` stay local).

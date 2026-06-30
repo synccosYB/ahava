@@ -6150,6 +6150,21 @@ export async function registerRoutes(
     const usedDeptIds = new Set<string>();
     const usedLocIds = new Set<string>();
 
+    // Resolve the clinic/business timezone for every CURRENTLY clocked-in member
+    // so the "Clocked In (h:mm AM)" label renders the punch in the clinic's local
+    // wall-clock time, not the server container's timezone. Only clocked-in
+    // members need a timezone (only they show a punch time), so we skip the rest
+    // to keep the lookups bounded. See .agents/memory/punch-time-display-tz.md.
+    const clockedInMemberIds = teamMembers
+      .filter(m => todayAttendance.some(a => a.employeeId === m.id && a.clockIn && !a.clockOut))
+      .map(m => m.id);
+    const tzByEmployee = new Map<string, string>();
+    await Promise.all(
+      clockedInMemberIds.map(async id => {
+        tzByEmployee.set(id, await resolveEmployeeTimezone(id));
+      }),
+    );
+
     // Lightweight enrichment WITHOUT the ledger. Status (clocked in / PTO /
     // clocked out) is derived from today's attendance + approved time-off, both
     // already loaded in bulk above, so we can filter & sort by status, name,
@@ -6180,7 +6195,8 @@ export async function registerRoutes(
       let status = "Clocked Out";
       if (isClockedIn) {
         const clockInTime = new Date(todayRecord!.clockIn!);
-        status = `Clocked In (${clockInTime.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })})`;
+        const tz = tzByEmployee.get(member.id) || "America/New_York";
+        status = `Clocked In (${clockInTime.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz })})`;
       }
       const effectiveStatus: EnrichedMember["effectiveStatus"] = isClockedIn
         ? "clocked_in"
@@ -7034,6 +7050,16 @@ export async function registerRoutes(
         { key: "clockOut", label: "Clock Out", kind: "datetime" },
         { key: "issue", label: "Issue", kind: "text" },
       ];
+      // Each incomplete punch row carries its employee's clinic/business
+      // timezone so the client renders the clock-in/out in clinic-local
+      // wall-clock time, not the viewer's browser timezone. Resolve once per
+      // distinct employee in the result set.
+      const tzByEmployee = new Map<string, string>();
+      await Promise.all(
+        Array.from(new Set(punches.map(p => p.employeeId))).map(async empId => {
+          tzByEmployee.set(empId, await resolveEmployeeTimezone(empId));
+        }),
+      );
       const rows = punches.map(p => {
         const u = userById.get(p.employeeId);
         return {
@@ -7044,6 +7070,7 @@ export async function registerRoutes(
           clockIn: p.clockIn ? new Date(p.clockIn).toISOString() : null,
           clockOut: p.clockOut ? new Date(p.clockOut).toISOString() : null,
           issue: p.status === "in-progress" ? "Still clocked in" : "Missing clock-out",
+          timezone: tzByEmployee.get(p.employeeId) || null,
         };
       });
       return res.json({ category, columns, rows });
