@@ -6236,16 +6236,25 @@ export async function registerRoutes(
       .map(id => ({ id, name: locNameById.get(id) || "Unknown" }))
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    // Counts across the full team scope (independent of the active filters).
-    const absentCount = enriched.filter(m => m.effectiveStatus === "clocked_out").length;
-
-    const filtered = enriched.filter(m => {
+    // Apply the department/location/search scope filters (everything EXCEPT
+    // the status filter). The absent count is derived from this scoped set so
+    // it reflects what the manager is actually looking at — e.g. filtering to
+    // one department shows that department's absentees, not the whole team.
+    // It stays independent of the status filter so the "Yet to clock in today"
+    // toggle button doesn't change its own number when pressed.
+    const scoped = enriched.filter(m => {
       if (q) {
         const name = `${m.firstName ?? ""} ${m.lastName ?? ""}`.toLowerCase();
         if (!name.includes(q)) return false;
       }
       if (departmentFilter !== ALL && !m.departmentIds.includes(departmentFilter)) return false;
       if (locationFilter !== ALL && !m.locationIds.includes(locationFilter)) return false;
+      return true;
+    });
+
+    const absentCount = scoped.filter(m => m.effectiveStatus === "clocked_out").length;
+
+    const filtered = scoped.filter(m => {
       if (statusFilter === "absent") {
         if (m.effectiveStatus !== "clocked_out") return false;
       } else if (statusFilter !== ALL) {
