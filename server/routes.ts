@@ -56,6 +56,7 @@ import { applyScheduleTemplate, validateTemplateDays } from "./services/schedule
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, type GeofenceMapData } from "./services/geofence";
 import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
+import { localTimeParts, formatScheduleWarning } from "./scheduleWarning";
 import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
 import bcrypt from "bcryptjs";
@@ -553,42 +554,15 @@ function resolveMembershipDisplay(
 
 async function getScheduleWarning(employeeId: string, punchType: "clock_in" | "clock_out"): Promise<string | null> {
   const now = new Date();
-  const dayOfWeek = now.getDay();
+  // Task #507: measure lateness/earliness against the employee's business/location
+  // wall-clock time (not the server's UTC local time), and pick the day-of-week
+  // schedule in that same timezone so a near-midnight punch doesn't pull the wrong day.
+  const timezone = await resolveEmployeeTimezone(employeeId);
+  const { dayOfWeek, minutes: currentMinutes } = localTimeParts(now, timezone);
   const schedule = await storage.getEmployeeScheduleByDay(employeeId, dayOfWeek);
   if (!schedule) return null;
 
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  const [startH, startM] = schedule.startTime.split(":").map(Number);
-  const [endH, endM] = schedule.endTime.split(":").map(Number);
-  const scheduleStart = startH * 60 + startM;
-  const scheduleEnd = endH * 60 + endM;
-
-  if (punchType === "clock_in") {
-    const diff = currentMinutes - scheduleStart;
-    if (diff < 0) {
-      const mins = Math.abs(diff);
-      const h = Math.floor(mins / 60);
-      const m = mins % 60;
-      return h > 0 ? `You are ${h} hour${h > 1 ? "s" : ""}${m > 0 ? ` and ${m} minute${m !== 1 ? "s" : ""}` : ""} early` : `You are ${m} minute${m !== 1 ? "s" : ""} early`;
-    } else if (diff > 0) {
-      const h = Math.floor(diff / 60);
-      const m = diff % 60;
-      return h > 0 ? `You are ${h} hour${h > 1 ? "s" : ""}${m > 0 ? ` and ${m} minute${m !== 1 ? "s" : ""}` : ""} late` : `You are ${m} minute${m !== 1 ? "s" : ""} late`;
-    }
-  } else {
-    const diff = currentMinutes - scheduleEnd;
-    if (diff < 0) {
-      const mins = Math.abs(diff);
-      const h = Math.floor(mins / 60);
-      const m = mins % 60;
-      return h > 0 ? `You are leaving ${h} hour${h > 1 ? "s" : ""}${m > 0 ? ` and ${m} minute${m !== 1 ? "s" : ""}` : ""} early` : `You are leaving ${m} minute${m !== 1 ? "s" : ""} early`;
-    } else if (diff > 0) {
-      const h = Math.floor(diff / 60);
-      const m = diff % 60;
-      return h > 0 ? `You stayed ${h} hour${h > 1 ? "s" : ""}${m > 0 ? ` and ${m} minute${m !== 1 ? "s" : ""}` : ""} past your shift` : `You stayed ${m} minute${m !== 1 ? "s" : ""} past your shift`;
-    }
-  }
-  return null;
+  return formatScheduleWarning(punchType, currentMinutes, schedule);
 }
 
 const pinLookupSchema = z.object({

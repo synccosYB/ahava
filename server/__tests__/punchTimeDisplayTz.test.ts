@@ -24,6 +24,7 @@ import {
   getOvernightShiftInfo,
 } from "../../client/src/lib/utils";
 import { resolveEmployeeTimezone } from "../services/punchOverlap";
+import { localTimeParts, formatScheduleWarning } from "../scheduleWarning";
 import { storage } from "../storage";
 
 // --- formatTime12InTz ------------------------------------------------------
@@ -258,5 +259,103 @@ test("reconciliation page has no raw-local punch datetime formatter", () => {
   assert.ok(
     !/function fmtDateTime\b/.test(src),
     "the dead raw-local fmtDateTime formatter must stay removed from reconciliation",
+  );
+});
+
+// --- Schedule late/early warning timezone (Task #507) ----------------------
+// The clock-in/out "You are X hours and Y minutes late/early" warning must be
+// measured against the employee's business/location wall-clock time, NOT the
+// server's local time (UTC here). Schedule start/end are stored as local
+// wall-clock strings, so once "now" is rendered in the same tz the minute math
+// is unchanged. These pin the two load-bearing helpers so a future change can't
+// silently revert to server-local time (which inflated "late" by the tz offset).
+
+test("localTimeParts: renders wall-clock hour/minute/day in a non-UTC tz", () => {
+  // 15:09 UTC on Wed Jan 15 2025.
+  const at = new Date(Date.UTC(2025, 0, 15, 15, 9, 0));
+  // New York (UTC-5 in Jan): 10:09 AM, still Wednesday.
+  const ny = localTimeParts(at, "America/New_York");
+  assert.equal(ny.minutes, 10 * 60 + 9);
+  assert.equal(ny.dayOfWeek, 3);
+  // UTC: 15:09, Wednesday.
+  const utc = localTimeParts(at, "UTC");
+  assert.equal(utc.minutes, 15 * 60 + 9);
+  assert.equal(utc.dayOfWeek, 3);
+});
+
+test("localTimeParts: near-midnight punch selects the correct local day", () => {
+  // 02:30 UTC on Thu Jan 16 2025.
+  const at = new Date(Date.UTC(2025, 0, 16, 2, 30, 0));
+  // New York (UTC-5): Wed Jan 15 21:30 → day should still be Wednesday (3).
+  const ny = localTimeParts(at, "America/New_York");
+  assert.equal(ny.dayOfWeek, 3);
+  assert.equal(ny.minutes, 21 * 60 + 30);
+  // Tokyo (UTC+9): Thu Jan 16 11:30 → Thursday (4).
+  const tokyo = localTimeParts(at, "Asia/Tokyo");
+  assert.equal(tokyo.dayOfWeek, 4);
+  assert.equal(tokyo.minutes, 11 * 60 + 30);
+});
+
+test("localTimeParts: falls back to server-local components on invalid tz", () => {
+  const at = new Date(Date.UTC(2025, 0, 15, 15, 9, 0));
+  const bogus = localTimeParts(at, "Not/AReal_Zone");
+  assert.equal(bogus.dayOfWeek, at.getDay());
+  assert.equal(bogus.minutes, at.getHours() * 60 + at.getMinutes());
+});
+
+test("schedule warning: lateness is the employee's LOCAL gap, not the UTC gap", () => {
+  // The bug: clocking in at 11:09 AM Eastern against a 09:00 shift is 2h9m late,
+  // but server-local (UTC) time read 15:09 → 6h9m late. Simulate by computing
+  // the local minutes from a fixed UTC instant, then formatting.
+  const at = new Date(Date.UTC(2025, 6, 15, 15, 9, 0)); // 15:09 UTC (summer → NY UTC-4 → 11:09 AM)
+  const { minutes } = localTimeParts(at, "America/New_York");
+  assert.equal(minutes, 11 * 60 + 9);
+  const warning = formatScheduleWarning("clock_in", minutes, {
+    startTime: "09:00",
+    endTime: "17:00",
+  });
+  assert.equal(warning, "You are 2 hours and 9 minutes late");
+  // Guard against the regression: server-local (UTC) minutes would say 6h9m.
+  const utcMinutes = localTimeParts(at, "UTC").minutes;
+  const wrong = formatScheduleWarning("clock_in", utcMinutes, {
+    startTime: "09:00",
+    endTime: "17:00",
+  });
+  assert.equal(wrong, "You are 6 hours and 9 minutes late");
+  assert.notEqual(warning, wrong);
+});
+
+test("schedule warning: clock-out 'leaving early' uses local time basis", () => {
+  const at = new Date(Date.UTC(2025, 6, 15, 20, 30, 0)); // 20:30 UTC → 4:30 PM NY (UTC-4)
+  const { minutes } = localTimeParts(at, "America/New_York");
+  const warning = formatScheduleWarning("clock_out", minutes, {
+    startTime: "09:00",
+    endTime: "17:00",
+  });
+  assert.equal(warning, "You are leaving 30 minutes early");
+});
+
+test("schedule warning: exactly on time returns null", () => {
+  const on = formatScheduleWarning("clock_in", 9 * 60, {
+    startTime: "09:00",
+    endTime: "17:00",
+  });
+  assert.equal(on, null);
+});
+
+test("schedule warning source: getScheduleWarning derives now in the employee tz", () => {
+  const src = readFileSync(resolve(__here, "../routes.ts"), "utf8");
+  // Must resolve the employee timezone and use localTimeParts, not raw getHours/getDay.
+  assert.match(
+    src,
+    /localTimeParts\(now,\s*timezone\)/,
+    "getScheduleWarning must compute now via localTimeParts(now, timezone)",
+  );
+  const fnStart = src.indexOf("async function getScheduleWarning");
+  const fnEnd = src.indexOf("\n}", fnStart);
+  const fnBody = src.slice(fnStart, fnEnd);
+  assert.ok(
+    !/now\.getHours\(\)|now\.getMinutes\(\)|now\.getDay\(\)/.test(fnBody),
+    "getScheduleWarning must not read server-local now.getHours/getMinutes/getDay",
   );
 });
