@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/table";
 import { Plus, Edit, Trash2, Monitor, Loader2, KeyRound, Unlink, Activity } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { formatDate, formatTime12InTz } from "@/lib/utils";
 
 type DerivedStatus = "online" | "idle" | "offline" | "unpaired" | "inactive";
 
@@ -67,6 +68,7 @@ type RecentPunch = {
   type: "clock_in" | "clock_out";
   timestamp: string;
   workDate: string;
+  timezone: string | null;
 };
 
 type RecentPunchesResponse = {
@@ -528,8 +530,8 @@ export default function KioskManagementPage() {
                           {p.type === "clock_in" ? "Clock in" : "Clock out"}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {new Date(p.timestamp).toLocaleString()}
+                      <TableCell className="text-sm text-muted-foreground" data-testid={`text-activity-time-${p.id}`}>
+                        {formatDate(p.workDate)} · {formatTime12InTz(p.timestamp, p.timezone)}
                       </TableCell>
                     </TableRow>
                   ))}

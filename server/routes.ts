@@ -9667,6 +9667,17 @@ export async function registerRoutes(
         storage.getRecentPunchesByKiosk(device.id, limit),
         storage.getKioskPunchTotalsToday(device.id),
       ]);
+      // Resolve each distinct employee's business/location timezone once so the
+      // admin sees kiosk punch times in the clinic's wall-clock time, not the
+      // viewer's browser timezone.
+      const tzByEmployee = new Map<string, string>();
+      await Promise.all(
+        Array.from(new Set(punches.map((p) => p.employeeId))).map(
+          async (empId) => {
+            tzByEmployee.set(empId, await resolveEmployeeTimezone(empId));
+          },
+        ),
+      );
       res.json({
         deviceId: device.id,
         punches: punches.map((p) => ({
@@ -9678,6 +9689,7 @@ export async function registerRoutes(
           type: p.clockOut ? "clock_out" : "clock_in",
           timestamp: p.clockOut || p.clockIn,
           workDate: p.workDate,
+          timezone: tzByEmployee.get(p.employeeId) ?? null,
         })),
         totals,
       });

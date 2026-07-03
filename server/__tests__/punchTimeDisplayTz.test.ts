@@ -210,3 +210,53 @@ test("resolveEmployeeTimezone: never throws — default on lookup failure", asyn
     assert.equal(await resolveEmployeeTimezone("u1"), DEFAULT_TIMEZONE);
   });
 });
+
+// --- Kiosk activity feed row formatting -----------------------------------
+// The Kiosk Management "Recent activity" feed renders each punch's time using
+// formatTime12InTz with the server-stamped per-employee timezone, so a remote
+// admin sees the clinic's wall-clock time, not their own browser time.
+test("kiosk activity row: renders the punch instant in the stamped clinic tz", () => {
+  const punch = {
+    timestamp: "2025-07-15T18:30:00.000Z", // summer → NY is UTC-4
+    workDate: "2025-07-15",
+    timezone: "America/New_York",
+  };
+  assert.equal(formatTime12InTz(punch.timestamp, punch.timezone), "2:30 PM");
+});
+
+test("kiosk activity row: null timezone falls back to local (never blank/crash)", () => {
+  const at = new Date(Date.UTC(2025, 0, 15, 18, 30, 0));
+  assert.equal(formatTime12InTz(at.toISOString(), null), formatTime12(at));
+});
+
+// --- Static guards: punch-time surfaces must not raw-render local time ------
+// These read the actual source so a future edit that reintroduces a raw
+// browser-local render of a punch time fails loudly here.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __here = dirname(fileURLToPath(import.meta.url));
+const clientPage = (rel: string) =>
+  readFileSync(resolve(__here, "../../client/src/pages", rel), "utf8");
+
+test("kiosk-management page formats activity times via formatTime12InTz", () => {
+  const src = clientPage("kiosk-management.tsx");
+  assert.match(
+    src,
+    /formatTime12InTz\(\s*p\.timestamp\s*,\s*p\.timezone\s*\)/,
+    "kiosk activity time cell must use formatTime12InTz(p.timestamp, p.timezone)",
+  );
+  assert.ok(
+    !/new Date\(p\.timestamp\)\.toLocaleString\(\)/.test(src),
+    "kiosk activity punch time must not use raw new Date(p.timestamp).toLocaleString()",
+  );
+});
+
+test("reconciliation page has no raw-local punch datetime formatter", () => {
+  const src = clientPage("reconciliation.tsx");
+  assert.ok(
+    !/function fmtDateTime\b/.test(src),
+    "the dead raw-local fmtDateTime formatter must stay removed from reconciliation",
+  );
+});

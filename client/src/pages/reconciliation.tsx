@@ -53,11 +53,6 @@ function deltaClass(n: number): string {
   return "text-muted-foreground";
 }
 
-function fmtDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString();
-}
-
 // ---------------------------------------------------------------------------
 // Types mirroring server/services/reconciliation.ts
 // ---------------------------------------------------------------------------
