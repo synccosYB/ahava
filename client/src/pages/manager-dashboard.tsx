@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { formatHoursMinutes } from "@/lib/utils";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -101,11 +101,20 @@ export default function ManagerDashboardPage() {
     return () => { try { ws?.close(); } catch {} };
   }, []);
 
+  // Prefill filters from URL params so the Dashboard's "Active Today" block can
+  // deep-link into a pre-filtered team view.
+  const searchString = useSearch();
+  const urlFilters = new URLSearchParams(searchString);
+  const VALID_STATUSES = ["clocked_in", "clocked_out", "pto", "absent"];
+  const statusParam = urlFilters.get("status");
+
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);
-  const [departmentFilter, setDepartmentFilter] = useState(ALL);
-  const [locationFilter, setLocationFilter] = useState(ALL);
-  const [statusFilter, setStatusFilter] = useState(ALL);
+  const [departmentFilter, setDepartmentFilter] = useState(urlFilters.get("department") || ALL);
+  const [locationFilter, setLocationFilter] = useState(urlFilters.get("location") || ALL);
+  const [statusFilter, setStatusFilter] = useState(
+    statusParam && VALID_STATUSES.includes(statusParam) ? statusParam : ALL,
+  );
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [page, setPage] = useState(0);

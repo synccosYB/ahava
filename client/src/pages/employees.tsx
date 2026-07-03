@@ -77,10 +77,14 @@ export default function EmployeesPage() {
     const id = new URLSearchParams(window.location.search).get("employeeId");
     if (id && id !== selectedEmployee) setSelectedEmployee(id);
   }, []);
+  const initialDepartment = (() => {
+    if (typeof window === "undefined") return "all";
+    return new URLSearchParams(window.location.search).get("department") || "all";
+  })();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
-  const [departmentFilter, setDepartmentFilter] = useState("all");
+  const [departmentFilter, setDepartmentFilter] = useState(initialDepartment);
   const [divisionFilter, setDivisionFilter] = useState("all");
   const [taxClassFilter, setTaxClassFilter] = useState("all");
   const [certStatusFilter, setCertStatusFilter] = useState("all");

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { handleMutationError } from "@/lib/mutationError";
@@ -476,11 +477,24 @@ type ProcessedPtoRequest = TimeOffRequest & {
 };
 
 export default function RequestsApprovalsPage() {
+  const searchString = useSearch();
+  const urlParams = new URLSearchParams(searchString);
+  const tabParam = urlParams.get("tab");
+  const initialTab = tabParam === "pto" || tabParam === "exceptions" || tabParam === "processed"
+    ? tabParam
+    : "all";
+  // Location/Department carried in from the Dashboard blocks pre-filter the
+  // pending PTO / exceptions tabs.
+  const initialFilters: Partial<FilterValues> = {
+    department: urlParams.get("department") || "",
+    location: urlParams.get("location") || "",
+  };
+
   return (
     <div className="max-w-5xl space-y-6" data-testid="requests-approvals-page">
       <PageHeader title="Requests & Approvals" subtitle="Manage pending PTO and exception requests" />
 
-      <Tabs defaultValue="all" data-testid="tabs-requests">
+      <Tabs defaultValue={initialTab} data-testid="tabs-requests">
         <TabsList>
           <TabsTrigger value="all" data-testid="tab-all-requests">All Pending</TabsTrigger>
           <TabsTrigger value="pto" data-testid="tab-pto-requests">PTO Requests</TabsTrigger>
@@ -489,8 +503,8 @@ export default function RequestsApprovalsPage() {
         </TabsList>
 
         <TabsContent value="all"><AllPendingTab /></TabsContent>
-        <TabsContent value="pto"><PtoRequestsTab /></TabsContent>
-        <TabsContent value="exceptions"><ExceptionsTab /></TabsContent>
+        <TabsContent value="pto"><PtoRequestsTab initialFilters={initialFilters} /></TabsContent>
+        <TabsContent value="exceptions"><ExceptionsTab initialFilters={initialFilters} /></TabsContent>
         <TabsContent value="processed"><ProcessedTab /></TabsContent>
       </Tabs>
     </div>
@@ -966,7 +980,7 @@ function AllPendingTab() {
   );
 }
 
-function PtoRequestsTab() {
+function PtoRequestsTab({ initialFilters }: { initialFilters?: Partial<FilterValues> }) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
@@ -989,7 +1003,7 @@ function PtoRequestsTab() {
     enabled: isAdmin,
   });
 
-  const [filters, setFilters] = useState<FilterValues>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<FilterValues>({ ...EMPTY_FILTERS, ...initialFilters });
   const updateFilters = (next: Partial<FilterValues>) => setFilters(prev => ({ ...prev, ...next }));
   const clearFilters = () => setFilters(EMPTY_FILTERS);
 
@@ -1068,7 +1082,7 @@ type ReopenPendingException = AttendanceException & {
   reviewerName: string;
 };
 
-function ExceptionsTab() {
+function ExceptionsTab({ initialFilters }: { initialFilters?: Partial<FilterValues> }) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
@@ -1099,7 +1113,7 @@ function ExceptionsTab() {
     enabled: isAdmin,
   });
 
-  const [filters, setFilters] = useState<FilterValues>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<FilterValues>({ ...EMPTY_FILTERS, ...initialFilters });
   const updateFilters = (next: Partial<FilterValues>) => setFilters(prev => ({ ...prev, ...next }));
   const clearFilters = () => setFilters(EMPTY_FILTERS);
 

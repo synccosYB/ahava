@@ -16,6 +16,7 @@ import {
 import { PageHeader } from "@/components/page-header";
 import { AttendancePunchTable } from "@/components/attendance-punch-table";
 import type { User, Department, Location, TimeOffRequest, AttendanceException } from "@shared/schema";
+import { userDepartmentIds, userLocationIds } from "@shared/schema";
 
 type PendingPtoRequest = TimeOffRequest & { employeeName: string };
 type EnrichedException = AttendanceException & { employeeName?: string };
@@ -53,7 +54,74 @@ export default function AdminDashboardPage() {
     queryKey: ["/api/locations"],
   });
 
-  const totalEmployees = allUsers?.length ?? 0;
+  // Company-wide "Active Today" (currently clocked in), respecting the top
+  // Location/Department selection. The admin variant of team-status returns
+  // company-wide data and `total` reflects the applied filters + status.
+  const activeTodayParams = new URLSearchParams({
+    status: "clocked_in",
+    department: departmentFilter,
+    location: locationFilter,
+    page: "0",
+    pageSize: "1",
+  });
+  const { data: activeTodayData, isLoading: activeLoading } = useQuery<{ total: number }>({
+    queryKey: ["/api/manager/team-status", "active-today", departmentFilter, locationFilter],
+    queryFn: async () => {
+      const res = await fetch(`/api/manager/team-status?${activeTodayParams}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load active count");
+      return res.json();
+    },
+  });
+
+  // Employees matching the current Location/Department selection. Employees are
+  // M2M with departments/locations, so match on ANY membership.
+  const filteredUsers = (allUsers ?? []).filter((u) => {
+    if (departmentFilter !== "all" && !userDepartmentIds(u).includes(departmentFilter)) return false;
+    if (locationFilter !== "all" && !userLocationIds(u).includes(locationFilter)) return false;
+    return true;
+  });
+
+  // Filter PTO/exceptions counts by the requesting employee's memberships so the
+  // block counts track the selected Location/Department.
+  const membershipByUser = new Map(
+    (allUsers ?? []).map((u) => [u.id, { deptIds: userDepartmentIds(u), locIds: userLocationIds(u) }]),
+  );
+  const matchesFilter = (userId: string | null | undefined) => {
+    if (departmentFilter === "all" && locationFilter === "all") return true;
+    if (!userId) return false;
+    const m = membershipByUser.get(userId);
+    if (!m) return false;
+    if (departmentFilter !== "all" && !m.deptIds.includes(departmentFilter)) return false;
+    if (locationFilter !== "all" && !m.locIds.includes(locationFilter)) return false;
+    return true;
+  };
+
+  const totalEmployees = filteredUsers.length;
+  const ptoPendingCount = (pendingPto ?? []).filter((r) => matchesFilter(r.userId)).length;
+  const exceptionsPendingCount = (pendingExceptions ?? []).filter((e) => matchesFilter(e.employeeId)).length;
+  const departmentsCount = departmentFilter !== "all" ? 1 : departments?.length ?? 0;
+  const locationsCount = locationFilter !== "all" ? 1 : locations?.length ?? 0;
+  const activeTodayCount = activeTodayData?.total ?? 0;
+
+  // Department Overview reflects the selection: narrow to the chosen department,
+  // and when a location is chosen show only departments that have employees there.
+  const deptsForOverview = (departments ?? []).filter((d) => {
+    if (departmentFilter !== "all" && d.id !== departmentFilter) return false;
+    if (locationFilter !== "all") {
+      return filteredUsers.some((u) => userDepartmentIds(u).includes(d.id));
+    }
+    return true;
+  });
+
+  // Carry the current Location/Department selection into a destination that
+  // supports both filters (Requests & Approvals, Team Overview).
+  const withFilters = (base: string, extra?: Record<string, string>) => {
+    const p = new URLSearchParams(extra);
+    if (departmentFilter !== "all") p.set("department", departmentFilter);
+    if (locationFilter !== "all") p.set("location", locationFilter);
+    const qs = p.toString();
+    return qs ? `${base}?${qs}` : base;
+  };
 
   const kpiCards = [
     {
@@ -62,45 +130,51 @@ export default function AdminDashboardPage() {
       icon: Users,
       color: "text-blue-600",
       testId: "kpi-total-employees",
+      href: departmentFilter !== "all" ? `/employees?department=${departmentFilter}` : "/employees",
     },
     {
       label: "Departments",
-      value: departments?.length ?? 0,
+      value: departmentsCount,
       icon: UserCheck,
       color: "text-green-600",
       testId: "kpi-departments",
+      href: "/locations?tab=departments",
     },
     {
       label: "PTO Pending",
-      value: pendingPto?.length ?? 0,
+      value: ptoPendingCount,
       icon: CalendarOff,
       color: "text-amber-500",
       testId: "kpi-pto-pending",
+      href: withFilters("/requests-approvals", { tab: "pto" }),
     },
     {
       label: "Exceptions Pending",
-      value: pendingExceptions?.length ?? 0,
+      value: exceptionsPendingCount,
       icon: Clock,
       color: "text-orange-500",
       testId: "kpi-exceptions-pending",
+      href: withFilters("/requests-approvals", { tab: "exceptions" }),
     },
     {
       label: "Locations",
-      value: locations?.length ?? 0,
+      value: locationsCount,
       icon: AlertTriangle,
       color: "text-purple-500",
       testId: "kpi-locations",
+      href: "/locations?tab=locations",
     },
     {
       label: "Active Today",
-      value: "—",
+      value: activeTodayCount,
       icon: Timer,
       color: "text-teal-500",
       testId: "kpi-active-today",
+      href: withFilters("/team", { status: "clocked_in" }),
     },
   ];
 
-  const statsLoading = usersLoading || ptoLoading || exceptionsLoading;
+  const statsLoading = usersLoading || ptoLoading || exceptionsLoading || activeLoading;
 
   return (
     <div className="max-w-6xl space-y-6" data-testid="admin-dashboard-page">
@@ -140,15 +214,20 @@ export default function AdminDashboardPage() {
           Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-24" />)
         ) : (
           kpiCards.map((kpi) => (
-            <Card key={kpi.testId} data-testid={`card-${kpi.testId}`}>
-              <CardContent className="flex flex-col items-center justify-center p-4">
-                <kpi.icon className={`h-5 w-5 mb-1 ${kpi.color}`} />
-                <p className="text-xs text-muted-foreground text-center">{kpi.label}</p>
-                <p className={`text-2xl font-bold tabular-nums ${kpi.color}`} data-testid={`text-${kpi.testId}`}>
-                  {kpi.value}
-                </p>
-              </CardContent>
-            </Card>
+            <Link key={kpi.testId} href={kpi.href} data-testid={`link-${kpi.testId}`}>
+              <Card
+                data-testid={`card-${kpi.testId}`}
+                className="cursor-pointer hover-elevate active-elevate-2 transition-colors"
+              >
+                <CardContent className="flex flex-col items-center justify-center p-4">
+                  <kpi.icon className={`h-5 w-5 mb-1 ${kpi.color}`} />
+                  <p className="text-xs text-muted-foreground text-center">{kpi.label}</p>
+                  <p className={`text-2xl font-bold tabular-nums ${kpi.color}`} data-testid={`text-${kpi.testId}`}>
+                    {kpi.value}
+                  </p>
+                </CardContent>
+              </Card>
+            </Link>
           ))
         )}
       </div>
@@ -162,7 +241,7 @@ export default function AdminDashboardPage() {
             <CardContent>
               {deptsError ? (
                 <ErrorBanner message="Failed to load department data." />
-              ) : departments && departments.length > 0 ? (
+              ) : deptsForOverview.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -171,7 +250,7 @@ export default function AdminDashboardPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {departments.map((dept) => (
+                    {deptsForOverview.map((dept) => (
                       <TableRow key={dept.id} data-testid={`row-dept-${dept.id}`}>
                         <TableCell className="font-medium" data-testid={`text-dept-name-${dept.id}`}>{dept.name}</TableCell>
                         <TableCell data-testid={`text-dept-desc-${dept.id}`}>{dept.description || "—"}</TableCell>
@@ -181,7 +260,9 @@ export default function AdminDashboardPage() {
                 </Table>
               ) : (
                 <p className="text-muted-foreground text-center py-4" data-testid="text-no-departments">
-                  No departments configured.
+                  {departmentFilter !== "all" || locationFilter !== "all"
+                    ? "No departments match the current filters."
+                    : "No departments configured."}
                 </p>
               )}
             </CardContent>

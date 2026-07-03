@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link } from "wouter";
+import { Link, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -169,10 +169,13 @@ function resolveActiveCompanyId(
 }
 
 export default function LocationsDepartmentsPage() {
+  const searchString = useSearch();
+  const tabParam = new URLSearchParams(searchString).get("tab");
+  const initialTab = tabParam === "departments" ? "departments" : "locations";
   return (
     <div className="max-w-6xl space-y-6" data-testid="locations-departments-page">
       <PageHeader title="Locations & Departments" subtitle="Configure company locations and department structure" />
-      <Tabs defaultValue="locations" data-testid="tabs-loc-dept">
+      <Tabs defaultValue={initialTab} data-testid="tabs-loc-dept">
         <TabsList>
           <TabsTrigger value="locations" data-testid="tab-locations">
             <MapPin className="h-4 w-4 mr-1" /> Locations
