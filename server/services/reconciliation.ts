@@ -23,6 +23,7 @@ import { computePunchHoursWorked } from "../punchHours";
 import { getEffectivePolicy, DEFAULT_PAYROLL_RULES } from "../policyEngine";
 import { buildPayCalcPolicy, splitDailyHours, computeWeeklyHours, resolvePayCalcPolicy, DEFAULT_PAY_CALC_POLICY, type PayCalcPolicy } from "../payrollEngine";
 import { evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses } from "./policyEnforcement";
+import { resolveEmployeeTimezone } from "./punchOverlap";
 import { writeAuditLog } from "./audit";
 import { writeLedgerEntry } from "./ledger";
 import { BALANCE_TRACKED_TIME_OFF_TYPES } from "@shared/schema";
@@ -49,6 +50,7 @@ export interface AttendanceDiffItem {
   workDate: string;
   clockIn: string | null;
   clockOut: string | null;
+  timezone: string;
   breakMinutes: number;
   storedHours: number;
   computedHours: number;
@@ -87,6 +89,14 @@ export async function computeAttendanceReconciliation(
   const punches = await storage.getAttendanceByDateRange(startDate, endDate);
   const { userMap, policyFor } = await buildPolicyResolver();
 
+  const tzCache = new Map<string, string>();
+  const timezoneFor = async (employeeId: string): Promise<string> => {
+    if (tzCache.has(employeeId)) return tzCache.get(employeeId)!;
+    const tz = await resolveEmployeeTimezone(employeeId);
+    tzCache.set(employeeId, tz);
+    return tz;
+  };
+
   const items: AttendanceDiffItem[] = [];
   let scanned = 0;
 
@@ -116,6 +126,7 @@ export async function computeAttendanceReconciliation(
       workDate: p.workDate,
       clockIn: p.clockIn ? new Date(p.clockIn).toISOString() : null,
       clockOut: p.clockOut ? new Date(p.clockOut).toISOString() : null,
+      timezone: await timezoneFor(p.employeeId),
       breakMinutes: p.breakMinutes || 0,
       storedHours: round2(stored),
       computedHours: round2(computed),
@@ -175,6 +186,7 @@ export async function applyAttendanceReconciliation(
       workDate: p.workDate,
       clockIn: p.clockIn ? new Date(p.clockIn).toISOString() : null,
       clockOut: p.clockOut ? new Date(p.clockOut).toISOString() : null,
+      timezone: await resolveEmployeeTimezone(p.employeeId),
       breakMinutes: p.breakMinutes || 0,
       storedHours: round2(stored),
       computedHours: round2(computed),

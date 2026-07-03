@@ -35,7 +35,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { formatTime12InTz } from "@/lib/utils";
 import { Loader2, RefreshCw, ArrowRight, AlertTriangle, CheckCircle2 } from "lucide-react";
+
+function fmtPunchTime(value: string | null, timezone: string): string {
+  const formatted = formatTime12InTz(value, timezone);
+  return formatted || "—";
+}
 
 function fmtHours(n: number | null): string {
   if (n === null || n === undefined) return "—";
@@ -63,6 +69,7 @@ interface AttendanceDiffItem {
   workDate: string;
   clockIn: string | null;
   clockOut: string | null;
+  timezone: string;
   breakMinutes: number;
   storedHours: number;
   computedHours: number;
@@ -296,6 +303,8 @@ function AttendanceTab() {
                     </TableHead>
                     <TableHead>Employee</TableHead>
                     <TableHead>Date</TableHead>
+                    <TableHead>Clock in</TableHead>
+                    <TableHead>Clock out</TableHead>
                     <TableHead className="text-right">Stored</TableHead>
                     <TableHead className="text-right">Computed</TableHead>
                     <TableHead className="text-right">Δ</TableHead>
@@ -316,6 +325,18 @@ function AttendanceTab() {
                         {it.employeeName}
                       </TableCell>
                       <TableCell>{it.workDate}</TableCell>
+                      <TableCell
+                        className="tabular-nums"
+                        data-testid={`text-attendance-clockin-${it.punchLogId}`}
+                      >
+                        {fmtPunchTime(it.clockIn, it.timezone)}
+                      </TableCell>
+                      <TableCell
+                        className="tabular-nums"
+                        data-testid={`text-attendance-clockout-${it.punchLogId}`}
+                      >
+                        {fmtPunchTime(it.clockOut, it.timezone)}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {fmtHours(it.storedHours)}
                       </TableCell>
