@@ -320,6 +320,12 @@ export const punchLogs = pgTable("punch_logs", {
   roundedClockIn: timestamp("rounded_clock_in"),
   roundedClockOut: timestamp("rounded_clock_out"),
   breakMinutes: integer("break_minutes").default(0),
+  // In-progress break marker. When set, the employee is currently on a break;
+  // ending the break (or clocking out) folds the elapsed minutes into
+  // breakMinutes and clears this. "On break" is detected SOLELY from this
+  // timestamp — never from `status`, so open-shift detection stays keyed on
+  // clock-in/clock-out only (see idx_punch_logs_one_open_per_employee).
+  breakStartedAt: timestamp("break_started_at"),
   hoursWorked: real("hours_worked"),
   status: varchar("status", { length: 20 }).default("in-progress").notNull(),
   notes: text("notes"),

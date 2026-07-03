@@ -2,6 +2,7 @@ import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "../policyEngine";
 import { buildPayCalcPolicy, splitDailyHours, resolvePayCalcPolicy } from "../payrollEngine";
 import { recomputeLedger } from "../attendanceLedger";
+import { computeBreakElapsedMinutes } from "../punchHours";
 import type { User } from "@shared/schema";
 
 export interface DayOfWeekBonusRule {
@@ -428,10 +429,23 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
     const hoursOpen = (now.getTime() - actualClockInTime.getTime()) / (1000 * 60 * 60);
 
     if (hoursOpen >= autoClockOutAfterHours) {
+      // The shift is closed at the CAPPED moment (clock-in + cap), NOT the
+      // wall-clock time this job happened to run. So an in-progress break must
+      // be measured only up to that same effective close — otherwise a job that
+      // runs late would count break minutes past the clock-out and underpay the
+      // employee. Fold that bounded elapsed into the SINGLE break-minutes
+      // accumulator (same path as manual web/kiosk clock-out).
+      const effectiveClockOut = new Date(
+        actualClockInTime.getTime() + autoClockOutAfterHours * 60 * 60 * 1000,
+      );
+      const breakMinutes =
+        (punch.breakMinutes || 0) +
+        computeBreakElapsedMinutes(punch.breakStartedAt, effectiveClockOut);
+
       const { autoClockOutActual, autoClockOutRounded, hoursWorked } = computeAutoClockOutValues({
         actualClockIn: actualClockInTime,
         roundedClockIn: roundedClockInTime,
-        breakMinutes: punch.breakMinutes || 0,
+        breakMinutes,
         autoClockOutAfterHours,
         roundingRule,
         roundingIntervalMinutes: roundingInterval,
@@ -447,6 +461,9 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
         roundedClockOut: autoClockOutRounded,
         hoursWorked,
         status,
+        // Persist the folded break total and clear the in-progress marker.
+        breakMinutes,
+        breakStartedAt: null,
       });
 
       // Refresh the canonical attendance ledger for the closed employee-day.

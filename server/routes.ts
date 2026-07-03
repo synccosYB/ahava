@@ -3231,7 +3231,12 @@ export async function registerRoutes(
 
       const now = new Date();
       const roundedClockInTime = new Date(lastRecord.roundedClockIn ?? lastRecord.clockIn);
-      const breakMinutes = lastRecord.breakMinutes || 0;
+      // Fold an in-progress break (started on the web) into the accumulator so a
+      // kiosk clock-out never orphans it.
+      const activeBreakMinutes = lastRecord.breakStartedAt
+        ? Math.max(0, Math.round((now.getTime() - new Date(lastRecord.breakStartedAt).getTime()) / 60000))
+        : 0;
+      const breakMinutes = (lastRecord.breakMinutes || 0) + activeBreakMinutes;
 
       const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, attRules, payrollRules, user, attendancePolicy?.policyName);
 
@@ -3261,6 +3266,9 @@ export async function registerRoutes(
         roundedClockOut: enforcement.roundedTime,
         hoursWorked: enforcement.hoursWorked,
         status: enforcement.status,
+        // Persist the folded break total and clear any in-progress marker.
+        breakMinutes,
+        breakStartedAt: null,
         // Stamp the kiosk that closed the punch so admins can see which device
         // each side of a shift came from.
         kioskDeviceId: kioskDevice.id,
@@ -3392,6 +3400,12 @@ export async function registerRoutes(
       const response: any = {
         isClockedIn: !!current,
         currentRecord: current ? punchLogToApiResponse(current) : null,
+        // Break state so both the dashboard card and the floating widget can
+        // render the break UI and a live break timer. "On break" is derived
+        // purely from the break-start timestamp being set.
+        onBreak: !!current?.breakStartedAt,
+        breakStartedAt: current?.breakStartedAt ?? null,
+        breakMinutes: current?.breakMinutes ?? 0,
         todayHours,
         weekHours,
         // Lets the dashboard hide the self clock buttons when web/mobile aren't
@@ -3526,7 +3540,13 @@ export async function registerRoutes(
 
       const now = new Date();
       const roundedClockInTime = new Date(current.roundedClockIn ?? current.clockIn);
-      const breakMinutes = current.breakMinutes || 0;
+      // Auto-end an in-progress break so its minutes are never orphaned: fold the
+      // elapsed minutes into the single break_minutes accumulator BEFORE the pay
+      // engine runs, then clear the break marker when the punch is closed.
+      const activeBreakMinutes = current.breakStartedAt
+        ? Math.max(0, Math.round((now.getTime() - new Date(current.breakStartedAt).getTime()) / 60000))
+        : 0;
+      const breakMinutes = (current.breakMinutes || 0) + activeBreakMinutes;
 
       const attPolicy = getResolvedPolicy(req, "attendance");
       const enforcement = enforceClockOut(roundedClockInTime, now, breakMinutes, rules, payrollRules, user, attPolicy?.policyName);
@@ -3557,6 +3577,10 @@ export async function registerRoutes(
         roundedClockOut: enforcement.roundedTime,
         hoursWorked: enforcement.hoursWorked,
         status: enforcement.status,
+        // Persist the folded break total and clear the in-progress marker so
+        // clocking out mid-break never leaves an orphaned open break.
+        breakMinutes,
+        breakStartedAt: null,
       });
 
       // closeOpenPunch only updates a punch that is still open, so a second
@@ -3614,6 +3638,94 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error clocking out:", error);
       handleRouteError(res, error, "Failed to clock out");
+    }
+  });
+
+  // Start a break on the current open shift. Requires an open shift and is
+  // rejected if a break is already running. "On break" is tracked by a
+  // break-start timestamp only — the punch status/open-shift detection are
+  // untouched, so this never interferes with clock-in/out.
+  app.post("/api/attendance/break/start", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const result = await storage.startBreak(userId);
+      if (!result.ok) {
+        if (result.reason === "not_clocked_in") {
+          return res.status(400).json({ message: "You're not currently clocked in." });
+        }
+        return res.status(409).json({ message: "You're already on a break." });
+      }
+
+      await writeLedgerEntry({
+        category: "attendance",
+        eventType: "break_start",
+        employeeId: userId,
+        actorUserId: userId,
+        entityType: "punch_log",
+        entityId: result.punch.id,
+        workDate: result.punch.workDate,
+        beforeValue: null,
+        afterValue: { breakStartedAt: result.punch.breakStartedAt },
+        source: "web",
+        ...getLedgerContext(req),
+      });
+
+      try {
+        (globalThis as any).__broadcastAttendanceUpdate?.({
+          type: "attendance_update",
+          employeeId: userId,
+          status: "break_start",
+        });
+      } catch {}
+      res.json(punchLogToApiResponse(result.punch));
+    } catch (error) {
+      console.error("Error starting break:", error);
+      handleRouteError(res, error, "Failed to start break");
+    }
+  });
+
+  // End the current break, folding the elapsed minutes into the shift's break
+  // minutes (the single accumulator every pay/attendance surface reads).
+  app.post("/api/attendance/break/end", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.authUser.id;
+      const result = await storage.endBreak(userId);
+      if (!result.ok) {
+        if (result.reason === "not_clocked_in") {
+          return res.status(400).json({ message: "You're not currently clocked in." });
+        }
+        return res.status(400).json({ message: "You're not currently on a break." });
+      }
+
+      // Keep the canonical attendance ledger warm — break minutes reduce paid
+      // hours, and an open (in-progress) shift's live totals depend on them.
+      void recomputeLedger(userId, [result.punch.workDate]);
+
+      await writeLedgerEntry({
+        category: "attendance",
+        eventType: "break_end",
+        employeeId: userId,
+        actorUserId: userId,
+        entityType: "punch_log",
+        entityId: result.punch.id,
+        workDate: result.punch.workDate,
+        beforeValue: null,
+        afterValue: { breakMinutes: result.punch.breakMinutes, elapsedMinutes: result.elapsedMinutes },
+        source: "web",
+        ...getLedgerContext(req),
+      });
+
+      try {
+        (globalThis as any).__broadcastAttendanceUpdate?.({
+          type: "attendance_update",
+          employeeId: userId,
+          status: "break_end",
+        });
+      } catch {}
+      res.json({ ...punchLogToApiResponse(result.punch), breakElapsedMinutes: result.elapsedMinutes });
+    } catch (error) {
+      console.error("Error ending break:", error);
+      handleRouteError(res, error, "Failed to end break");
     }
   });
 

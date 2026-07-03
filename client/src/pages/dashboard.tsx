@@ -1,30 +1,16 @@
-import { useEffect, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { formatHoursMinutes, liveElapsedSeconds, addLiveElapsedHours, getOvernightShiftInfo, formatTime12InTz, formatDate } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+import { formatHoursMinutes, addLiveElapsedHours, getOvernightShiftInfo, formatTime12InTz, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
+import { useTimeClock } from "@/hooks/use-time-clock";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useToast } from "@/hooks/use-toast";
 import { PageHeader } from "@/components/page-header";
-import { Clock, Play, Square, TrendingUp } from "lucide-react";
-import { getPunchCoords } from "@/lib/geolocation";
+import { Clock, Coffee, Play, Square, TrendingUp } from "lucide-react";
 import type { AttendanceRecord } from "@shared/schema";
-
-interface DashboardStatus {
-  isClockedIn: boolean;
-  currentRecord: AttendanceRecord | null;
-  todayHours: number;
-  weekHours: number;
-  ptoBalance: { vacation: number; sick: number; personal: number };
-  allowedPunchSources?: string[];
-  geofenceEnabled?: boolean;
-  timezone?: string | null;
-}
 
 // The records endpoint stamps each row with the employee's business timezone so
 // punch times render in the medical center's wall-clock, not the device's tz.
@@ -32,37 +18,22 @@ type DashboardRecord = AttendanceRecord & { timezone?: string | null };
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const { toast } = useToast();
 
+  // Shared time-clock state/actions — identical logic to the floating widget.
   const {
-    data: status,
-    isLoading: statusLoading,
-    isError: statusError,
+    status,
+    query: { isLoading: statusLoading, isError: statusError, refetch: refetchStatus, isFetching: statusFetching },
     dataUpdatedAt,
-    refetch: refetchStatus,
-    isFetching: statusFetching,
-  } = useQuery<DashboardStatus>({
-    queryKey: ["/api/attendance/status"],
-    refetchInterval: 60000,
-    refetchOnWindowFocus: true,
-    retry: 3,
-    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
-  });
-
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!status?.isClockedIn) return;
-    setNowMs(Date.now());
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [status?.isClockedIn, status?.currentRecord?.clockIn]);
-
-  const clockInIso = status?.currentRecord?.clockIn ?? null;
-  const elapsedSeconds = status?.isClockedIn ? liveElapsedSeconds(clockInIso, nowMs) : 0;
-  const elapsedHrs = Math.floor(elapsedSeconds / 3600);
-  const elapsedMins = Math.floor((elapsedSeconds % 3600) / 60);
-  const elapsedSecs = elapsedSeconds % 60;
-  const elapsedLabel = `${String(elapsedHrs).padStart(2, "0")}:${String(elapsedMins).padStart(2, "0")}:${String(elapsedSecs).padStart(2, "0")}`;
+    nowMs,
+    onBreak,
+    elapsedLabel,
+    breakElapsedLabel,
+    canSelfPunch,
+    clockInMutation,
+    clockOutMutation,
+    startBreakMutation,
+    endBreakMutation,
+  } = useTimeClock();
 
   const liveTodayHours = status?.isClockedIn
     ? addLiveElapsedHours(status?.todayHours, dataUpdatedAt, nowMs)
@@ -84,58 +55,7 @@ export default function Dashboard() {
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
   });
 
-  const clockInMutation = useMutation({
-    mutationFn: async () => {
-      // When geofencing applies to this employee, capture device location so the
-      // server can verify the punch is inside an allowed radius. Never blocks:
-      // if location is denied/unavailable we send nothing and the server raises
-      // a geofence exception instead.
-      const coords = status?.geofenceEnabled
-        ? await getPunchCoords()
-        : { latitude: null, longitude: null };
-      // Omit coords entirely when unavailable so we never send a misleading
-      // value; the server treats absence as "no location" and raises a
-      // geofence exception when location is required.
-      const body =
-        coords.latitude != null && coords.longitude != null
-          ? { latitude: coords.latitude, longitude: coords.longitude }
-          : undefined;
-      const res = await apiRequest("POST", "/api/attendance/clock-in", body);
-      return res.json() as Promise<AttendanceRecord & { scheduleWarning?: string }>;
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/attendance/records"] });
-      toast({ title: "Clocked In", description: data?.scheduleWarning || "You have successfully clocked in." });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const clockOutMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/attendance/clock-out");
-      return res.json() as Promise<AttendanceRecord & { scheduleWarning?: string }>;
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/attendance/status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/attendance/records"] });
-      toast({ title: "Clocked Out", description: data?.scheduleWarning || "You have successfully clocked out." });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
   const recentActivity = (recentRecords || []).slice(0, 5);
-
-  // The web dashboard punches with source "web", so gate visibility on "web"
-  // specifically — matching server enforcement. (A "mobile"-only policy would
-  // still be rejected here, so we don't show the button for it.) When the status
-  // doesn't include a list yet, default to showing the button.
-  const allowedSources = status?.allowedPunchSources;
-  const canSelfPunch = !allowedSources || allowedSources.includes("web");
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -185,26 +105,57 @@ export default function Dashboard() {
                       <p className="text-xs font-medium tabular-nums text-green-700 dark:text-green-400" data-testid="text-live-elapsed">
                         {elapsedLabel}
                       </p>
+                      {onBreak && (
+                        <p className="text-xs font-medium tabular-nums text-amber-600 dark:text-amber-400 flex items-center gap-1" data-testid="text-break-elapsed">
+                          <Coffee className="h-3 w-3" />
+                          On break · {breakElapsedLabel}
+                        </p>
+                      )}
                     </>
                   )}
                 </div>
               </div>
-              <div>
+              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-end">
                 {!canSelfPunch ? (
                   <p className="text-sm text-muted-foreground max-w-[16rem] text-center sm:text-right" data-testid="text-self-punch-disabled">
                     Self clock-in isn't enabled for you. Please use a kiosk or ask your manager.
                   </p>
                 ) : status?.isClockedIn ? (
-                  <Button
-                    variant="destructive"
-                    onClick={() => clockOutMutation.mutate()}
-                    disabled={clockOutMutation.isPending}
-                    data-testid="button-clock-out"
-                    className="px-6"
-                  >
-                    <Square className="mr-2 h-4 w-4" />
-                    {clockOutMutation.isPending ? "Clocking Out..." : "Clock Out"}
-                  </Button>
+                  <>
+                    {onBreak ? (
+                      <Button
+                        variant="outline"
+                        onClick={() => endBreakMutation.mutate()}
+                        disabled={endBreakMutation.isPending}
+                        data-testid="button-end-break"
+                        className="px-6 border-amber-400 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                      >
+                        <Coffee className="mr-2 h-4 w-4" />
+                        {endBreakMutation.isPending ? "Ending..." : "End Break"}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        onClick={() => startBreakMutation.mutate()}
+                        disabled={startBreakMutation.isPending}
+                        data-testid="button-take-break"
+                        className="px-6"
+                      >
+                        <Coffee className="mr-2 h-4 w-4" />
+                        {startBreakMutation.isPending ? "Starting..." : "Take Break"}
+                      </Button>
+                    )}
+                    <Button
+                      variant="destructive"
+                      onClick={() => clockOutMutation.mutate()}
+                      disabled={clockOutMutation.isPending}
+                      data-testid="button-clock-out"
+                      className="px-6"
+                    >
+                      <Square className="mr-2 h-4 w-4" />
+                      {clockOutMutation.isPending ? "Clocking Out..." : "Clock Out"}
+                    </Button>
+                  </>
                 ) : (
                   <Button
                     onClick={() => clockInMutation.mutate()}

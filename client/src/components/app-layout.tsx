@@ -1,7 +1,9 @@
+import { useLocation } from "wouter";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Separator } from "@/components/ui/separator";
 import { SynkDexWidget } from "@/components/synkdex-widget";
+import { TimeClockWidget } from "@/components/time-clock-widget";
 import {
   Tooltip,
   TooltipContent,
@@ -17,6 +19,10 @@ function getShortcutLabel() {
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const shortcut = getShortcutLabel();
+  const [location] = useLocation();
+  // The dashboard already renders the full status card, so the floating widget
+  // would be redundant there.
+  const showTimeClockWidget = location !== "/";
   return (
     <SidebarProvider>
       <AppSidebar />
@@ -46,6 +52,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </SidebarInset>
+      {showTimeClockWidget && <TimeClockWidget />}
       <SynkDexWidget />
     </SidebarProvider>
   );

@@ -29,3 +29,20 @@ export function computePunchHoursWorked(punch: {
   const breakMs = (punch.breakMinutes || 0) * 60 * 1000;
   return Math.round(((end - start - breakMs) / (1000 * 60 * 60)) * 100) / 100;
 }
+
+/**
+ * Whole minutes elapsed for an in-progress break, from its start timestamp to
+ * `now`. This is the SINGLE formula used when ending a break — the result is
+ * folded into `punch_logs.break_minutes` (the one break accumulator every pay
+ * surface subtracts), so breaks are never double-counted. Never negative.
+ */
+export function computeBreakElapsedMinutes(
+  breakStartedAt: Date | string | null | undefined,
+  now: Date | number = Date.now(),
+): number {
+  if (!breakStartedAt) return 0;
+  const start = new Date(breakStartedAt).getTime();
+  const end = typeof now === "number" ? now : now.getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+  return Math.max(0, Math.round((end - start) / 60000));
+}

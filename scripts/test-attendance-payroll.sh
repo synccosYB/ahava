@@ -85,6 +85,7 @@ TEST_FILES=(
   "server/services/__tests__/policyEnforcement.test.ts"
   "server/services/__tests__/punchLogTimes.test.ts"
   "server/__tests__/punchHoursCalc.test.ts"
+  "server/__tests__/breakFolding.test.ts"
   "server/__tests__/punchSources.test.ts"
   "server/__tests__/punchValidation.test.ts"
   "server/__tests__/punchTimeDisplayTz.test.ts"

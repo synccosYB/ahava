@@ -207,6 +207,7 @@ import {
 } from "@shared/correctionCounts";
 import { getEffectivePolicy, buildPtoPolicyFromRules } from "./policyEngine";
 import { resolvePayCalcPolicy, splitDailyHours, DEFAULT_PAY_CALC_POLICY } from "./payrollEngine";
+import { computeBreakElapsedMinutes } from "./punchHours";
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
@@ -217,6 +218,13 @@ export interface ClockInOptions {
   punchLatitude?: number | null;
   punchLongitude?: number | null;
 }
+
+// Result of a start/end break action. `ok: false` carries a machine-readable
+// reason the route maps to a friendly 4xx (no open shift / already on break /
+// not on break) so break logic never leaks HTTP concerns into storage.
+export type BreakActionResult =
+  | { ok: true; punch: PunchLog; elapsedMinutes: number }
+  | { ok: false; reason: "not_clocked_in" | "already_on_break" | "not_on_break" };
 
 // Thrown when a clock-in would create a second open punch for an employee.
 // Routes map this to a 409 ("You're already clocked in.") instead of a 500.
@@ -320,6 +328,8 @@ export interface IStorage {
 
   clockIn(userId: string, source?: string, roundedTime?: Date, opts?: ClockInOptions): Promise<PunchLog>;
   clockOut(userId: string): Promise<PunchLog | undefined>;
+  startBreak(userId: string): Promise<BreakActionResult>;
+  endBreak(userId: string): Promise<BreakActionResult>;
   closeOpenPunch(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
   getCurrentAttendance(userId: string): Promise<PunchLog | undefined>;
   getOpenPunchLogs(): Promise<PunchLog[]>;
@@ -1409,6 +1419,72 @@ export class DatabaseStorage implements IStorage {
         .where(eq(punchLogs.id, current.id))
         .returning();
       return updated ? punchLogToLegacy(updated) : undefined;
+    });
+  }
+
+  // Start a break on the employee's current open shift. Atomic per-employee
+  // (same advisory lock as clock-in/out) so a double-tap can't set two starts.
+  // Rejects when there's no open shift or a break is already running. "On break"
+  // is a pure function of break_started_at being set — status is never touched.
+  async startBreak(userId: string): Promise<BreakActionResult> {
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId}))`);
+
+      const [current] = await tx
+        .select()
+        .from(punchLogs)
+        .where(and(
+          eq(punchLogs.employeeId, userId),
+          isNotNull(punchLogs.clockIn),
+          isNull(punchLogs.clockOut),
+        ))
+        .orderBy(desc(punchLogs.clockIn))
+        .limit(1);
+      if (!current || !current.clockIn) return { ok: false, reason: "not_clocked_in" as const };
+      if (current.breakStartedAt) return { ok: false, reason: "already_on_break" as const };
+
+      const [updated] = await tx
+        .update(punchLogs)
+        .set({ breakStartedAt: new Date() })
+        .where(and(eq(punchLogs.id, current.id), isNull(punchLogs.breakStartedAt)))
+        .returning();
+      if (!updated) return { ok: false, reason: "already_on_break" as const };
+      return { ok: true, punch: punchLogToLegacy(updated), elapsedMinutes: 0 };
+    });
+  }
+
+  // End the current break, folding the elapsed whole minutes into break_minutes
+  // and clearing break_started_at. Same single break-minutes accumulator every
+  // pay/attendance surface already reads — no parallel calculation. Rejects when
+  // there's no open shift or no break is running.
+  async endBreak(userId: string): Promise<BreakActionResult> {
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId}))`);
+
+      const [current] = await tx
+        .select()
+        .from(punchLogs)
+        .where(and(
+          eq(punchLogs.employeeId, userId),
+          isNotNull(punchLogs.clockIn),
+          isNull(punchLogs.clockOut),
+        ))
+        .orderBy(desc(punchLogs.clockIn))
+        .limit(1);
+      if (!current || !current.clockIn) return { ok: false, reason: "not_clocked_in" as const };
+      if (!current.breakStartedAt) return { ok: false, reason: "not_on_break" as const };
+
+      const elapsedMinutes = computeBreakElapsedMinutes(current.breakStartedAt);
+      const [updated] = await tx
+        .update(punchLogs)
+        .set({
+          breakMinutes: (current.breakMinutes || 0) + elapsedMinutes,
+          breakStartedAt: null,
+        })
+        .where(and(eq(punchLogs.id, current.id), isNotNull(punchLogs.breakStartedAt)))
+        .returning();
+      if (!updated) return { ok: false, reason: "not_on_break" as const };
+      return { ok: true, punch: punchLogToLegacy(updated), elapsedMinutes };
     });
   }
 
