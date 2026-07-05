@@ -93,6 +93,7 @@ export {
   insertPermissionSchema,
   insertPolicyTypeSchema,
   insertPasswordResetTokenSchema,
+  timezoneFieldSchema,
 } from "./models/auth";
 
 export const documents = pgTable("documents", {

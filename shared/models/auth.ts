@@ -2,6 +2,33 @@ import { sql } from "drizzle-orm";
 import { boolean, index, integer, jsonb, pgTable, real, text, timestamp, unique, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { normalizeTimezone } from "../timezone";
+
+// Task #518: a single, bypass-proof Zod guard for any persisted `timezone`
+// field. Root cause context lives in shared/timezone.ts — a malformed IANA zone
+// ("America/New york") that reaches the DB later inflates lateness/OT. Rather
+// than relying on each route to remember to call the guard, this coerces a
+// recoverable value to its canonical form and REJECTS an unrecoverable one at
+// parse time, so EVERY write path that validates through an insert schema
+// (present or future) is protected automatically. A blank/omitted zone is
+// allowed (downstream falls back to company/default). Reuse this on the insert
+// schema of any new table that stores a timezone.
+export const timezoneFieldSchema = z
+  .string()
+  .optional()
+  .nullable()
+  .transform((val, ctx) => {
+    if (val === undefined || val === null || val.trim() === "") return val;
+    const normalized = normalizeTimezone(val);
+    if (!normalized) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `"${val}" is not a valid IANA timezone.`,
+      });
+      return z.NEVER;
+    }
+    return normalized;
+  });
 
 export const sessions = pgTable(
   "sessions",
@@ -33,6 +60,8 @@ export const insertCompanySchema = createInsertSchema(companies).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+}).extend({
+  timezone: timezoneFieldSchema,
 });
 export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companies.$inferSelect;
@@ -57,6 +86,8 @@ export const insertLocationSchema = createInsertSchema(locations).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+}).extend({
+  timezone: timezoneFieldSchema,
 });
 export type InsertLocation = z.infer<typeof insertLocationSchema>;
 export type Location = typeof locations.$inferSelect;
