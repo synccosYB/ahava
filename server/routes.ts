@@ -56,6 +56,7 @@ import { applyScheduleTemplate, validateTemplateDays } from "./services/schedule
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, type GeofenceMapData } from "./services/geofence";
 import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
+import { normalizeTimezone } from "@shared/timezone";
 import { localTimeParts, formatScheduleWarning } from "./scheduleWarning";
 import { config } from "./config";
 import { WebSocketServer, WebSocket } from "ws";
@@ -550,6 +551,28 @@ function resolveMembershipDisplay(
     locationName: locNames.length ? locNames.join(", ") : null,
     managerNames,
   };
+}
+
+// Task #514: validate + normalize a `timezone` field on a company/location save
+// body IN PLACE. A blank/omitted timezone is allowed (falls back to the company
+// / default zone downstream). A present but invalid IANA string (wrong case,
+// space instead of underscore, unknown zone) is either coerced to its canonical
+// form or rejected with a 400 — so a malformed value like "America/New york"
+// can never be persisted again. Returns an error payload to send, or null when OK.
+function normalizeTimezoneField(
+  data: { timezone?: string | null },
+): { message: string; errors: { fieldErrors: { timezone: string[] } } } | null {
+  const raw = data.timezone;
+  if (raw === undefined || raw === null || raw === "") return null;
+  const normalized = normalizeTimezone(raw);
+  if (!normalized) {
+    return {
+      message: "Invalid timezone",
+      errors: { fieldErrors: { timezone: [`"${raw}" is not a valid IANA timezone.`] } },
+    };
+  }
+  data.timezone = normalized;
+  return null;
 }
 
 async function getScheduleWarning(employeeId: string, punchType: "clock_in" | "clock_out"): Promise<string | null> {
@@ -2340,6 +2363,8 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid company data", errors: parsed.error.flatten() });
     }
+    const tzError = normalizeTimezoneField(parsed.data);
+    if (tzError) return res.status(400).json(tzError);
     const company = await storage.createCompany(parsed.data);
     res.status(201).json(company);
   });
@@ -2349,6 +2374,8 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid company data", errors: parsed.error.flatten() });
     }
+    const tzError = normalizeTimezoneField(parsed.data);
+    if (tzError) return res.status(400).json(tzError);
     const company = await storage.updateCompany(String(req.params.id), parsed.data);
     if (!company) return res.status(404).json({ message: "Company not found" });
     res.json(company);
@@ -2433,6 +2460,8 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
     }
     const { companyIds, ...locationData } = parsed.data;
+    const tzError = normalizeTimezoneField(locationData);
+    if (tzError) return res.status(400).json(tzError);
     // If extra companyIds were supplied but no primary companyId, pick the first.
     if (!locationData.companyId && companyIds && companyIds.length > 0) {
       locationData.companyId = companyIds[0];
@@ -2450,6 +2479,8 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid location data", errors: parsed.error.flatten() });
     }
     const { companyIds, ...locationData } = parsed.data;
+    const tzError = normalizeTimezoneField(locationData);
+    if (tzError) return res.status(400).json(tzError);
     const before = await storage.getLocation(String(req.params.id));
     if (!before) return res.status(404).json({ message: "Location not found" });
     const location = await storage.updateLocation(String(req.params.id), locationData);

@@ -9,24 +9,29 @@
 
 import { storage } from "../storage";
 import type { PunchOverlapInfo } from "../punchValidation";
-
-const DEFAULT_TIMEZONE = "America/New_York";
+import { DEFAULT_TIMEZONE, normalizeTimezone } from "@shared/timezone";
 
 /**
  * Resolve the employee's local/business IANA timezone for rendering punch times
- * in rejection / flag messages. Prefers the employee's location timezone, then
- * the company timezone, then a sane default. Never throws — falls back to the
- * default on any lookup failure.
+ * in rejection / flag messages and for lateness math. Prefers the employee's
+ * location timezone, then the company timezone, then a sane default. Each
+ * candidate is validated + normalized (task #514): an invalid stored zone —
+ * e.g. "America/New york" — is skipped rather than trusted, so the resolver
+ * never hands back a string that would silently degrade to the server's local
+ * (UTC) clock downstream. Never throws — falls back to the default on any
+ * lookup failure.
  */
 export async function resolveEmployeeTimezone(userId: string): Promise<string> {
   try {
     const locationIds = await storage.getUserLocationIds(userId);
     for (const locId of locationIds) {
       const loc = await storage.getLocation(locId);
-      if (loc?.timezone) return loc.timezone;
+      const locTz = normalizeTimezone(loc?.timezone);
+      if (locTz) return locTz;
       if (loc?.companyId) {
         const company = await storage.getCompany(loc.companyId);
-        if (company?.timezone) return company.timezone;
+        const companyTz = normalizeTimezone(company?.timezone);
+        if (companyTz) return companyTz;
       }
     }
   } catch (err) {

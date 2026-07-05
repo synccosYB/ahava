@@ -9,6 +9,8 @@
 // These are kept pure + free of heavy imports so they can be regression-tested
 // without a database.
 
+import { DEFAULT_TIMEZONE } from "@shared/timezone";
+
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -19,38 +21,53 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Sat: 6,
 };
 
+function computeLocalTimeParts(
+  at: Date,
+  timezone: string,
+): { dayOfWeek: number; minutes: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(at);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value;
+  const weekday = get("weekday");
+  let hour = Number(get("hour"));
+  if (hour === 24) hour = 0; // some environments emit "24" for midnight
+  const minute = Number(get("minute"));
+  const dayOfWeek = weekday != null ? WEEKDAY_INDEX[weekday] : undefined;
+  if (dayOfWeek == null || Number.isNaN(hour) || Number.isNaN(minute)) {
+    throw new Error("unparsable local time parts");
+  }
+  return { dayOfWeek, minutes: hour * 60 + minute };
+}
+
 /**
  * Derive the wall-clock day-of-week + minutes-since-midnight for an instant as
- * rendered in a specific IANA timezone. Falls back to server-local components if
- * the tz is invalid or unparsable (never throws).
+ * rendered in a specific IANA timezone. If the given timezone is invalid or
+ * unparsable, it falls back to the safe default business zone
+ * ({@link DEFAULT_TIMEZONE}) — and NEVER to the server's local (UTC) clock,
+ * which would inflate the lateness figure by the UTC→business offset
+ * (task #514). Never throws.
  */
 export function localTimeParts(
   at: Date,
   timezone: string,
 ): { dayOfWeek: number; minutes: number } {
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).formatToParts(at);
-    const get = (type: string) => parts.find((p) => p.type === type)?.value;
-    const weekday = get("weekday");
-    let hour = Number(get("hour"));
-    if (hour === 24) hour = 0; // some environments emit "24" for midnight
-    const minute = Number(get("minute"));
-    const dayOfWeek = weekday != null ? WEEKDAY_INDEX[weekday] : undefined;
-    if (dayOfWeek == null || Number.isNaN(hour) || Number.isNaN(minute)) {
-      throw new Error("unparsable local time parts");
-    }
-    return { dayOfWeek, minutes: hour * 60 + minute };
+    return computeLocalTimeParts(at, timezone);
   } catch {
-    return {
-      dayOfWeek: at.getDay(),
-      minutes: at.getHours() * 60 + at.getMinutes(),
-    };
+    // Invalid/unrecognized zone — degrade to the safe default, not server-local.
+    try {
+      return computeLocalTimeParts(at, DEFAULT_TIMEZONE);
+    } catch {
+      return {
+        dayOfWeek: at.getDay(),
+        minutes: at.getHours() * 60 + at.getMinutes(),
+      };
+    }
   }
 }
 

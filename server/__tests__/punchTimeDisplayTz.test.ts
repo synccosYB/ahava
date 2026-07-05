@@ -212,6 +212,71 @@ test("resolveEmployeeTimezone: never throws — default on lookup failure", asyn
   });
 });
 
+// Task #514: an invalid stored location timezone (e.g. "America/New york" —
+// lowercase "york", a space instead of an underscore) must NOT be trusted. The
+// resolver skips it and falls back (company → default), never handing back a
+// broken string that would silently degrade to the server's UTC clock.
+test("resolveEmployeeTimezone: unrecoverable invalid location tz falls back to company tz", async () => {
+  await withStubbedStorage(
+    {
+      locationIds: ["loc1"],
+      locations: {
+        loc1: { id: "loc1", timezone: "Not/AZone", companyId: "co1" },
+      },
+      companies: { co1: { id: "co1", timezone: "America/Chicago" } },
+    },
+    async () => {
+      assert.equal(await resolveEmployeeTimezone("u1"), "America/Chicago");
+    },
+  );
+});
+
+test("resolveEmployeeTimezone: the exact 'Main' bug value normalizes to America/New_York", async () => {
+  // The production "Main" location stored "America/New york" (lowercase york,
+  // space) — recoverable, so it normalizes to the canonical zone rather than
+  // being discarded, and never leaks the broken string downstream.
+  await withStubbedStorage(
+    {
+      locationIds: ["loc1"],
+      locations: {
+        loc1: { id: "loc1", timezone: "America/New york", companyId: "co1" },
+      },
+      companies: { co1: { id: "co1", timezone: "America/Chicago" } },
+    },
+    async () => {
+      assert.equal(await resolveEmployeeTimezone("u1"), "America/New_York");
+    },
+  );
+});
+
+test("resolveEmployeeTimezone: invalid location + no company tz falls back to default", async () => {
+  await withStubbedStorage(
+    {
+      locationIds: ["loc1"],
+      locations: {
+        loc1: { id: "loc1", timezone: "Not/AZone", companyId: null },
+      },
+    },
+    async () => {
+      assert.equal(await resolveEmployeeTimezone("u1"), DEFAULT_TIMEZONE);
+    },
+  );
+});
+
+test("resolveEmployeeTimezone: normalizes a recoverable malformed tz to canonical", async () => {
+  await withStubbedStorage(
+    {
+      locationIds: ["loc1"],
+      locations: {
+        loc1: { id: "loc1", timezone: "america/new_york", companyId: null },
+      },
+    },
+    async () => {
+      assert.equal(await resolveEmployeeTimezone("u1"), "America/New_York");
+    },
+  );
+});
+
 // --- Kiosk activity feed row formatting -----------------------------------
 // The Kiosk Management "Recent activity" feed renders each punch's time using
 // formatTime12InTz with the server-stamped per-employee timezone, so a remote
@@ -296,11 +361,18 @@ test("localTimeParts: near-midnight punch selects the correct local day", () => 
   assert.equal(tokyo.minutes, 11 * 60 + 30);
 });
 
-test("localTimeParts: falls back to server-local components on invalid tz", () => {
-  const at = new Date(Date.UTC(2025, 0, 15, 15, 9, 0));
+test("localTimeParts: on invalid tz falls back to the default zone, NOT server-local (UTC)", () => {
+  // Task #514: an unrecognized zone must degrade to the safe default business
+  // zone (America/New_York), never to the server's local (UTC) clock — the
+  // latter is exactly what inflated the lateness figure.
+  const at = new Date(Date.UTC(2025, 6, 15, 15, 9, 0)); // 15:09 UTC → 11:09 AM ET
   const bogus = localTimeParts(at, "Not/AReal_Zone");
-  assert.equal(bogus.dayOfWeek, at.getDay());
-  assert.equal(bogus.minutes, at.getHours() * 60 + at.getMinutes());
+  const ny = localTimeParts(at, "America/New_York");
+  assert.equal(bogus.minutes, ny.minutes);
+  assert.equal(bogus.dayOfWeek, ny.dayOfWeek);
+  assert.equal(bogus.minutes, 11 * 60 + 9);
+  // Guard: server-local (UTC) would have been 15:09 → 909 minutes.
+  assert.notEqual(bogus.minutes, at.getUTCHours() * 60 + at.getUTCMinutes());
 });
 
 test("schedule warning: lateness is the employee's LOCAL gap, not the UTC gap", () => {
@@ -323,6 +395,23 @@ test("schedule warning: lateness is the employee's LOCAL gap, not the UTC gap", 
   });
   assert.equal(wrong, "You are 6 hours and 9 minutes late");
   assert.notEqual(warning, wrong);
+});
+
+test("schedule warning: an INVALID stored tz yields local lateness, not UTC-inflated", () => {
+  // Task #514: the "Main" location's tz was stored as "America/New york" (bad
+  // separator + case). localTimeParts must NOT degrade to server-local (UTC);
+  // it falls back to the default business zone so 11:09 AM ET against a 09:00
+  // shift reads 2h9m late — never the ~6h9m UTC-inflated figure.
+  const at = new Date(Date.UTC(2025, 6, 15, 15, 9, 0)); // 15:09 UTC → 11:09 AM ET
+  const { minutes } = localTimeParts(at, "America/New york");
+  assert.equal(minutes, 11 * 60 + 9);
+  const warning = formatScheduleWarning("clock_in", minutes, {
+    startTime: "09:00",
+    endTime: "17:00",
+  });
+  assert.equal(warning, "You are 2 hours and 9 minutes late");
+  // Guard: had it degraded to server-local (UTC), it would say 6h9m late.
+  assert.notEqual(warning, "You are 6 hours and 9 minutes late");
 });
 
 test("schedule warning: clock-out 'leaving early' uses local time basis", () => {

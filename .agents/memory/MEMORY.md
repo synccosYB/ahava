@@ -15,3 +15,4 @@
 - [Punch-overlap exception linkage](punch-overlap-linkage.md) — punch_overlap exception links closing punch via punchLogId but the CONFLICTING punch id lives ONLY in the reason text "(conflicting punch: <id>)"; parse it back, no column.
 - [Punch-time display timezone](punch-time-display-tz.md) — punch times stored UTC, rendered in business/location tz everywhere; server stamps resolveEmployeeTimezone() on responses, client uses formatTime12InTz; never raw-UTC + local formatter.
 - [Take Break feature](take-break-feature.md) — "on break" = break_started_at set (never overload status); end-break folds elapsed into the SINGLE break_minutes path (no double-count); clock-out auto-ends; shared use-time-clock hook fixes late timer.
+- [Timezone validation SSOT](timezone-validation.md) — shared/timezone.ts (isValid/normalize/resolve) is the ONE tz guard; bad stored zone must fall back to company→DEFAULT_TIMEZONE, NEVER server-local (UTC) or lateness inflates.
