@@ -24,6 +24,7 @@ import {
   ArrowRight, Check, ChevronsUpDown,
 } from "lucide-react";
 import { usePermissions } from "@/hooks/use-permissions";
+import { useAuth } from "@/hooks/use-auth";
 import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command";
@@ -397,12 +398,78 @@ function LocationRow({ loc, canEdit }: { loc: Location; canEdit: boolean }) {
   );
 }
 
+interface TimezoneAuditEntry {
+  kind: "location" | "company";
+  id: string;
+  name: string;
+  storedTimezone: string;
+}
+
+function TimezoneAuditCard() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const { data, isLoading } = useQuery<{ unrecoverable: TimezoneAuditEntry[] }>({
+    queryKey: ["/api/timezone-audit"],
+    enabled: isAdmin,
+  });
+
+  const entries = data?.unrecoverable ?? [];
+  if (!isAdmin || isLoading || entries.length === 0) return null;
+
+  return (
+    <Card className="border-destructive/50" data-testid="card-timezone-audit">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-destructive">
+          <AlertCircle className="h-5 w-5" />
+          Timezones needing review
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground" data-testid="text-timezone-audit-intro">
+          These records have an invalid timezone that couldn't be auto-corrected. Until fixed,
+          they fall back to the company or default timezone, which may be wrong. Edit each one
+          below and pick a valid timezone.
+        </p>
+        <div className="space-y-2">
+          {entries.map((e) => (
+            <div
+              key={`${e.kind}-${e.id}`}
+              className="flex items-center justify-between gap-3 rounded-md border p-3"
+              data-testid={`row-timezone-audit-${e.id}`}
+            >
+              <div className="min-w-0">
+                <p className="font-medium truncate" data-testid={`text-timezone-audit-name-${e.id}`}>
+                  {e.name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  <Badge variant="outline" className="mr-2 capitalize">{e.kind}</Badge>
+                  Stored:{" "}
+                  <code className="text-destructive" data-testid={`text-timezone-audit-value-${e.id}`}>
+                    {e.storedTimezone}
+                  </code>
+                </p>
+              </div>
+              <Link href={e.kind === "location" ? "/locations" : "/companies"}>
+                <Button variant="outline" size="sm" data-testid={`button-fix-timezone-${e.id}`}>
+                  Fix <ArrowRight className="h-4 w-4 ml-1" />
+                </Button>
+              </Link>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function LocationsSection() {
   const { data: locations, isLoading } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { has } = usePermissions();
   const canEdit = has("locations.manage");
 
   return (
+    <div className="space-y-6">
+    <TimezoneAuditCard />
     <Card data-testid="card-locations-settings">
       <CardHeader>
         <CardTitle>Location Settings</CardTitle>
@@ -447,6 +514,7 @@ function LocationsSection() {
         )}
       </CardContent>
     </Card>
+    </div>
   );
 }
 

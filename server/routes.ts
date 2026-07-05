@@ -29,6 +29,7 @@ import {
   computePayrollDrift,
 } from "./services/reconciliation";
 import { runAlertDetection } from "./services/alerts";
+import { auditUnrecoverableTimezones } from "./services/timezoneHeal";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
 import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./services/onboarding";
 import { materializeOffboardingChecklist, evaluateDeactivationGate } from "./services/offboarding";
@@ -2448,6 +2449,19 @@ export async function registerRoutes(
       return res.status(403).json({ message: "Forbidden" });
     }
     res.json({ ...location, companyIds: merged });
+  });
+
+  // Task #515: admin review surface for locations/companies whose stored
+  // timezone is malformed and could NOT be auto-recovered by the boot heal.
+  // Read-only and admin-only: the sweep scans + heals ALL companies/locations
+  // (server-internal at boot, see healTimezones in server/index.ts), so this
+  // report is inherently cross-tenant and must be gated to admins — the
+  // per-resource `locations.view` permission would let a scoped manager read
+  // other companies' data. Healing is NOT triggered here (a GET must not write
+  // across tenants); it runs at boot only.
+  app.get("/api/timezone-audit", requireAuth, requireRole("admin"), async (_req, res) => {
+    const unrecoverable = await auditUnrecoverableTimezones();
+    res.json({ unrecoverable });
   });
 
   const locationBodySchema = insertLocationSchema.extend({

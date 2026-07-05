@@ -8,6 +8,7 @@ import path from 'path';
 import { setupAuth, registerAuthRoutes } from "./replit_integrations/auth";
 import { seed } from "./seed";
 import { runMigrations } from "./migrate";
+import { healTimezones } from "./services/timezoneHeal";
 import { config } from "./config";
 import { rateLimit } from "./lib/rateLimit";
 import { logger } from "./lib/logger";
@@ -92,6 +93,27 @@ app.use((req, res, next) => {
 (async () => {
   await runMigrations();
   await seed().catch((err) => logger.warn("Seed warning", { source: "seed", err }));
+
+  // Task #515: sweep for any malformed stored timezone the SQL heal migration
+  // couldn't reach (it only knew the one hard-coded zone). Runs after migrations
+  // so the columns exist; never fatal — runtime resolution still falls back
+  // safely if this fails.
+  await healTimezones()
+    .then(({ healed, unrecoverable }) => {
+      if (healed.length > 0) {
+        logger.info(
+          `Timezone heal: corrected ${healed.length} record(s)`,
+          { source: "timezone-heal", healed },
+        );
+      }
+      if (unrecoverable.length > 0) {
+        logger.warn(
+          `Timezone heal: ${unrecoverable.length} record(s) could not be auto-recovered — surfaced for admin review`,
+          { source: "timezone-heal", unrecoverable },
+        );
+      }
+    })
+    .catch((err) => logger.warn("Timezone heal warning", { source: "timezone-heal", err }));
 
   await setupAuth(app);
   registerAuthRoutes(app);

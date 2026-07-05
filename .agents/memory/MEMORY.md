@@ -16,3 +16,4 @@
 - [Punch-time display timezone](punch-time-display-tz.md) — punch times stored UTC, rendered in business/location tz everywhere; server stamps resolveEmployeeTimezone() on responses, client uses formatTime12InTz; never raw-UTC + local formatter.
 - [Take Break feature](take-break-feature.md) — "on break" = break_started_at set (never overload status); end-break folds elapsed into the SINGLE break_minutes path (no double-count); clock-out auto-ends; shared use-time-clock hook fixes late timer.
 - [Timezone validation SSOT](timezone-validation.md) — shared/timezone.ts (isValid/normalize/resolve) is the ONE tz guard; bad stored zone must fall back to company→DEFAULT_TIMEZONE, NEVER server-local (UTC) or lateness inflates.
+- [Timezone data heal sweep](timezone-heal.md) — boot-time healTimezones() normalizes malformed location/company zones (Intl-backed, recovers case/space typos); unrecoverable ones surfaced via admin-only read-only /api/timezone-audit.
