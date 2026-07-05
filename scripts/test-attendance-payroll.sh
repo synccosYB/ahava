@@ -39,6 +39,9 @@
 #   DB-backed:
 #     - punchIntegrityRoute.test.ts        punch-edit route rejects bad edits
 #                                          (400) + recomputes hours on a valid edit.
+#     - timezoneValidationRoute.test.ts    company/location create+edit routes coerce
+#                                          a malformed timezone to canonical form or
+#                                          reject garbage (400) — real Express + auth.
 #     - services/clockInIntegration.test.ts  clock-in punch lifecycle.
 #     - services/duplicateOpenPunch.test.ts  concurrent clock-in -> one open punch.
 #     - services/exceptionResolveRoute.test.ts exception resolve honors OT threshold.
@@ -94,6 +97,7 @@ TEST_FILES=(
   "server/services/__tests__/duplicateOpenPunch.test.ts"
   "server/services/__tests__/exceptionResolveRoute.test.ts"
   "server/__tests__/punchIntegrityRoute.test.ts"
+  "server/__tests__/timezoneValidationRoute.test.ts"
   # DB-backed: PTO
   "server/__tests__/ptoBalanceCalc.test.ts"
   "server/__tests__/ptoEmployeeAssignment.test.ts"

@@ -47,6 +47,7 @@ Total: **144 tests across 22 files, all passing.**
 | Punch method classification | `punchSources` | `punchSources.test.ts` |
 | Punch times render in clinic wall-clock tz (not viewer tz) | `client utils` / `punchOverlap` | `punchTimeDisplayTz.test.ts` |
 | Exception resolve honors configured OT threshold | `routes.ts` exception resolve | `exceptionResolveRoute.test.ts` |
+| Company/location save routes coerce malformed timezone or reject garbage (400) | `routes.ts` normalizeTimezoneField | `timezoneValidationRoute.test.ts` |
 | Atomic PTO-balance / approval races | `storage.ts` increments | `concurrentUpdates.test.ts` |
 
 ## Permission boundaries → tests
