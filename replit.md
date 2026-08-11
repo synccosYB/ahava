@@ -80,7 +80,6 @@ The system is built with an Express.js backend (TypeScript), a React frontend (V
 - **`multer`:** File uploads.
 - **`@vladmandic/face-api`:** Client-side face recognition (for biometrics).
 - **`@xyflow/react`:** Visual workflow builder.
-## One-shot production data wipe (Task 522)
-- `server/prodDataWipe.ts` runs at boot (after migrations, before seed): takes+verifies a pg_dump backup to object storage (`backups/db/pre-wipe-*.dump`), then truncates all tables except `_migration_log`. One-shot: marker tag `9999_prod_data_wipe_2026_08_11` in `_migration_log`.
-- Armed by `WIPE_PROD_DATA=yes-really-wipe-prod` (set in production env) or the committed `WIPE_PROD_DATA.trigger` file (deployments only). Manual: `npx tsx scripts/wipe-database.ts --yes-really-wipe-prod`.
-- After the wipe runs in production: delete `WIPE_PROD_DATA.trigger` and the production `WIPE_PROD_DATA` env var (marker keeps re-runs safe either way).
+## One-shot production data wipe (Task 522 — COMPLETED 2026-08-11)
+- The wipe RAN in production on 2026-08-11 14:33 UTC: marker `9999_prod_data_wipe_2026_08_11` is in prod `_migration_log`, all application tables were truncated, and seed re-created the bootstrap admin/roles/policies. Pre-wipe backup: object storage `.private/backups/db/pre-wipe-2026-08-11T14-33-47-451Z.dump` (~303 KiB).
+- Triggers are DISARMED: `WIPE_PROD_DATA.trigger` deleted and the production `WIPE_PROD_DATA` env var removed. `server/prodDataWipe.ts` remains but is inert (marker + no trigger). Manual re-use (new wipe) would require a new marker tag: `npx tsx scripts/wipe-database.ts --yes-really-wipe-prod`.
