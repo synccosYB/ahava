@@ -80,3 +80,7 @@ The system is built with an Express.js backend (TypeScript), a React frontend (V
 - **`multer`:** File uploads.
 - **`@vladmandic/face-api`:** Client-side face recognition (for biometrics).
 - **`@xyflow/react`:** Visual workflow builder.
+## One-shot production data wipe (Task 522)
+- `server/prodDataWipe.ts` runs at boot (after migrations, before seed): takes+verifies a pg_dump backup to object storage (`backups/db/pre-wipe-*.dump`), then truncates all tables except `_migration_log`. One-shot: marker tag `9999_prod_data_wipe_2026_08_11` in `_migration_log`.
+- Armed by `WIPE_PROD_DATA=yes-really-wipe-prod` (set in production env) or the committed `WIPE_PROD_DATA.trigger` file (deployments only). Manual: `npx tsx scripts/wipe-database.ts --yes-really-wipe-prod`.
+- After the wipe runs in production: delete `WIPE_PROD_DATA.trigger` and the production `WIPE_PROD_DATA` env var (marker keeps re-runs safe either way).

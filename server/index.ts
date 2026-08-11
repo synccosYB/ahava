@@ -8,6 +8,7 @@ import path from 'path';
 import { setupAuth, registerAuthRoutes } from "./replit_integrations/auth";
 import { seed } from "./seed";
 import { runMigrations } from "./migrate";
+import { maybeWipeProductionData } from "./prodDataWipe";
 import { healTimezones } from "./services/timezoneHeal";
 import { config } from "./config";
 import { rateLimit } from "./lib/rateLimit";
@@ -92,6 +93,10 @@ app.use((req, res, next) => {
 
 (async () => {
   await runMigrations();
+  // One-shot production data wipe (no-op unless WIPE_PROD_DATA is set and the
+  // one-shot marker is absent; takes + verifies a backup first, and MUST fail
+  // the boot if the wipe was requested but could not complete safely).
+  await maybeWipeProductionData();
   await seed().catch((err) => logger.warn("Seed warning", { source: "seed", err }));
 
   // Task #515: sweep for any malformed stored timezone the SQL heal migration
