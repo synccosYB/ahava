@@ -456,6 +456,8 @@ export default function PayrollPrepPage() {
         </CardContent>
       </Card>
 
+      <PunctualityBonusReview />
+
       <Dialog open={!!detailBatchId} onOpenChange={(open) => !open && setDetailBatchId(null)}>
         <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto" data-testid="dialog-batch-detail">
           <DialogHeader>
@@ -689,5 +691,111 @@ export default function PayrollPrepPage() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+type PunctualityBonusWeekRow = {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  weekStartDate: string;
+  status: string;
+  reason: string | null;
+  bonusPerHour: number;
+  regularHours: number;
+  overtimeHours: number;
+  doubleTimeHours: number;
+  bonusAmount: number;
+};
+
+// Manager review of Weekly Punctuality Rate Bonus weeks that need a decision
+// (an employee missed a scheduled day with no approved PTO — never-late weeks
+// auto-qualify and any-late weeks auto-forfeit without landing here).
+function PunctualityBonusReview() {
+  const { toast } = useToast();
+  const { data: weeks = [], isLoading } = useQuery<PunctualityBonusWeekRow[]>({
+    queryKey: ["/api/payroll/punctuality-bonus/weeks", "pending_review"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/payroll/punctuality-bonus/weeks?status=pending_review");
+      return res.json();
+    },
+  });
+
+  const decideMutation = useMutation({
+    mutationFn: async ({ id, decision }: { id: string; decision: "approve" | "deny" }) => {
+      await apiRequest("POST", `/api/payroll/punctuality-bonus/${id}/decision`, { decision });
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/punctuality-bonus/weeks", "pending_review"] });
+      toast({ title: vars.decision === "approve" ? "Bonus approved" : "Bonus denied" });
+    },
+    onError: (error: any) => {
+      toast({ title: "Could not save decision", description: error?.message || "Please try again.", variant: "destructive" });
+    },
+  });
+
+  if (!isLoading && weeks.length === 0) return null;
+
+  return (
+    <Card data-testid="card-punctuality-review">
+      <CardContent className="p-0">
+        <div className="px-4 py-3 border-b">
+          <h3 className="text-sm font-semibold">Punctuality Bonus — Pending Review</h3>
+          <p className="text-xs text-muted-foreground">
+            These weeks were never late but missed a scheduled day with no approved PTO. Approve to pay the bonus, or deny.
+          </p>
+        </div>
+        {isLoading ? (
+          <div className="p-6 space-y-2">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Week Of</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Reason</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Bonus $</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {weeks.map((w) => (
+                <TableRow key={w.id} data-testid={`row-punctuality-${w.id}`}>
+                  <TableCell className="font-medium" data-testid={`text-punctuality-employee-${w.id}`}>{w.employeeName}</TableCell>
+                  <TableCell className="tabular-nums">{formatDate(w.weekStartDate)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground max-w-md">{w.reason || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatCurrency(w.bonusAmount || 0)}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={decideMutation.isPending}
+                        onClick={() => decideMutation.mutate({ id: w.id, decision: "approve" })}
+                        data-testid={`button-punctuality-approve-${w.id}`}
+                      >
+                        <CheckCircle className="h-3 w-3 mr-1" /> Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={decideMutation.isPending}
+                        onClick={() => decideMutation.mutate({ id: w.id, decision: "deny" })}
+                        data-testid={`button-punctuality-deny-${w.id}`}
+                      >
+                        <XCircle className="h-3 w-3 mr-1" /> Deny
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
 }

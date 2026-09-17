@@ -8,7 +8,9 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "db:migrate": "tsx scripts/run-migrations.ts",
+    "test": "node --import tsx --test --test-concurrency=1 $(find server client shared -name '*.test.ts' | sort)"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",
