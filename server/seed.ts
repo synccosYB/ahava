@@ -236,41 +236,98 @@ const POLICY_TYPES = [
 export async function seed() {
   console.log("Seeding database...");
 
+  // Bootstrap admin. In production we NEVER seed a default/known password:
+  // that would ship a hidden super-admin backdoor. Production requires an
+  // operator-supplied SEED_ADMIN_PASSWORD (>= 12 chars) and always forces a
+  // change on first login. Non-production (dev/test/CI) keeps the well-known
+  // local `admin123` credential for convenience — the test suites rely on the
+  // seeded admin-dev-001 account existing and being usable without a forced
+  // password change.
+  const ADMIN_EMAIL = "admin@ahavamedical.com";
+  const ADMIN_ID = "admin-dev-001";
+  const isProduction = process.env.NODE_ENV === "production";
+  const bootstrapPassword = process.env.SEED_ADMIN_PASSWORD;
+  const bootstrapPasswordOk = Boolean(bootstrapPassword && bootstrapPassword.length >= 12);
+
   const [existingAdmin] = await db
     .select()
     .from(users)
-    .where(eq(users.email, "admin@ahavamedical.com"));
+    .where(eq(users.email, ADMIN_EMAIL));
 
   if (!existingAdmin) {
-    const hashedPassword = await bcrypt.hash("admin123", 10);
-    await db.insert(users).values({
-      id: "admin-dev-001",
-      email: "admin@ahavamedical.com",
-      password: hashedPassword,
-      passwordHash: hashedPassword,
-      firstName: "Admin",
-      lastName: "User",
-      role: "admin",
-    });
-    console.log("Created admin user: admin@ahavamedical.com / admin123");
+    if (isProduction) {
+      if (bootstrapPasswordOk) {
+        const hashedPassword = await bcrypt.hash(bootstrapPassword!, 10);
+        await db.insert(users).values({
+          id: ADMIN_ID,
+          email: ADMIN_EMAIL,
+          password: hashedPassword,
+          passwordHash: hashedPassword,
+          firstName: "Admin",
+          lastName: "User",
+          role: "admin",
+          forcePasswordChange: true,
+        });
+        console.log(`Created bootstrap admin ${ADMIN_EMAIL} from SEED_ADMIN_PASSWORD (password change required on first login).`);
+      } else {
+        console.warn(
+          `[seed] No bootstrap admin created. Set SEED_ADMIN_PASSWORD (>= 12 chars) to provision the initial ${ADMIN_EMAIL} account. ` +
+          `Refusing to seed a default-password admin in production.`,
+        );
+      }
+    } else {
+      const hashedPassword = await bcrypt.hash("admin123", 10);
+      await db.insert(users).values({
+        id: ADMIN_ID,
+        email: ADMIN_EMAIL,
+        password: hashedPassword,
+        passwordHash: hashedPassword,
+        firstName: "Admin",
+        lastName: "User",
+        role: "admin",
+      });
+      console.log("Created local dev admin: admin@ahavamedical.com / admin123 (non-production only)");
+    }
   } else {
     const hasUsablePassword = Boolean(existingAdmin.password || existingAdmin.passwordHash);
 
     if (!hasUsablePassword) {
-      const hashedPassword = await bcrypt.hash("admin123", 10);
-      await db
-        .update(users)
-        .set({
-          password: hashedPassword,
-          passwordHash: hashedPassword,
-          role: "admin",
-          deactivatedAt: null,
-          forcePasswordChange: true,
-        })
-        .where(eq(users.id, existingAdmin.id));
-      console.log(
-        "Repaired admin user password (was missing): admin@ahavamedical.com / admin123 (forced change on first login).",
-      );
+      if (isProduction) {
+        if (bootstrapPasswordOk) {
+          const hashedPassword = await bcrypt.hash(bootstrapPassword!, 10);
+          await db
+            .update(users)
+            .set({
+              password: hashedPassword,
+              passwordHash: hashedPassword,
+              role: "admin",
+              deactivatedAt: null,
+              forcePasswordChange: true,
+            })
+            .where(eq(users.id, existingAdmin.id));
+          console.log(`Repaired admin ${ADMIN_EMAIL} password from SEED_ADMIN_PASSWORD (change required on first login).`);
+        } else {
+          console.warn(
+            `[seed] Admin ${ADMIN_EMAIL} has no usable password. Set SEED_ADMIN_PASSWORD (>= 12 chars) and restart, or use the password-reset flow. ` +
+            `Refusing to apply a default password in production.`,
+          );
+        }
+      } else {
+        const hashedPassword = await bcrypt.hash("admin123", 10);
+        await db
+          .update(users)
+          .set({
+            password: hashedPassword,
+            passwordHash: hashedPassword,
+            role: "admin",
+            deactivatedAt: null,
+            forcePasswordChange: true,
+          })
+          .where(eq(users.id, existingAdmin.id));
+        console.log(
+          "Repaired local dev admin password (was missing): admin@ahavamedical.com / admin123 (forced change on first login).",
+        );
+      }
     } else {
       console.log("Admin user already exists, skipping.");
     }
@@ -380,15 +437,19 @@ export async function seed() {
 
   const allRoles = await db.select().from(roles);
   const superAdminRole = allRoles.find((r) => r.name === "Super Admin");
-  if (superAdminRole) {
+  // Only assign the role if the bootstrap admin actually exists — in
+  // production without SEED_ADMIN_PASSWORD it is intentionally not created,
+  // and the user_roles FK would otherwise fail.
+  const [adminUser] = await db.select().from(users).where(eq(users.id, ADMIN_ID));
+  if (superAdminRole && adminUser) {
     const [existingAdminUserRole] = await db
       .select()
       .from(userRoles)
-      .where(eq(userRoles.userId, "admin-dev-001"));
+      .where(eq(userRoles.userId, ADMIN_ID));
 
     if (!existingAdminUserRole) {
       await db.insert(userRoles).values({
-        userId: "admin-dev-001",
+        userId: ADMIN_ID,
         roleId: superAdminRole.id,
       });
       console.log("Assigned Super Admin role to admin user.");

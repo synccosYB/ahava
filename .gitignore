@@ -5,3 +5,6 @@ server/public
 vite.config.ts.*
 *.tar.gz
 uploads/
+.env
+.env.*
+!.env.example

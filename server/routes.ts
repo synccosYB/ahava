@@ -1550,8 +1550,12 @@ export async function registerRoutes(
     const user = (req as any).authUser as User;
     const { currentPassword, newPassword } = req.body;
 
-    if (!newPassword || newPassword.length < 6) {
-      return res.status(400).json({ message: "New password must be at least 6 characters" });
+    // Enforce the same strength policy as the password-reset flow (single
+    // source of truth) instead of a weaker local minimum.
+    const { validateNewPassword } = await import("./services/passwordReset");
+    const pwError = validateNewPassword(newPassword);
+    if (pwError) {
+      return res.status(400).json({ message: pwError });
     }
 
     const fullUser = await storage.getUser(user.id);

@@ -4,7 +4,7 @@ import connectPg from "connect-pg-simple";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { authStorage } from "./storage";
-import { generateToken } from "../../middleware/auth";
+import { generateToken, getJwtSecret } from "../../middleware/auth";
 import { rateLimit } from "../../lib/rateLimit";
 import { writeAuditLog, getAuditContext } from "../../services/audit";
 import {
@@ -421,8 +421,7 @@ export async function setupAuth(app: Express) {
       const authHeader = req.headers.authorization;
       if (authHeader?.startsWith("Bearer ")) {
         try {
-          const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET || "dev-jwt-secret-not-for-production";
-          const decoded = jwt.verify(authHeader.slice(7), secret) as { userId: string };
+          const decoded = jwt.verify(authHeader.slice(7), getJwtSecret()) as { userId: string };
           userId = decoded.userId;
         } catch {
         }

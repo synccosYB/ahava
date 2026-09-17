@@ -2,7 +2,7 @@ import type { RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import { authStorage } from "../replit_integrations/auth/storage";
 
-function getJwtSecret(): string {
+export function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
   if (!secret) {
     if (process.env.NODE_ENV === "production") {
