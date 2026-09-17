@@ -23,6 +23,13 @@ export const config = {
   rateLimitWindowMs: num("RATE_LIMIT_WINDOW_MS", 60_000),
   rateLimitMax: num("RATE_LIMIT_MAX", 240),
 
+  // Number of trusted reverse-proxy hops in front of the app. Express uses this
+  // to derive req.ip from the RIGHTMOST N entries of X-Forwarded-For, so a
+  // client-supplied XFF value cannot forge the IP the rate limiter keys on.
+  // Default 1 matches a single ingress proxy (Replit, most PaaS); set
+  // TRUST_PROXY_HOPS to the real hop count if the deployment differs.
+  trustProxyHops: num("TRUST_PROXY_HOPS", 1),
+
   slowRequestMs: num("SLOW_REQUEST_MS", 1_500),
 
   jobsBatchSize: num("JOBS_BATCH_SIZE", 25),

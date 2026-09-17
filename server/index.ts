@@ -17,6 +17,11 @@ import { pool } from "./db";
 
 const app = express();
 
+// Trust exactly the configured number of proxy hops so req.ip is derived from
+// the trusted proxy's X-Forwarded-For entry, not a client-forged one. The rate
+// limiter and any IP-based throttling depend on this being non-spoofable.
+app.set("trust proxy", config.trustProxyHops);
+
 app.use(
   helmet({
     contentSecurityPolicy: false,

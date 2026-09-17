@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import {
   type User,
   type UpsertUser,
@@ -240,6 +241,31 @@ export class DuplicateOpenPunchError extends Error {
 // that enforces "one open punch per employee" (migration 0048).
 const PG_UNIQUE_VIOLATION = "23505";
 export const OPEN_PUNCH_UNIQUE_INDEX = "idx_punch_logs_one_open_per_employee";
+
+// Kiosk/supervisor PINs are stored as a peppered keyed hash, never plaintext,
+// so a database or backup read cannot recover them. HMAC (a keyed hash) keeps
+// the PIN->employee lookup an O(1) exact match while making the stored value
+// useless without the server-side pepper. Because PINs are low-entropy (4-6
+// digits), the pepper's secrecy plus request rate-limiting are what defend
+// against brute force. The pepper falls back to the app's JWT/session secret,
+// which is mandatory in production (see getJwtSecret / getSession).
+function getPinPepper(): string {
+  const pepper =
+    process.env.PIN_PEPPER || process.env.JWT_SECRET || process.env.SESSION_SECRET;
+  if (!pepper) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "PIN_PEPPER (or JWT_SECRET/SESSION_SECRET) must be set in production to hash employee PINs",
+      );
+    }
+    return "dev-pin-pepper-not-for-production";
+  }
+  return pepper;
+}
+
+function hashPin(pin: string): string {
+  return crypto.createHmac("sha256", getPinPepper()).update(String(pin).trim()).digest("hex");
+}
 
 function isOpenPunchUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; constraint?: string; message?: string } | null;
@@ -1865,12 +1891,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createEmployeePin(pin: InsertEmployeePin): Promise<EmployeePin> {
-    const [created] = await db.insert(employeePins).values(pin).returning();
+    const [created] = await db
+      .insert(employeePins)
+      .values({ ...pin, pin: hashPin(pin.pin) })
+      .returning();
     return created;
   }
 
   async updateEmployeePin(userId: string, pin: string): Promise<EmployeePin | undefined> {
-    const [updated] = await db.update(employeePins).set({ pin }).where(eq(employeePins.userId, userId)).returning();
+    const [updated] = await db
+      .update(employeePins)
+      .set({ pin: hashPin(pin) })
+      .where(eq(employeePins.userId, userId))
+      .returning();
     return updated;
   }
 
@@ -1997,11 +2030,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserByPin(pin: string): Promise<User | undefined> {
+    // PINs are stored as a peppered keyed hash (never plaintext), so match on
+    // the hash of the supplied PIN rather than the raw value.
     const results = await db
       .select({ user: users })
       .from(employeePins)
       .innerJoin(users, eq(employeePins.userId, users.id))
-      .where(eq(employeePins.pin, pin));
+      .where(eq(employeePins.pin, hashPin(pin)));
     return results[0]?.user;
   }
 

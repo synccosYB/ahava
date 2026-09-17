@@ -19,11 +19,11 @@ export function rateLimit(opts?: { windowMs?: number; max?: number }): RequestHa
   const windowMs = opts?.windowMs ?? config.rateLimitWindowMs;
   const max = opts?.max ?? config.rateLimitMax;
   return (req, res, next) => {
-    const ip =
-      (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-      req.ip ||
-      req.socket.remoteAddress ||
-      "unknown";
+    // Use Express's req.ip, which honors the app's `trust proxy` setting and so
+    // reflects the real client IP from the trusted proxy hop — NOT the raw,
+    // client-spoofable X-Forwarded-For header (which would let any caller mint a
+    // fresh bucket per request and bypass throttling entirely).
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
     const key = `${ip}:${req.path}`;
     const now = Date.now();
     let b = buckets.get(key);
