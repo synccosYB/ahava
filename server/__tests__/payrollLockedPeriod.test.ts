@@ -27,6 +27,7 @@ import {
   punchLogs,
   payrollExports,
   payrollBatchRecords,
+  attendanceChangeLedger,
 } from "@shared/schema";
 import { eq, inArray } from "drizzle-orm";
 
@@ -56,6 +57,9 @@ async function purgeLeftovers() {
       await db.delete(payrollExports).where(inArray(payrollExports.id, expIds));
     }
     await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.employeeId, u.id));
+    // The DELETE-punch route writes an attendance_change_ledger row (punch_delete);
+    // that ledger FK to users is non-cascading, so purge it before the user.
+    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, u.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, u.id));
     await db.delete(users).where(eq(users.id, u.id));
   }
@@ -101,6 +105,9 @@ async function setupFixture(label: string): Promise<Fixture> {
       await db.delete(payrollExports).where(inArray(payrollExports.id, createdExportIds));
     }
     await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.employeeId, employee.id));
+    // The DELETE-punch route writes an attendance_change_ledger row (punch_delete);
+    // that ledger FK to users is non-cascading, so purge it before the user.
+    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, employee.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, employee.id));
     await db.delete(users).where(eq(users.id, employee.id));
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
