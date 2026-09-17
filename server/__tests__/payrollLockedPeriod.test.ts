@@ -27,8 +27,20 @@ import {
   punchLogs,
   payrollExports,
   payrollBatchRecords,
+  attendanceChangeLedger,
+  attendanceLedger,
 } from "@shared/schema";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, or } from "drizzle-orm";
+
+// The ledger tables reference users(id) with no ON DELETE CASCADE, and the
+// delete-punch route writes an attendance_change_ledger audit row, so any test
+// user must have its ledger rows purged before it can be deleted.
+async function purgeLedgerFor(userId: string) {
+  await db
+    .delete(attendanceChangeLedger)
+    .where(or(eq(attendanceChangeLedger.employeeId, userId), eq(attendanceChangeLedger.actorUserId, userId)));
+  await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, userId));
+}
 
 const REVIEWER_ID = "admin-dev-001";
 const EMAIL_PREFIX = "lockedperiod-test+";
@@ -57,6 +69,7 @@ async function purgeLeftovers() {
     }
     await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.employeeId, u.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, u.id));
+    await purgeLedgerFor(u.id);
     await db.delete(users).where(eq(users.id, u.id));
   }
 }
@@ -102,6 +115,7 @@ async function setupFixture(label: string): Promise<Fixture> {
     }
     await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.employeeId, employee.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, employee.id));
+    await purgeLedgerFor(employee.id);
     await db.delete(users).where(eq(users.id, employee.id));
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   };

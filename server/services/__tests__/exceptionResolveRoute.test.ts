@@ -17,8 +17,40 @@ import {
   users,
   payrollExports,
   payrollBatchRecords,
+  attendanceChangeLedger,
+  attendanceLedger,
 } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or } from "drizzle-orm";
+
+// The ledger tables reference users(id) with no ON DELETE CASCADE, and
+// resolving an exception writes attendance_change_ledger audit rows, so any
+// test user must have its ledger rows purged before it can be deleted.
+async function purgeLedgerFor(userId: string) {
+  await db
+    .delete(attendanceChangeLedger)
+    .where(or(eq(attendanceChangeLedger.employeeId, userId), eq(attendanceChangeLedger.actorUserId, userId)));
+  await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, userId));
+}
+
+// The resolve route fires `void recomputeLedger(...)` (server/routes.ts) — a
+// fire-and-forget materialization that can write an attendance_ledger row just
+// after we purge it. Retry the purge+delete so teardown wins the race with that
+// in-flight write instead of failing on the users FK.
+async function deleteUserWithLedger(userId: string) {
+  for (let attempt = 0; ; attempt++) {
+    await purgeLedgerFor(userId);
+    try {
+      await db.delete(users).where(eq(users.id, userId));
+      return;
+    } catch (err) {
+      if ((err as { code?: string }).code === "23503" && attempt < 9) {
+        await new Promise((r) => setTimeout(r, 50));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
 
 const REVIEWER_ID = "admin-dev-001";
 const TEST_EMAIL_PREFIX = "task81-overtime-test+";
@@ -49,7 +81,7 @@ async function purgeLeftoverTestData() {
   for (const u of oldUsers) {
     await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, u.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, u.id));
-    await db.delete(users).where(eq(users.id, u.id));
+    await deleteUserWithLedger(u.id);
   }
 }
 
@@ -131,7 +163,7 @@ async function setupFixture(label: string): Promise<TestFixture> {
     await db.delete(policyAssignments).where(eq(policyAssignments.userId, employee.id));
     await db.delete(policyRules).where(eq(policyRules.policyId, policy.id));
     await db.delete(policies).where(eq(policies.id, policy.id));
-    await db.delete(users).where(eq(users.id, employee.id));
+    await deleteUserWithLedger(employee.id);
     await new Promise<void>((resolve, reject) =>
       httpServer.close((err) => (err ? reject(err) : resolve())),
     );
@@ -784,7 +816,7 @@ test("POST /attendance/exceptions rejects a punchLogId that belongs to another e
     .returning();
   t.after(async () => {
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, otherEmployee.id));
-    await db.delete(users).where(eq(users.id, otherEmployee.id));
+    await deleteUserWithLedger(otherEmployee.id);
   });
 
   const workDate = "2026-04-26";

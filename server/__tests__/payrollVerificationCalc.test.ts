@@ -135,7 +135,7 @@ test("missing link: attendance record with no punch is flagged unverifiable", as
   const d = result!.discrepancies.find((x) => x.workDate === "2026-01-08");
   assert.ok(d);
   assert.equal(d!.computedRegular, null);
-  assert.match(d!.issue, /no linked punch/i);
+  assert.match(d!.issue, /no source punches found/i);
 });
 
 test("PTO rows are skipped: only attendance rows are recomputable", async () => {
