@@ -80,6 +80,10 @@ async function purgeLeftoverTestData() {
   const oldUsers = leftoverUsers.filter((u) => u.email?.startsWith(TEST_EMAIL_PREFIX));
   for (const u of oldUsers) {
     await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, u.id));
+    // Resolving an exception writes attendance_change_ledger + attendance_ledger
+    // rows (both non-cascading FKs to users), so purge them before the user.
+    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, u.id));
+    await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, u.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, u.id));
     await deleteUserWithLedger(u.id);
   }
@@ -158,7 +162,16 @@ async function setupFixture(label: string): Promise<TestFixture> {
     // test (e.g. payroll override) don't block the user delete. Audit log
     // rows reference the (never-deleted) seeded admin actor and have no FK
     // back to the exception/punch, so they're left in place.
+    // The resolve route fires `void recomputeLedger(...)` (not awaited), which
+    // inserts attendance_ledger rows after the response; let that settle before
+    // we purge, so the async insert can't land after our delete and FK-block the
+    // user delete.
+    await new Promise((resolve) => setTimeout(resolve, 250));
     await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, employee.id));
+    // Resolving an exception writes attendance_change_ledger + attendance_ledger
+    // rows (both non-cascading FKs to users), so purge them before the user.
+    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, employee.id));
+    await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, employee.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, employee.id));
     await db.delete(policyAssignments).where(eq(policyAssignments.userId, employee.id));
     await db.delete(policyRules).where(eq(policyRules.policyId, policy.id));
@@ -815,6 +828,8 @@ test("POST /attendance/exceptions rejects a punchLogId that belongs to another e
     })
     .returning();
   t.after(async () => {
+    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, otherEmployee.id));
+    await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, otherEmployee.id));
     await db.delete(punchLogs).where(eq(punchLogs.employeeId, otherEmployee.id));
     await deleteUserWithLedger(otherEmployee.id);
   });

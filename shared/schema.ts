@@ -1090,6 +1090,71 @@ export const payrollAdjustmentsRelations = relations(payrollAdjustments, ({ one 
   punchLog: one(punchLogs, { fields: [payrollAdjustments.punchLogId], references: [punchLogs.id] }),
 }));
 
+// ---------------------------------------------------------------------------
+// Weekly Punctuality Rate Bonus (Task: punctuality-bonus)
+// ---------------------------------------------------------------------------
+// One row per (employee, pay-week) recording whether the employee earned the
+// configurable punctuality rate bonus for that week and — for the absence case
+// — the manager's review decision. The `weekStartDate` is the workweek start
+// (see payrollEngine.workweekStartFor), so the row aligns 1:1 with the weekly
+// grouping payroll already uses. Statuses:
+//   - qualified       : on-time every scheduled day → auto-granted bonus.
+//   - forfeited_late  : late (past grace) on ≥1 scheduled day → auto-forfeited.
+//   - pending_review  : never late, but missed a scheduled day with no approved
+//                       PTO → awaits a manager approve/deny (no pay until then).
+//   - granted         : a manager approved a pending_review week → bonus paid.
+//   - denied          : a manager denied a pending_review week → no bonus.
+// `bonusAmount` is the differential that is (or would be) paid this week; it is
+// the spec formula and is non-zero only for `qualified`/`granted`. The hours +
+// multipliers + bonusPerHour are frozen so the amount is reproducible.
+export const PUNCTUALITY_BONUS_STATUSES = [
+  "qualified",
+  "forfeited_late",
+  "pending_review",
+  "granted",
+  "denied",
+] as const;
+export type PunctualityBonusStatus = (typeof PUNCTUALITY_BONUS_STATUSES)[number];
+
+export const punctualityBonusWeeks = pgTable("punctuality_bonus_weeks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  // Workweek start (YYYY-MM-DD) from payrollEngine.workweekStartFor.
+  weekStartDate: date("week_start_date").notNull(),
+  status: varchar("status", { length: 20 }).notNull(),
+  // Human-readable detail: which day was late / absent, or the manager note.
+  reason: text("reason"),
+  // Frozen inputs to the differential so the amount is reproducible/auditable.
+  bonusPerHour: real("bonus_per_hour").default(0).notNull(),
+  regularHours: real("regular_hours").default(0).notNull(),
+  overtimeHours: real("overtime_hours").default(0).notNull(),
+  doubleTimeHours: real("double_time_hours").default(0).notNull(),
+  overtimeMultiplier: real("overtime_multiplier").default(1.5).notNull(),
+  doubleTimeMultiplier: real("double_time_multiplier").default(2).notNull(),
+  // The differential that is (or would be) paid this week (spec formula).
+  bonusAmount: real("bonus_amount").default(0).notNull(),
+  decidedBy: varchar("decided_by").references(() => users.id),
+  decidedAt: timestamp("decided_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex("punctuality_bonus_weeks_employee_week_idx").on(t.employeeId, t.weekStartDate),
+  index("punctuality_bonus_weeks_status_idx").on(t.status),
+]);
+
+export const insertPunctualityBonusWeekSchema = createInsertSchema(punctualityBonusWeeks).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPunctualityBonusWeek = z.infer<typeof insertPunctualityBonusWeekSchema>;
+export type PunctualityBonusWeek = typeof punctualityBonusWeeks.$inferSelect;
+
+export const punctualityBonusWeeksRelations = relations(punctualityBonusWeeks, ({ one }) => ({
+  employee: one(users, { fields: [punctualityBonusWeeks.employeeId], references: [users.id] }),
+  decider: one(users, { fields: [punctualityBonusWeeks.decidedBy], references: [users.id] }),
+}));
+
 // Task #464: the canonical per-employee-per-day attendance ledger. ONE
 // materialized row per (employee, work_date) holding the unified pay engine's
 // daily split (regular/overtime/double-time + total worked hours), the derived

@@ -8,7 +8,7 @@ import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBa
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
-import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport, OverlapPunchPair, OverlapPunchSummary } from "@shared/schema";
+import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport, OverlapPunchPair, OverlapPunchSummary, EmployeeSchedule } from "@shared/schema";
 import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
@@ -57,6 +57,14 @@ import { applyScheduleTemplate, validateTemplateDays } from "./services/schedule
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, type GeofenceMapData } from "./services/geofence";
 import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
+import {
+  resolvePunctualityBonusConfig,
+  recomputePunctualityForEmployee,
+  listPunctualityBonusWeeksForEmployees,
+  getPunctualityBonusWeek,
+  decidePunctualityBonusWeek,
+  type PunctualityBonusConfig,
+} from "./services/punctualityBonus";
 import { normalizeTimezone } from "@shared/timezone";
 import { localTimeParts, formatScheduleWarning } from "./scheduleWarning";
 import { config } from "./config";
@@ -8429,6 +8437,11 @@ export async function registerRoutes(
         scheduledDays: number[];
         payrollCompanyId: string | null;
         payrollCompanyName: string | null;
+        // Punctuality-bonus inputs (Task: punctuality-bonus).
+        schedules: EmployeeSchedule[];
+        graceMinutes: number;
+        timezone: string;
+        punctualityConfig: PunctualityBonusConfig;
       }>();
       // Small per-batch cache so resolving the payroll company name never
       // re-queries the same company across employees.
@@ -8464,13 +8477,22 @@ export async function registerRoutes(
         const payrollCompanyId = profile?.payrollCompanyId ?? null;
         const payrollCompanyName = await resolveCompanyName(payrollCompanyId);
         const schedules = await storage.getEmployeeSchedules(employeeId);
+        const payrollRules = (pay?.rules as Record<string, any>) || DEFAULT_PAYROLL_RULES;
+        const graceMinutes =
+          Number((att?.rules as any)?.gracePeriodMinutes ?? DEFAULT_ATTENDANCE_RULES.gracePeriodMinutes) || 0;
+        const punctualityConfig = resolvePunctualityBonusConfig(payrollRules);
+        const timezone = punctualityConfig.enabled ? await resolveEmployeeTimezone(employeeId) : "UTC";
         const resolved = {
           payCalc,
-          payrollRules: (pay?.rules as Record<string, any>) || DEFAULT_PAYROLL_RULES,
+          payrollRules,
           rate,
           scheduledDays: schedules.filter(s => s.isActive).map(s => s.dayOfWeek),
           payrollCompanyId,
           payrollCompanyName,
+          schedules,
+          graceMinutes,
+          timezone,
+          punctualityConfig,
         };
         empResolutionCache.set(employeeId, resolved);
         return resolved;
@@ -8519,7 +8541,7 @@ export async function registerRoutes(
         }
 
         for (const [employeeId, groups] of groupsByEmployee) {
-          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName } = await resolveEmp(employeeId);
+          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName, schedules: empSchedules, graceMinutes, timezone: empTimezone, punctualityConfig } = await resolveEmp(employeeId);
 
           type DayMeta = {
             workDate: string;
@@ -8586,8 +8608,47 @@ export async function registerRoutes(
           );
           const splitByDate = new Map(weekly.days.map(d => [d.date, d]));
 
+          // Weekly Punctuality Rate Bonus (Task: punctuality-bonus). When enabled
+          // on the employee's payroll policy, evaluate each pay week's punctuality
+          // (on-time on every scheduled day, PTO-excused absences, late→forfeit,
+          // absence→pending_review), upsert the per-week rows (manager decisions
+          // preserved), and surface the granted week's differential on the
+          // representative day's `bonusAmount` — same column the other bonuses use.
+          const punctualityByDate = new Map<string, { amount: number; description: string }>();
+          if (punctualityConfig.enabled) {
+            const empPunches = groups.flatMap(g => g.punches);
+            const empApprovedTimeOff = approvedTimeOff.filter(r => r.userId === employeeId);
+            const payable = await recomputePunctualityForEmployee(tx, {
+              employeeId,
+              rangeStart: startDate,
+              rangeEnd: endDate,
+              workweekStartDay: payCalc.workweekStartDay,
+              graceMinutes,
+              timezone: empTimezone,
+              bonusPerHour: punctualityConfig.bonusPerHour,
+              overtimeMultiplier: payCalc.overtimeMultiplier,
+              doubleTimeMultiplier: payCalc.doubleTimeMultiplier,
+              schedules: empSchedules,
+              punches: empPunches,
+              approvedTimeOff: empApprovedTimeOff,
+              weekly,
+            });
+            for (const { amount, representativeDate } of payable.values()) {
+              const label = `${punctualityConfig.label}: +$${amount.toFixed(2)}`;
+              const prior = punctualityByDate.get(representativeDate);
+              punctualityByDate.set(representativeDate, prior
+                ? { amount: round2(prior.amount + amount), description: `${prior.description}; ${label}` }
+                : { amount, description: label });
+            }
+          }
+
           for (const meta of dayMetas) {
             const split = splitByDate.get(meta.workDate);
+            const punctuality = punctualityByDate.get(meta.workDate);
+            const recordBonusAmount = punctuality ? round2(meta.bonusAmount + punctuality.amount) : meta.bonusAmount;
+            const recordBonusDescription = punctuality
+              ? (meta.bonusDescription ? `${meta.bonusDescription}; ${punctuality.description}` : punctuality.description)
+              : meta.bonusDescription;
             await tx.insert(payrollBatchRecordsTable).values({
               payrollExportId: created.id,
               employeeId,
@@ -8615,9 +8676,9 @@ export async function registerRoutes(
               workweekStartDay: payCalc.workweekStartDay,
               payrollCompanyId,
               payrollCompanyName,
-              bonusAmount: meta.bonusAmount,
+              bonusAmount: recordBonusAmount,
               bonusHours: meta.bonusHours,
-              bonusDescription: meta.bonusDescription,
+              bonusDescription: recordBonusDescription,
               hasIssues: meta.hasIssue,
               issueDescription: meta.hasIssue ? `Missing punch data on ${meta.workDate}` : null,
             });
@@ -9284,6 +9345,98 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error acknowledging adjustment:", error);
       handleRouteError(res, error, "Failed to acknowledge adjustment");
+    }
+  });
+
+  // --- Weekly Punctuality Rate Bonus review (Task: punctuality-bonus) --------
+  // Resolve the set of employees a caller may review punctuality bonuses for.
+  // Super admins / payroll.view_all / attendance.view_all see everyone;
+  // team managers (attendance.view_team) see their team plus themselves.
+  async function resolvePunctualityScope(req: any): Promise<Set<string>> {
+    const requester = req.authUser as User;
+    const perms = await resolveUserPermissions(requester.id);
+    const isSuper = perms.has("system.super_admin");
+    const canViewAll = isSuper || perms.has("payroll.view_all") || perms.has("attendance.view_all");
+    const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuper);
+    if (canViewAll) return new Set(allUsers.map((u) => u.id));
+    const teamIds = await getTeamUserIds(requester);
+    teamIds.add(requester.id);
+    return new Set(allUsers.filter((u) => teamIds.has(u.id)).map((u) => u.id));
+  }
+
+  // List punctuality-bonus weeks visible to the caller. Defaults to the weeks
+  // that need a decision (`pending_review`); pass ?status= to fetch another set.
+  app.get("/api/payroll/punctuality-bonus/weeks", requireAuth, requirePermission("payroll.view_all"), async (req: any, res) => {
+    try {
+      const visible = await resolvePunctualityScope(req);
+      const statusParam = typeof req.query.status === "string" ? req.query.status : "pending_review";
+      const status = statusParam === "all" ? undefined : (statusParam as any);
+      const rows = await listPunctualityBonusWeeksForEmployees(Array.from(visible), status ? { status } : undefined);
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const nameById = new Map(allUsers.map((u) => [u.id, `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || "Unknown"]));
+      res.json(rows.map((r) => ({ ...r, employeeName: nameById.get(r.employeeId) || "Unknown" })));
+    } catch (error) {
+      console.error("Error listing punctuality bonus weeks:", error);
+      handleRouteError(res, error, "Failed to list punctuality bonus weeks");
+    }
+  });
+
+  // Approve or deny a pending_review punctuality-bonus week.
+  app.post("/api/payroll/punctuality-bonus/:id/decision", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const decision = req.body?.decision;
+      if (decision !== "approve" && decision !== "deny") {
+        return res.status(400).json({ message: "decision must be 'approve' or 'deny'" });
+      }
+      const note = typeof req.body?.note === "string" ? req.body.note : undefined;
+
+      const week = await getPunctualityBonusWeek(String(req.params.id));
+      if (!week) return res.status(404).json({ message: "Punctuality bonus week not found" });
+
+      const visible = await resolvePunctualityScope(req);
+      if (!visible.has(week.employeeId)) {
+        return res.status(403).json({ message: "Forbidden: employee is outside your team scope" });
+      }
+      if (week.status !== "pending_review") {
+        return res.status(409).json({ message: `Week is not pending review (status: ${week.status})`, code: "NOT_PENDING_REVIEW" });
+      }
+
+      const adminUser = req.authUser as User;
+      const updated = await decidePunctualityBonusWeek(week.id, decision, adminUser.id, note);
+      if (!updated) {
+        return res.status(409).json({ message: "Week could not be decided (no longer pending)", code: "NOT_PENDING_REVIEW" });
+      }
+
+      const auditCtx = getAuditContext(req);
+      await writeLedgerEntry({
+        category: "payroll",
+        eventType: decision === "approve" ? "punctuality_bonus_granted" : "punctuality_bonus_denied",
+        employeeId: updated.employeeId,
+        actorUserId: adminUser.id,
+        entityType: "punctuality_bonus_week",
+        entityId: updated.id,
+        workDate: updated.weekStartDate,
+        beforeValue: { status: week.status, bonusAmount: week.bonusAmount },
+        afterValue: { status: updated.status, bonusAmount: updated.bonusAmount },
+        context: { note: note ?? null, weekStartDate: updated.weekStartDate },
+        source: "manager_review",
+        ipAddress: auditCtx.ipAddress,
+        userAgent: auditCtx.userAgent,
+      });
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "punctuality_bonus_week",
+        targetId: updated.id,
+        action: decision === "approve" ? "punctuality_bonus.granted" : "punctuality_bonus.denied",
+        oldValue: { status: week.status },
+        newValue: { status: updated.status, bonusAmount: updated.bonusAmount },
+        ...auditCtx,
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error deciding punctuality bonus week:", error);
+      handleRouteError(res, error, "Failed to decide punctuality bonus week");
     }
   });
 

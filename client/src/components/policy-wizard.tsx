@@ -1474,6 +1474,77 @@ interface EarlyArrivalBonus {
   applyScope?: "entire_shift" | "before_cutoff";
 }
 
+// Weekly Punctuality Rate Bonus editor (Task: punctuality-bonus). Binds to the
+// nested `punctualityBonus` object on the payroll rules: an enable toggle plus a
+// "$/hour bonus" delta applied to every hour of a fully-on-time pay week.
+type PunctualityBonusValue = { enabled?: boolean; bonusPerHour?: number; label?: string } | undefined;
+function PunctualityBonusEditor({
+  value,
+  onChange,
+}: {
+  value: PunctualityBonusValue;
+  onChange: (next: { enabled: boolean; bonusPerHour: number; label: string }) => void;
+}) {
+  const enabled = value?.enabled === true;
+  const bonusPerHour = value?.bonusPerHour ?? 2;
+  const label = value?.label ?? "Weekly Punctuality Bonus";
+  const patch = (p: Partial<{ enabled: boolean; bonusPerHour: number; label: string }>) =>
+    onChange({ enabled, bonusPerHour, label, ...p });
+
+  return (
+    <div className="space-y-4" data-testid="editor-punctuality-bonus">
+      <div>
+        <h4 className="text-sm font-semibold">Weekly Punctuality Rate Bonus</h4>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          Reward employees who clock in on-time (within the attendance grace period) on
+          every scheduled day of a pay week with an elevated hourly rate that week. Any
+          late arrival forfeits the week automatically; a missed scheduled day with no
+          approved PTO is sent to a manager for review. The bonus applies to regular,
+          overtime and double-time hours (OT/DT scaled by their multipliers).
+        </p>
+      </div>
+      <div className="flex items-center justify-between border rounded-md px-3 py-2">
+        <div>
+          <Label className="font-medium">Enable punctuality bonus</Label>
+          <p className="text-xs text-muted-foreground">Off by default.</p>
+        </div>
+        <Switch
+          checked={enabled}
+          onCheckedChange={(v) => patch({ enabled: v })}
+          data-testid="switch-punctuality-enabled"
+        />
+      </div>
+      {enabled && (
+        <div className="grid grid-cols-1 gap-3">
+          <div>
+            <Label>$/hour bonus</Label>
+            <Input
+              type="number"
+              step="0.01"
+              min={0}
+              value={bonusPerHour}
+              onChange={(e) => patch({ bonusPerHour: e.target.value === "" ? 0 : Number(e.target.value) })}
+              data-testid="input-punctuality-per-hour"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Extra dollars per hour added on a qualifying week (e.g. 2 makes a $25/hr employee earn $27/hr that week).
+            </p>
+          </div>
+          <div>
+            <Label>Label</Label>
+            <Input
+              value={label}
+              onChange={(e) => patch({ label: e.target.value })}
+              placeholder="Weekly Punctuality Bonus"
+              data-testid="input-punctuality-label"
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EarlyArrivalBonusEditor({
   bonuses, onChange, errors, overlaps,
 }: {
@@ -2161,6 +2232,18 @@ function StepRules({
           onChange={(next) => setRulesForm({ ...rulesForm, earlyArrivalBonuses: next })}
           errors={errors}
           overlaps={earlyOverlaps}
+        />
+      ),
+    });
+    tabs.push({
+      id: "punctuality-bonus",
+      label: "Punctuality Bonus",
+      isOff: !(rulesForm.punctualityBonus && rulesForm.punctualityBonus.enabled === true),
+      hasError: false,
+      content: (
+        <PunctualityBonusEditor
+          value={rulesForm.punctualityBonus}
+          onChange={(next) => setRulesForm({ ...rulesForm, punctualityBonus: next })}
         />
       ),
     });

@@ -517,6 +517,17 @@ export const DEFAULT_PAYROLL_RULES = {
     daysOfWeek?: number[];
     applyScope?: "entire_shift" | "before_cutoff";
   }>,
+  // Weekly Punctuality Rate Bonus. When enabled, an employee who clocks in
+  // on-time (within the attendance grace period) on EVERY scheduled day of a
+  // pay week earns an elevated rate — `bonusPerHour` extra on every hour that
+  // week, with the OT/DT hours scaled by their multipliers (see
+  // server/services/punctualityBonus.ts). Defaulted OFF so it is a no-op until
+  // an admin turns it on.
+  punctualityBonus: {
+    enabled: false,
+    bonusPerHour: 2,
+    label: "Weekly Punctuality Bonus",
+  } as { enabled: boolean; bonusPerHour: number; label?: string },
 };
 
 export const DEFAULT_APPROVALS_RULES = {
