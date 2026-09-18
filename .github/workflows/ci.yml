@@ -55,7 +55,12 @@ jobs:
         run: npx tsc
 
       - name: Production build
+        # Build in production mode (what actually deploys) so the client is
+        # minified — the job-level NODE_ENV=test yields a much larger,
+        # unoptimized bundle.
         run: npm run build
+        env:
+          NODE_ENV: production
 
       - name: Run migrations
         run: npm run db:migrate

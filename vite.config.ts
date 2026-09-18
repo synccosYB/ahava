@@ -48,6 +48,10 @@ export default defineConfig({
       workbox: {
         // Precache the built app shell (JS/CSS/HTML/icons) for fast loads.
         globPatterns: ["**/*.{js,css,html,ico,png,svg,webmanifest}"],
+        // This is a large single-bundle SPA (face-api etc.); allow the shell
+        // chunk to be precached with headroom so SW generation never errors on
+        // a big-but-legitimate bundle. The production bundle is ~1.6 MB.
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         // The SPA is served by Express; fall back to the app shell on
         // navigation so deep links still boot when offline/flaky.
         navigateFallback: "/index.html",
