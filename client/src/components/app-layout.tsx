@@ -4,6 +4,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Separator } from "@/components/ui/separator";
 import { SynkDexWidget } from "@/components/synkdex-widget";
 import { TimeClockWidget } from "@/components/time-clock-widget";
+import { PwaInstallPrompt } from "@/components/pwa-install-prompt";
 import {
   Tooltip,
   TooltipContent,
@@ -47,6 +48,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <span className="text-xs font-medium text-muted-foreground tracking-wide uppercase">
             Ahava Medical Center
           </span>
+          <div className="ml-auto flex items-center">
+            <PwaInstallPrompt />
+          </div>
         </header>
         <main className="flex-1 overflow-auto p-6" data-testid="main-content">
           {children}
