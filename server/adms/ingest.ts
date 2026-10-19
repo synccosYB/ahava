@@ -86,7 +86,10 @@ export async function ingestPunches(
       } else {
         let record;
         try {
-          record = await storage.clockIn(userId, "biometric", undefined, { kioskDeviceId: device.id });
+          // Biometric clocks have their own table and must not be written to
+          // punch_logs.kiosk_device_id (FK references kiosk_devices only).
+          // Device provenance is stored in biometric_device_events.punch_log_id.
+          record = await storage.clockIn(userId, "biometric");
         } catch (err) {
           if (err instanceof DuplicateOpenPunchError) {
             await adms.updateEvent(event.id, { userId, status: "duplicate", direction: "clock_in" });
