@@ -4,6 +4,7 @@ import { z } from "zod";
 import { storage, DuplicateOpenPunchError } from "./storage";
 import { badRequestFromZod, handleRouteError, mapRouteError, RouteConflictError, PayrollFinalizedError } from "./routeErrors";
 import { db } from "./db";
+import { employeeLocations as employeeLocationsTable } from "@shared/schema";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
@@ -2542,7 +2543,32 @@ export async function registerRoutes(
   app.delete("/api/locations/:id", requireAuth, requirePermission("locations.manage"), async (req, res) => {
     const location = await storage.getLocation(String(req.params.id));
     if (!location) return res.status(404).json({ message: "Location not found" });
-    await storage.deleteLocation(String(req.params.id));
+
+    // employee_locations has ON DELETE CASCADE. Never silently remove employee
+    // assignments in order to delete a location. Other references use FK
+    // restrictions; handle those below as a normal, actionable conflict.
+    const employeesAssigned = await db.select({ id: employeeLocationsTable.id })
+      .from(employeeLocationsTable)
+      .where(eq(employeeLocationsTable.locationId, location.id))
+      .limit(1);
+    if (employeesAssigned.length > 0) {
+      return res.status(409).json({
+        code: "LOCATION_IN_USE",
+        message: "This location has employee assignments. Deactivate it instead to preserve its records.",
+      });
+    }
+
+    try {
+      await storage.deleteLocation(location.id);
+    } catch (err) {
+      if ((err as { code?: string } | null)?.code === "23503") {
+        return res.status(409).json({
+          code: "LOCATION_IN_USE",
+          message: "This location is linked to other records and cannot be permanently deleted. Deactivate it instead to preserve history.",
+        });
+      }
+      throw err;
+    }
     res.status(204).send();
   });
 
