@@ -23,13 +23,12 @@ export const PUNCH_SOURCE_LABELS: Record<PunchSource, string> = {
 // `allowedPunchSources`. Includes "manager" so that manager/admin corrections
 // (which create/modify punches) keep working exactly as before for employees
 // and locations without an explicit policy. QR is off by default because the
-// capture experience isn't built yet.
+// capture experience isn't built yet. Fingerprint clocks are intentionally\n// opt-in and require a configured, authenticated ingress before use.
 export const DEFAULT_ALLOWED_PUNCH_SOURCES: PunchSource[] = [
   "web",
   "mobile",
   "kiosk",
   "manager",
-  "biometric",
 ];
 
 export function isKnownPunchSource(value: unknown): value is PunchSource {
