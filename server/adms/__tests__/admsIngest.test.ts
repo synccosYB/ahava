@@ -20,6 +20,17 @@ import { ingestPunches } from "../ingest";
 import { parseAttlog } from "../protocol";
 import * as adms from "../store";
 
+// This suite deletes/recreates test attendance records. Permit it only in
+// GitHub CI's isolated ahava_ci database, never an ordinary Replit workspace
+// or a database with production employee attendance.
+const isolatedTestDatabase =
+  process.env.CI === "true" &&
+  (() => {
+    try { return new URL(process.env.DATABASE_URL ?? "").pathname === "/ahava_ci"; }
+    catch { return false; }
+  })();
+const integrationTest = isolatedTestDatabase ? test : test.skip;
+
 const TEST_USER_ID = "admin-dev-001";
 const DEVICE_SERIAL = "TEST-ADMS-SN-1";
 const DEVICE_USER = "999"; // the user's number ON the clock
@@ -48,7 +59,7 @@ async function cleanup() {
     );
 }
 
-test("ADMS ingest: mapped user → clock-in, then clock-out, idempotent on resend", async (t) => {
+integrationTest("ADMS ingest: mapped user → clock-in, then clock-out, idempotent on resend", async (t) => {
   await cleanup();
   t.after(cleanup);
 
@@ -75,7 +86,7 @@ test("ADMS ingest: mapped user → clock-in, then clock-out, idempotent on resen
   assert.equal(r3.duplicates, 1, "resent punch must be counted as a duplicate");
 });
 
-test("ADMS ingest: unmapped user is parked as pending_mapping, never dropped", async (t) => {
+integrationTest("ADMS ingest: unmapped user is parked as pending_mapping, never dropped", async (t) => {
   await cleanup();
   t.after(cleanup);
 
