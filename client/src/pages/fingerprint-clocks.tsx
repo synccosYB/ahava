@@ -213,6 +213,12 @@ export default function FingerprintClocksPage() {
             <Setting label="HTTPS" value={isHttps ? "ON" : "OFF"} />
             <Setting label="Enable Proxy Server" value="OFF" />
           </div>
+          <p className="text-amber-700 mt-3">
+            Security setup required: Ahava rejects unauthenticated clock traffic by default.
+            Configure a trusted HTTPS gateway to provide the X-Ahava-ADMS-Key header and
+            set ADMS_INGEST_TOKEN on the server. Confirm your clock firmware or gateway
+            supports this before using live payroll punches.
+          </p>
           <p className="text-muted-foreground mt-3">
             Tip: give each employee an <strong>Employee Number</strong> in Ahava that matches the
             number they're enrolled as on the clock — then their punches link automatically.

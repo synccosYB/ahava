@@ -12,6 +12,19 @@
 // We keep this intentionally small and well-logged: on first real-device bring-up
 // the verbose request log is how we confirm/adjust behaviour on site.
 
+import { timingSafeEqual } from "node:crypto";
+
+// ADMS punch uploads affect payroll. A serial number is a public identifier,
+// not authentication. Require a secret supplied by an authenticated HTTPS
+// ingress (e.g. a trusted reverse proxy injecting X-Ahava-ADMS-Key). The
+// physical clock's ability to send credentials must be verified per model.
+export function isValidAdmsToken(configured: string | undefined, supplied: string | undefined): boolean {
+  if (!configured || configured.length < 32 || !supplied) return false;
+  const expected = Buffer.from(configured, "utf8");
+  const actual = Buffer.from(supplied, "utf8");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
 export interface AttendancePunch {
   /** The device's local enrolled user-number (what the clock calls the person). */
   deviceUserId: string;

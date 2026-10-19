@@ -69,13 +69,10 @@ export async function autoMatchUserByEmployeeNumber(
     .from(userEmploymentProfiles)
     .innerJoin(users, eq(users.id, userEmploymentProfiles.userId))
     .where(eq(userEmploymentProfiles.employeeNumber, deviceUserId));
-  if (rows.length === 0) return undefined;
-  if (rows.length === 1) return rows[0].userId;
-  if (companyId) {
-    const scoped = rows.filter((r) => r.companyId === companyId);
-    if (scoped.length === 1) return scoped[0].userId;
-  }
-  return undefined; // ambiguous — leave for a human to map
+  // Never auto-bind an employee from a different company simply because the
+  // employee number happens to be globally unique.
+  const eligible = companyId ? rows.filter((r) => r.companyId === companyId) : rows;
+  return eligible.length === 1 ? eligible[0].userId : undefined;
 }
 
 export async function mapDeviceUser(deviceId: string, deviceUserId: string, userId: string): Promise<void> {

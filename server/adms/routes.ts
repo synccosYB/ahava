@@ -2,9 +2,11 @@
 //   • a PUBLIC, unauthenticated "/iclock" router the clocks push to (ADMS), and
 //   • an ADMIN "/api/biometric-devices" API to register + monitor them.
 //
-// The clocks authenticate only by a pre-registered hardware serial (that's all
-// ADMS carries), so the trust model today is "serial is known + reaches us over
-// HTTPS". Punch payloads are low-sensitivity (an employee number + a time).
+// Clock serials are identifiers, not proof of origin. All /iclock requests
+// require an authenticated upstream that supplies X-Ahava-ADMS-Key, matched
+// against ADMS_INGEST_TOKEN (>= 32 characters). Without that configuration,
+// the endpoint fails closed. Device compatibility/gateway setup is required
+// before enabling live payroll punches.
 import express, { type Express, type Request, type Response, Router } from "express";
 import { z } from "zod";
 import { logger } from "../lib/logger";
@@ -17,6 +19,7 @@ import {
   parseAttlog,
   tableKind,
   serialFromQuery,
+  isValidAdmsToken,
 } from "./protocol";
 import { ingestPunches } from "./ingest";
 import * as adms from "./store";
@@ -41,6 +44,13 @@ function buildIclockRouter(): Router {
   // no content-type). Capture everything as a raw text body.
   router.use(express.text({ type: () => true, limit: "4mb" }));
 
+  router.use((req, res, next) => {
+    if (!isValidAdmsToken(process.env.ADMS_INGEST_TOKEN, req.get("X-Ahava-ADMS-Key"))) {
+      return textResponse(res, "ERROR: unauthorized device ingress", 403);
+    }
+    next();
+  });
+
   // Verbose request trace — on first real-device bring-up this is how we confirm
   // the clock is reaching us and see exactly what it sends.
   router.use((req, _res, next) => {
@@ -58,13 +68,13 @@ function buildIclockRouter(): Router {
   // Initial handshake: the device asks for its options/registry.
   router.get("/cdata", async (req, res) => {
     const serial = serialFromQuery(req.query as any);
-    if (!serial) return textResponse(res, ackOk());
+    if (!serial) return textResponse(res, "ERROR: device serial required", 400);
     const device = await adms.getDeviceBySerial(serial);
-    if (device) {
-      await adms.touchDeviceLastSeen(device.id).catch(() => {});
-    } else {
-      logger.warn("[adms] handshake from UNREGISTERED device", { source: "adms", sn: serial });
+    if (!device || !device.isActive) {
+      logger.warn("[adms] handshake from unknown/inactive device", { source: "adms", sn: serial });
+      return textResponse(res, "ERROR: device not registered or inactive", 403);
     }
+    await adms.touchDeviceLastSeen(device.id).catch(() => {});
     return textResponse(res, buildOptionsResponse(serial));
   });
 
@@ -74,22 +84,20 @@ function buildIclockRouter(): Router {
     const kind = tableKind(req.query as any);
     const device = serial ? await adms.getDeviceBySerial(serial) : undefined;
 
-    if (device) await adms.touchDeviceLastSeen(device.id).catch(() => {});
+    if (!device || !device.isActive) {
+      logger.warn("[adms] request from unknown/inactive device", { source: "adms", sn: serial });
+      return textResponse(res, "ERROR: device not registered or inactive", 403);
+    }
+    await adms.touchDeviceLastSeen(device.id).catch(() => {});
 
     if (kind === "ATTLOG") {
       const punches = parseAttlog(bodyToString(req));
-      if (!device) {
-        // Register-first is the intended workflow, so this should be rare. ACK so
-        // the device doesn't spin, but shout about it so we register the serial.
-        logger.warn("[adms] ATTLOG from UNREGISTERED device — punches NOT stored", {
-          source: "adms",
-          sn: serial,
-          count: punches.length,
-        });
-        return textResponse(res, ackOk(punches.length));
-      }
       const r = await ingestPunches(device, punches);
       logger.info("[adms] ATTLOG ingested", { source: "adms", sn: serial, ...r });
+      // Errors are visible to admins and must not be misreported as success.
+      // The event ledger retains records for reconciliation when processing
+      // cannot complete (including DB/policy errors).
+      if (r.errors) return textResponse(res, "ERROR: punch ingest incomplete", 503);
       return textResponse(res, ackOk(punches.length));
     }
 
@@ -103,7 +111,10 @@ function buildIclockRouter(): Router {
     const serial = serialFromQuery(req.query as any);
     if (serial) {
       const device = await adms.getDeviceBySerial(serial);
-      if (device) await adms.touchDeviceLastSeen(device.id).catch(() => {});
+      if (!device || !device.isActive) return textResponse(res, "ERROR: device not registered or inactive", 403);
+      await adms.touchDeviceLastSeen(device.id).catch(() => {});
+    } else {
+      return textResponse(res, "ERROR: device serial required", 400);
     }
     return textResponse(res, ackOk());
   });
