@@ -20,7 +20,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building, Check } from "lucide-react";
+import { MapPin, Building2, Plus, Pencil, Trash2, RotateCcw, ChevronsUpDown, X, Building, Check } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { useAuth } from "@/hooks/use-auth";
 import { useActiveCompany } from "@/hooks/use-active-company";
@@ -198,6 +198,8 @@ function LocationsTab() {
   const { user, isLoading: authLoading } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [locationToRemove, setLocationToRemove] = useState<LocationWithCompanies | null>(null);
+  const [deleteError, setDeleteError] = useState("");
   const [form, setForm] = useState({ name: "", code: "", timezone: "" });
   const [companyIds, setCompanyIds] = useState<string[]>([]);
   const [addresses, setAddresses] = useState<AddressEntry[]>([emptyAddress()]);
@@ -302,14 +304,30 @@ function LocationsTab() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations"] });
+      setLocationToRemove(null);
+      setDeleteError("");
       toast({ title: "Location deleted" });
     },
     onError: (err: Error) => {
-      toast({
-        title: "Could not delete location",
-        description: friendlyMutationError(err, "Couldn't delete location — please try again."),
-        variant: "destructive",
-      });
+      // Keep the dialog open so admins can choose safe deactivation instead.
+      setDeleteError(friendlyMutationError(err, "Couldn't delete location — please try again."));
+    },
+  });
+
+  const activeMutation = useMutation({
+    mutationFn: async ({ id, isActive }: { id: string; isActive: boolean }) => {
+      await apiRequest("PATCH", `/api/locations/${id}`, { isActive });
+    },
+    onSuccess: (_result, { isActive }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/locations"] });
+      setLocationToRemove(null);
+      setDeleteError("");
+      toast({ title: isActive ? "Location reactivated" : "Location deactivated" });
+    },
+    onError: (err: Error) => {
+      const description = friendlyMutationError(err, "Couldn't change location status — please try again.");
+      setDeleteError(description);
+      toast({ title: "Could not update location status", description, variant: "destructive" });
     },
   });
 
@@ -721,7 +739,23 @@ function LocationsTab() {
                         <Button variant="ghost" size="icon" onClick={() => startEdit(loc)} data-testid={`button-edit-location-${loc.id}`}>
                           <Pencil className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="icon" onClick={() => deleteMutation.mutate(loc.id)} data-testid={`button-delete-location-${loc.id}`}>
+                        {!loc.isActive && (
+                          <Button
+                            variant="ghost" size="icon" title={`Reactivate ${loc.name}`}
+                            aria-label={`Reactivate ${loc.name}`}
+                            disabled={activeMutation.isPending}
+                            onClick={() => activeMutation.mutate({ id: loc.id, isActive: true })}
+                            data-testid={`button-reactivate-location-${loc.id}`}
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost" size="icon" title={`Remove ${loc.name}`}
+                          aria-label={`Remove ${loc.name}`}
+                          onClick={() => { setLocationToRemove(loc); setDeleteError(""); }}
+                          data-testid={`button-delete-location-${loc.id}`}
+                        >
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
                       </div>
@@ -734,6 +768,57 @@ function LocationsTab() {
         </CardContent>
       </Card>
       )}
+      <Dialog
+        open={!!locationToRemove}
+        onOpenChange={(open) => {
+          if (!open && !deleteMutation.isPending && !activeMutation.isPending) {
+            setLocationToRemove(null);
+            setDeleteError("");
+          }
+        }}
+      >
+        <DialogContent data-testid="dialog-confirm-remove-location">
+          <DialogHeader>
+            <DialogTitle>Remove {locationToRemove?.name}?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Permanent deletion is only allowed when the location is no longer linked to other records.
+            Deactivating keeps employee assignments and historical attendance, payroll, and policy data intact.
+          </p>
+          {deleteError && (
+            <p role="alert" className="text-sm text-destructive" data-testid="text-location-delete-error">
+              {deleteError}
+            </p>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              disabled={deleteMutation.isPending || activeMutation.isPending}
+              onClick={() => { setLocationToRemove(null); setDeleteError(""); }}
+            >
+              Cancel
+            </Button>
+            {locationToRemove?.isActive && (
+              <Button
+                variant="secondary"
+                disabled={deleteMutation.isPending || activeMutation.isPending}
+                onClick={() => activeMutation.mutate({ id: locationToRemove.id, isActive: false })}
+                data-testid="button-deactivate-location"
+              >
+                Deactivate instead
+              </Button>
+            )}
+            <Button
+              variant="destructive"
+              disabled={!locationToRemove || deleteMutation.isPending || activeMutation.isPending}
+              onClick={() => { if (locationToRemove) deleteMutation.mutate(locationToRemove.id); }}
+              data-testid="button-confirm-delete-location"
+            >
+              Delete permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
