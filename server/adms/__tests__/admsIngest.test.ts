@@ -72,7 +72,10 @@ integrationTest("ADMS ingest: mapped user → clock-in, then clock-out, idempote
   const open = await storage.getLatestAttendanceForUser(TEST_USER_ID);
   assert.ok(open && open.clockIn && !open.clockOut, "employee should now be clocked in");
   assert.equal(open!.source, "biometric", "punch should be tagged as a biometric-device punch");
-  assert.equal(open!.kioskDeviceId, device.id, "punch should carry the device id");
+  assert.equal(open!.kioskDeviceId, null, "fingerprint clock is not a kiosk_devices FK");
+  const linked = (await adms.listEvents(device.id, 10)).find((e) => e.punchLogId === open!.id);
+  assert.ok(linked, "fingerprint event should link device to its punch");
+  assert.equal(linked!.deviceId, device.id);
 
   // 2) Second punch → clock-out (derived from open state, not the device status key).
   const r2 = await ingestPunches(device, parseAttlog(`${DEVICE_USER}\t2026-10-20 17:00:00\t1\t1`));
