@@ -37,7 +37,8 @@ test("recognizes the six canonical punch methods", () => {
 // --- Defaults preserve existing behavior ---
 test("default allowed methods keep web/mobile/kiosk/manager on, qr off", () => {
   assert.deepEqual(DEFAULT_ALLOWED_PUNCH_SOURCES, ["web", "mobile", "kiosk", "manager"]);
-  assert.ok(!DEFAULT_ALLOWED_PUNCH_SOURCES.includes("qr"));\n  assert.ok(!DEFAULT_ALLOWED_PUNCH_SOURCES.includes("biometric"));
+  assert.ok(!DEFAULT_ALLOWED_PUNCH_SOURCES.includes("qr"));
+  assert.ok(!DEFAULT_ALLOWED_PUNCH_SOURCES.includes("biometric"));
 });
 
 test("policy engine default attendance rules use the shared default", () => {
@@ -100,7 +101,9 @@ test("isPunchSourceAllowed enforces per-policy allow lists", () => {
   assert.equal(isPunchSourceAllowed(undefined, "mobile"), true);
   assert.equal(isPunchSourceAllowed(undefined, "kiosk"), true);
   assert.equal(isPunchSourceAllowed(undefined, "manager"), true);
-  assert.equal(isPunchSourceAllowed(undefined, "qr"), false);\n  assert.equal(isPunchSourceAllowed(undefined, "biometric"), false);\n  assert.equal(isPunchSourceAllowed({ allowedPunchSources: ["biometric"] }, "biometric"), true);
+  assert.equal(isPunchSourceAllowed(undefined, "qr"), false);
+  assert.equal(isPunchSourceAllowed(undefined, "biometric"), false);
+  assert.equal(isPunchSourceAllowed({ allowedPunchSources: ["biometric"] }, "biometric"), true);
 });
 
 test("labels resolve for known sources and pass through unknown", () => {
