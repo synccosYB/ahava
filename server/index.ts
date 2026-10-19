@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import compression from "compression";
 import { registerRoutes } from "./routes";
+import { registerAdmsRoutes } from "./adms/routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import path from 'path';
@@ -127,6 +128,11 @@ app.use((req, res, next) => {
 
   await setupAuth(app);
   registerAuthRoutes(app);
+
+  // Biometric wall clocks push to "/iclock" (ADMS) with no login — mount it here,
+  // before registerRoutes and the SPA catch-all, so those requests are matched
+  // and are not swallowed by the client app. Admin APIs register here too.
+  registerAdmsRoutes(app);
 
   // Liveness: process is up and serving. No external dependencies checked so
   // load balancers don't recycle the instance when the DB is briefly busy.

@@ -677,6 +677,90 @@ export const insertKioskDeviceSchema = createInsertSchema(kioskDevices).omit({
 export type InsertKioskDevice = z.infer<typeof insertKioskDeviceSchema>;
 export type KioskDevice = typeof kioskDevices.$inferSelect;
 
+// ---------------------------------------------------------------------------
+// Biometric wall clocks (ADMS push devices) — e.g. Compumatic XLS Bio v2 /
+// ZKTeco fingerprint terminals. These are physical clocks that match a finger
+// locally and PUSH each punch to us over the ADMS/"iclock" protocol. Unlike a
+// kiosk tablet (which runs our UI), these are headless appliances identified by
+// a hardware serial number. See server/adms/* for the ingest.
+// ---------------------------------------------------------------------------
+export const biometricDevices = pgTable("biometric_devices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // The hardware serial the device reports as `SN=` on every ADMS request. This
+  // IS the device's identity on the wire, so it is unique and pre-registered.
+  serialNumber: varchar("serial_number", { length: 64 }).notNull().unique(),
+  name: varchar("name", { length: 100 }).notNull(),
+  // A biometric clock belongs to a physical location; every employee assigned to
+  // that location may punch on it (department-independent, per the owner's spec).
+  locationId: varchar("location_id").references(() => locations.id),
+  companyId: varchar("company_id").references(() => companies.id),
+  // Reserved for Phase 2 (per-device HMAC/token). ADMS itself carries no secret,
+  // so today trust = "serial is pre-registered + reaches us over HTTPS".
+  secret: varchar("secret", { length: 128 }),
+  isActive: boolean("is_active").default(true).notNull(),
+  lastSeenAt: timestamp("last_seen_at"),
+  firmware: varchar("firmware", { length: 64 }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("biometric_devices_location_idx").on(table.locationId),
+]);
+
+export const insertBiometricDeviceSchema = createInsertSchema(biometricDevices).omit({
+  id: true,
+  createdAt: true,
+  lastSeenAt: true,
+});
+export type InsertBiometricDevice = z.infer<typeof insertBiometricDeviceSchema>;
+export type BiometricDevice = typeof biometricDevices.$inferSelect;
+
+// Maps a device's LOCAL enrolled user-number (what the clock knows the employee
+// as, sent in each punch) to the Ahava employee. Per-device because each
+// physical clock holds its own local enrollment today; central template sync
+// (Phase 2) will keep these numbers consistent across a location's clocks.
+export const biometricDeviceUsers = pgTable("biometric_device_users", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  deviceId: varchar("device_id").notNull().references(() => biometricDevices.id),
+  deviceUserId: varchar("device_user_id", { length: 64 }).notNull(),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  uniqueIndex("biometric_device_users_device_user_uq").on(table.deviceId, table.deviceUserId),
+  index("biometric_device_users_user_idx").on(table.userId),
+]);
+
+export const insertBiometricDeviceUserSchema = createInsertSchema(biometricDeviceUsers).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertBiometricDeviceUser = z.infer<typeof insertBiometricDeviceUserSchema>;
+export type BiometricDeviceUser = typeof biometricDeviceUsers.$inferSelect;
+
+// Every raw punch a device pushes, kept for (a) idempotency — devices re-send
+// until ACKed, so (deviceId, deviceUserId, devicePunchTime) is a dedupe key —
+// and (b) audit/debugging, including punches we couldn't yet map to an employee
+// (status = "pending_mapping") so nothing is ever silently dropped.
+export const biometricDeviceEvents = pgTable("biometric_device_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  deviceId: varchar("device_id").notNull().references(() => biometricDevices.id),
+  deviceUserId: varchar("device_user_id", { length: 64 }).notNull(),
+  // Device-reported local time string, verbatim — the idempotency key.
+  devicePunchTime: varchar("device_punch_time", { length: 32 }).notNull(),
+  deviceStatus: varchar("device_status", { length: 16 }),
+  rawLine: text("raw_line"),
+  userId: varchar("user_id").references(() => users.id),
+  punchLogId: varchar("punch_log_id"),
+  direction: varchar("direction", { length: 12 }),
+  // "processed" | "pending_mapping" | "duplicate" | "error"
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  uniqueIndex("biometric_device_events_dedup_uq").on(table.deviceId, table.deviceUserId, table.devicePunchTime),
+  index("biometric_device_events_device_idx").on(table.deviceId),
+]);
+
+export type BiometricDeviceEvent = typeof biometricDeviceEvents.$inferSelect;
+
 // LEGACY / DORMANT (task #454): after the PTO consolidation, NO balance/accrual
 // number is read from this table. Every PTO read surface resolves the effective
 // `pto` policy through the unified engine (policies + policy_rules) via
