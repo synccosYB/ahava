@@ -484,6 +484,13 @@
       "when": 1780301600000,
       "tag": "0068_punctuality_bonus_weeks",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1780301700000,
+      "tag": "0069_biometric_devices",
+      "breakpoints": true
     }
   ]
 }
