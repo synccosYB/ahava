@@ -25,9 +25,9 @@ function test(name: string, fn: () => void | Promise<void>) {
 }
 
 // --- Canonical set ---
-test("recognizes the five canonical punch methods", () => {
-  assert.deepEqual([...PUNCH_SOURCES], ["web", "mobile", "kiosk", "qr", "manager"]);
-  for (const s of ["web", "mobile", "kiosk", "qr", "manager"]) {
+test("recognizes the six canonical punch methods", () => {
+  assert.deepEqual([...PUNCH_SOURCES], ["web", "mobile", "kiosk", "qr", "manager", "biometric"]);
+  for (const s of ["web", "mobile", "kiosk", "qr", "manager", "biometric"]) {
     assert.ok(isKnownPunchSource(s), `${s} should be known`);
   }
   assert.equal(isKnownPunchSource("badge"), false);
@@ -37,7 +37,7 @@ test("recognizes the five canonical punch methods", () => {
 // --- Defaults preserve existing behavior ---
 test("default allowed methods keep web/mobile/kiosk/manager on, qr off", () => {
   assert.deepEqual(DEFAULT_ALLOWED_PUNCH_SOURCES, ["web", "mobile", "kiosk", "manager"]);
-  assert.ok(!DEFAULT_ALLOWED_PUNCH_SOURCES.includes("qr"));
+  assert.ok(!DEFAULT_ALLOWED_PUNCH_SOURCES.includes("qr"));\n  assert.ok(!DEFAULT_ALLOWED_PUNCH_SOURCES.includes("biometric"));
 });
 
 test("policy engine default attendance rules use the shared default", () => {
@@ -95,12 +95,12 @@ test("isPunchSourceAllowed enforces per-policy allow lists", () => {
   assert.equal(isPunchSourceAllowed(kioskOnly, "web"), false);
   assert.equal(isPunchSourceAllowed(kioskOnly, "manager"), false);
 
-  // With no policy, web/mobile/kiosk/manager are allowed; qr is blocked.
+  // With no policy, web/mobile/kiosk/manager are allowed; qr and biometric are blocked.
   assert.equal(isPunchSourceAllowed(undefined, "web"), true);
   assert.equal(isPunchSourceAllowed(undefined, "mobile"), true);
   assert.equal(isPunchSourceAllowed(undefined, "kiosk"), true);
   assert.equal(isPunchSourceAllowed(undefined, "manager"), true);
-  assert.equal(isPunchSourceAllowed(undefined, "qr"), false);
+  assert.equal(isPunchSourceAllowed(undefined, "qr"), false);\n  assert.equal(isPunchSourceAllowed(undefined, "biometric"), false);\n  assert.equal(isPunchSourceAllowed({ allowedPunchSources: ["biometric"] }, "biometric"), true);
 });
 
 test("labels resolve for known sources and pass through unknown", () => {
