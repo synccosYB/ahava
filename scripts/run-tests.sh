@@ -8,7 +8,17 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-mapfile -t FILES < <(find . -path ./node_modules -prune -o -name '*.test.ts' -print | sort)
+# Exclude dependencies and generated caches at *any* depth. Replit workspaces
+# can contain nested node_modules (e.g. artifacts/mockup-sandbox/node_modules)
+# and .cache/.bun copies of dependency source tests; those are not Ahava tests.
+mapfile -t FILES < <(find . \
+  -type d \( -name node_modules -o -name .git -o -name .cache -o -name dist \) -prune \
+  -o -type f -name '*.test.ts' -print | sort)
+
+if [ "${#FILES[@]}" -eq 0 ]; then
+  echo "ERROR: No Ahava test suites were discovered." >&2
+  exit 1
+fi
 
 pass=0
 fail=0
