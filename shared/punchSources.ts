@@ -3,7 +3,7 @@
 // the list in one place means both sides agree on what "kiosk", "manager", etc.
 // mean and which methods are allowed by default.
 
-export const PUNCH_SOURCES = ["web", "mobile", "kiosk", "qr", "manager"] as const;
+export const PUNCH_SOURCES = ["web", "mobile", "kiosk", "qr", "manager", "biometric"] as const;
 
 export type PunchSource = (typeof PUNCH_SOURCES)[number];
 
@@ -13,6 +13,10 @@ export const PUNCH_SOURCE_LABELS: Record<PunchSource, string> = {
   kiosk: "Kiosk",
   qr: "QR Code",
   manager: "Manager Entry",
+  // "biometric" = a punch pushed in by a physical biometric wall clock
+  // (e.g. a Compumatic / ZKTeco fingerprint terminal) over the ADMS push
+  // protocol. See server/adms/*.
+  biometric: "Fingerprint Clock",
 };
 
 // Default allowed methods when a policy doesn't explicitly configure
@@ -25,6 +29,7 @@ export const DEFAULT_ALLOWED_PUNCH_SOURCES: PunchSource[] = [
   "mobile",
   "kiosk",
   "manager",
+  "biometric",
 ];
 
 export function isKnownPunchSource(value: unknown): value is PunchSource {
