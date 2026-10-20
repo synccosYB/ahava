@@ -2,11 +2,12 @@
 //   • a PUBLIC, unauthenticated "/iclock" router the clocks push to (ADMS), and
 //   • an ADMIN "/api/biometric-devices" API to register + monitor them.
 //
-// Clock serials are identifiers, not proof of origin. All /iclock requests
-// require an authenticated upstream that supplies X-Ahava-ADMS-Key, matched
-// against ADMS_INGEST_TOKEN (>= 32 characters). Without that configuration,
-// the endpoint fails closed. Device compatibility/gateway setup is required
-// before enabling live payroll punches.
+// Clock serials are identifiers, not proof of origin. When configured,
+// ADMS_INGEST_TOKEN requires an authenticated upstream supplying
+// X-Ahava-ADMS-Key. For clock compatibility during beta, a missing token
+// permits requests through to the handler's registered/active-serial checks.
+// Serial-only identification is NOT authentication: restrict clock ingress to
+// trusted network sources until a compatible authenticated gateway is in place.
 import express, { type Express, type Request, type Response, Router } from "express";
 import { z } from "zod";
 import { logger } from "../lib/logger";
@@ -45,7 +46,8 @@ function buildIclockRouter(): Router {
   router.use(express.text({ type: () => true, limit: "4mb" }));
 
   router.use((req, res, next) => {
-    if (!isValidAdmsToken(process.env.ADMS_INGEST_TOKEN, req.get("X-Ahava-ADMS-Key"))) {
+    const token = process.env.ADMS_INGEST_TOKEN;
+    if (token && !isValidAdmsToken(token, req.get("X-Ahava-ADMS-Key"))) {
       return textResponse(res, "ERROR: unauthorized device ingress", 403);
     }
     next();
