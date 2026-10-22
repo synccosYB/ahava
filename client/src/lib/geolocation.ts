@@ -1,8 +1,11 @@
-// Task #418: best-effort device location capture for clock-in geofencing.
+// Task #418 / Note #2: best-effort device location capture for clock-in
+// geofencing.
 //
-// Geofencing NEVER blocks a clock-in, so this helper never rejects — if the
-// browser has no geolocation, the user denies the prompt, or it times out, we
-// simply resolve with nulls and let the server raise a geofence exception.
+// This helper never rejects — if the browser has no geolocation, the user
+// denies the prompt, or it times out, we resolve with nulls. For a self-service
+// (phone/web) clock-in where the employee has a geofence, the server treats
+// "no coordinates" as outside the fence and BLOCKS the punch (strict mode),
+// returning a message telling them to enable location or use the wall clock.
 
 export interface PunchCoords {
   latitude: number | null;

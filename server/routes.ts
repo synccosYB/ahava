@@ -55,7 +55,7 @@ import { drainPending, enqueue } from "./services/jobs";
 import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
-import { flagClockInGeofence, attachGeofenceMapToExceptions, type GeofenceMapData } from "./services/geofence";
+import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
 import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import {
   resolvePunctualityBonusConfig,
@@ -3581,6 +3581,33 @@ export async function registerRoutes(
 
       const { latitude: punchLatitude, longitude: punchLongitude } =
         parsePunchCoords(req.body);
+
+      // Note #2: STRICT geofencing for self-service (phone/web) clock-ins. The
+      // wall fingerprint clock and on-site kiosk are physical proof of presence
+      // and are exempt (they punch through their own paths / sources). A manager
+      // or admin can override for a stuck employee by passing overrideGeofence.
+      const physicalSource = source === "kiosk" || source === "biometric";
+      const canOverrideGeofence =
+        (user.role === "manager" || user.role === "admin") && req.body?.overrideGeofence === true;
+      if (!physicalSource && !canOverrideGeofence) {
+        const geoEval = await evaluateClockInGeofence(userId, punchLatitude, punchLongitude);
+        if (geoEval.required && !geoEval.withinRadius) {
+          await recordGeofenceBlockedAttempt({
+            userId,
+            workDate: now.toISOString().split("T")[0],
+            punchTime: now,
+            evaluation: geoEval,
+            punchLatitude,
+            punchLongitude,
+          });
+          return res.status(403).json({
+            message: buildGeofenceBlockMessage(geoEval),
+            code: "geofence_blocked",
+            coordsMissing: geoEval.coordsMissing,
+            nearestDistanceMeters: geoEval.nearestDistanceMeters,
+          });
+        }
+      }
 
       const record = await storage.clockIn(userId, source, enforcement.roundedTime, {
         punchLatitude,
