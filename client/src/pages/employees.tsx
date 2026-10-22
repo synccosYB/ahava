@@ -1393,9 +1393,9 @@ function AddEmployeeDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="W-2">W-2 — paid to the person</SelectItem>
-                  <SelectItem value="1099">1099 — paid to a company</SelectItem>
-                  <SelectItem value="Volunteer">Volunteer — not paid</SelectItem>
+                  <SelectItem value="W-2">W-2</SelectItem>
+                  <SelectItem value="1099">1099</SelectItem>
+                  <SelectItem value="Volunteer">Volunteer</SelectItem>
                 </SelectContent>
               </Select>
             </div>
