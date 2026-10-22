@@ -62,6 +62,11 @@ import {
   type UserAccessScope,
   employeeDepartments,
   employeeLocations,
+  departmentLocations,
+  type DepartmentLocation,
+  managerScopes,
+  type ManagerScope,
+  type InsertManagerScope,
   ptoPolicies,
   type PtoPolicy,
   type InsertPtoPolicy,
@@ -305,6 +310,7 @@ export interface IStorage {
 
   getCompany(id: string): Promise<Company | undefined>;
   getAllCompanies(): Promise<Company[]>;
+  getOperationalCompany(): Promise<Company | undefined>;
   createCompany(company: InsertCompany): Promise<Company>;
   updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
   deleteCompany(id: string): Promise<void>;
@@ -492,6 +498,7 @@ export interface IStorage {
 
   getCompany(id: string): Promise<Company | undefined>;
   getAllCompanies(): Promise<Company[]>;
+  getOperationalCompany(): Promise<Company | undefined>;
   createCompany(company: InsertCompany): Promise<Company>;
   updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
   deleteCompany(id: string): Promise<void>;
@@ -537,6 +544,12 @@ export interface IStorage {
   removeUserAccessScope(id: string): Promise<void>;
 
   getScopedUserIds(user: User): Promise<Set<string>>;
+  getManagerScopedUserIds(userId: string): Promise<Set<string> | null>;
+  getManagerScopes(userId: string): Promise<ManagerScope[]>;
+  setManagerScopes(userId: string, hats: Array<{ locationId?: string | null; departmentId?: string | null }>): Promise<void>;
+  getLocationDepartmentIds(locationId: string): Promise<string[]>;
+  getDepartmentLocationIds(departmentId: string): Promise<string[]>;
+  setLocationDepartmentIds(locationId: string, departmentIds: string[]): Promise<void>;
 
   getPolicy(id: string): Promise<Policy | undefined>;
   getPoliciesByCompany(companyId: string | null): Promise<Policy[]>;
@@ -2370,6 +2383,19 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(companies);
   }
 
+  // Note #1: the single operational company every employee belongs to —
+  // "Ahava Medical". Matched by name (BCM and any other company are payroll-only
+  // payees, never operational). Falls back to the first active company, then any
+  // company, so a rename can't orphan new hires.
+  async getOperationalCompany(): Promise<Company | undefined> {
+    const all = await db.select().from(companies);
+    return (
+      all.find((c) => /ahava\s*medical/i.test(c.name || "")) ??
+      all.find((c) => c.isActive) ??
+      all[0]
+    );
+  }
+
   async createCompany(company: InsertCompany): Promise<Company> {
     const [created] = await db.insert(companies).values(company).returning();
     return created;
@@ -2549,10 +2575,72 @@ export class DatabaseStorage implements IStorage {
     await db.delete(userAccessScopes).where(eq(userAccessScopes.id, id));
   }
 
+  // Note #3: a manager's visible employees = the UNION of their "hats". Each hat
+  // is one (location?, department?) pair in manager_scopes:
+  //   * location only  → everyone at that location (all departments)
+  //   * department only → that department across all locations
+  //   * both           → that department at that location
+  // Returns null when the manager has NO hats, so callers fall back to the
+  // legacy membership-based scoping and existing managers keep working untouched.
+  async getManagerScopedUserIds(userId: string): Promise<Set<string> | null> {
+    const hats = await db.select().from(managerScopes).where(eq(managerScopes.userId, userId));
+    if (hats.length === 0) return null;
+    const result = new Set<string>();
+    for (const hat of hats) {
+      if (!hat.locationId && !hat.departmentId) continue;
+      const perHat = await this.usersMatchingScope(hat.locationId, hat.departmentId);
+      perHat.forEach((id) => result.add(id));
+    }
+    return result;
+  }
+
+  // Employees matching a single (location?, department?) hat. A null dimension
+  // is unconstrained; when both are set the two constraints are AND-ed. Checks
+  // both the legacy single column and the many-to-many join for each dimension.
+  private async usersMatchingScope(
+    locationId: string | null,
+    departmentId: string | null,
+  ): Promise<Set<string>> {
+    const conditions: any[] = [];
+    if (locationId) {
+      conditions.push(
+        or(
+          eq(users.locationId, locationId),
+          inArray(
+            users.id,
+            db.select({ id: employeeLocations.userId }).from(employeeLocations).where(eq(employeeLocations.locationId, locationId)),
+          ),
+        ),
+      );
+    }
+    if (departmentId) {
+      conditions.push(
+        or(
+          eq(users.departmentId, departmentId),
+          inArray(
+            users.id,
+            db.select({ id: employeeDepartments.userId }).from(employeeDepartments).where(eq(employeeDepartments.departmentId, departmentId)),
+          ),
+        ),
+      );
+    }
+    if (conditions.length === 0) return new Set();
+    const rows = await db.select({ id: users.id }).from(users).where(and(...conditions));
+    return new Set(rows.map((r) => r.id));
+  }
+
   async getScopedUserIds(user: User): Promise<Set<string>> {
     if (user.role === "admin") {
       const allUsers = await this.getAllUsers();
       return new Set(allUsers.map(u => u.id));
+    }
+
+    // Hats (manager_scopes) win when defined; otherwise fall back to the legacy
+    // membership scoping below. A manager always sees themselves too.
+    const hatScoped = await this.getManagerScopedUserIds(user.id);
+    if (hatScoped) {
+      hatScoped.add(user.id);
+      return hatScoped;
     }
 
     const conditions: any[] = [];
@@ -2599,6 +2687,56 @@ export class DatabaseStorage implements IStorage {
 
     const scopedUsers = await db.select({ id: users.id }).from(users).where(and(...conditions));
     return new Set(scopedUsers.map(u => u.id));
+  }
+
+  // --- Manager hats (Note #3) ------------------------------------------------
+  async getManagerScopes(userId: string): Promise<ManagerScope[]> {
+    return db.select().from(managerScopes).where(eq(managerScopes.userId, userId));
+  }
+
+  // Replace a manager's full set of hats in one shot. Each hat must name at
+  // least one dimension; empty pairs are dropped.
+  async setManagerScopes(
+    userId: string,
+    hats: Array<{ locationId?: string | null; departmentId?: string | null }>,
+  ): Promise<void> {
+    const clean = hats
+      .map((h) => ({ locationId: h.locationId || null, departmentId: h.departmentId || null }))
+      .filter((h) => h.locationId || h.departmentId);
+    await db.transaction(async (tx) => {
+      await tx.delete(managerScopes).where(eq(managerScopes.userId, userId));
+      if (clean.length > 0) {
+        await tx.insert(managerScopes).values(clean.map((h) => ({ userId, ...h })));
+      }
+    });
+  }
+
+  // --- Department ↔ location mapping (Note #3) -------------------------------
+  async getLocationDepartmentIds(locationId: string): Promise<string[]> {
+    const rows = await db
+      .select({ departmentId: departmentLocations.departmentId })
+      .from(departmentLocations)
+      .where(eq(departmentLocations.locationId, locationId));
+    return rows.map((r) => r.departmentId);
+  }
+
+  async getDepartmentLocationIds(departmentId: string): Promise<string[]> {
+    const rows = await db
+      .select({ locationId: departmentLocations.locationId })
+      .from(departmentLocations)
+      .where(eq(departmentLocations.departmentId, departmentId));
+    return rows.map((r) => r.locationId);
+  }
+
+  // Replace the full set of departments that exist at a location.
+  async setLocationDepartmentIds(locationId: string, departmentIds: string[]): Promise<void> {
+    const unique = Array.from(new Set(departmentIds.filter(Boolean)));
+    await db.transaction(async (tx) => {
+      await tx.delete(departmentLocations).where(eq(departmentLocations.locationId, locationId));
+      if (unique.length > 0) {
+        await tx.insert(departmentLocations).values(unique.map((departmentId) => ({ locationId, departmentId })));
+      }
+    });
   }
 
   async getPtoPolicy(id: string): Promise<PtoPolicy | undefined> {

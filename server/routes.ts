@@ -947,7 +947,14 @@ export async function registerRoutes(
     departmentIds: z.array(z.string()).optional(),
     locationIds: z.array(z.string()).optional(),
     employmentType: z.string().optional(),
-    taxClassification: z.enum(["W-2", "1099"]).optional(),
+    taxClassification: z.enum(["W-2", "1099", "Volunteer"]).optional(),
+    // Note #5: which company issues this person's pay (W-2 → the person is paid
+    // by this company; 1099 → the check is made out to this company). Null for
+    // volunteers / people not on payroll. Picked manually from existing companies.
+    payrollCompanyId: z.string().optional().nullable(),
+    // Note #5: when false the person is not required to punch; missing-clock-out
+    // and no-show alerts are suppressed. Defaults true.
+    clockInRequired: z.boolean().optional(),
     hireDate: z.string().optional(),
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
@@ -972,27 +979,13 @@ export async function registerRoutes(
       });
     }
 
-    if (parsed.data.companyId) {
-      if (parsed.data.locationId) {
-        const loc = await storage.getLocation(parsed.data.locationId);
-        if (!loc) {
-          return res.status(400).json({ message: "Location does not belong to the selected company" });
-        }
-        const locCompanies = new Set([
-          ...(loc.companyId ? [loc.companyId] : []),
-          ...(await storage.getLocationCompanyIds(loc.id)),
-        ]);
-        if (!locCompanies.has(parsed.data.companyId)) {
-          return res.status(400).json({ message: "Location does not belong to the selected company" });
-        }
-      }
-      if (parsed.data.departmentId) {
-        const dept = await storage.getDepartment(parsed.data.departmentId);
-        if (!dept || (dept.companyId && dept.companyId !== parsed.data.companyId)) {
-          return res.status(400).json({ message: "Department does not belong to the selected company" });
-        }
-      }
-    }
+    // Note #1: operationally there is a single company (Ahava Medical). The
+    // client no longer asks for it, so default any missing companyId to the
+    // operational company and let every hire land under it. Locations and
+    // departments are no longer gated by company (one operational company;
+    // departments are a shared list), so the old membership validation is gone.
+    const operationalCompanyId =
+      parsed.data.companyId || (await storage.getOperationalCompany())?.id || null;
 
     // Always create an employment profile so every new hire has a tax
     // classification on record (defaults to W-2). Reports and payroll filters
@@ -1019,7 +1012,7 @@ export async function registerRoutes(
       password: hashedPassword,
       passwordHash: hashedPassword,
       forcePasswordChange: true,
-      companyId: parsed.data.companyId || null,
+      companyId: operationalCompanyId,
       locationId: parsed.data.locationId || null,
       departmentId: parsed.data.departmentId || null,
     });
@@ -1035,6 +1028,10 @@ export async function registerRoutes(
       userId: newUser.id,
       employmentType: parsed.data.employmentType || "full_time",
       taxClassification: parsed.data.taxClassification || "W-2",
+      // Volunteers are never on payroll, so they never carry a paying company.
+      payrollCompanyId:
+        parsed.data.taxClassification === "Volunteer" ? null : parsed.data.payrollCompanyId || null,
+      clockInRequired: parsed.data.clockInRequired ?? true,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
       weeklySalary: parsed.data.weeklySalary || null,
@@ -2586,6 +2583,55 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
+  // Note #3: which departments exist at a location (edited from the location
+  // side). Returns/replaces the full set of department ids.
+  app.get("/api/locations/:locationId/departments", requireAuth, requirePermission("locations.view"), async (req, res) => {
+    const location = await storage.getLocation(String(req.params.locationId));
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    const departmentIds = await storage.getLocationDepartmentIds(String(req.params.locationId));
+    res.json({ departmentIds });
+  });
+
+  app.put("/api/locations/:locationId/departments", requireAuth, requirePermission("locations.manage"), async (req, res) => {
+    const location = await storage.getLocation(String(req.params.locationId));
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    const parsed = z.object({ departmentIds: z.array(z.string()) }).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid department list", errors: parsed.error.flatten() });
+    }
+    await storage.setLocationDepartmentIds(String(req.params.locationId), parsed.data.departmentIds);
+    const departmentIds = await storage.getLocationDepartmentIds(String(req.params.locationId));
+    res.json({ departmentIds });
+  });
+
+  // Note #3: a manager's "hats" — the (location?, department?) scopes that
+  // decide which employees they can see. Empty = legacy membership scoping.
+  app.get("/api/users/:id/manager-scopes", requireAuth, requirePermission("users.view"), async (req, res) => {
+    const scopes = await storage.getManagerScopes(String(req.params.id));
+    res.json({ scopes });
+  });
+
+  app.put("/api/users/:id/manager-scopes", requireAuth, requirePermission("users.edit"), async (req, res) => {
+    const target = await storage.getUser(String(req.params.id));
+    if (!target) return res.status(404).json({ message: "User not found" });
+    const parsed = z
+      .object({
+        scopes: z.array(
+          z.object({
+            locationId: z.string().nullish(),
+            departmentId: z.string().nullish(),
+          }),
+        ),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid manager scopes", errors: parsed.error.flatten() });
+    }
+    await storage.setManagerScopes(String(req.params.id), parsed.data.scopes);
+    const scopes = await storage.getManagerScopes(String(req.params.id));
+    res.json({ scopes });
+  });
+
   // Task #418: pull optional device coordinates off a clock-in payload. Returns
   // nulls for anything missing or non-finite — geofencing treats "no coords" as
   // a required-but-missing signal rather than throwing.
@@ -2870,6 +2916,7 @@ export async function registerRoutes(
         "voluntaryPayEnabled",
         "taxClassification",
         "payrollCompanyId",
+        "clockInRequired",
         "hireDate",
         "terminationDate",
       ] as const;
@@ -2936,6 +2983,14 @@ export async function registerRoutes(
     if (user.role === "admin") {
       const allUsers = (await storage.getAllUsers()).filter(u => u.id !== SUPER_ADMIN_USER_ID);
       return new Set(allUsers.filter(u => u.id !== user.id).map(u => u.id));
+    }
+    // Note #3: manager hats (manager_scopes) win when defined — the union of the
+    // manager's (location?, department?) scopes. Falls through to the legacy
+    // department-manager logic when the manager has no hats yet.
+    const hatScoped = await storage.getManagerScopedUserIds(user.id);
+    if (hatScoped) {
+      hatScoped.delete(user.id);
+      return hatScoped;
     }
     const managedDepts = await storage.getDepartmentsForManager(user.id);
     if (managedDepts.length > 0) {
@@ -8435,6 +8490,7 @@ export async function registerRoutes(
         payrollRules: Record<string, any>;
         rate: number;
         scheduledDays: number[];
+        taxClassification: string;
         payrollCompanyId: string | null;
         payrollCompanyName: string | null;
         // Punctuality-bonus inputs (Task: punctuality-bonus).
@@ -8489,6 +8545,9 @@ export async function registerRoutes(
           scheduledDays: schedules.filter(s => s.isActive).map(s => s.dayOfWeek),
           payrollCompanyId,
           payrollCompanyName,
+          // Note #5: volunteers are never on payroll. Carried here so the export
+          // loop can skip them entirely rather than list them at $0.
+          taxClassification: profile?.taxClassification ?? "W-2",
           schedules,
           graceMinutes,
           timezone,
@@ -8541,7 +8600,9 @@ export async function registerRoutes(
         }
 
         for (const [employeeId, groups] of groupsByEmployee) {
-          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName, schedules: empSchedules, graceMinutes, timezone: empTimezone, punctualityConfig } = await resolveEmp(employeeId);
+          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName, taxClassification, schedules: empSchedules, graceMinutes, timezone: empTimezone, punctualityConfig } = await resolveEmp(employeeId);
+          // Note #5: volunteers get no pay — exclude them from payroll entirely.
+          if (taxClassification === "Volunteer") continue;
 
           type DayMeta = {
             workDate: string;
