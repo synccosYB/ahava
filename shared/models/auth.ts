@@ -152,6 +152,13 @@ export const users = pgTable("users", {
   forcePasswordChange: boolean("force_password_change").default(false).notNull(),
   roleManuallyOverriddenAt: timestamp("role_manually_overridden_at"),
   deactivatedAt: timestamp("deactivated_at"),
+  // Account edit-lock (chain of command). When true, this account cannot make
+  // edits; only someone at lockedByRank or higher can unlock it. See
+  // server/services/rank.ts.
+  editLocked: boolean("edit_locked").default(false).notNull(),
+  lockedByUserId: varchar("locked_by_user_id"),
+  lockedByRank: integer("locked_by_rank"),
+  lockedAt: timestamp("locked_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

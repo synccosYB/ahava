@@ -56,6 +56,7 @@ import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
+import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/rank";
 import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import {
   resolvePunctualityBonusConfig,
@@ -952,6 +953,15 @@ export async function registerRoutes(
     // by this company; 1099 → the check is made out to this company). Null for
     // volunteers / people not on payroll. Picked manually from existing companies.
     payrollCompanyId: z.string().optional().nullable(),
+    // Note #5 (1099 payee): who the 1099 check is made out to. Only the name is
+    // required (enforced below when tax form is 1099); the rest are optional.
+    payeeName: z.string().optional().nullable(),
+    payeeAddress: z.string().optional().nullable(),
+    payeeCity: z.string().optional().nullable(),
+    payeeState: z.string().optional().nullable(),
+    payeeZip: z.string().optional().nullable(),
+    payeeTaxId: z.string().optional().nullable(),
+    payeeMemo: z.string().optional().nullable(),
     // Note #5: when false the person is not required to punch; missing-clock-out
     // and no-show alerts are suppressed. Defaults true.
     clockInRequired: z.boolean().optional(),
@@ -1000,6 +1010,9 @@ export async function registerRoutes(
     if (profilePayType === "salary" && !(parsed.data.weeklySalary && parsed.data.weeklySalary > 0)) {
       return res.status(400).json({ message: "Salary pay type requires a positive Weekly Salary." });
     }
+    if (parsed.data.taxClassification === "1099" && !(parsed.data.payeeName && parsed.data.payeeName.trim())) {
+      return res.status(400).json({ message: 'A 1099 worker needs a "Pay to the order of" name.' });
+    }
 
     const tempPassword = generateTempPassword();
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
@@ -1031,6 +1044,14 @@ export async function registerRoutes(
       // Volunteers are never on payroll, so they never carry a paying company.
       payrollCompanyId:
         parsed.data.taxClassification === "Volunteer" ? null : parsed.data.payrollCompanyId || null,
+      // 1099 payee ("pay to the order of") — only kept for 1099 workers.
+      payeeName: parsed.data.taxClassification === "1099" ? parsed.data.payeeName || null : null,
+      payeeAddress: parsed.data.taxClassification === "1099" ? parsed.data.payeeAddress || null : null,
+      payeeCity: parsed.data.taxClassification === "1099" ? parsed.data.payeeCity || null : null,
+      payeeState: parsed.data.taxClassification === "1099" ? parsed.data.payeeState || null : null,
+      payeeZip: parsed.data.taxClassification === "1099" ? parsed.data.payeeZip || null : null,
+      payeeTaxId: parsed.data.taxClassification === "1099" ? parsed.data.payeeTaxId || null : null,
+      payeeMemo: parsed.data.taxClassification === "1099" ? parsed.data.payeeMemo || null : null,
       clockInRequired: parsed.data.clockInRequired ?? true,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
@@ -1302,6 +1323,11 @@ export async function registerRoutes(
   app.patch("/api/users/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
+    }
+    // Additive lock guard (does NOT change who can edit): a locked account can't
+    // make edits until unlocked. Super admin is never locked.
+    if ((req as any).authUser?.editLocked && !isSuperAdmin(req)) {
+      return res.status(403).json({ message: "Your account is locked from making changes." });
     }
     const parsed = updateUserSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -2632,6 +2658,108 @@ export async function registerRoutes(
     res.json({ scopes });
   });
 
+  // --- Account edit-lock (chain of command) --------------------------------
+  // Lock: freeze a lower-ranked account from making edits. Stores the locker's
+  // rank so only someone at that rank or higher can unlock later.
+  app.post("/api/users/:id/lock", requireAuth, async (req: any, res) => {
+    const actor = req.authUser as User;
+    const target = await storage.getUser(String(req.params.id));
+    if (!target) return res.status(404).json({ message: "User not found" });
+    if (actor.id === target.id) return res.status(400).json({ message: "You can't lock your own account." });
+    const [actorRank, targetRank] = await Promise.all([getUserRank(actor), getUserRank(target)]);
+    if (!outranks(actorRank, targetRank)) {
+      return res.status(403).json({ message: "You can only lock accounts below your authority." });
+    }
+    const updated = await storage.updateUser(target.id, {
+      editLocked: true,
+      lockedByUserId: actor.id,
+      lockedByRank: actorRank,
+      lockedAt: new Date(),
+    } as any);
+    invalidateUserCache();
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: "user",
+      targetId: target.id,
+      action: "account.lock",
+      oldValue: { editLocked: false },
+      newValue: { editLocked: true, lockedByRank: actorRank },
+      ...getAuditContext(req),
+    });
+    res.json({ id: updated?.id, editLocked: true });
+  });
+
+  // Unlock: only someone at the locker's rank or higher may unlock.
+  app.post("/api/users/:id/unlock", requireAuth, async (req: any, res) => {
+    const actor = req.authUser as User;
+    const target = await storage.getUser(String(req.params.id));
+    if (!target) return res.status(404).json({ message: "User not found" });
+    if (!target.editLocked) return res.json({ id: target.id, editLocked: false });
+    const actorRank = await getUserRank(actor);
+    const lockedByRank = target.lockedByRank ?? RANK.OWNER;
+    if (!canUnlock(actorRank, lockedByRank)) {
+      return res.status(403).json({
+        message: `This account was locked by a ${RANK_LABEL[lockedByRank] || "higher authority"} — only a ${RANK_LABEL[lockedByRank] || "higher authority"} or above can unlock it.`,
+      });
+    }
+    const updated = await storage.updateUser(target.id, {
+      editLocked: false,
+      lockedByUserId: null,
+      lockedByRank: null,
+      lockedAt: null,
+    } as any);
+    invalidateUserCache();
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: "user",
+      targetId: target.id,
+      action: "account.unlock",
+      oldValue: { editLocked: true, lockedByRank },
+      newValue: { editLocked: false },
+      ...getAuditContext(req),
+    });
+    res.json({ id: updated?.id, editLocked: false });
+  });
+
+  // Undo a logged change: revert the recorded old values. Supports the edits we
+  // log with before/after snapshots (employment_profile, user). The actor must
+  // out-rank the affected employee, and the undo is itself audit-logged.
+  app.post("/api/audit-logs/:id/undo", requireAuth, requirePermission("audit.view"), async (req: any, res) => {
+    const actor = req.authUser as User;
+    const entry = await storage.getAuditLog(String(req.params.id));
+    if (!entry) return res.status(404).json({ message: "Audit entry not found" });
+    const oldValue = (entry.oldValue ?? null) as Record<string, unknown> | null;
+    if (!oldValue || Object.keys(oldValue).length === 0) {
+      return res.status(400).json({ message: "This change has no recorded previous value to undo." });
+    }
+    if (entry.targetType !== "employment_profile" && entry.targetType !== "user") {
+      return res.status(400).json({ message: `Undo isn't supported for "${entry.targetType}" changes yet.` });
+    }
+    // The affected employee is the audit target (userId for both types).
+    const affected = await storage.getUser(entry.targetId);
+    if (!affected) return res.status(404).json({ message: "The affected account no longer exists." });
+    const [actorRank, targetRank] = await Promise.all([getUserRank(actor), getUserRank(affected)]);
+    if (actor.id !== affected.id && !outranks(actorRank, targetRank)) {
+      return res.status(403).json({ message: "You can only undo changes on accounts below your authority." });
+    }
+    if (entry.targetType === "employment_profile") {
+      await storage.updateEmploymentProfile(entry.targetId, oldValue as any);
+    } else {
+      await storage.updateUser(entry.targetId, oldValue as any);
+      invalidateUserCache();
+    }
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      action: `undo.${entry.action}`,
+      oldValue: (entry.newValue ?? null) as any,
+      newValue: oldValue as any,
+      ...getAuditContext(req),
+    });
+    res.json({ ok: true, reverted: Object.keys(oldValue) });
+  });
+
   // Task #418: pull optional device coordinates off a clock-in payload. Returns
   // nulls for anything missing or non-finite — geofencing treats "no coords" as
   // a required-but-missing signal rather than throwing.
@@ -2866,6 +2994,11 @@ export async function registerRoutes(
   });
 
   app.patch("/api/employment-profiles/:userId", requireAuth, requirePermission("users.edit"), async (req, res) => {
+    // Additive lock guard (does NOT change who can edit): a locked account can't
+    // make edits until unlocked. Super admin is never locked.
+    if ((req as any).authUser?.editLocked && !isSuperAdmin(req)) {
+      return res.status(403).json({ message: "Your account is locked from making changes." });
+    }
     const parsed = insertEmploymentProfileSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
@@ -2916,6 +3049,13 @@ export async function registerRoutes(
         "voluntaryPayEnabled",
         "taxClassification",
         "payrollCompanyId",
+        "payeeName",
+        "payeeAddress",
+        "payeeCity",
+        "payeeState",
+        "payeeZip",
+        "payeeTaxId",
+        "payeeMemo",
         "clockInRequired",
         "hireDate",
         "terminationDate",
@@ -9067,7 +9207,7 @@ export async function registerRoutes(
         approvedExceptionsForBatch.map(e => e.punchLogId).filter(Boolean) as string[]
       );
 
-      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
+      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; payee: string; payeeMemo: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
       const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
@@ -9144,6 +9284,10 @@ export async function registerRoutes(
             employeeName,
             taxClassification: profile?.taxClassification || "W-2",
             payrollCompany,
+            // Note #5: 1099 payee ("pay to the order of") + memo for the payroll
+            // company. Blank for W-2 / volunteers.
+            payee: profile?.payeeName || "",
+            payeeMemo: profile?.payeeMemo || "",
             amount,
             payType,
             department,
@@ -9165,7 +9309,7 @@ export async function registerRoutes(
       }
 
       let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
-      csv += "Employee Name,Tax Classification,Payroll Company,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
+      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
 
       for (const [, dayMap] of employeeRecords) {
         const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
@@ -9176,7 +9320,7 @@ export async function registerRoutes(
         for (const row of rows) {
           const bonusAmtCell = row.bonusAmount > 0 ? formatAmountCurrency(row.bonusAmount) : "";
           const bonusDescCell = row.bonusDescriptions.length > 0 ? escapeCSV(row.bonusDescriptions.join("; ")) : "";
-          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
+          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${escapeCSV(row.payee)},${escapeCSV(row.payeeMemo)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
           totalAmount += row.amount;
           totalPaidHours += row.paidHours;
           totalBonusAmount += row.bonusAmount;
@@ -9185,8 +9329,10 @@ export async function registerRoutes(
         const empName = rows[0].employeeName;
         const taxClass = rows[0].taxClassification;
         const payrollCompany = rows[0].payrollCompany;
+        const payee = rows[0].payee;
+        const payeeMemo = rows[0].payeeMemo;
         const totalBonusCell = totalBonusAmount > 0 ? formatAmountCurrency(totalBonusAmount) : "";
-        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${escapeCSV(payee)},${escapeCSV(payeeMemo)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
       }
 
       const adminUser = req.authUser as User;

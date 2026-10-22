@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X, Lock, LockOpen } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -985,6 +985,13 @@ function AddEmployeeDialog({
     employmentType: "full_time",
     taxClassification: "W-2",
     payrollCompanyId: "",
+    payeeName: "",
+    payeeAddress: "",
+    payeeCity: "",
+    payeeState: "",
+    payeeZip: "",
+    payeeTaxId: "",
+    payeeMemo: "",
     clockInRequired: true,
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
@@ -1065,6 +1072,15 @@ function AddEmployeeDialog({
         hireDate: formData.hireDate,
         payType: effectivePayType,
       };
+      if (formData.taxClassification === "1099") {
+        body.payeeName = formData.payeeName.trim();
+        body.payeeAddress = formData.payeeAddress.trim() || null;
+        body.payeeCity = formData.payeeCity.trim() || null;
+        body.payeeState = formData.payeeState.trim() || null;
+        body.payeeZip = formData.payeeZip.trim() || null;
+        body.payeeTaxId = formData.payeeTaxId.trim() || null;
+        body.payeeMemo = formData.payeeMemo.trim() || null;
+      }
       if (effectivePayType === "hourly" && formData.hourlyRate) {
         body.hourlyRate = parseFloat(formData.hourlyRate);
       }
@@ -1124,6 +1140,7 @@ function AddEmployeeDialog({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
       taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true,
+      payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "", payeeMemo: "",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
     });
@@ -1152,11 +1169,12 @@ function AddEmployeeDialog({
     (formData.payType === "hourly" && ratePositive(formData.hourlyRate)) ||
     (formData.payType === "daily" && ratePositive(formData.dailySalary)) ||
     (formData.payType === "salary" && ratePositive(formData.weeklySalary));
-  // Everyone except volunteers must be assigned a paying company (W-2 pays the
-  // person, 1099 pays the company) — see Note #5.
+  // Everyone except volunteers must be assigned a paying company (Ahava / BCM).
   const payrollCompanyValid = isVolunteer || !!formData.payrollCompanyId;
+  // A 1099 worker must have a "Pay to the order of" name (the rest is optional).
+  const payeeValid = formData.taxClassification !== "1099" || !!formData.payeeName.trim();
   const canProceedStep3 =
-    canProceedStep1 && canProceedStep2 && formData.taxClassification && payRateValid && payrollCompanyValid;
+    canProceedStep1 && canProceedStep2 && formData.taxClassification && payRateValid && payrollCompanyValid && payeeValid;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(v); }}>
@@ -1393,9 +1411,9 @@ function AddEmployeeDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="W-2">W-2 — paid to the person</SelectItem>
-                  <SelectItem value="1099">1099 — paid to a company</SelectItem>
-                  <SelectItem value="Volunteer">Volunteer — not paid</SelectItem>
+                  <SelectItem value="W-2">W-2</SelectItem>
+                  <SelectItem value="1099">1099</SelectItem>
+                  <SelectItem value="Volunteer">Volunteer</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1416,9 +1434,61 @@ function AddEmployeeDialog({
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  {formData.taxClassification === "1099"
-                    ? "The check is made out to this company (1099)."
-                    : "The company that issues this person's paycheck."}
+                  Which entity issues this person's payment.
+                </p>
+              </div>
+            )}
+            {formData.taxClassification === "1099" && (
+              <div className="space-y-2 rounded-md border p-3">
+                <div className="space-y-1">
+                  <Label>Pay to the order of *</Label>
+                  <Input
+                    value={formData.payeeName}
+                    onChange={(e) => setFormData({ ...formData, payeeName: e.target.value })}
+                    placeholder="Company / LLC name"
+                    data-testid="input-add-payee-name"
+                  />
+                </div>
+                <Input
+                  value={formData.payeeAddress}
+                  onChange={(e) => setFormData({ ...formData, payeeAddress: e.target.value })}
+                  placeholder="Address (optional)"
+                  data-testid="input-add-payee-address"
+                />
+                <div className="grid grid-cols-3 gap-2">
+                  <Input
+                    value={formData.payeeCity}
+                    onChange={(e) => setFormData({ ...formData, payeeCity: e.target.value })}
+                    placeholder="City"
+                    data-testid="input-add-payee-city"
+                  />
+                  <Input
+                    value={formData.payeeState}
+                    onChange={(e) => setFormData({ ...formData, payeeState: e.target.value })}
+                    placeholder="State"
+                    data-testid="input-add-payee-state"
+                  />
+                  <Input
+                    value={formData.payeeZip}
+                    onChange={(e) => setFormData({ ...formData, payeeZip: e.target.value })}
+                    placeholder="ZIP"
+                    data-testid="input-add-payee-zip"
+                  />
+                </div>
+                <Input
+                  value={formData.payeeTaxId}
+                  onChange={(e) => setFormData({ ...formData, payeeTaxId: e.target.value })}
+                  placeholder="Tax ID (optional)"
+                  data-testid="input-add-payee-tax-id"
+                />
+                <Input
+                  value={formData.payeeMemo}
+                  onChange={(e) => setFormData({ ...formData, payeeMemo: e.target.value })}
+                  placeholder="Memo (optional) — shown on the payroll report"
+                  data-testid="input-add-payee-memo"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Only the name is required — address, Tax ID and memo can be added later.
                 </p>
               </div>
             )}
@@ -1850,6 +1920,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     holidayPayEnabled: false,
     overtimeEligible: false,
     payrollCompanyId: "none",
+    payeeName: "",
+    payeeAddress: "",
+    payeeCity: "",
+    payeeState: "",
+    payeeZip: "",
+    payeeTaxId: "",
+    payeeMemo: "",
   });
 
   const openPayDialog = () => {
@@ -1861,6 +1938,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       holidayPayEnabled: !!profile?.holidayPayEnabled,
       overtimeEligible: !!profile?.overtimeEligible,
       payrollCompanyId: profile?.payrollCompanyId || "none",
+      payeeName: profile?.payeeName || "",
+      payeeAddress: profile?.payeeAddress || "",
+      payeeCity: profile?.payeeCity || "",
+      payeeState: profile?.payeeState || "",
+      payeeZip: profile?.payeeZip || "",
+      payeeTaxId: profile?.payeeTaxId || "",
+      payeeMemo: profile?.payeeMemo || "",
     });
     setEditPayOpen(true);
   };
@@ -1886,6 +1970,16 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         weeklySalary: payForm.payType === "salary" ? parseFloat(payForm.weeklySalary) : null,
         payrollCompanyId: payForm.payrollCompanyId === "none" ? null : payForm.payrollCompanyId,
       };
+      // 1099 payee ("pay to the order of") + memo — only for 1099 workers.
+      if (profile?.taxClassification === "1099") {
+        body.payeeName = payForm.payeeName.trim() || null;
+        body.payeeAddress = payForm.payeeAddress.trim() || null;
+        body.payeeCity = payForm.payeeCity.trim() || null;
+        body.payeeState = payForm.payeeState.trim() || null;
+        body.payeeZip = payForm.payeeZip.trim() || null;
+        body.payeeTaxId = payForm.payeeTaxId.trim() || null;
+        body.payeeMemo = payForm.payeeMemo.trim() || null;
+      }
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, body);
     },
     onSuccess: () => {
@@ -1922,6 +2016,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             <Badge variant="outline" data-testid="badge-employee-profile-role">
               {user?.role}
             </Badge>
+            {user?.editLocked && (
+              <Badge variant="destructive" data-testid="badge-employee-locked">Locked</Badge>
+            )}
+            <LockAccountButton userId={userId} locked={!!user?.editLocked} />
             <ResetPasswordButton userId={userId} />
           </div>
         }
@@ -2633,6 +2731,30 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     Used for payroll reporting only — independent of department/location assignment.
                   </p>
                 </div>
+                {profile?.taxClassification === "1099" && (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <Label>Pay to the order of</Label>
+                    <Input
+                      value={payForm.payeeName}
+                      onChange={(e) => setPayForm((f) => ({ ...f, payeeName: e.target.value }))}
+                      placeholder="Company / LLC name"
+                      data-testid="input-pay-payee-name"
+                    />
+                    <Input
+                      value={payForm.payeeAddress}
+                      onChange={(e) => setPayForm((f) => ({ ...f, payeeAddress: e.target.value }))}
+                      placeholder="Address (optional)"
+                      data-testid="input-pay-payee-address"
+                    />
+                    <div className="grid grid-cols-3 gap-2">
+                      <Input value={payForm.payeeCity} onChange={(e) => setPayForm((f) => ({ ...f, payeeCity: e.target.value }))} placeholder="City" data-testid="input-pay-payee-city" />
+                      <Input value={payForm.payeeState} onChange={(e) => setPayForm((f) => ({ ...f, payeeState: e.target.value }))} placeholder="State" data-testid="input-pay-payee-state" />
+                      <Input value={payForm.payeeZip} onChange={(e) => setPayForm((f) => ({ ...f, payeeZip: e.target.value }))} placeholder="ZIP" data-testid="input-pay-payee-zip" />
+                    </div>
+                    <Input value={payForm.payeeTaxId} onChange={(e) => setPayForm((f) => ({ ...f, payeeTaxId: e.target.value }))} placeholder="Tax ID (optional)" data-testid="input-pay-payee-tax-id" />
+                    <Input value={payForm.payeeMemo} onChange={(e) => setPayForm((f) => ({ ...f, payeeMemo: e.target.value }))} placeholder="Memo (optional) — shown on the payroll report" data-testid="input-pay-payee-memo" />
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button
@@ -3121,6 +3243,39 @@ function ManagerScopeEditor({ userId }: { userId: string }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// Lock / unlock an account's ability to make edits (chain of command). Shown to
+// owners and managers; the server enforces who may actually lock/unlock.
+function LockAccountButton({ userId, locked }: { userId: string; locked: boolean }) {
+  const { toast } = useToast();
+  const { user: viewer } = useAuth();
+  const canSee = viewer?.role === "admin" || viewer?.role === "manager";
+  const mutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/users/${userId}/${locked ? "unlock" : "lock"}`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({ title: locked ? "Account unlocked" : "Account locked" });
+    },
+    onError: (err: Error) => toast({ title: "Couldn't change lock", description: err.message, variant: "destructive" }),
+  });
+  if (!canSee) return null;
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => mutation.mutate()}
+      disabled={mutation.isPending}
+      data-testid="button-lock-account"
+      title={locked ? "Unlock this account's editing" : "Lock this account from editing"}
+    >
+      {locked ? <LockOpen className="h-4 w-4 mr-1" /> : <Lock className="h-4 w-4 mr-1" />}
+      {locked ? "Unlock" : "Lock"}
+    </Button>
   );
 }
 

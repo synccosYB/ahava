@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useDebounce } from "@/hooks/use-debounce";
 import { cachedFetch } from "@/lib/cachedFetch";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { RotateCcw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -80,6 +83,28 @@ export default function AuditLogPage() {
   });
 
   const totalPages = Math.ceil((data?.total || 0) / pageSize);
+
+  const { toast } = useToast();
+  const undoMutation = useMutation({
+    mutationFn: async (logId: string) => {
+      await apiRequest("POST", `/api/audit-logs/${logId}/undo`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/audit-logs/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setSelectedLog(null);
+      toast({ title: "Change undone", description: "The previous values were restored." });
+    },
+    onError: (err: Error) => toast({ title: "Couldn't undo", description: err.message, variant: "destructive" }),
+  });
+  // A change is undoable when we logged its previous values and it targets an
+  // account's profile/pay (not already an undo).
+  const canUndo = (log: AuditLogEntry | null) =>
+    !!log &&
+    (log.targetType === "employment_profile" || log.targetType === "user") &&
+    log.oldValue !== null &&
+    log.oldValue !== undefined &&
+    !log.action.startsWith("undo.");
 
   function renderJson(val: unknown) {
     if (val === null || val === undefined) return <span className="text-muted-foreground">—</span>;
@@ -303,6 +328,23 @@ export default function AuditLogPage() {
                     <div className="bg-muted p-3 rounded text-sm" data-testid="text-detail-context">
                       {renderJson(selectedLog.context as Record<string, unknown>)}
                     </div>
+                  </div>
+                )}
+
+                {canUndo(selectedLog) && (
+                  <div className="flex items-center justify-between rounded-md border p-3">
+                    <p className="text-sm text-muted-foreground">
+                      Restore the old values from this change. The undo is itself logged.
+                    </p>
+                    <Button
+                      variant="outline"
+                      onClick={() => undoMutation.mutate(selectedLog.id)}
+                      disabled={undoMutation.isPending}
+                      data-testid="button-undo-change"
+                    >
+                      <RotateCcw className="h-4 w-4 mr-1" />
+                      {undoMutation.isPending ? "Undoing…" : "Undo this change"}
+                    </Button>
                   </div>
                 )}
               </div>
