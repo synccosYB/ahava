@@ -1920,6 +1920,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     holidayPayEnabled: false,
     overtimeEligible: false,
     payrollCompanyId: "none",
+    payeeName: "",
+    payeeAddress: "",
+    payeeCity: "",
+    payeeState: "",
+    payeeZip: "",
+    payeeTaxId: "",
+    payeeMemo: "",
   });
 
   const openPayDialog = () => {
@@ -1931,6 +1938,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       holidayPayEnabled: !!profile?.holidayPayEnabled,
       overtimeEligible: !!profile?.overtimeEligible,
       payrollCompanyId: profile?.payrollCompanyId || "none",
+      payeeName: profile?.payeeName || "",
+      payeeAddress: profile?.payeeAddress || "",
+      payeeCity: profile?.payeeCity || "",
+      payeeState: profile?.payeeState || "",
+      payeeZip: profile?.payeeZip || "",
+      payeeTaxId: profile?.payeeTaxId || "",
+      payeeMemo: profile?.payeeMemo || "",
     });
     setEditPayOpen(true);
   };
@@ -1956,6 +1970,16 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         weeklySalary: payForm.payType === "salary" ? parseFloat(payForm.weeklySalary) : null,
         payrollCompanyId: payForm.payrollCompanyId === "none" ? null : payForm.payrollCompanyId,
       };
+      // 1099 payee ("pay to the order of") + memo — only for 1099 workers.
+      if (profile?.taxClassification === "1099") {
+        body.payeeName = payForm.payeeName.trim() || null;
+        body.payeeAddress = payForm.payeeAddress.trim() || null;
+        body.payeeCity = payForm.payeeCity.trim() || null;
+        body.payeeState = payForm.payeeState.trim() || null;
+        body.payeeZip = payForm.payeeZip.trim() || null;
+        body.payeeTaxId = payForm.payeeTaxId.trim() || null;
+        body.payeeMemo = payForm.payeeMemo.trim() || null;
+      }
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, body);
     },
     onSuccess: () => {
@@ -2703,6 +2727,30 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     Used for payroll reporting only — independent of department/location assignment.
                   </p>
                 </div>
+                {profile?.taxClassification === "1099" && (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <Label>Pay to the order of</Label>
+                    <Input
+                      value={payForm.payeeName}
+                      onChange={(e) => setPayForm((f) => ({ ...f, payeeName: e.target.value }))}
+                      placeholder="Company / LLC name"
+                      data-testid="input-pay-payee-name"
+                    />
+                    <Input
+                      value={payForm.payeeAddress}
+                      onChange={(e) => setPayForm((f) => ({ ...f, payeeAddress: e.target.value }))}
+                      placeholder="Address (optional)"
+                      data-testid="input-pay-payee-address"
+                    />
+                    <div className="grid grid-cols-3 gap-2">
+                      <Input value={payForm.payeeCity} onChange={(e) => setPayForm((f) => ({ ...f, payeeCity: e.target.value }))} placeholder="City" data-testid="input-pay-payee-city" />
+                      <Input value={payForm.payeeState} onChange={(e) => setPayForm((f) => ({ ...f, payeeState: e.target.value }))} placeholder="State" data-testid="input-pay-payee-state" />
+                      <Input value={payForm.payeeZip} onChange={(e) => setPayForm((f) => ({ ...f, payeeZip: e.target.value }))} placeholder="ZIP" data-testid="input-pay-payee-zip" />
+                    </div>
+                    <Input value={payForm.payeeTaxId} onChange={(e) => setPayForm((f) => ({ ...f, payeeTaxId: e.target.value }))} placeholder="Tax ID (optional)" data-testid="input-pay-payee-tax-id" />
+                    <Input value={payForm.payeeMemo} onChange={(e) => setPayForm((f) => ({ ...f, payeeMemo: e.target.value }))} placeholder="Memo (optional) — shown on the payroll report" data-testid="input-pay-payee-memo" />
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button
