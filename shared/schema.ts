@@ -323,6 +323,9 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   payeeState: varchar("payee_state", { length: 50 }),
   payeeZip: varchar("payee_zip", { length: 20 }),
   payeeTaxId: varchar("payee_tax_id", { length: 40 }),
+  // Free-text memo for the 1099 payee, surfaced on the payroll report sent to
+  // the paying companies (e.g. a check memo / note).
+  payeeMemo: varchar("payee_memo", { length: 500 }),
   hireDate: date("hire_date"),
   terminationDate: date("termination_date"),
   createdAt: timestamp("created_at").defaultNow(),

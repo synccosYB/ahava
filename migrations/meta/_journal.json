@@ -505,6 +505,13 @@
       "when": 1780301900000,
       "tag": "0071_1099_payee",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1780302000000,
+      "tag": "0072_payee_memo",
+      "breakpoints": true
     }
   ]
 }

@@ -960,6 +960,7 @@ export async function registerRoutes(
     payeeState: z.string().optional().nullable(),
     payeeZip: z.string().optional().nullable(),
     payeeTaxId: z.string().optional().nullable(),
+    payeeMemo: z.string().optional().nullable(),
     // Note #5: when false the person is not required to punch; missing-clock-out
     // and no-show alerts are suppressed. Defaults true.
     clockInRequired: z.boolean().optional(),
@@ -1049,6 +1050,7 @@ export async function registerRoutes(
       payeeState: parsed.data.taxClassification === "1099" ? parsed.data.payeeState || null : null,
       payeeZip: parsed.data.taxClassification === "1099" ? parsed.data.payeeZip || null : null,
       payeeTaxId: parsed.data.taxClassification === "1099" ? parsed.data.payeeTaxId || null : null,
+      payeeMemo: parsed.data.taxClassification === "1099" ? parsed.data.payeeMemo || null : null,
       clockInRequired: parsed.data.clockInRequired ?? true,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
@@ -2940,6 +2942,7 @@ export async function registerRoutes(
         "payeeState",
         "payeeZip",
         "payeeTaxId",
+        "payeeMemo",
         "clockInRequired",
         "hireDate",
         "terminationDate",
@@ -9091,7 +9094,7 @@ export async function registerRoutes(
         approvedExceptionsForBatch.map(e => e.punchLogId).filter(Boolean) as string[]
       );
 
-      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
+      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; payee: string; payeeMemo: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
       const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
@@ -9168,6 +9171,10 @@ export async function registerRoutes(
             employeeName,
             taxClassification: profile?.taxClassification || "W-2",
             payrollCompany,
+            // Note #5: 1099 payee ("pay to the order of") + memo for the payroll
+            // company. Blank for W-2 / volunteers.
+            payee: profile?.payeeName || "",
+            payeeMemo: profile?.payeeMemo || "",
             amount,
             payType,
             department,
@@ -9189,7 +9196,7 @@ export async function registerRoutes(
       }
 
       let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
-      csv += "Employee Name,Tax Classification,Payroll Company,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
+      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
 
       for (const [, dayMap] of employeeRecords) {
         const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
@@ -9200,7 +9207,7 @@ export async function registerRoutes(
         for (const row of rows) {
           const bonusAmtCell = row.bonusAmount > 0 ? formatAmountCurrency(row.bonusAmount) : "";
           const bonusDescCell = row.bonusDescriptions.length > 0 ? escapeCSV(row.bonusDescriptions.join("; ")) : "";
-          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
+          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${escapeCSV(row.payee)},${escapeCSV(row.payeeMemo)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
           totalAmount += row.amount;
           totalPaidHours += row.paidHours;
           totalBonusAmount += row.bonusAmount;
@@ -9209,8 +9216,10 @@ export async function registerRoutes(
         const empName = rows[0].employeeName;
         const taxClass = rows[0].taxClassification;
         const payrollCompany = rows[0].payrollCompany;
+        const payee = rows[0].payee;
+        const payeeMemo = rows[0].payeeMemo;
         const totalBonusCell = totalBonusAmount > 0 ? formatAmountCurrency(totalBonusAmount) : "";
-        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${escapeCSV(payee)},${escapeCSV(payeeMemo)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
       }
 
       const adminUser = req.authUser as User;
