@@ -952,6 +952,14 @@ export async function registerRoutes(
     // by this company; 1099 → the check is made out to this company). Null for
     // volunteers / people not on payroll. Picked manually from existing companies.
     payrollCompanyId: z.string().optional().nullable(),
+    // Note #5 (1099 payee): who the 1099 check is made out to. Only the name is
+    // required (enforced below when tax form is 1099); the rest are optional.
+    payeeName: z.string().optional().nullable(),
+    payeeAddress: z.string().optional().nullable(),
+    payeeCity: z.string().optional().nullable(),
+    payeeState: z.string().optional().nullable(),
+    payeeZip: z.string().optional().nullable(),
+    payeeTaxId: z.string().optional().nullable(),
     // Note #5: when false the person is not required to punch; missing-clock-out
     // and no-show alerts are suppressed. Defaults true.
     clockInRequired: z.boolean().optional(),
@@ -1000,6 +1008,9 @@ export async function registerRoutes(
     if (profilePayType === "salary" && !(parsed.data.weeklySalary && parsed.data.weeklySalary > 0)) {
       return res.status(400).json({ message: "Salary pay type requires a positive Weekly Salary." });
     }
+    if (parsed.data.taxClassification === "1099" && !(parsed.data.payeeName && parsed.data.payeeName.trim())) {
+      return res.status(400).json({ message: 'A 1099 worker needs a "Pay to the order of" name.' });
+    }
 
     const tempPassword = generateTempPassword();
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
@@ -1031,6 +1042,13 @@ export async function registerRoutes(
       // Volunteers are never on payroll, so they never carry a paying company.
       payrollCompanyId:
         parsed.data.taxClassification === "Volunteer" ? null : parsed.data.payrollCompanyId || null,
+      // 1099 payee ("pay to the order of") — only kept for 1099 workers.
+      payeeName: parsed.data.taxClassification === "1099" ? parsed.data.payeeName || null : null,
+      payeeAddress: parsed.data.taxClassification === "1099" ? parsed.data.payeeAddress || null : null,
+      payeeCity: parsed.data.taxClassification === "1099" ? parsed.data.payeeCity || null : null,
+      payeeState: parsed.data.taxClassification === "1099" ? parsed.data.payeeState || null : null,
+      payeeZip: parsed.data.taxClassification === "1099" ? parsed.data.payeeZip || null : null,
+      payeeTaxId: parsed.data.taxClassification === "1099" ? parsed.data.payeeTaxId || null : null,
       clockInRequired: parsed.data.clockInRequired ?? true,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
@@ -2916,6 +2934,12 @@ export async function registerRoutes(
         "voluntaryPayEnabled",
         "taxClassification",
         "payrollCompanyId",
+        "payeeName",
+        "payeeAddress",
+        "payeeCity",
+        "payeeState",
+        "payeeZip",
+        "payeeTaxId",
         "clockInRequired",
         "hireDate",
         "terminationDate",

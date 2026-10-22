@@ -313,6 +313,16 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // company (users.companyId / department & location assignments). Nullable —
   // existing employees fall back to a blank placeholder, not an error.
   payrollCompanyId: varchar("payroll_company_id").references(() => companies.id),
+  // Note #5 (1099 payee): a 1099 worker's check is written to this company/LLC
+  // ("pay to the order of"), distinct from the paying entity above. Only the
+  // name is required at entry; address + Tax ID are optional. Null for W-2 and
+  // volunteers.
+  payeeName: varchar("payee_name", { length: 200 }),
+  payeeAddress: varchar("payee_address", { length: 500 }),
+  payeeCity: varchar("payee_city", { length: 100 }),
+  payeeState: varchar("payee_state", { length: 50 }),
+  payeeZip: varchar("payee_zip", { length: 20 }),
+  payeeTaxId: varchar("payee_tax_id", { length: 40 }),
   hireDate: date("hire_date"),
   terminationDate: date("termination_date"),
   createdAt: timestamp("created_at").defaultNow(),

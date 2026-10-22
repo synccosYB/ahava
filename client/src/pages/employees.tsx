@@ -985,6 +985,12 @@ function AddEmployeeDialog({
     employmentType: "full_time",
     taxClassification: "W-2",
     payrollCompanyId: "",
+    payeeName: "",
+    payeeAddress: "",
+    payeeCity: "",
+    payeeState: "",
+    payeeZip: "",
+    payeeTaxId: "",
     clockInRequired: true,
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
@@ -1065,6 +1071,14 @@ function AddEmployeeDialog({
         hireDate: formData.hireDate,
         payType: effectivePayType,
       };
+      if (formData.taxClassification === "1099") {
+        body.payeeName = formData.payeeName.trim();
+        body.payeeAddress = formData.payeeAddress.trim() || null;
+        body.payeeCity = formData.payeeCity.trim() || null;
+        body.payeeState = formData.payeeState.trim() || null;
+        body.payeeZip = formData.payeeZip.trim() || null;
+        body.payeeTaxId = formData.payeeTaxId.trim() || null;
+      }
       if (effectivePayType === "hourly" && formData.hourlyRate) {
         body.hourlyRate = parseFloat(formData.hourlyRate);
       }
@@ -1124,6 +1138,7 @@ function AddEmployeeDialog({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
       taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true,
+      payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
     });
@@ -1152,11 +1167,12 @@ function AddEmployeeDialog({
     (formData.payType === "hourly" && ratePositive(formData.hourlyRate)) ||
     (formData.payType === "daily" && ratePositive(formData.dailySalary)) ||
     (formData.payType === "salary" && ratePositive(formData.weeklySalary));
-  // Everyone except volunteers must be assigned a paying company (W-2 pays the
-  // person, 1099 pays the company) — see Note #5.
+  // Everyone except volunteers must be assigned a paying company (Ahava / BCM).
   const payrollCompanyValid = isVolunteer || !!formData.payrollCompanyId;
+  // A 1099 worker must have a "Pay to the order of" name (the rest is optional).
+  const payeeValid = formData.taxClassification !== "1099" || !!formData.payeeName.trim();
   const canProceedStep3 =
-    canProceedStep1 && canProceedStep2 && formData.taxClassification && payRateValid && payrollCompanyValid;
+    canProceedStep1 && canProceedStep2 && formData.taxClassification && payRateValid && payrollCompanyValid && payeeValid;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(v); }}>
@@ -1416,9 +1432,55 @@ function AddEmployeeDialog({
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  {formData.taxClassification === "1099"
-                    ? "The check is made out to this company (1099)."
-                    : "The company that issues this person's paycheck."}
+                  Which entity issues this person's payment.
+                </p>
+              </div>
+            )}
+            {formData.taxClassification === "1099" && (
+              <div className="space-y-2 rounded-md border p-3">
+                <div className="space-y-1">
+                  <Label>Pay to the order of *</Label>
+                  <Input
+                    value={formData.payeeName}
+                    onChange={(e) => setFormData({ ...formData, payeeName: e.target.value })}
+                    placeholder="Company / LLC name"
+                    data-testid="input-add-payee-name"
+                  />
+                </div>
+                <Input
+                  value={formData.payeeAddress}
+                  onChange={(e) => setFormData({ ...formData, payeeAddress: e.target.value })}
+                  placeholder="Address (optional)"
+                  data-testid="input-add-payee-address"
+                />
+                <div className="grid grid-cols-3 gap-2">
+                  <Input
+                    value={formData.payeeCity}
+                    onChange={(e) => setFormData({ ...formData, payeeCity: e.target.value })}
+                    placeholder="City"
+                    data-testid="input-add-payee-city"
+                  />
+                  <Input
+                    value={formData.payeeState}
+                    onChange={(e) => setFormData({ ...formData, payeeState: e.target.value })}
+                    placeholder="State"
+                    data-testid="input-add-payee-state"
+                  />
+                  <Input
+                    value={formData.payeeZip}
+                    onChange={(e) => setFormData({ ...formData, payeeZip: e.target.value })}
+                    placeholder="ZIP"
+                    data-testid="input-add-payee-zip"
+                  />
+                </div>
+                <Input
+                  value={formData.payeeTaxId}
+                  onChange={(e) => setFormData({ ...formData, payeeTaxId: e.target.value })}
+                  placeholder="Tax ID (optional)"
+                  data-testid="input-add-payee-tax-id"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Only the name is required — address and Tax ID can be added later.
                 </p>
               </div>
             )}

@@ -498,6 +498,13 @@
       "when": 1780301800000,
       "tag": "0070_dept_locations_manager_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1780301900000,
+      "tag": "0071_1099_payee",
+      "breakpoints": true
     }
   ]
 }
