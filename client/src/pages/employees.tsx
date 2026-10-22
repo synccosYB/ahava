@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X, Lock, LockOpen } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -2016,6 +2016,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             <Badge variant="outline" data-testid="badge-employee-profile-role">
               {user?.role}
             </Badge>
+            {user?.editLocked && (
+              <Badge variant="destructive" data-testid="badge-employee-locked">Locked</Badge>
+            )}
+            <LockAccountButton userId={userId} locked={!!user?.editLocked} />
             <ResetPasswordButton userId={userId} />
           </div>
         }
@@ -3239,6 +3243,39 @@ function ManagerScopeEditor({ userId }: { userId: string }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// Lock / unlock an account's ability to make edits (chain of command). Shown to
+// owners and managers; the server enforces who may actually lock/unlock.
+function LockAccountButton({ userId, locked }: { userId: string; locked: boolean }) {
+  const { toast } = useToast();
+  const { user: viewer } = useAuth();
+  const canSee = viewer?.role === "admin" || viewer?.role === "manager";
+  const mutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/users/${userId}/${locked ? "unlock" : "lock"}`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({ title: locked ? "Account unlocked" : "Account locked" });
+    },
+    onError: (err: Error) => toast({ title: "Couldn't change lock", description: err.message, variant: "destructive" }),
+  });
+  if (!canSee) return null;
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => mutation.mutate()}
+      disabled={mutation.isPending}
+      data-testid="button-lock-account"
+      title={locked ? "Unlock this account's editing" : "Lock this account from editing"}
+    >
+      {locked ? <LockOpen className="h-4 w-4 mr-1" /> : <Lock className="h-4 w-4 mr-1" />}
+      {locked ? "Unlock" : "Lock"}
+    </Button>
   );
 }
 
