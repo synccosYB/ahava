@@ -1,10 +1,16 @@
-// Task #418: clock-in geofencing.
+// Task #418 / Note #2: clock-in geofencing.
 //
-// Geofencing NEVER blocks a clock-in. It only decides whether a punch happened
-// inside an allowed radius of one of the employee's geofenced location
-// addresses; when it didn't (or when the device gave us no coordinates while a
-// geofence is in force), we raise a "geofence" attendance exception for a
-// manager to review. The punch always succeeds.
+// Two modes, by punch source:
+//   * Self-service (phone/web): STRICT. The self-service clock-in route calls
+//     evaluateClockInGeofence BEFORE writing a punch and BLOCKS when the device
+//     is outside every allowed radius (or shares no location while a geofence is
+//     in force). A blocked attempt is recorded as a "geofence" exception for the
+//     manager. A manager/admin can override for a stuck employee.
+//   * Wall fingerprint clock & on-site kiosk: physical proof of presence — they
+//     never geofence.
+// The helpers below also still support the legacy flag-only path
+// (flagClockInGeofence) which raises a manager-facing exception without blocking;
+// it runs after a punch is created (e.g. for an overridden out-of-area punch).
 
 import { storage } from "../storage";
 import type { LocationAddress, PunchLog } from "@shared/schema";
@@ -235,6 +241,64 @@ export function buildGeofenceExceptionReason(
     ? ` from "${evaluation.nearestLabel}"`
     : "";
   return `Clock-in was ${distance}${where}, outside the allowed ${allowed} geofence${coords}.`;
+}
+
+// Note #2: evaluate a would-be clock-in against the employee's geofenced
+// addresses WITHOUT creating anything. Used by the self-service clock-in path to
+// decide whether to BLOCK (strict enforcement) before any punch is written. The
+// wall fingerprint clock and on-site kiosk are physical proof of presence and
+// never call this.
+export async function evaluateClockInGeofence(
+  userId: string,
+  punchLatitude: number | null | undefined,
+  punchLongitude: number | null | undefined,
+): Promise<GeofenceEvaluation> {
+  const addresses = await storage.getEmployeeGeofencedAddresses(userId);
+  return evaluateGeofenceForAddresses(addresses, punchLatitude, punchLongitude);
+}
+
+// Note #2: a human-readable message for a BLOCKED self-service clock-in, telling
+// the employee to enable location or walk to the wall clock.
+export function buildGeofenceBlockMessage(evaluation: GeofenceEvaluation): string {
+  if (evaluation.coordsMissing) {
+    return (
+      "We couldn't confirm you're at the building. Turn on location for this " +
+      "site and try again, or clock in on the wall clock inside the building."
+    );
+  }
+  const distance =
+    evaluation.nearestDistanceMeters != null ? `${evaluation.nearestDistanceMeters}m away` : "too far away";
+  const where = evaluation.nearestLabel ? ` from ${evaluation.nearestLabel}` : "";
+  return (
+    `You're ${distance}${where} — outside your work location, so you can't clock ` +
+    "in from your phone here. Clock in on the wall clock inside the building."
+  );
+}
+
+// Note #2: record a BLOCKED out-of-area attempt as a pending "geofence"
+// attendance exception (no linked punch, since none was created) so a manager
+// sees that someone tried to clock in from the wrong place. Never throws.
+export async function recordGeofenceBlockedAttempt(args: {
+  userId: string;
+  workDate: string;
+  punchTime: Date;
+  evaluation: GeofenceEvaluation;
+  punchLatitude: number | null | undefined;
+  punchLongitude: number | null | undefined;
+}): Promise<void> {
+  try {
+    const base = buildGeofenceExceptionReason(args.evaluation, args.punchLatitude, args.punchLongitude);
+    await storage.createAttendanceException({
+      employeeId: args.userId,
+      exceptionDate: args.workDate,
+      exceptionTime: args.punchTime,
+      type: "geofence",
+      reason: `BLOCKED — phone clock-in denied. ${base}`,
+      status: "pending",
+    });
+  } catch (err) {
+    console.error("Failed to record geofence blocked attempt:", err);
+  }
 }
 
 // Run the full geofence check for a clock-in and, when out of bounds (or

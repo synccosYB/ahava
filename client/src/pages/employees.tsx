@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -984,6 +984,8 @@ function AddEmployeeDialog({
     locationIds: [] as string[],
     employmentType: "full_time",
     taxClassification: "W-2",
+    payrollCompanyId: "",
+    clockInRequired: true,
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
     hourlyRate: "",
@@ -996,6 +998,23 @@ function AddEmployeeDialog({
   const [createDepartmentOpen, setCreateDepartmentOpen] = useState(false);
   const [createLocationOpen, setCreateLocationOpen] = useState(false);
   const selectedCompanyName = divisions.find((d) => d.id === formData.companyId)?.name;
+
+  // Note #1: operationally there is a single company (Ahava Medical). We no
+  // longer ask for it — resolve it automatically and assign every hire to it.
+  // Matched by name; falls back to the first company so a rename can't break
+  // Add Employee. BCM and any other company are payroll-only payees (see the
+  // paying-company picker on the Pay step), never the operational company.
+  const operationalCompany = useMemo(
+    () =>
+      divisions.find((d) => /ahava\s*medical/i.test(d.name)) ?? divisions[0],
+    [divisions],
+  );
+  useEffect(() => {
+    if (open && operationalCompany && formData.companyId !== operationalCompany.id) {
+      setFormData((f) => ({ ...f, companyId: operationalCompany.id }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, operationalCompany]);
 
   const { data: onboardingTemplates = [] } = useQuery<Array<{ id: string; name: string; isDefault: boolean; companyId: string | null; isActive: boolean }>>({
     queryKey: ["/api/onboarding-templates", { companyId: formData.companyId }],
@@ -1016,19 +1035,20 @@ function AddEmployeeDialog({
     queryKey: ["/api/departments"],
   });
 
+  // Note #1: locations are no longer gated by company (one operational company),
+  // so fetch the full list.
   const { data: scopedLocations = [] } = useQuery<Location[]>({
-    queryKey: ["/api/locations", { companyId: formData.companyId }],
-    queryFn: async () => {
-      const res = await fetch(`/api/locations?companyId=${formData.companyId}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch locations");
-      return res.json();
-    },
-    enabled: !!formData.companyId,
+    queryKey: ["/api/locations"],
+    enabled: open,
   });
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const body: Record<string, string | number | null | string[]> = {
+      const isVolunteer = formData.taxClassification === "Volunteer";
+      // Volunteers have no pay: force the no-rate pay type and never attach a
+      // paying company. Everyone else carries the manually-picked paying company.
+      const effectivePayType = isVolunteer ? "contractual" : formData.payType;
+      const body: Record<string, string | number | boolean | null | string[]> = {
         firstName: formData.firstName,
         lastName: formData.lastName,
         email: formData.email.trim().toLowerCase(),
@@ -1040,16 +1060,18 @@ function AddEmployeeDialog({
         locationId: formData.locationIds[0] || null,
         employmentType: formData.employmentType,
         taxClassification: formData.taxClassification,
+        payrollCompanyId: isVolunteer ? null : formData.payrollCompanyId || null,
+        clockInRequired: formData.clockInRequired,
         hireDate: formData.hireDate,
-        payType: formData.payType,
+        payType: effectivePayType,
       };
-      if (formData.payType === "hourly" && formData.hourlyRate) {
+      if (effectivePayType === "hourly" && formData.hourlyRate) {
         body.hourlyRate = parseFloat(formData.hourlyRate);
       }
-      if (formData.payType === "salary" && formData.weeklySalary) {
+      if (effectivePayType === "salary" && formData.weeklySalary) {
         body.weeklySalary = parseFloat(formData.weeklySalary);
       }
-      if (formData.payType === "daily" && formData.dailySalary) {
+      if (effectivePayType === "daily" && formData.dailySalary) {
         body.dailySalary = parseFloat(formData.dailySalary);
       }
       if (formData.onboardingTemplateId) {
@@ -1101,7 +1123,7 @@ function AddEmployeeDialog({
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
-      taxClassification: "W-2",
+      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true,
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
     });
@@ -1115,18 +1137,26 @@ function AddEmployeeDialog({
     }
   };
 
-  const canProceedStep1 = !!(formData.firstName && formData.lastName && formData.email && formData.companyId);
-  const canProceedStep2 = !!(formData.hireDate && formData.taxClassification && formData.employmentType);
+  // Note #1/#4: company is no longer asked for here (auto-assigned). Page 1 is
+  // identity + assignment; the money questions live on the Pay step.
+  const canProceedStep1 = !!(formData.firstName && formData.lastName && formData.email);
+  const canProceedStep2 = !!(formData.hireDate && formData.employmentType);
   const ratePositive = (v: string) => {
     const n = parseFloat(v);
     return Number.isFinite(n) && n > 0;
   };
+  const isVolunteer = formData.taxClassification === "Volunteer";
   const payRateValid =
+    isVolunteer ||
     formData.payType === "contractual" ||
     (formData.payType === "hourly" && ratePositive(formData.hourlyRate)) ||
     (formData.payType === "daily" && ratePositive(formData.dailySalary)) ||
     (formData.payType === "salary" && ratePositive(formData.weeklySalary));
-  const canProceedStep3 = canProceedStep1 && canProceedStep2 && payRateValid;
+  // Everyone except volunteers must be assigned a paying company (W-2 pays the
+  // person, 1099 pays the company) — see Note #5.
+  const payrollCompanyValid = isVolunteer || !!formData.payrollCompanyId;
+  const canProceedStep3 =
+    canProceedStep1 && canProceedStep2 && formData.taxClassification && payRateValid && payrollCompanyValid;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(v); }}>
@@ -1208,38 +1238,6 @@ function AddEmployeeDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Company *</Label>
-              <Select
-                value={formData.companyId}
-                onValueChange={(v) => {
-                  if (v === INLINE_ADD_NEW_VALUE) {
-                    setCreateCompanyOpen(true);
-                    return;
-                  }
-                  setFormData({ ...formData, companyId: v, departmentIds: [], locationIds: [] });
-                }}
-              >
-                <SelectTrigger data-testid="select-add-division">
-                  <SelectValue placeholder="Select company" />
-                </SelectTrigger>
-                <SelectContent>
-                  {divisions.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-                  ))}
-                  <PermissionedAddNewItem
-                    permission="company.create"
-                    label="Add new company"
-                    testId="option-add-new-company"
-                  />
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="space-y-4">
-            <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label>Departments</Label>
                 <Button
@@ -1284,17 +1282,7 @@ function AddEmployeeDialog({
                   size="sm"
                   className="h-7 px-2 text-xs"
                   data-testid="button-add-new-location"
-                  onClick={() => {
-                    if (!formData.companyId) {
-                      toast({
-                        title: "Select a company first",
-                        description: "Choose a company in Step 1 before adding a location.",
-                        variant: "destructive",
-                      });
-                      return;
-                    }
-                    setCreateLocationOpen(true);
-                  }}
+                  onClick={() => setCreateLocationOpen(true)}
                 >
                   <Plus className="h-3.5 w-3.5 mr-1" /> Add new
                 </Button>
@@ -1321,6 +1309,11 @@ function AddEmployeeDialog({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="space-y-4">
             <div className="space-y-2">
               <Label>Employment Type</Label>
               <Select value={formData.employmentType} onValueChange={(v) => setFormData({ ...formData, employmentType: v })}>
@@ -1335,18 +1328,18 @@ function AddEmployeeDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>Tax Classification</Label>
-              <Select value={formData.taxClassification} onValueChange={(v) => setFormData({ ...formData, taxClassification: v })}>
-                <SelectTrigger data-testid="select-add-tax-classification">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="W-2">W-2</SelectItem>
-                  <SelectItem value="1099">1099</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">Tax form classification — independent from employment type.</p>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label>Required to clock in</Label>
+                <p className="text-xs text-muted-foreground">
+                  Turn off for people paid regardless of hours (e.g. a salaried manager) or volunteers. When off, missing-clock-out and no-show alerts are suppressed for this person.
+                </p>
+              </div>
+              <Switch
+                checked={formData.clockInRequired}
+                onCheckedChange={(v) => setFormData({ ...formData, clockInRequired: v })}
+                data-testid="switch-add-clock-in-required"
+              />
             </div>
             <div className="space-y-2">
               <Label>Hire Date</Label>
@@ -1384,6 +1377,57 @@ function AddEmployeeDialog({
 
         {step === 3 && (
           <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Tax Form</Label>
+              <Select
+                value={formData.taxClassification}
+                onValueChange={(v) =>
+                  setFormData({
+                    ...formData,
+                    taxClassification: v,
+                    payrollCompanyId: v === "Volunteer" ? "" : formData.payrollCompanyId,
+                  })
+                }
+              >
+                <SelectTrigger data-testid="select-add-tax-classification">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="W-2">W-2 — paid to the person</SelectItem>
+                  <SelectItem value="1099">1099 — paid to a company</SelectItem>
+                  <SelectItem value="Volunteer">Volunteer — not paid</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {!isVolunteer && (
+              <div className="space-y-2">
+                <Label>Paying Company *</Label>
+                <Select
+                  value={formData.payrollCompanyId}
+                  onValueChange={(v) => setFormData({ ...formData, payrollCompanyId: v })}
+                >
+                  <SelectTrigger data-testid="select-add-payroll-company">
+                    <SelectValue placeholder="Who pays this person" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {divisions.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {formData.taxClassification === "1099"
+                    ? "The check is made out to this company (1099)."
+                    : "The company that issues this person's paycheck."}
+                </p>
+              </div>
+            )}
+            {isVolunteer ? (
+              <p className="text-sm text-muted-foreground" data-testid="text-add-volunteer-note">
+                Volunteers are not paid — only their attendance is tracked. No pay rate or paying company is needed.
+              </p>
+            ) : (
+            <>
             <div className="space-y-2">
               <Label>Pay Type</Label>
               <Select
@@ -1452,6 +1496,13 @@ function AddEmployeeDialog({
                   data-testid="input-add-weekly-salary"
                 />
               </div>
+            )}
+            {formData.payType === "salary" && (
+              <p className="text-xs text-muted-foreground" data-testid="text-add-salary-note">
+                Fixed salary — pay is not affected by hours worked. Hours are still shown on reports for reference.
+              </p>
+            )}
+            </>
             )}
           </div>
         )}
@@ -1726,6 +1777,20 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
       toast({ title: "Tax classification updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const clockInRequiredMutation = useMutation({
+    mutationFn: async (clockInRequired: boolean) => {
+      await apiRequest("PATCH", `/api/employment-profiles/${userId}`, { clockInRequired });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      toast({ title: "Clock-in requirement updated" });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -2217,7 +2282,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           </div>
         </TabsContent>
 
-        <TabsContent value="employment">
+        <TabsContent value="employment" className="space-y-6">
+          {user?.role === "manager" && (
+            <ManagerScopeEditor userId={userId} />
+          )}
           <Card data-testid="card-employment">
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Employment Details</CardTitle>
@@ -2316,8 +2384,25 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                   <SelectContent>
                     <SelectItem value="W-2">W-2</SelectItem>
                     <SelectItem value="1099">1099</SelectItem>
+                    <SelectItem value="Volunteer">Volunteer</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Required to clock in</Label>
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={profile?.clockInRequired ?? true}
+                    onCheckedChange={(v) => clockInRequiredMutation.mutate(v)}
+                    disabled={profileLoading || !profile}
+                    data-testid="switch-profile-clock-in-required"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {(profile?.clockInRequired ?? true)
+                      ? "Missing-punch & no-show alerts on"
+                      : "Alerts suppressed (not required)"}
+                  </span>
+                </div>
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Hire Date</Label>
@@ -2910,6 +2995,132 @@ function CorrectionRequestStat({ userId }: { userId: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Note #3: edit a manager's "hats" — each row is a (location?, department?)
+// scope. The manager sees the UNION of their hats. "All" on a dimension means
+// unconstrained (all locations / all departments).
+type ManagerHat = { locationId: string; departmentId: string };
+
+function ManagerScopeEditor({ userId }: { userId: string }) {
+  const { toast } = useToast();
+  const { data: locations = [] } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { data: departments = [] } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
+  const { data: scopeData } = useQuery<{ scopes: Array<{ id: string; locationId: string | null; departmentId: string | null }> }>({
+    queryKey: ["/api/users", userId, "manager-scopes"],
+    queryFn: async () => {
+      const res = await fetch(`/api/users/${userId}/manager-scopes`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load management scope");
+      return res.json();
+    },
+  });
+
+  const [hats, setHats] = useState<ManagerHat[]>([]);
+  useEffect(() => {
+    if (scopeData?.scopes) {
+      setHats(scopeData.scopes.map((s) => ({ locationId: s.locationId || "", departmentId: s.departmentId || "" })));
+    }
+  }, [scopeData]);
+
+  const locName = (id: string) => locations.find((l) => l.id === id)?.name || "that location";
+  const deptName = (id: string) => departments.find((d) => d.id === id)?.name || "that department";
+  const describeHat = (h: ManagerHat) => {
+    if (h.locationId && h.departmentId) return `${deptName(h.departmentId)} at ${locName(h.locationId)}`;
+    if (h.locationId) return `Everyone at ${locName(h.locationId)} (all departments)`;
+    if (h.departmentId) return `${deptName(h.departmentId)} across all locations`;
+    return "Pick a location and/or department";
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const scopes = hats
+        .map((h) => ({ locationId: h.locationId || null, departmentId: h.departmentId || null }))
+        .filter((h) => h.locationId || h.departmentId);
+      await apiRequest("PUT", `/api/users/${userId}/manager-scopes`, { scopes });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "manager-scopes"] });
+      toast({ title: "Management scope updated" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const setHat = (i: number, patch: Partial<ManagerHat>) =>
+    setHats((prev) => prev.map((h, idx) => (idx === i ? { ...h, ...patch } : h)));
+
+  return (
+    <Card data-testid="card-manager-scope">
+      <CardHeader>
+        <CardTitle>Management Scope</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          What this manager can see. Each row is one "hat" — the manager sees the
+          sum of all rows. Leave a location or department as "All" to cover every
+          one. Example: <em>All of Sumner</em> plus <em>Vision at Kingston</em>.
+          With no rows, the manager falls back to their own department memberships.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {hats.length === 0 && (
+          <p className="text-sm text-muted-foreground" data-testid="text-no-manager-scopes">
+            No scopes set.
+          </p>
+        )}
+        {hats.map((h, i) => (
+          <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border p-2" data-testid={`manager-scope-row-${i}`}>
+            <Select value={h.locationId || "all"} onValueChange={(v) => setHat(i, { locationId: v === "all" ? "" : v })}>
+              <SelectTrigger className="w-[200px]" data-testid={`select-scope-location-${i}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All locations</SelectItem>
+                {locations.map((l) => (
+                  <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={h.departmentId || "all"} onValueChange={(v) => setHat(i, { departmentId: v === "all" ? "" : v })}>
+              <SelectTrigger className="w-[200px]" data-testid={`select-scope-department-${i}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All departments</SelectItem>
+                {departments.map((d) => (
+                  <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="text-xs text-muted-foreground flex-1 min-w-[160px]">{describeHat(h)}</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setHats((prev) => prev.filter((_, idx) => idx !== i))}
+              data-testid={`button-remove-scope-${i}`}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setHats((prev) => [...prev, { locationId: "", departmentId: "" }])}
+            data-testid="button-add-scope"
+          >
+            <Plus className="h-4 w-4 mr-1" /> Add scope
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending}
+            data-testid="button-save-manager-scope"
+          >
+            Save scope
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -18,6 +18,8 @@ import {
   userAccessScopes,
   employeeDepartments,
   employeeLocations,
+  departmentLocations,
+  managerScopes,
   policyTypes,
 } from "./models/auth";
 
@@ -39,6 +41,8 @@ export {
   userAccessScopes,
   employeeDepartments,
   employeeLocations,
+  departmentLocations,
+  managerScopes,
   policyTypes,
   passwordResetTokens,
   normalizeEmail,
@@ -74,6 +78,10 @@ export type {
   InsertEmployeeDepartment,
   EmployeeLocation,
   InsertEmployeeLocation,
+  DepartmentLocation,
+  InsertDepartmentLocation,
+  ManagerScope,
+  InsertManagerScope,
   PolicyType,
   InsertPolicyType,
   PasswordResetToken,
@@ -89,6 +97,8 @@ export {
   insertDepartmentManagerSchema,
   insertEmployeeDepartmentSchema,
   insertEmployeeLocationSchema,
+  insertDepartmentLocationSchema,
+  insertManagerScopeSchema,
   insertRoleSchema,
   insertPermissionSchema,
   insertPolicyTypeSchema,
@@ -292,6 +302,11 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   holidayPayEnabled: boolean("holiday_pay_enabled").default(false).notNull(),
   voluntaryPayEnabled: boolean("voluntary_pay_enabled").default(false).notNull(),
   taxClassification: varchar("tax_classification", { length: 10 }).default("W-2").notNull(),
+  // Note #5: when false the person is NOT required to punch (e.g. a salaried
+  // 1099 manager paid regardless of hours, or a volunteer). Missing-clock-out
+  // and no-show alerts are suppressed for them. Defaults true so existing
+  // employees stay on the normal "must clock in" footing.
+  clockInRequired: boolean("clock_in_required").default(true).notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
   // Payroll-only company (Task #475): which company this employee belongs to for
   // payroll identification. Deliberately INDEPENDENT of the assignment-derived

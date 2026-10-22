@@ -18,6 +18,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { MultiSelect } from "@/components/ui/multi-select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { MapPin, Building2, Plus, Pencil, Trash2, ChevronsUpDown, X, Building, Check } from "lucide-react";
@@ -200,12 +201,15 @@ function LocationsTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", code: "", timezone: "" });
   const [companyIds, setCompanyIds] = useState<string[]>([]);
+  // Note #3: which departments exist at this location.
+  const [departmentIds, setDepartmentIds] = useState<string[]>([]);
   const [addresses, setAddresses] = useState<AddressEntry[]>([emptyAddress()]);
   const [addressCounts, setAddressCounts] = useState<Record<string, LocationAddress[]>>({});
   const [editOriginalAddresses, setEditOriginalAddresses] = useState<LocationAddress[]>([]);
 
   const { activeCompanyId } = useActiveCompany();
   const { data: locations, isLoading } = useQuery<LocationWithCompanies[]>({ queryKey: ["/api/locations"] });
+  const { data: allDepartments = [] } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
   const { data: divisions, isLoading: divisionsLoading } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
   const divisionId = resolveActiveCompanyId(user, divisions, activeCompanyId);
   const hasCompany = !!divisionId;
@@ -280,6 +284,11 @@ function LocationsTab() {
           await apiRequest("POST", `/api/locations/${locationId}/addresses`, data);
         }
       }
+
+      // Note #3: persist which departments exist at this location.
+      if (locationId) {
+        await apiRequest("PUT", `/api/locations/${locationId}/departments`, { departmentIds });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations"] });
@@ -316,6 +325,7 @@ function LocationsTab() {
   const resetForm = () => {
     setForm({ name: "", code: "", timezone: "" });
     setCompanyIds(divisionId ? [divisionId] : []);
+    setDepartmentIds([]);
     setAddresses([emptyAddress()]);
     setEditOriginalAddresses([]);
     setEditingId(null);
@@ -332,6 +342,18 @@ function LocationsTab() {
       : (loc.companyId ? [loc.companyId] : []);
     setCompanyIds(initial);
     setEditingId(loc.id);
+
+    try {
+      const deptRes = await fetch(`/api/locations/${loc.id}/departments`, { credentials: "include" });
+      if (deptRes.ok) {
+        const { departmentIds: ids } = await deptRes.json();
+        setDepartmentIds(Array.isArray(ids) ? ids : []);
+      } else {
+        setDepartmentIds([]);
+      }
+    } catch {
+      setDepartmentIds([]);
+    }
 
     try {
       const res = await fetch(`/api/locations/${loc.id}/addresses`, { credentials: "include" });
@@ -420,6 +442,21 @@ function LocationsTab() {
               <div><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-location-name" /></div>
               <div><Label>Code</Label><Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} data-testid="input-location-code" /></div>
               <div><Label>Timezone</Label><Input value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} placeholder="America/New_York" data-testid="input-location-timezone" /></div>
+              <div>
+                <Label>Departments at this location</Label>
+                <MultiSelect
+                  options={allDepartments.map((d) => ({ label: d.name, value: d.id }))}
+                  selected={departmentIds}
+                  onChange={setDepartmentIds}
+                  placeholder="Select departments present here"
+                  allLabel="No departments"
+                  emptyMessage="No departments yet — add them in the Departments tab."
+                  data-testid="select-location-departments"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Pick every department that exists at this location. A department can be at several locations.
+                </p>
+              </div>
               {divisions && divisions.length > 0 && (
                 <div data-testid="field-location-companies">
                   <Label>Companies *</Label>
@@ -931,19 +968,12 @@ function DepartmentsTab() {
                   </div>
                 )}
               </div>
-              <div>
-                <Label>Location</Label>
-                <Select value={form.locationId || "none"} onValueChange={(v) => setForm({ ...form, locationId: v === "none" ? "" : v })}>
-                  <SelectTrigger data-testid="select-department-location">
-                    <SelectValue placeholder="Select location" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">None</SelectItem>
-                    {locations?.map((l) => (
-                      <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="text-xs text-muted-foreground" data-testid="text-department-location-hint">
+                  A department can exist at several locations. Choose which locations
+                  have this department from the <span className="font-medium">Locations</span> tab
+                  (edit a location → "Departments at this location").
+                </p>
               </div>
             </div>
             <DialogFooter>
