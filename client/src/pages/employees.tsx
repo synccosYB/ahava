@@ -991,6 +991,7 @@ function AddEmployeeDialog({
     payeeState: "",
     payeeZip: "",
     payeeTaxId: "",
+    payeeMemo: "",
     clockInRequired: true,
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
@@ -1078,6 +1079,7 @@ function AddEmployeeDialog({
         body.payeeState = formData.payeeState.trim() || null;
         body.payeeZip = formData.payeeZip.trim() || null;
         body.payeeTaxId = formData.payeeTaxId.trim() || null;
+        body.payeeMemo = formData.payeeMemo.trim() || null;
       }
       if (effectivePayType === "hourly" && formData.hourlyRate) {
         body.hourlyRate = parseFloat(formData.hourlyRate);
@@ -1138,7 +1140,7 @@ function AddEmployeeDialog({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
       taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true,
-      payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "",
+      payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "", payeeMemo: "",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
     });
@@ -1479,8 +1481,14 @@ function AddEmployeeDialog({
                   placeholder="Tax ID (optional)"
                   data-testid="input-add-payee-tax-id"
                 />
+                <Input
+                  value={formData.payeeMemo}
+                  onChange={(e) => setFormData({ ...formData, payeeMemo: e.target.value })}
+                  placeholder="Memo (optional) — shown on the payroll report"
+                  data-testid="input-add-payee-memo"
+                />
                 <p className="text-xs text-muted-foreground">
-                  Only the name is required — address and Tax ID can be added later.
+                  Only the name is required — address, Tax ID and memo can be added later.
                 </p>
               </div>
             )}
