@@ -494,6 +494,7 @@ export interface IStorage {
   computeAnnualVacationEntitlement(userId: string): Promise<number>;
 
   createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
+  getAuditLog(id: string): Promise<AuditLog | undefined>;
   getAuditLogs(module?: string, limit?: number): Promise<AuditLog[]>;
 
   getCompany(id: string): Promise<Company | undefined>;
@@ -3090,6 +3091,11 @@ export class DatabaseStorage implements IStorage {
   async createAuditLog(log: InsertAuditLog): Promise<AuditLog> {
     const [created] = await db.insert(auditLogs).values(log).returning();
     return created;
+  }
+
+  async getAuditLog(id: string): Promise<AuditLog | undefined> {
+    const [row] = await db.select().from(auditLogs).where(eq(auditLogs.id, id));
+    return row;
   }
 
   async getAuditLogs(targetType?: string, limit: number = 50): Promise<AuditLog[]> {

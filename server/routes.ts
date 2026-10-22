@@ -56,6 +56,7 @@ import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
+import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/rank";
 import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import {
   resolvePunctualityBonusConfig,
@@ -1322,6 +1323,11 @@ export async function registerRoutes(
   app.patch("/api/users/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
+    }
+    // Additive lock guard (does NOT change who can edit): a locked account can't
+    // make edits until unlocked. Super admin is never locked.
+    if ((req as any).authUser?.editLocked && !isSuperAdmin(req)) {
+      return res.status(403).json({ message: "Your account is locked from making changes." });
     }
     const parsed = updateUserSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -2652,6 +2658,108 @@ export async function registerRoutes(
     res.json({ scopes });
   });
 
+  // --- Account edit-lock (chain of command) --------------------------------
+  // Lock: freeze a lower-ranked account from making edits. Stores the locker's
+  // rank so only someone at that rank or higher can unlock later.
+  app.post("/api/users/:id/lock", requireAuth, async (req: any, res) => {
+    const actor = req.authUser as User;
+    const target = await storage.getUser(String(req.params.id));
+    if (!target) return res.status(404).json({ message: "User not found" });
+    if (actor.id === target.id) return res.status(400).json({ message: "You can't lock your own account." });
+    const [actorRank, targetRank] = await Promise.all([getUserRank(actor), getUserRank(target)]);
+    if (!outranks(actorRank, targetRank)) {
+      return res.status(403).json({ message: "You can only lock accounts below your authority." });
+    }
+    const updated = await storage.updateUser(target.id, {
+      editLocked: true,
+      lockedByUserId: actor.id,
+      lockedByRank: actorRank,
+      lockedAt: new Date(),
+    } as any);
+    invalidateUserCache();
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: "user",
+      targetId: target.id,
+      action: "account.lock",
+      oldValue: { editLocked: false },
+      newValue: { editLocked: true, lockedByRank: actorRank },
+      ...getAuditContext(req),
+    });
+    res.json({ id: updated?.id, editLocked: true });
+  });
+
+  // Unlock: only someone at the locker's rank or higher may unlock.
+  app.post("/api/users/:id/unlock", requireAuth, async (req: any, res) => {
+    const actor = req.authUser as User;
+    const target = await storage.getUser(String(req.params.id));
+    if (!target) return res.status(404).json({ message: "User not found" });
+    if (!target.editLocked) return res.json({ id: target.id, editLocked: false });
+    const actorRank = await getUserRank(actor);
+    const lockedByRank = target.lockedByRank ?? RANK.OWNER;
+    if (!canUnlock(actorRank, lockedByRank)) {
+      return res.status(403).json({
+        message: `This account was locked by a ${RANK_LABEL[lockedByRank] || "higher authority"} — only a ${RANK_LABEL[lockedByRank] || "higher authority"} or above can unlock it.`,
+      });
+    }
+    const updated = await storage.updateUser(target.id, {
+      editLocked: false,
+      lockedByUserId: null,
+      lockedByRank: null,
+      lockedAt: null,
+    } as any);
+    invalidateUserCache();
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: "user",
+      targetId: target.id,
+      action: "account.unlock",
+      oldValue: { editLocked: true, lockedByRank },
+      newValue: { editLocked: false },
+      ...getAuditContext(req),
+    });
+    res.json({ id: updated?.id, editLocked: false });
+  });
+
+  // Undo a logged change: revert the recorded old values. Supports the edits we
+  // log with before/after snapshots (employment_profile, user). The actor must
+  // out-rank the affected employee, and the undo is itself audit-logged.
+  app.post("/api/audit-logs/:id/undo", requireAuth, requirePermission("audit.view"), async (req: any, res) => {
+    const actor = req.authUser as User;
+    const entry = await storage.getAuditLog(String(req.params.id));
+    if (!entry) return res.status(404).json({ message: "Audit entry not found" });
+    const oldValue = (entry.oldValue ?? null) as Record<string, unknown> | null;
+    if (!oldValue || Object.keys(oldValue).length === 0) {
+      return res.status(400).json({ message: "This change has no recorded previous value to undo." });
+    }
+    if (entry.targetType !== "employment_profile" && entry.targetType !== "user") {
+      return res.status(400).json({ message: `Undo isn't supported for "${entry.targetType}" changes yet.` });
+    }
+    // The affected employee is the audit target (userId for both types).
+    const affected = await storage.getUser(entry.targetId);
+    if (!affected) return res.status(404).json({ message: "The affected account no longer exists." });
+    const [actorRank, targetRank] = await Promise.all([getUserRank(actor), getUserRank(affected)]);
+    if (actor.id !== affected.id && !outranks(actorRank, targetRank)) {
+      return res.status(403).json({ message: "You can only undo changes on accounts below your authority." });
+    }
+    if (entry.targetType === "employment_profile") {
+      await storage.updateEmploymentProfile(entry.targetId, oldValue as any);
+    } else {
+      await storage.updateUser(entry.targetId, oldValue as any);
+      invalidateUserCache();
+    }
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      action: `undo.${entry.action}`,
+      oldValue: (entry.newValue ?? null) as any,
+      newValue: oldValue as any,
+      ...getAuditContext(req),
+    });
+    res.json({ ok: true, reverted: Object.keys(oldValue) });
+  });
+
   // Task #418: pull optional device coordinates off a clock-in payload. Returns
   // nulls for anything missing or non-finite — geofencing treats "no coords" as
   // a required-but-missing signal rather than throwing.
@@ -2886,6 +2994,11 @@ export async function registerRoutes(
   });
 
   app.patch("/api/employment-profiles/:userId", requireAuth, requirePermission("users.edit"), async (req, res) => {
+    // Additive lock guard (does NOT change who can edit): a locked account can't
+    // make edits until unlocked. Super admin is never locked.
+    if ((req as any).authUser?.editLocked && !isSuperAdmin(req)) {
+      return res.status(403).json({ message: "Your account is locked from making changes." });
+    }
     const parsed = insertEmploymentProfileSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
