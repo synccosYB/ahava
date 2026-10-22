@@ -133,7 +133,18 @@ export function MultiSelect({
             data-testid={testId ? `${testId}-search` : undefined}
           />
         </div>
-        <div className="max-h-60 overflow-y-auto p-1">
+        <div
+          className="max-h-60 overflow-y-auto p-1"
+          onWheel={(e) => {
+            // When this popover is opened inside a Dialog, the dialog's
+            // body-scroll lock (react-remove-scroll) swallows wheel events over
+            // this portaled list, so the mouse wheel can't scroll it (dragging
+            // the scrollbar still works). Apply the delta manually so the wheel
+            // scrolls the list; stopPropagation keeps it from bubbling out.
+            e.currentTarget.scrollTop += e.deltaY;
+            e.stopPropagation();
+          }}
+        >
           <button
             type="button"
             onClick={() => onChange([])}
