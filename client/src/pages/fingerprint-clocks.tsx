@@ -31,7 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Fingerprint, Loader2, Activity, Link2 } from "lucide-react";
+import { Plus, Fingerprint, Loader2, Activity, Link2, DownloadCloud } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 
 type BiometricDevice = {
@@ -148,6 +148,18 @@ export default function FingerprintClocksPage() {
         description: "The clock will upload its fingerprints on its next check-in (a few seconds). Refresh to see the count.",
       }),
     onError: () => toast({ title: "Couldn't request fingerprints", variant: "destructive" }),
+  });
+
+  const distributeMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/biometric-devices/${id}/distribute`, {}),
+    onSuccess: async (res: any) => {
+      const data = await res.json().catch(() => ({}));
+      toast({
+        title: "Fingerprints queued for this clock",
+        description: `${data.people ?? 0} people queued. The clock will load them on its next check-in (a few seconds).`,
+      });
+    },
+    onError: () => toast({ title: "Couldn't push fingerprints", variant: "destructive" }),
   });
 
   function openCreate() {
@@ -297,10 +309,20 @@ export default function FingerprintClocksPage() {
                             variant="ghost"
                             onClick={() => harvestMutation.mutate(device.id)}
                             disabled={harvestMutation.isPending}
-                            title="Pull fingerprints from this clock (cloud sync)"
+                            title="Pull fingerprints FROM this clock into Ahava (harvest)"
                             data-testid={`button-harvest-${device.id}`}
                           >
                             <Fingerprint className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => distributeMutation.mutate(device.id)}
+                            disabled={distributeMutation.isPending}
+                            title="Push everyone's fingerprints TO this clock (distribute)"
+                            data-testid={`button-distribute-${device.id}`}
+                          >
+                            <DownloadCloud className="h-3 w-3" />
                           </Button>
                           <Button
                             size="sm"

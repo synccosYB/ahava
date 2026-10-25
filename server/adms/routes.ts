@@ -19,6 +19,8 @@ import {
   ackOk,
   parseAttlog,
   parseBioUpload,
+  buildUserInfoCommand,
+  buildFingerprintUpdateCommand,
   tableKind,
   serialFromQuery,
   isValidAdmsToken,
@@ -241,6 +243,40 @@ function registerAdminRoutes(app: Express): void {
     const device = await adms.getDevice(String(req.params.id));
     if (!device) return res.status(404).json({ message: "Device not found" });
     res.json({ count: await adms.countFingerprintsForDevice(device.id) });
+  });
+
+  // Phase 2 Distribute: push every mapped fingerprint (optionally scoped to the
+  // device's company) DOWN to this clock, so a new/replacement clock knows
+  // everyone without re-enrollment. Queues a user + template command per finger;
+  // the clock applies them on its next poll. Attribution is wired by mapping the
+  // target PIN → employee on this device.
+  app.post("/api/biometric-devices/:id/distribute", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
+    const device = await adms.getDevice(String(req.params.id));
+    if (!device) return res.status(404).json({ message: "Device not found" });
+    const templates = await adms.getDistributableTemplates(device.companyId ?? null);
+    const seenPins = new Set<string>();
+    let queued = 0;
+    for (const t of templates) {
+      if (!seenPins.has(t.pin)) {
+        await adms.enqueueCommand(device.id, buildUserInfoCommand(t.pin, t.name));
+        await adms.mapDeviceUser(device.id, t.pin, t.userId);
+        seenPins.add(t.pin);
+        queued += 1;
+      }
+      await adms.enqueueCommand(
+        device.id,
+        buildFingerprintUpdateCommand({
+          pin: t.pin,
+          fingerIndex: t.fingerIndex,
+          size: t.size,
+          valid: t.valid,
+          template: t.template,
+          format: t.format,
+        }),
+      );
+      queued += 1;
+    }
+    res.json({ ok: true, people: seenPins.size, queued });
   });
 }
 

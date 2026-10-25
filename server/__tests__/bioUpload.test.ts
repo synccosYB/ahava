@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseBioUpload } from "../adms/protocol";
+import { parseBioUpload, buildUserInfoCommand, buildFingerprintUpdateCommand } from "../adms/protocol";
 
 test("parses legacy USER + FP lines", () => {
   const body = [
@@ -54,4 +54,30 @@ test("empty body is safe", () => {
   const r = parseBioUpload("");
   assert.equal(r.users.length, 0);
   assert.equal(r.fingerprints.length, 0);
+});
+
+// --- Distribute: command builders ---
+test("buildUserInfoCommand emits a DATA UPDATE USERINFO line", () => {
+  const cmd = buildUserInfoCommand("123", "Jane Doe");
+  assert.match(cmd, /^DATA UPDATE USERINFO /);
+  assert.match(cmd, /PIN=123/);
+  assert.match(cmd, /Name=Jane Doe/);
+});
+
+test("buildFingerprintUpdateCommand: legacy FP carries PIN/FID/TMP", () => {
+  const cmd = buildFingerprintUpdateCommand({ pin: "123", fingerIndex: 6, size: 1998, valid: true, template: "QUJD", format: "FP" });
+  assert.match(cmd, /^DATA UPDATE FINGERTMP /);
+  assert.match(cmd, /PIN=123/);
+  assert.match(cmd, /FID=6/);
+  assert.match(cmd, /Valid=1/);
+  assert.match(cmd, /TMP=QUJD/);
+});
+
+test("buildFingerprintUpdateCommand: BIODATA format for newer firmware", () => {
+  const cmd = buildFingerprintUpdateCommand({ pin: "9", fingerIndex: 3, size: null, valid: false, template: "Zm9v", format: "BIODATA" });
+  assert.match(cmd, /^DATA UPDATE BIODATA /);
+  assert.match(cmd, /Pin=9/);
+  assert.match(cmd, /Index=3/);
+  assert.match(cmd, /Valid=0/);
+  assert.match(cmd, /Tmp=Zm9v/);
 });
