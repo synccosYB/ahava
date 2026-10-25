@@ -18,6 +18,7 @@ import {
   buildOptionsResponse,
   ackOk,
   parseAttlog,
+  parseBioUpload,
   tableKind,
   serialFromQuery,
   isValidAdmsToken,
@@ -34,6 +35,12 @@ function bodyToString(req: Request): string {
   if (typeof b === "string") return b;
   if (Buffer.isBuffer(b)) return b.toString("utf8");
   return "";
+}
+
+// Replace template blobs (TMP=/Tmp=) with their length so we can log the wire
+// FORMAT during bring-up without ever logging biometric data. Truncated.
+function redactTemplates(body: string): string {
+  return body.replace(/((?:TMP|Tmp)=)(\S+)/g, (_m, k: string, v: string) => `${k}<len=${v.length}>`).slice(0, 2000);
 }
 
 // ---------------------------------------------------------------------------
@@ -103,26 +110,66 @@ function buildIclockRouter(): Router {
       return textResponse(res, ackOk(punches.length));
     }
 
-    // OPERLOG (user edits / enrollments) and anything else: ACK for now. Phase 2
-    // will consume USERINFO/FINGERTMP here to bootstrap the central template store.
-    return textResponse(res, ackOk());
-  });
-
-  // Command poll: we have no commands to push yet (Phase 2 pushes templates here).
-  router.get("/getrequest", async (req, res) => {
-    const serial = serialFromQuery(req.query as any);
-    if (serial) {
-      const device = await adms.getDeviceBySerial(serial);
-      if (!device || !device.isActive) return textResponse(res, "ERROR: device not registered or inactive", 403);
-      await adms.touchDeviceLastSeen(device.id).catch(() => {});
-    } else {
-      return textResponse(res, "ERROR: device serial required", 400);
+    // OPERLOG / data upload: harvest user + fingerprint templates (Phase 2).
+    // Only acts when the body actually carries USER/FP/BIODATA lines, so ordinary
+    // operation logs still just ACK.
+    const body = bodyToString(req);
+    const bio = parseBioUpload(body);
+    if (bio.users.length > 0 || bio.fingerprints.length > 0) {
+      // On first bring-up, log the structure (templates redacted) so we can
+      // confirm/adjust the parser against the real firmware.
+      logger.info("[adms] bio upload", { source: "adms", sn: serial, sample: redactTemplates(body) });
+      let stored = 0;
+      for (const fp of bio.fingerprints) {
+        try {
+          const userId = (await adms.getMappedUserId(device.id, fp.pin)) ?? null;
+          await adms.storeFingerprintTemplate({
+            sourceDeviceId: device.id,
+            devicePin: fp.pin,
+            fingerIndex: fp.fingerIndex,
+            template: fp.template,
+            size: fp.size,
+            valid: fp.valid,
+            format: fp.format,
+            userId,
+            companyId: device.companyId ?? null,
+          });
+          stored += 1;
+        } catch (err) {
+          logger.error("[adms] fingerprint store failed", { source: "adms", sn: serial, pin: fp.pin, err });
+        }
+      }
+      logger.info("[adms] bio upload harvested", {
+        source: "adms", sn: serial,
+        users: bio.users.length, fingerprints: bio.fingerprints.length, stored,
+      });
     }
     return textResponse(res, ackOk());
   });
 
-  // Command results + any other iclock chatter: acknowledge so the device is happy.
-  router.post("/devicecmd", (_req, res) => textResponse(res, ackOk()));
+  // Command poll: hand the clock its next queued command(s), e.g. "upload all
+  // your templates" (Harvest) or "store this template" (Distribute). Commands go
+  // on the wire as `C:<seq>:<command>`; "OK" when the queue is empty.
+  router.get("/getrequest", async (req, res) => {
+    const serial = serialFromQuery(req.query as any);
+    if (!serial) return textResponse(res, "ERROR: device serial required", 400);
+    const device = await adms.getDeviceBySerial(serial);
+    if (!device || !device.isActive) return textResponse(res, "ERROR: device not registered or inactive", 403);
+    await adms.touchDeviceLastSeen(device.id).catch(() => {});
+    const commands = await adms.takePendingCommands(device.id).catch(() => []);
+    if (commands.length === 0) return textResponse(res, ackOk());
+    logger.info("[adms] dispatching commands", { source: "adms", sn: serial, count: commands.length });
+    return textResponse(res, commands.map((c) => `C:${c.seq}:${c.command}`).join("\n"));
+  });
+
+  // Command results: the device reports `ID=<seq>&Return=<code>&CMD=<...>`.
+  router.post("/devicecmd", async (req, res) => {
+    const raw = bodyToString(req);
+    const m = raw.match(/\bID=(\d+)/);
+    if (m) await adms.ackCommand(Number(m[1]), raw.slice(0, 500)).catch(() => {});
+    logger.info("[adms] devicecmd result", { source: "adms", result: raw.slice(0, 200) });
+    return textResponse(res, ackOk());
+  });
   // Terminal catch-all (no path → Express-5-safe): anything else under /iclock
   // gets a plain OK so an unexpected request never 404s the device into backoff.
   router.use((_req, res) => textResponse(res, ackOk()));
@@ -174,6 +221,26 @@ function registerAdminRoutes(app: Express): void {
     }
     await adms.mapDeviceUser(device.id, parsed.data.deviceUserId, parsed.data.userId);
     res.json({ ok: true });
+  });
+
+  // Phase 2 Harvest: ask the clock to upload its users + fingerprint templates.
+  // Queues the standard query commands; whichever the firmware supports will run,
+  // and the uploaded templates land via POST /iclock/cdata. The clock picks these
+  // up on its next poll (seconds).
+  app.post("/api/biometric-devices/:id/harvest", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
+    const device = await adms.getDevice(String(req.params.id));
+    if (!device) return res.status(404).json({ message: "Device not found" });
+    for (const command of ["DATA QUERY USERINFO", "DATA QUERY FINGERTMP", "DATA QUERY BIODATA"]) {
+      await adms.enqueueCommand(device.id, command);
+    }
+    res.json({ ok: true, queued: 3 });
+  });
+
+  // How many fingerprint templates we've harvested from this device (for the UI).
+  app.get("/api/biometric-devices/:id/fingerprints", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
+    const device = await adms.getDevice(String(req.params.id));
+    if (!device) return res.status(404).json({ message: "Device not found" });
+    res.json({ count: await adms.countFingerprintsForDevice(device.id) });
   });
 }
 

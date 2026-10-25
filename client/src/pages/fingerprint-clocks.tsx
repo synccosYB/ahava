@@ -140,6 +140,16 @@ export default function FingerprintClocksPage() {
     onError: () => toast({ title: "Failed to link employee", variant: "destructive" }),
   });
 
+  const harvestMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/biometric-devices/${id}/harvest`, {}),
+    onSuccess: () =>
+      toast({
+        title: "Fingerprint pull requested",
+        description: "The clock will upload its fingerprints on its next check-in (a few seconds). Refresh to see the count.",
+      }),
+    onError: () => toast({ title: "Couldn't request fingerprints", variant: "destructive" }),
+  });
+
   function openCreate() {
     setFormName("");
     setFormSerial("");
@@ -282,6 +292,16 @@ export default function FingerprintClocksPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1 justify-end">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => harvestMutation.mutate(device.id)}
+                            disabled={harvestMutation.isPending}
+                            title="Pull fingerprints from this clock (cloud sync)"
+                            data-testid={`button-harvest-${device.id}`}
+                          >
+                            <Fingerprint className="h-3 w-3" />
+                          </Button>
                           <Button
                             size="sm"
                             variant="ghost"
