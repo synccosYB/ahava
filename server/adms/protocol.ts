@@ -65,6 +65,92 @@ export function parseAttlog(body: string): AttendancePunch[] {
   return punches;
 }
 
+// --- Fingerprint "cloud brain" parsing (Phase 2 Harvest) -------------------
+//
+// When a clock uploads its user + fingerprint data (on connect, or in reply to a
+// DATA QUERY command) it POSTs tab/space-separated key=value lines to
+// /iclock/cdata. Firmware varies, so we parse leniently and case-insensitively.
+//   • User line:   `USER PIN=1  Name=John  Pri=0 ...`
+//   • Template:    legacy  `FP PIN=1  FID=0  Size=1998  Valid=1  TMP=<base64>`
+//                  newer   `BIODATA Pin=1  No=0  Index=0  Type=1  Valid=1  Tmp=<base64>`
+
+export interface DeviceUserRecord {
+  pin: string;
+  name: string | null;
+}
+
+export interface DeviceFingerprintRecord {
+  pin: string;
+  fingerIndex: number;
+  size: number | null;
+  valid: boolean;
+  template: string; // base64 vendor blob
+  format: "FP" | "BIODATA";
+}
+
+export interface BioUpload {
+  users: DeviceUserRecord[];
+  fingerprints: DeviceFingerprintRecord[];
+}
+
+// Parse the key=value pairs on one line into a case-insensitive lookup. Values
+// can contain `=` (base64 padding never does, but be safe) so split on the first.
+function kvPairs(rest: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const tok of rest.split(/\t|\s{1,}/)) {
+    const eq = tok.indexOf("=");
+    if (eq <= 0) continue;
+    out[tok.slice(0, eq).toLowerCase()] = tok.slice(eq + 1);
+  }
+  return out;
+}
+
+/**
+ * Parse a device data upload body into user + fingerprint records. Lines that
+ * aren't USER/FP/BIODATA are ignored. Returns whatever it recognizes — never
+ * throws — so a stray line can't drop real data.
+ */
+export function parseBioUpload(body: string): BioUpload {
+  const users: DeviceUserRecord[] = [];
+  const fingerprints: DeviceFingerprintRecord[] = [];
+  if (!body) return { users, fingerprints };
+
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const sp = line.indexOf(" ");
+    const tag = (sp > 0 ? line.slice(0, sp) : line).toUpperCase();
+    const rest = sp > 0 ? line.slice(sp + 1) : "";
+    const kv = kvPairs(rest);
+
+    if (tag === "USER") {
+      const pin = kv.pin ?? "";
+      if (pin) users.push({ pin, name: kv.name ? decodeURIComponent(kv.name.replace(/\+/g, " ")) : null });
+      continue;
+    }
+    if (tag === "FP" || tag === "BIODATA") {
+      // BIODATA is only a fingerprint when Type is absent or 1 (0/1 = fingerprint
+      // across firmwares); skip face/palm/vein rows.
+      if (tag === "BIODATA" && kv.type !== undefined && kv.type !== "0" && kv.type !== "1") continue;
+      const pin = kv.pin ?? "";
+      const template = kv.tmp ?? "";
+      if (!pin || !template) continue;
+      const idxRaw = kv.fid ?? kv.index ?? kv.no ?? "0";
+      const fingerIndex = Number.parseInt(idxRaw, 10);
+      const size = kv.size ? Number.parseInt(kv.size, 10) : null;
+      fingerprints.push({
+        pin,
+        fingerIndex: Number.isFinite(fingerIndex) ? fingerIndex : 0,
+        size: Number.isFinite(size as number) ? (size as number) : null,
+        valid: kv.valid === undefined ? true : kv.valid === "1" || kv.valid.toLowerCase() === "true",
+        template,
+        format: tag === "FP" ? "FP" : "BIODATA",
+      });
+    }
+  }
+  return { users, fingerprints };
+}
+
 /** Pull the `table` kind (ATTLOG / OPERLOG / ...) from the request query. */
 export function tableKind(query: Record<string, unknown>): string {
   const t = query?.table ?? query?.Table ?? "";
