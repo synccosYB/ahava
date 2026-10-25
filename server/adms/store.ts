@@ -1,7 +1,7 @@
 // Data access for biometric wall clocks. Kept in its own module (reading `db`
 // directly, the same way server/storage.ts does) so the large IStorage surface
 // doesn't have to grow for this feature.
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../db";
 import {
   biometricDevices,
@@ -16,7 +16,7 @@ import {
   type BiometricDeviceCommand,
   type InsertBiometricDevice,
 } from "@shared/schema";
-import { encryptTemplate } from "../services/biometricEncryption";
+import { encryptTemplate, decryptTemplate } from "../services/biometricEncryption";
 
 export async function getDeviceBySerial(serial: string): Promise<BiometricDevice | undefined> {
   const [row] = await db
@@ -227,4 +227,66 @@ export async function countFingerprintsForDevice(deviceId: string): Promise<numb
     .from(fingerprintTemplates)
     .where(eq(fingerprintTemplates.sourceDeviceId, deviceId));
   return rows.length;
+}
+
+// --- Fingerprint cloud brain: Distribute (Phase 2) -------------------------
+
+export interface DistributableTemplate {
+  userId: string;
+  pin: string; // consistent target PIN: employee number when set, else source PIN
+  name: string;
+  fingerIndex: number;
+  template: string; // decrypted base64 vendor blob
+  size: number | null;
+  valid: boolean;
+  format: string;
+}
+
+/**
+ * The templates to push onto a target clock: every fingerprint that's mapped to
+ * an employee (optionally scoped to a company). The target PIN is the employee's
+ * Employee Number when present (so punches auto-attribute everywhere) — otherwise
+ * the original source PIN. Templates are decrypted here for the outgoing command.
+ */
+export async function getDistributableTemplates(companyId: string | null): Promise<DistributableTemplate[]> {
+  const conditions = [isNotNull(fingerprintTemplates.userId)];
+  if (companyId) conditions.push(eq(users.companyId, companyId));
+  const rows = await db
+    .select({
+      userId: fingerprintTemplates.userId,
+      devicePin: fingerprintTemplates.devicePin,
+      fingerIndex: fingerprintTemplates.fingerIndex,
+      templateData: fingerprintTemplates.templateData,
+      templateFormat: fingerprintTemplates.templateFormat,
+      size: fingerprintTemplates.size,
+      valid: fingerprintTemplates.valid,
+      employeeNumber: userEmploymentProfiles.employeeNumber,
+      firstName: users.firstName,
+      lastName: users.lastName,
+    })
+    .from(fingerprintTemplates)
+    .innerJoin(users, eq(users.id, fingerprintTemplates.userId))
+    .leftJoin(userEmploymentProfiles, eq(userEmploymentProfiles.userId, fingerprintTemplates.userId))
+    .where(and(...conditions));
+
+  const out: DistributableTemplate[] = [];
+  for (const r of rows) {
+    let template: string;
+    try {
+      template = decryptTemplate<string>(r.templateData);
+    } catch {
+      continue; // skip anything we can't decrypt rather than push garbage
+    }
+    out.push({
+      userId: r.userId as string,
+      pin: (r.employeeNumber && r.employeeNumber.trim()) || r.devicePin,
+      name: `${r.firstName ?? ""} ${r.lastName ?? ""}`.trim(),
+      fingerIndex: r.fingerIndex,
+      template,
+      size: r.size,
+      valid: r.valid,
+      format: r.templateFormat || "FP",
+    });
+  }
+  return out;
 }

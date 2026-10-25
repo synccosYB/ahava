@@ -151,6 +151,39 @@ export function parseBioUpload(body: string): BioUpload {
   return { users, fingerprints };
 }
 
+// --- Fingerprint cloud brain: Distribute (push templates DOWN to a clock) ---
+//
+// Build the `DATA UPDATE ...` commands that tell a clock to create a user and
+// store a fingerprint template. Queued per device and handed over on getrequest.
+// We emit the template in the SAME format it was harvested in (FP vs BIODATA).
+
+/** Command to create/update a user on the device. */
+export function buildUserInfoCommand(pin: string, name: string | null): string {
+  const safeName = (name ?? "").replace(/[\t\r\n]/g, " ").slice(0, 24);
+  return `DATA UPDATE USERINFO PIN=${pin}\tName=${safeName}\tPri=0\tPasswd=\tCard=0\tGrp=1\tTZ=0`;
+}
+
+/** Command to store one fingerprint template on the device. */
+export function buildFingerprintUpdateCommand(input: {
+  pin: string;
+  fingerIndex: number;
+  size: number | null;
+  valid: boolean;
+  template: string; // base64 vendor blob (decrypted)
+  format: "FP" | "BIODATA" | string;
+}): string {
+  const valid = input.valid ? 1 : 0;
+  if (input.format === "BIODATA") {
+    return (
+      `DATA UPDATE BIODATA Pin=${input.pin}\tNo=${input.fingerIndex}\tIndex=${input.fingerIndex}` +
+      `\tValid=${valid}\tDuress=0\tType=1\tMajorVer=0\tMinorVer=0\tFormat=0\tTmp=${input.template}`
+    );
+  }
+  // Legacy FINGERTMP.
+  const size = input.size ?? input.template.length;
+  return `DATA UPDATE FINGERTMP PIN=${input.pin}\tFID=${input.fingerIndex}\tSize=${size}\tValid=${valid}\tTMP=${input.template}`;
+}
+
 /** Pull the `table` kind (ATTLOG / OPERLOG / ...) from the request query. */
 export function tableKind(query: Record<string, unknown>): string {
   const t = query?.table ?? query?.Table ?? "";

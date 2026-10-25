@@ -73,6 +73,31 @@ test("template store: encrypted at rest + idempotent upsert per finger", async (
   assert.equal(f1.size, 2000, "upsert refreshed the metadata");
 });
 
+test("distribute: mapped template → PIN=employee number, decrypted template", async () => {
+  // An employee with an Employee Number, and one of their fingers harvested.
+  const [emp] = await db
+    .insert(schema.users)
+    .values({ id: `${stamp}-emp`, email: `${stamp}-emp@test.local`, firstName: "Dana", lastName: "Finger", role: "employee" })
+    .returning();
+  await db.insert(schema.userEmploymentProfiles).values({ userId: emp.id, employeeNumber: "4242" });
+  await adms.storeFingerprintTemplate({
+    sourceDeviceId: device.id, devicePin: "9001", fingerIndex: 0,
+    template: "ZGFuYXMtZmluZ2Vy", size: 1998, valid: true, format: "FP",
+    userId: emp.id, companyId: null,
+  });
+
+  const list = await adms.getDistributableTemplates(null);
+  const mine = list.find((t) => t.userId === emp.id);
+  assert.ok(mine, "the mapped template is distributable");
+  assert.equal(mine!.pin, "4242", "target PIN is the Employee Number (so it auto-attributes everywhere)");
+  assert.equal(mine!.template, "ZGFuYXMtZmluZ2Vy", "template decrypts back to the original blob");
+  assert.equal(mine!.name, "Dana Finger");
+
+  await db.delete(schema.userEmploymentProfiles).where(eq(schema.userEmploymentProfiles.userId, emp.id));
+  await db.delete(schema.fingerprintTemplates).where(eq(schema.fingerprintTemplates.userId, emp.id));
+  await db.delete(schema.users).where(eq(schema.users.id, emp.id));
+});
+
 test.after(async () => {
   await db.delete(schema.fingerprintTemplates).where(eq(schema.fingerprintTemplates.sourceDeviceId, device.id));
   await db.delete(schema.biometricDeviceCommands).where(eq(schema.biometricDeviceCommands.deviceId, device.id));
