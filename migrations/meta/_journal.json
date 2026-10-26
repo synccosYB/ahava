@@ -519,6 +519,13 @@
       "when": 1780302100000,
       "tag": "0073_account_edit_lock",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1780302200000,
+      "tag": "0074_fingerprint_sync",
+      "breakpoints": true
     }
   ]
 }

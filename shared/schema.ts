@@ -789,6 +789,55 @@ export const biometricDeviceEvents = pgTable("biometric_device_events", {
 
 export type BiometricDeviceEvent = typeof biometricDeviceEvents.$inferSelect;
 
+// Fingerprint "cloud brain" (Phase 2). Per-finger ZK/Compumatic templates
+// harvested off a clock, encrypted at rest, tied to the Ahava employee once
+// mapped. Distinct from biometric_templates (face descriptors, one per user).
+export const fingerprintTemplates = pgTable("fingerprint_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
+  companyId: varchar("company_id").references(() => companies.id),
+  // The device this template was pulled off (its serial-backed row id).
+  sourceDeviceId: varchar("source_device_id"),
+  // The device's local user-number (PIN) the template was enrolled under.
+  devicePin: varchar("device_pin", { length: 64 }).notNull(),
+  fingerIndex: integer("finger_index").notNull(),
+  // Encrypted (AES-256-GCM) base64 of the vendor template blob. Never cleartext.
+  templateData: text("template_data").notNull(),
+  // "FP" (legacy FINGERTMP) or "BIODATA" (newer push firmware), for re-encoding.
+  templateFormat: varchar("template_format", { length: 16 }),
+  size: integer("size"),
+  valid: boolean("valid").default(true).notNull(),
+  encryptionKeyVersion: integer("encryption_key_version").default(1).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("fingerprint_templates_source_unique").on(table.sourceDeviceId, table.devicePin, table.fingerIndex),
+  index("fingerprint_templates_user_idx").on(table.userId),
+  index("fingerprint_templates_pin_idx").on(table.devicePin),
+]);
+export type FingerprintTemplate = typeof fingerprintTemplates.$inferSelect;
+
+// Per-device command queue. getrequest hands a clock its next pending command
+// (e.g. "upload all templates" for Harvest, "store this template" for Distribute);
+// the clock reports the result to /devicecmd. `seq` is the numeric id sent on the
+// wire (C:<seq>:<command>).
+export const biometricDeviceCommands = pgTable("biometric_device_commands", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  seq: bigserial("seq", { mode: "number" }).notNull(),
+  deviceId: varchar("device_id").notNull(),
+  command: text("command").notNull(),
+  // "pending" | "sent" | "acked"
+  status: varchar("status", { length: 16 }).default("pending").notNull(),
+  result: text("result"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  sentAt: timestamp("sent_at"),
+  ackedAt: timestamp("acked_at"),
+}, (table) => [
+  index("biometric_device_commands_device_idx").on(table.deviceId, table.status),
+  uniqueIndex("biometric_device_commands_seq_unique").on(table.seq),
+]);
+export type BiometricDeviceCommand = typeof biometricDeviceCommands.$inferSelect;
+
 // LEGACY / DORMANT (task #454): after the PTO consolidation, NO balance/accrual
 // number is read from this table. Every PTO read surface resolves the effective
 // `pto` policy through the unified engine (policies + policy_rules) via
