@@ -220,13 +220,14 @@ export async function storeFingerprintTemplate(input: {
     });
 }
 
-/** How many fingerprint templates we've harvested from a given device. */
-export async function countFingerprintsForDevice(deviceId: string): Promise<number> {
+/** How many fingerprint templates we've harvested from a device, and how many
+ * are linked to an Ahava employee (so they can be distributed). */
+export async function getFingerprintStats(deviceId: string): Promise<{ total: number; linked: number }> {
   const rows = await db
-    .select({ id: fingerprintTemplates.id })
+    .select({ userId: fingerprintTemplates.userId })
     .from(fingerprintTemplates)
     .where(eq(fingerprintTemplates.sourceDeviceId, deviceId));
-  return rows.length;
+  return { total: rows.length, linked: rows.filter((r) => r.userId).length };
 }
 
 // --- Fingerprint cloud brain: Distribute (Phase 2) -------------------------

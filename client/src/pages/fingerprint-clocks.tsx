@@ -268,6 +268,7 @@ export default function FingerprintClocksPage() {
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Serial</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Location</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Last Seen</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Fingerprints</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -301,6 +302,9 @@ export default function FingerprintClocksPage() {
                           </Badge>
                           <span data-testid={`text-lastseen-${device.id}`}>{timeAgo(device.lastSeenAt)}</span>
                         </div>
+                      </TableCell>
+                      <TableCell data-testid={`cell-fingerprints-${device.id}`}>
+                        <FingerprintCount deviceId={device.id} />
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1 justify-end">
@@ -520,5 +524,26 @@ function Setting({ label, value }: { label: string; value: string }) {
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="font-mono text-sm font-medium break-all">{value}</div>
     </div>
+  );
+}
+
+// Harvested-fingerprint count for a clock (polls so it updates after a Harvest).
+function FingerprintCount({ deviceId }: { deviceId: string }) {
+  const { data } = useQuery<{ total: number; linked: number }>({
+    queryKey: ["/api/biometric-devices", deviceId, "fingerprints"],
+    queryFn: async () => {
+      const res = await fetch(`/api/biometric-devices/${deviceId}/fingerprints`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load fingerprint count");
+      return res.json();
+    },
+    refetchInterval: 10_000,
+  });
+  if (!data) return <span className="text-sm text-muted-foreground">—</span>;
+  if (data.total === 0) return <span className="text-sm text-muted-foreground" data-testid={`text-fp-count-${deviceId}`}>0 synced</span>;
+  return (
+    <span className="text-sm" data-testid={`text-fp-count-${deviceId}`}>
+      <span className="font-medium">{data.total}</span> synced
+      <span className="text-muted-foreground"> · {data.linked} linked</span>
+    </span>
   );
 }
