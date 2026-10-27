@@ -61,7 +61,7 @@ test("template store: encrypted at rest + idempotent upsert per finger", async (
     userId: null, companyId: null,
   });
 
-  assert.equal(await adms.countFingerprintsForDevice(device.id), 2, "one row per finger, upsert not duplicate");
+  assert.equal((await adms.getFingerprintStats(device.id)).total, 2, "one row per finger, upsert not duplicate");
 
   const rows = await db
     .select()

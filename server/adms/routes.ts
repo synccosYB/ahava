@@ -122,7 +122,18 @@ function buildIclockRouter(): Router {
       let stored = 0;
       for (const fp of bio.fingerprints) {
         try {
-          const userId = (await adms.getMappedUserId(device.id, fp.pin)) ?? null;
+          // Bind to the Ahava employee: an explicit mapping wins; otherwise
+          // auto-link when the device PIN equals the employee's Employee Number
+          // (the convention we recommend), persisting the mapping so punches and
+          // future harvests stay bound. Unmatched templates are kept unmapped.
+          let userId = (await adms.getMappedUserId(device.id, fp.pin)) ?? null;
+          if (!userId) {
+            const auto = await adms.autoMatchUserByEmployeeNumber(fp.pin, device.companyId ?? null);
+            if (auto) {
+              userId = auto;
+              await adms.mapDeviceUser(device.id, fp.pin, auto);
+            }
+          }
           await adms.storeFingerprintTemplate({
             sourceDeviceId: device.id,
             devicePin: fp.pin,
@@ -236,11 +247,12 @@ function registerAdminRoutes(app: Express): void {
     res.json({ ok: true, queued: 3 });
   });
 
-  // How many fingerprint templates we've harvested from this device (for the UI).
+  // Fingerprint sync status for this device (for the UI): how many templates are
+  // stored and how many are linked to an employee (and thus distributable).
   app.get("/api/biometric-devices/:id/fingerprints", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
     const device = await adms.getDevice(String(req.params.id));
     if (!device) return res.status(404).json({ message: "Device not found" });
-    res.json({ count: await adms.countFingerprintsForDevice(device.id) });
+    res.json(await adms.getFingerprintStats(device.id));
   });
 
   // Phase 2 Distribute: push every mapped fingerprint (optionally scoped to the
