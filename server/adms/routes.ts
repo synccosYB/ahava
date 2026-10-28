@@ -198,6 +198,16 @@ const mapUserSchema = z.object({
   userId: z.string().trim().min(1),
 });
 
+// All fields optional (partial edit). Serial/name mirror the insert constraints;
+// locationId can be cleared with null.
+const updateDeviceSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  serialNumber: z.string().trim().min(1).max(64).optional(),
+  locationId: z.string().trim().min(1).nullable().optional(),
+  companyId: z.string().trim().min(1).nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
 function registerAdminRoutes(app: Express): void {
   app.get("/api/biometric-devices", requireAuth, requirePermission("kiosk.manage"), async (_req, res) => {
     res.json(await adms.listDevices());
@@ -217,6 +227,38 @@ function registerAdminRoutes(app: Express): void {
       }
       throw err;
     }
+  });
+
+  // Edit a clock's details (name / serial / location). The serial is the device's
+  // identity on the wire, so changing it re-points which physical unit Ahava trusts.
+  app.patch("/api/biometric-devices/:id", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
+    const device = await adms.getDevice(String(req.params.id));
+    if (!device) return res.status(404).json({ message: "Device not found" });
+    const parsed = updateDeviceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid device" });
+    }
+    if (Object.keys(parsed.data).length === 0) {
+      return res.status(400).json({ message: "Nothing to update." });
+    }
+    try {
+      const updated = await adms.updateDevice(device.id, parsed.data);
+      res.json(updated);
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        return res.status(409).json({ message: "A device with that serial number already exists." });
+      }
+      throw err;
+    }
+  });
+
+  // Remove a clock and everything attached to it (events, user maps, harvested
+  // templates, queued commands). Does not touch templates already on other clocks.
+  app.delete("/api/biometric-devices/:id", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
+    const device = await adms.getDevice(String(req.params.id));
+    if (!device) return res.status(404).json({ message: "Device not found" });
+    await adms.deleteDevice(device.id);
+    res.json({ ok: true });
   });
 
   app.get("/api/biometric-devices/:id/events", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {

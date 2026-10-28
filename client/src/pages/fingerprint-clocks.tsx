@@ -31,7 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Fingerprint, Loader2, Activity, Link2, DownloadCloud } from "lucide-react";
+import { Plus, Fingerprint, Loader2, Activity, Link2, DownloadCloud, Pencil, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 
 type BiometricDevice = {
@@ -89,10 +89,12 @@ function timeAgo(iso: string | null): string {
 export default function FingerprintClocksPage() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
   const [formSerial, setFormSerial] = useState("");
   const [formLocationId, setFormLocationId] = useState("none");
   const [activityFor, setActivityFor] = useState<BiometricDevice | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BiometricDevice | null>(null);
   // Per unmatched device-user-number, the employee the admin has picked to map.
   const [mapPicks, setMapPicks] = useState<Record<string, string>>({});
 
@@ -121,6 +123,34 @@ export default function FingerprintClocksPage() {
     onError: (err: any) =>
       toast({
         title: err?.payload?.message || "Failed to add clock",
+        variant: "destructive",
+      }),
+  });
+
+  const editMutation = useMutation({
+    mutationFn: ({ id, ...data }: any) => apiRequest("PATCH", `/api/biometric-devices/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/biometric-devices"] });
+      closeDialog();
+      toast({ title: "Clock updated" });
+    },
+    onError: (err: any) =>
+      toast({
+        title: err?.payload?.message || "Failed to update clock",
+        variant: "destructive",
+      }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/biometric-devices/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/biometric-devices"] });
+      setDeleteTarget(null);
+      toast({ title: "Clock removed" });
+    },
+    onError: (err: any) =>
+      toast({
+        title: err?.payload?.message || "Failed to remove clock",
         variant: "destructive",
       }),
   });
@@ -163,22 +193,37 @@ export default function FingerprintClocksPage() {
   });
 
   function openCreate() {
+    setEditingId(null);
     setFormName("");
     setFormSerial("");
     setFormLocationId("none");
     setDialogOpen(true);
   }
 
+  function openEdit(device: BiometricDevice) {
+    setEditingId(device.id);
+    setFormName(device.name);
+    setFormSerial(device.serialNumber);
+    setFormLocationId(device.locationId ?? "none");
+    setDialogOpen(true);
+  }
+
   function closeDialog() {
     setDialogOpen(false);
+    setEditingId(null);
   }
 
   function handleSubmit() {
-    createMutation.mutate({
+    const payload = {
       name: formName.trim(),
       serialNumber: formSerial.trim(),
       locationId: formLocationId === "none" ? null : formLocationId,
-    });
+    };
+    if (editingId) {
+      editMutation.mutate({ id: editingId, ...payload });
+    } else {
+      createMutation.mutate(payload);
+    }
   }
 
   const locationMap = useMemo(
@@ -337,6 +382,24 @@ export default function FingerprintClocksPage() {
                           >
                             <Activity className="h-3 w-3" />
                           </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openEdit(device)}
+                            title="Edit name / serial / location"
+                            data-testid={`button-edit-${device.id}`}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setDeleteTarget(device)}
+                            title="Remove this clock"
+                            data-testid={`button-delete-${device.id}`}
+                          >
+                            <Trash2 className="h-3 w-3 text-red-600" />
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -352,13 +415,15 @@ export default function FingerprintClocksPage() {
         </CardContent>
       </Card>
 
-      {/* Add-clock dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {/* Add / edit clock dialog */}
+      <Dialog open={dialogOpen} onOpenChange={(open) => (open ? setDialogOpen(true) : closeDialog())}>
         <DialogContent data-testid="dialog-clock-form">
           <DialogHeader>
-            <DialogTitle>Add Fingerprint Clock</DialogTitle>
+            <DialogTitle>{editingId ? "Edit Fingerprint Clock" : "Add Fingerprint Clock"}</DialogTitle>
             <DialogDescription>
-              Register the clock by its hardware serial number so Ahava trusts its punches.
+              {editingId
+                ? "Update the clock's details. Changing the serial re-points which physical unit Ahava trusts for punches."
+                : "Register the clock by its hardware serial number so Ahava trusts its punches."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -399,11 +464,44 @@ export default function FingerprintClocksPage() {
             <Button variant="outline" onClick={closeDialog} data-testid="button-cancel">Cancel</Button>
             <Button
               onClick={handleSubmit}
-              disabled={!formName.trim() || !formSerial.trim() || createMutation.isPending}
+              disabled={!formName.trim() || !formSerial.trim() || createMutation.isPending || editMutation.isPending}
               data-testid="button-submit-clock"
             >
-              {createMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Add Clock
+              {(createMutation.isPending || editMutation.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {editingId ? "Save Changes" : "Add Clock"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent data-testid="dialog-clock-delete">
+          <DialogHeader>
+            <DialogTitle>Remove this clock?</DialogTitle>
+            <DialogDescription>
+              {deleteTarget ? (
+                <>
+                  <span className="font-medium">{deleteTarget.name}</span> (serial{" "}
+                  <span className="font-mono">{deleteTarget.serialNumber}</span>) will be removed, along
+                  with its punch history, employee links, and the fingerprints harvested from it. This
+                  can't be undone. Fingerprints already pushed to other clocks are not affected.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} data-testid="button-delete-cancel">
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-delete-confirm"
+            >
+              {deleteMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Remove Clock
             </Button>
           </DialogFooter>
         </DialogContent>
