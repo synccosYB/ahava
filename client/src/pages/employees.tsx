@@ -805,6 +805,7 @@ interface ImportSummary {
   created: number;
   updated: number;
   skipped: { row: number; reason: string }[];
+  warnings: { row: number; reason: string }[];
   profilesWithNumber: number;
 }
 
@@ -876,9 +877,15 @@ function ImportEmployeesDialog({
         <DialogHeader>
           <DialogTitle>Import Employees</DialogTitle>
           <DialogDescription>
-            Upload an Excel (.xlsx) spreadsheet with columns Employee, ID, Dept,
-            and Location. Existing staff (matched by ID) are updated, new ones
-            are added. Names, ID numbers, company, and location are imported.
+            Upload an Excel (.xlsx) spreadsheet. Recognized columns:{" "}
+            <span className="font-medium">Employee Name</span>,{" "}
+            <span className="font-medium">Clock #</span>,{" "}
+            <span className="font-medium">Actual Location</span>,{" "}
+            <span className="font-medium">Paying Company</span>, and{" "}
+            <span className="font-medium">Wage Type</span> (W-2 / 1099 /
+            Volunteer). Existing staff (matched by Clock #) are updated, new ones
+            are added. Blank Paying Company / Wage Type cells are left for you to
+            set by hand. (Legacy files using Employee / ID / Location still work.)
           </DialogDescription>
         </DialogHeader>
 
@@ -903,6 +910,21 @@ function ImportEmployeesDialog({
                   {summary.skipped.slice(0, 25).map((s, i) => (
                     <li key={i}>
                       Row {s.row}: {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {summary.warnings?.length > 0 && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950/30">
+                <p className="font-medium text-blue-800 dark:text-blue-300">
+                  {summary.warnings.length} note
+                  {summary.warnings.length === 1 ? "" : "s"} (employee still imported)
+                </p>
+                <ul className="mt-1 max-h-40 overflow-auto text-xs text-blue-700 dark:text-blue-400">
+                  {summary.warnings.slice(0, 25).map((w, i) => (
+                    <li key={i}>
+                      Row {w.row}: {w.reason}
                     </li>
                   ))}
                 </ul>

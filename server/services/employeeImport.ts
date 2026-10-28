@@ -1,28 +1,37 @@
 /**
  * Reusable employee spreadsheet importer.
  *
- * Parses an uploaded .xlsx workbook (same shape as the original Ahava employee
- * list) and, for each row:
- *  - Ensures the company "Ahava Medical Center" exists (create if missing).
- *  - Ensures each cleaned location exists under that company (raw -> cleaned).
- *  - Creates the employee (role `employee`, First/Last parsed from the cell),
- *    stores the spreadsheet ID as the employment-profile employee number, and
- *    links the employee to their location via both the many-to-many membership
- *    and the legacy single-location column.
- *  - Leaves email, password, department, and pay fields empty.
+ * Parses an uploaded .xlsx workbook and, for each row:
+ *  - Ensures the operational company "Ahava Medical Center" exists.
+ *  - Resolves the employee's WORK LOCATION. Preferred: an explicit
+ *    "Actual Location" column (e.g. "Sumner"), created under the company if
+ *    missing. Fallback (legacy files): the clock "Department" cell mapped to an
+ *    approved location name via LOCATION_NAME_MAP.
+ *  - Creates the employee (role `employee`, First/Last parsed from the cell) and
+ *    stores the Clock # as the employment-profile employee number — the key that
+ *    makes time-clock punches auto-attach to the right person.
+ *  - Optionally sets the PAYING COMPANY ("Paying Company" column -> payrollCompanyId,
+ *    matched to an existing company by name) and the WAGE TYPE ("Wage Type"
+ *    column -> taxClassification: W-2 / 1099 / Volunteer).
+ *  - Leaves email, password, department, and pay-rate fields empty. Blank
+ *    Paying Company / Wage Type cells are left untouched (schema default), so the
+ *    per-person "mix" rows can be filled in by hand later.
  *
- * Idempotent: matches existing employees on the stored employee number, so a
- * second run UPDATES the name/company/location instead of creating duplicates.
+ * Idempotent: matches existing employees on the stored employee number (scoped to
+ * this company), so a second run UPDATES the name/location/pay fields instead of
+ * creating duplicates.
  */
 import XLSX from "xlsx";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
-import { userEmploymentProfiles, users } from "../../shared/schema";
+import { userEmploymentProfiles, users, type Company } from "../../shared/schema";
 
 export const COMPANY_NAME = "Ahava Medical Center";
 
-// Raw location string in the file -> approved cleaned name.
+// Legacy fallback only: raw clock "Department" string -> approved location name,
+// used when a file has no "Actual Location" column. New imports should carry an
+// explicit Actual Location (e.g. "Sumner") instead of deriving it here.
 export const LOCATION_NAME_MAP: Record<string, string> = {
   "Sumner ahava": "Sumner Ahava",
   "Sumner Ahava Other": "Sumner Ahava Other",
@@ -33,13 +42,6 @@ export const LOCATION_NAME_MAP: Record<string, string> = {
   Monsey: "Monsey",
 };
 
-interface Row {
-  Employee: string;
-  ID: string | number;
-  Dept: string | number;
-  Location: string;
-}
-
 export interface ImportSummary {
   company: string;
   companyId: string;
@@ -48,7 +50,27 @@ export interface ImportSummary {
   created: number;
   updated: number;
   skipped: { row: number; reason: string }[];
+  /** Non-fatal per-row notes (e.g. an unrecognized paying company or wage type
+   * that was left blank); the employee is still imported. */
+  warnings: { row: number; reason: string }[];
   profilesWithNumber: number;
+}
+
+/**
+ * Case/space-insensitive column accessor. Returns the first non-empty cell among
+ * the candidate header names, so both legacy headers ("Employee", "ID",
+ * "Location") and the enriched sheet ("Employee Name", "Clock #", "Actual
+ * Location", "Wage Type", "Paying Company") work without a fixed schema.
+ */
+function pick(row: Record<string, unknown>, candidates: string[]): string {
+  const norm = (s: string) => s.trim().toLowerCase();
+  const byKey = new Map<string, unknown>();
+  for (const [k, v] of Object.entries(row)) byKey.set(norm(k), v);
+  for (const c of candidates) {
+    const v = byKey.get(norm(c));
+    if (v != null && String(v).trim() !== "") return String(v).trim();
+  }
+  return "";
 }
 
 /**
@@ -65,6 +87,17 @@ function parseName(raw: string): { firstName: string; lastName: string } {
   return { firstName, lastName };
 }
 
+/** Normalize a wage-type cell to a stored taxClassification, or undefined when
+ * blank/unrecognized (leave the schema default, don't guess). */
+function normalizeWageType(raw: string): "W-2" | "1099" | "Volunteer" | undefined {
+  const v = raw.trim().toLowerCase().replace(/\s+/g, "");
+  if (!v) return undefined;
+  if (v === "w-2" || v === "w2") return "W-2";
+  if (v === "1099") return "1099";
+  if (v.startsWith("vol")) return "Volunteer";
+  return undefined;
+}
+
 async function ensureCompany(): Promise<string> {
   const all = await storage.getAllCompanies();
   const existing = all.find(
@@ -75,28 +108,31 @@ async function ensureCompany(): Promise<string> {
   return created.id;
 }
 
-async function ensureLocations(
-  companyId: string,
-): Promise<Map<string, string>> {
-  // Scope to THIS company so a same-named location in another company can never
-  // be reused — otherwise an import could bind employees to the wrong tenant.
-  const existing = await storage.getLocationsByCompany(companyId);
-  const byName = new Map<string, string>();
-  for (const l of existing) byName.set(l.name.trim().toLowerCase(), l.id);
-
-  const cleanedNames = Array.from(new Set(Object.values(LOCATION_NAME_MAP)));
-  const result = new Map<string, string>(); // cleaned name -> location id
-  for (const name of cleanedNames) {
-    const key = name.toLowerCase();
-    let id = byName.get(key);
-    if (!id) {
-      const loc = await storage.createLocation({ companyId, name });
-      id = loc.id;
-      byName.set(key, id);
+/**
+ * Resolve a "Paying Company" cell to an existing company id. Matches by name:
+ * anything containing "bcm" -> the BCM company; anything containing "ahava" ->
+ * the Ahava Medical operational company. Never creates a company (payroll
+ * companies are set up by hand); an unmatched value returns undefined so the
+ * caller can warn and leave payrollCompanyId null.
+ */
+function makePayingCompanyResolver(companies: Company[], operationalId: string) {
+  const byLower = companies.map((c) => ({ id: c.id, lower: c.name.trim().toLowerCase() }));
+  const cache = new Map<string, string | undefined>();
+  return (raw: string): string | undefined => {
+    const key = raw.trim().toLowerCase();
+    if (!key) return undefined;
+    if (cache.has(key)) return cache.get(key);
+    let id: string | undefined;
+    if (key.includes("bcm")) {
+      id = byLower.find((c) => c.lower.includes("bcm"))?.id;
+    } else if (key.includes("ahava")) {
+      id = byLower.find((c) => c.lower.includes("ahava medical"))?.id ?? operationalId;
+    } else {
+      id = byLower.find((c) => c.lower === key || c.lower.includes(key))?.id;
     }
-    result.set(name, id);
-  }
-  return result;
+    cache.set(key, id);
+    return id;
+  };
 }
 
 /**
@@ -112,13 +148,28 @@ export async function importEmployeesFromBuffer(
     throw new Error("The spreadsheet has no sheets.");
   }
   const ws = wb.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json<Row>(ws, { defval: null });
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: null });
 
   const companyId = await ensureCompany();
-  const locationByName = await ensureLocations(companyId);
+  const allCompanies = await storage.getAllCompanies();
+  const resolvePayingCompany = makePayingCompanyResolver(allCompanies, companyId);
+
+  // Location cache (cleaned name -> id), seeded from this company's locations so
+  // a same-named location in another tenant is never reused.
+  const existingLocations = await storage.getLocationsByCompany(companyId);
+  const locationByName = new Map<string, string>(); // lowercase name -> id
+  for (const l of existingLocations) locationByName.set(l.name.trim().toLowerCase(), l.id);
+  async function ensureLocation(name: string): Promise<string> {
+    const key = name.trim().toLowerCase();
+    const found = locationByName.get(key);
+    if (found) return found;
+    const loc = await storage.createLocation({ companyId, name: name.trim() });
+    locationByName.set(key, loc.id);
+    return loc.id;
+  }
 
   // Build a lookup of existing employees by stored employee number so the run
-  // is idempotent. Scope to THIS company (join users) so a matching employee
+  // is idempotent. Scoped to THIS company (join users) so a matching employee
   // number in another company is never updated or moved across tenants.
   const existingProfiles = await db
     .select({
@@ -136,40 +187,65 @@ export async function importEmployeesFromBuffer(
   let created = 0;
   let updated = 0;
   const skipped: { row: number; reason: string }[] = [];
+  const warnings: { row: number; reason: string }[] = [];
 
   let rowNum = 1;
   for (const row of rows) {
     rowNum++;
-    const employeeNumber = row.ID == null ? "" : String(row.ID).trim();
-    const employeeCell = row.Employee == null ? "" : String(row.Employee).trim();
-    const rawLocation = row.Location == null ? "" : String(row.Location).trim();
+    // Clock # is the match key (employee number). Accept legacy "ID" too, but
+    // never the zero-padded "Employee Id" or the "Payroll Id".
+    const employeeNumber = pick(row, ["Clock #", "Clock#", "Clock Number", "ID"]);
+    const employeeCell = pick(row, ["Employee Name", "Employee", "Name"]);
+    const actualLocation = pick(row, ["Actual Location", "Work Location"]);
+    const legacyDept = pick(row, ["Location", "Department Name", "Dept", "Department"]);
+    const payingCompanyRaw = pick(row, ["Paying Company", "Payroll Company"]);
+    const wageTypeRaw = pick(row, ["Wage Type", "Tax Classification", "Tax Form"]);
 
     if (!employeeNumber) {
-      skipped.push({ row: rowNum, reason: "missing ID" });
+      skipped.push({ row: rowNum, reason: "missing Clock # / ID" });
       continue;
     }
     if (!employeeCell) {
-      skipped.push({
-        row: rowNum,
-        reason: `missing name (ID ${employeeNumber})`,
-      });
+      skipped.push({ row: rowNum, reason: `missing name (Clock # ${employeeNumber})` });
       continue;
     }
 
-    const cleanedLocation = LOCATION_NAME_MAP[rawLocation];
-    if (!cleanedLocation) {
-      skipped.push({
-        row: rowNum,
-        reason: `unknown location "${rawLocation}" (ID ${employeeNumber})`,
-      });
-      continue;
+    // Resolve the work location: explicit Actual Location wins; otherwise fall
+    // back to mapping the legacy department cell.
+    let locationName = actualLocation;
+    if (!locationName) {
+      const mapped = LOCATION_NAME_MAP[legacyDept];
+      if (!mapped) {
+        skipped.push({
+          row: rowNum,
+          reason: `no Actual Location and unknown department "${legacyDept}" (Clock # ${employeeNumber})`,
+        });
+        continue;
+      }
+      locationName = mapped;
     }
-    const locationId = locationByName.get(cleanedLocation)!;
+    const locationId = await ensureLocation(locationName);
     const { firstName, lastName } = parseName(employeeCell);
+
+    // Optional pay fields. Only set when the cell is present and recognized;
+    // blank or unrecognized values warn and are left at the schema default.
+    const profilePatch: { employeeNumber: string; payrollCompanyId?: string; taxClassification?: string } = {
+      employeeNumber,
+    };
+    if (payingCompanyRaw) {
+      const payId = resolvePayingCompany(payingCompanyRaw);
+      if (payId) profilePatch.payrollCompanyId = payId;
+      else warnings.push({ row: rowNum, reason: `unrecognized paying company "${payingCompanyRaw}" (Clock # ${employeeNumber}); left blank` });
+    }
+    if (wageTypeRaw) {
+      const wt = normalizeWageType(wageTypeRaw);
+      if (wt) profilePatch.taxClassification = wt;
+      else warnings.push({ row: rowNum, reason: `unrecognized wage type "${wageTypeRaw}" (Clock # ${employeeNumber}); left at default` });
+    }
 
     const existingUserId = userIdByNumber.get(employeeNumber);
     if (existingUserId) {
-      // Idempotent update: refresh name/company/location, never duplicate.
+      // Idempotent update: refresh name/company/location/pay, never duplicate.
       await storage.updateUser(existingUserId, {
         firstName,
         lastName,
@@ -177,7 +253,7 @@ export async function importEmployeesFromBuffer(
         companyId,
       });
       await storage.setUserLocationIds(existingUserId, [locationId]);
-      await storage.updateEmploymentProfile(existingUserId, { employeeNumber });
+      await storage.updateEmploymentProfile(existingUserId, profilePatch);
       updated++;
       continue;
     }
@@ -189,10 +265,7 @@ export async function importEmployeesFromBuffer(
       companyId,
     });
     await storage.setUserLocationIds(newUser.id, [locationId]);
-    await storage.createEmploymentProfile({
-      userId: newUser.id,
-      employeeNumber,
-    });
+    await storage.createEmploymentProfile({ userId: newUser.id, ...profilePatch });
     userIdByNumber.set(employeeNumber, newUser.id);
     created++;
   }
@@ -214,6 +287,7 @@ export async function importEmployeesFromBuffer(
     created,
     updated,
     skipped,
+    warnings,
     profilesWithNumber,
   };
 }
