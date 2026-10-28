@@ -1308,6 +1308,7 @@ export async function registerRoutes(
             created: summary.created,
             updated: summary.updated,
             skipped: summary.skipped.length,
+            warnings: summary.warnings.length,
             company: summary.company,
           },
           context: { fileName: req.file.originalname },
