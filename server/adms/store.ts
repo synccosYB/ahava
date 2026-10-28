@@ -48,6 +48,33 @@ export async function touchDeviceLastSeen(deviceId: string, firmware?: string | 
     .where(eq(biometricDevices.id, deviceId));
 }
 
+/** Edit a registered clock's mutable fields (name, serial, location, company,
+ * active flag). Returns the updated row, or undefined if the id is unknown. */
+export async function updateDevice(
+  id: string,
+  patch: Partial<Pick<BiometricDevice, "name" | "serialNumber" | "locationId" | "companyId" | "isActive">>,
+): Promise<BiometricDevice | undefined> {
+  const [row] = await db.update(biometricDevices).set(patch).where(eq(biometricDevices.id, id)).returning();
+  return row;
+}
+
+/**
+ * Permanently remove a clock and everything attached to it. The child tables
+ * (events, user maps, harvested templates, queued commands) have no ON DELETE
+ * cascade, so we clear them first inside a transaction, then delete the device.
+ * Harvested templates already distributed to OTHER clocks are unaffected (only
+ * the rows harvested FROM this device are removed).
+ */
+export async function deleteDevice(id: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.delete(biometricDeviceEvents).where(eq(biometricDeviceEvents.deviceId, id));
+    await tx.delete(biometricDeviceUsers).where(eq(biometricDeviceUsers.deviceId, id));
+    await tx.delete(biometricDeviceCommands).where(eq(biometricDeviceCommands.deviceId, id));
+    await tx.delete(fingerprintTemplates).where(eq(fingerprintTemplates.sourceDeviceId, id));
+    await tx.delete(biometricDevices).where(eq(biometricDevices.id, id));
+  });
+}
+
 /** Explicit mapping: the device's local user-number → Ahava user id. */
 export async function getMappedUserId(deviceId: string, deviceUserId: string): Promise<string | undefined> {
   const [row] = await db
