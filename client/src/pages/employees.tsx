@@ -31,7 +31,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { formatCurrency, formatHoursMinutes, formatDate } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
-import { userDepartmentIds, userLocationIds } from "@shared/schema";
+import { userDepartmentIds, userLocationIds, TERMINATION_REASONS } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
@@ -833,6 +833,9 @@ interface ImportSummary {
   locationsTotal: number;
   created: number;
   updated: number;
+  departmentsAssigned?: number;
+  rolesAssigned?: number;
+  deactivated?: { row: number; employeeNumber: string; name: string }[];
   skipped: { row: number; reason: string }[];
   warnings: { row: number; reason: string }[];
   profilesWithNumber: number;
@@ -929,6 +932,27 @@ function ImportEmployeesDialog({
               Company: {summary.company} · Locations: {summary.locationsTotal} ·
               Rows read: {summary.rowsParsed}
             </p>
+            {(summary.departmentsAssigned || summary.rolesAssigned) ? (
+              <p className="text-muted-foreground">
+                Departments assigned: {summary.departmentsAssigned ?? 0}
+                {summary.rolesAssigned ? ` · Roles assigned: ${summary.rolesAssigned}` : ""}
+              </p>
+            ) : null}
+            {summary.deactivated && summary.deactivated.length > 0 && (
+              <div className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30">
+                <p className="font-medium text-red-800 dark:text-red-300">
+                  {summary.deactivated.length} employee
+                  {summary.deactivated.length === 1 ? "" : "s"} deactivated (marked "Inactive")
+                </p>
+                <ul className="mt-1 max-h-40 overflow-auto text-xs text-red-700 dark:text-red-400">
+                  {summary.deactivated.slice(0, 25).map((d, i) => (
+                    <li key={i}>
+                      {d.name} (Clock #{d.employeeNumber})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {summary.skipped.length > 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
                 <p className="font-medium text-amber-800 dark:text-amber-300">
@@ -4248,6 +4272,7 @@ function OffboardingTab({ userId }: { userId: string }) {
   const [skipReasonByTask, setSkipReasonByTask] = useState<Record<string, string>>({});
   const [notesByTask, setNotesByTask] = useState<Record<string, string>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deactivateReason, setDeactivateReason] = useState<string>("");
 
   const startMut = useMutation({
     mutationFn: async () => apiRequest("POST", `/api/offboarding/start`, {
@@ -4268,11 +4293,12 @@ function OffboardingTab({ userId }: { userId: string }) {
   });
 
   const deactivateMut = useMutation({
-    mutationFn: async () => checklist ? apiRequest("POST", `/api/offboarding-checklists/${checklist.id}/deactivate`) : Promise.resolve(),
+    mutationFn: async () => checklist ? apiRequest("POST", `/api/offboarding-checklists/${checklist.id}/deactivate`, deactivateReason ? { terminationReason: deactivateReason } : {}) : Promise.resolve(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       setConfirmOpen(false);
+      setDeactivateReason("");
       toast({ title: "Account deactivated" });
     },
     onError: (e: unknown) => {
@@ -4341,6 +4367,15 @@ function OffboardingTab({ userId }: { userId: string }) {
                 <DialogContent>
                   <DialogHeader><DialogTitle>Deactivate account</DialogTitle></DialogHeader>
                   <p className="text-sm">This will set the termination date and prevent the user from logging in.</p>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="deactivate-reason">Reason</Label>
+                    <Select value={deactivateReason} onValueChange={setDeactivateReason}>
+                      <SelectTrigger id="deactivate-reason" data-testid="select-termination-reason"><SelectValue placeholder="Select a reason (optional)" /></SelectTrigger>
+                      <SelectContent>
+                        {TERMINATION_REASONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <DialogFooter>
                     <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
                     <Button variant="destructive" onClick={() => deactivateMut.mutate()} disabled={deactivateMut.isPending} data-testid="button-confirm-deactivate">Deactivate</Button>

@@ -749,7 +749,7 @@ export interface IStorage {
   setOffboardingChecklistDeactivation(id: string, actorUserId: string): Promise<OffboardingChecklist | undefined>;
   computeOffboardingProgress(checklistId: string): Promise<{ progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }>;
 
-  setUserDeactivated(userId: string, actorUserId: string): Promise<User | undefined>;
+  setUserDeactivated(userId: string, actorUserId: string, reason?: string | null): Promise<User | undefined>;
   clearUserDeactivated(userId: string): Promise<User | undefined>;
 
   // ===== Biometric kiosk =====
@@ -4280,13 +4280,21 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async setUserDeactivated(userId: string, _actorUserId: string): Promise<User | undefined> {
-    const [updated] = await db.update(users).set({ deactivatedAt: new Date(), updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+  async setUserDeactivated(userId: string, _actorUserId: string, reason?: string | null): Promise<User | undefined> {
+    const [updated] = await db
+      .update(users)
+      .set({ deactivatedAt: new Date(), terminationReason: reason ?? null, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
     return updated;
   }
 
   async clearUserDeactivated(userId: string): Promise<User | undefined> {
-    const [updated] = await db.update(users).set({ deactivatedAt: null, updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+    const [updated] = await db
+      .update(users)
+      .set({ deactivatedAt: null, terminationReason: null, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
     return updated;
   }
 
