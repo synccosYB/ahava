@@ -152,6 +152,10 @@ export const users = pgTable("users", {
   forcePasswordChange: boolean("force_password_change").default(false).notNull(),
   roleManuallyOverriddenAt: timestamp("role_manually_overridden_at"),
   deactivatedAt: timestamp("deactivated_at"),
+  // Why the account was deactivated (Resigned / Fired / Laid off / Other).
+  // Nullable: null on active accounts and on legacy deactivations that predate
+  // this field. See TERMINATION_REASONS in shared/schema.ts for the allowed set.
+  terminationReason: varchar("termination_reason", { length: 30 }),
   // Account edit-lock (chain of command). When true, this account cannot make
   // edits; only someone at lockedByRank or higher can unlock it. See
   // server/services/rank.ts.
