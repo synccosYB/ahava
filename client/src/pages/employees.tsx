@@ -103,6 +103,7 @@ export default function EmployeesPage() {
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importPunchesOpen, setImportPunchesOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   const { user: currentUser } = useAuth();
@@ -278,6 +279,16 @@ export default function EmployeesPage() {
             Import Employees
           </Button>
         )}
+        {canImport && (
+          <Button
+            variant="outline"
+            onClick={() => setImportPunchesOpen(true)}
+            data-testid="button-import-punches"
+          >
+            <Upload className="h-4 w-4 mr-2" />
+            Import Punches
+          </Button>
+        )}
         <AddEmployeeDialog
           open={addDialogOpen}
           onOpenChange={setAddDialogOpen}
@@ -291,6 +302,13 @@ export default function EmployeesPage() {
         <ImportEmployeesDialog
           open={importDialogOpen}
           onOpenChange={setImportDialogOpen}
+        />
+      )}
+
+      {canImport && (
+        <ImportPunchesDialog
+          open={importPunchesOpen}
+          onOpenChange={setImportPunchesOpen}
         />
       )}
 
@@ -1020,6 +1038,166 @@ function ImportEmployeesDialog({
                 onClick={() => file && importMutation.mutate(file)}
                 disabled={!file || importMutation.isPending}
                 data-testid="button-import-submit"
+              >
+                {importMutation.isPending ? "Importing…" : "Import"}
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface PunchImportSummary {
+  rowsParsed: number;
+  imported: number;
+  duplicates: number;
+  employeesTouched: number;
+  skipped: { row: number; reason: string }[];
+  unmatchedClockNumbers: string[];
+}
+
+function ImportPunchesDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [summary, setSummary] = useState<PunchImportSummary | null>(null);
+
+  const importMutation = useMutation({
+    mutationFn: async (selectedFile: File): Promise<PunchImportSummary> => {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      const res = await fetch("/api/attendance/import", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        let message = "Failed to import punches";
+        try {
+          const body = await res.json();
+          if (body?.message) message = body.message;
+        } catch {
+          /* keep default */
+        }
+        throw new Error(message);
+      }
+      return res.json();
+    },
+    onSuccess: (result) => {
+      setSummary(result);
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/records"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/punches"] });
+      toast({
+        title: "Punch import complete",
+        description: `${result.imported} imported, ${result.duplicates} already present.`,
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Import failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleClose = (next: boolean) => {
+    if (!next) {
+      setFile(null);
+      setSummary(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+    onOpenChange(next);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent data-testid="dialog-import-punches">
+        <DialogHeader>
+          <DialogTitle>Import Punches</DialogTitle>
+          <DialogDescription>
+            Upload a punch report (.xlsx or .csv) with one row per shift:{" "}
+            <span className="font-medium">Clock #</span>,{" "}
+            <span className="font-medium">Clock In</span>,{" "}
+            <span className="font-medium">Clock Out</span> (local time). Employees are
+            matched by Clock #. Safe to re-run — a shift that already exists is skipped,
+            so you can re-upload as each machine is switched over.
+          </DialogDescription>
+        </DialogHeader>
+
+        {summary ? (
+          <div className="space-y-2 text-sm" data-testid="text-punch-import-summary">
+            <p>
+              <span className="font-medium">{summary.imported}</span> punches imported
+              for <span className="font-medium">{summary.employeesTouched}</span>{" "}
+              employees. <span className="font-medium">{summary.duplicates}</span> already
+              present (skipped).
+            </p>
+            <p className="text-muted-foreground">Rows read: {summary.rowsParsed}</p>
+            {summary.unmatchedClockNumbers.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+                <p className="font-medium text-amber-800 dark:text-amber-300">
+                  {summary.unmatchedClockNumbers.length} Clock # not found (add these
+                  employees first, then re-import)
+                </p>
+                <p className="mt-1 max-h-40 overflow-auto text-xs text-amber-700 dark:text-amber-400">
+                  {summary.unmatchedClockNumbers.join(", ")}
+                </p>
+              </div>
+            )}
+            {summary.skipped.length > 0 && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950/30">
+                <p className="font-medium text-blue-800 dark:text-blue-300">
+                  {summary.skipped.length} row{summary.skipped.length === 1 ? "" : "s"} skipped
+                </p>
+                <ul className="mt-1 max-h-40 overflow-auto text-xs text-blue-700 dark:text-blue-400">
+                  {summary.skipped.slice(0, 25).map((s, i) => (
+                    <li key={i}>Row {s.row}: {s.reason}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <Input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              data-testid="input-punch-import-file"
+            />
+            {file && (
+              <p className="text-sm text-muted-foreground" data-testid="text-punch-selected-file">
+                Selected: {file.name}
+              </p>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          {summary ? (
+            <Button onClick={() => handleClose(false)} data-testid="button-punch-import-done">
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => handleClose(false)}
+                disabled={importMutation.isPending}
+                data-testid="button-punch-import-cancel"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => file && importMutation.mutate(file)}
+                disabled={!file || importMutation.isPending}
+                data-testid="button-punch-import-submit"
               >
                 {importMutation.isPending ? "Importing…" : "Import"}
               </Button>

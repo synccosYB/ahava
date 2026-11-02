@@ -20,6 +20,7 @@ import { buildEmployeeTimesheet } from "./timesheetService";
 import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, summarizeLedger, recomputeLedger } from "./attendanceLedger";
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
+import { importPunchesFromBuffer } from "./services/punchImport";
 import {
   computeAttendanceReconciliation,
   applyAttendanceReconciliation,
@@ -188,6 +189,21 @@ const employeeImportUpload = multer({
       cb(null, true);
     } else {
       cb(new Error("Only Excel (.xlsx) spreadsheets are allowed"));
+    }
+  },
+});
+
+// Punch (timesheet) migration import — accepts .xlsx/.xls and .csv.
+const punchImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = [".xlsx", ".xls", ".csv"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only Excel (.xlsx) or CSV files are allowed"));
     }
   },
 });
@@ -1324,6 +1340,52 @@ export async function registerRoutes(
         res.json(summary);
       } catch (err) {
         handleRouteError(res, err, "Failed to import employees");
+      }
+    },
+  );
+
+  // Bulk-import historical punches (clock in/out) from the prior time-clock
+  // system. Admin-only. Idempotent: a shift whose (employee, clock-in minute)
+  // already exists is skipped, so the report can be re-uploaded as each machine
+  // is switched over without doubling.
+  app.post(
+    "/api/attendance/import",
+    requireAuth,
+    requireRole("admin"),
+    (req: any, res, next) => {
+      punchImportUpload.single("file")(req, res, (err: any) => {
+        if (err) {
+          return res.status(400).json({ message: err.message || "Invalid upload" });
+        }
+        next();
+      });
+    },
+    async (req: any, res) => {
+      if (!req.file?.buffer) {
+        return res.status(400).json({ message: "No spreadsheet file uploaded" });
+      }
+      const actor = (req as any).authUser as User;
+      const auditCtx = getAuditContext(req);
+      try {
+        const summary = await importPunchesFromBuffer(req.file.buffer);
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "attendance",
+          targetId: actor.id,
+          action: "attendance.bulk_import",
+          oldValue: null,
+          newValue: {
+            imported: summary.imported,
+            duplicates: summary.duplicates,
+            skipped: summary.skipped.length,
+            employeesTouched: summary.employeesTouched,
+          },
+          context: { fileName: req.file.originalname },
+          ...auditCtx,
+        });
+        res.json(summary);
+      } catch (err) {
+        handleRouteError(res, err, "Failed to import punches");
       }
     },
   );
