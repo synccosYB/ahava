@@ -192,6 +192,33 @@ export default function FingerprintClocksPage() {
     onError: () => toast({ title: "Couldn't push fingerprints", variant: "destructive" }),
   });
 
+  // Bulk sync: locationId null => every clock; a locationId => just that location.
+  const bulkHarvest = useMutation({
+    mutationFn: (locationId: string | null) =>
+      apiRequest("POST", "/api/biometric-devices/bulk-harvest", locationId ? { locationId } : {}),
+    onSuccess: async (res: any) => {
+      const d = await res.json().catch(() => ({}));
+      toast({
+        title: "Pull requested",
+        description: `${d.clocks ?? 0} clock${(d.clocks ?? 0) === 1 ? "" : "s"} will upload fingerprints on next check-in.`,
+      });
+    },
+    onError: () => toast({ title: "Couldn't request pull", variant: "destructive" }),
+  });
+
+  const bulkDistribute = useMutation({
+    mutationFn: (locationId: string | null) =>
+      apiRequest("POST", "/api/biometric-devices/bulk-distribute", locationId ? { locationId } : {}),
+    onSuccess: async (res: any) => {
+      const d = await res.json().catch(() => ({}));
+      toast({
+        title: "Push queued",
+        description: `${d.people ?? 0} people queued to ${d.clocks ?? 0} clock${(d.clocks ?? 0) === 1 ? "" : "s"}. They load on next check-in.`,
+      });
+    },
+    onError: () => toast({ title: "Couldn't push fingerprints", variant: "destructive" }),
+  });
+
   function openCreate() {
     setEditingId(null);
     setFormName("");
@@ -231,6 +258,15 @@ export default function FingerprintClocksPage() {
     [locations],
   );
   const userMap = useMemo(() => new Map((users || []).map((u) => [u.id, u])), [users]);
+
+  // Distinct locations that actually have clocks, for the per-location sync buttons.
+  const clockLocations = useMemo(() => {
+    const ids = Array.from(new Set((devices || []).map((d) => d.locationId).filter(Boolean))) as string[];
+    return ids
+      .map((id) => ({ id, name: locationMap.get(id) || "Unknown" }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [devices, locationMap]);
+  const bulkBusy = bulkHarvest.isPending || bulkDistribute.isPending;
 
   // Distinct device user-numbers that have punched but aren't linked to an
   // employee yet — surfaced so an admin can bind them in one place.
@@ -292,6 +328,67 @@ export default function FingerprintClocksPage() {
           </p>
         </CardContent>
       </Card>
+
+      {/* Bulk fingerprint sync: push/pull across all clocks or a whole location */}
+      {devices && devices.length > 0 && (
+        <Card data-testid="card-bulk-sync">
+          <CardHeader>
+            <CardTitle className="text-base">Fingerprint sync</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm space-y-4">
+            <p className="text-muted-foreground">
+              <strong>Push</strong> sends everyone's stored fingerprints down onto the clocks (so a new
+              hire works everywhere). <strong>Pull</strong> brings the clocks' fingerprints up into Ahava.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => bulkDistribute.mutate(null)}
+                disabled={bulkBusy}
+                data-testid="button-push-all"
+              >
+                <DownloadCloud className="h-4 w-4 mr-2" /> Push to all clocks
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => bulkHarvest.mutate(null)}
+                disabled={bulkBusy}
+                data-testid="button-pull-all"
+              >
+                <Fingerprint className="h-4 w-4 mr-2" /> Pull from all clocks
+              </Button>
+            </div>
+            {clockLocations.length > 0 && (
+              <div>
+                <p className="text-muted-foreground mb-2">By location:</p>
+                <div className="space-y-2">
+                  {clockLocations.map((loc) => (
+                    <div key={loc.id} className="flex items-center gap-2" data-testid={`row-bulk-${loc.id}`}>
+                      <span className="w-40 shrink-0 font-medium">{loc.name}</span>
+                      <Button
+                        size="sm"
+                        onClick={() => bulkDistribute.mutate(loc.id)}
+                        disabled={bulkBusy}
+                        data-testid={`button-push-loc-${loc.id}`}
+                      >
+                        <DownloadCloud className="h-3 w-3 mr-1" /> Push
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => bulkHarvest.mutate(loc.id)}
+                        disabled={bulkBusy}
+                        data-testid={`button-pull-loc-${loc.id}`}
+                      >
+                        <Fingerprint className="h-3 w-3 mr-1" /> Pull
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card data-testid="card-clock-list">
         <CardHeader>

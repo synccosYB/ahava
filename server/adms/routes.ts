@@ -13,7 +13,7 @@ import { z } from "zod";
 import { logger } from "../lib/logger";
 import { requireAuth } from "../middleware/auth";
 import { requirePermission } from "../middleware/rbac";
-import { insertBiometricDeviceSchema } from "@shared/schema";
+import { insertBiometricDeviceSchema, type BiometricDevice } from "@shared/schema";
 import {
   buildOptionsResponse,
   ackOk,
@@ -208,7 +208,75 @@ const updateDeviceSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+// Queue the Harvest query commands on one device; returns how many were queued.
+// Whichever the firmware supports runs on its next poll; templates land via
+// POST /iclock/cdata.
+export async function queueHarvest(deviceId: string): Promise<number> {
+  const commands = ["DATA QUERY USERINFO", "DATA QUERY FINGERTMP", "DATA QUERY BIODATA"];
+  for (const command of commands) await adms.enqueueCommand(deviceId, command);
+  return commands.length;
+}
+
+// Queue a Distribute onto one device: every mapped fingerprint (scoped to the
+// device's company) as a user + template command. Returns people/commands queued.
+export async function queueDistribute(device: BiometricDevice): Promise<{ people: number; queued: number }> {
+  const templates = await adms.getDistributableTemplates(device.companyId ?? null);
+  const seenPins = new Set<string>();
+  let queued = 0;
+  for (const t of templates) {
+    if (!seenPins.has(t.pin)) {
+      await adms.enqueueCommand(device.id, buildUserInfoCommand(t.pin, t.name));
+      await adms.mapDeviceUser(device.id, t.pin, t.userId);
+      seenPins.add(t.pin);
+      queued += 1;
+    }
+    await adms.enqueueCommand(
+      device.id,
+      buildFingerprintUpdateCommand({
+        pin: t.pin,
+        fingerIndex: t.fingerIndex,
+        size: t.size,
+        valid: t.valid,
+        template: t.template,
+        format: t.format,
+      }),
+    );
+    queued += 1;
+  }
+  return { people: seenPins.size, queued };
+}
+
+// Clocks to act on for a bulk operation: all of them, or just one location when
+// a locationId is given.
+export async function devicesForBulk(locationId: string | null): Promise<BiometricDevice[]> {
+  const all = await adms.listDevices();
+  return locationId ? all.filter((d) => d.locationId === locationId) : all;
+}
+
 function registerAdminRoutes(app: Express): void {
+  // --- Bulk fingerprint sync: all clocks, or one location ----------------------
+  // Defined before the per-device routes; distinct path shapes, so no collision.
+  app.post("/api/biometric-devices/bulk-harvest", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
+    const locationId = String((req.body?.locationId ?? "")).trim() || null;
+    const devices = await devicesForBulk(locationId);
+    let queued = 0;
+    for (const d of devices) queued += await queueHarvest(d.id);
+    res.json({ ok: true, clocks: devices.length, queued });
+  });
+
+  app.post("/api/biometric-devices/bulk-distribute", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
+    const locationId = String((req.body?.locationId ?? "")).trim() || null;
+    const devices = await devicesForBulk(locationId);
+    let queued = 0;
+    let people = 0;
+    for (const d of devices) {
+      const r = await queueDistribute(d);
+      queued += r.queued;
+      people = Math.max(people, r.people);
+    }
+    res.json({ ok: true, clocks: devices.length, people, queued });
+  });
+
   app.get("/api/biometric-devices", requireAuth, requirePermission("kiosk.manage"), async (_req, res) => {
     res.json(await adms.listDevices());
   });
@@ -285,10 +353,8 @@ function registerAdminRoutes(app: Express): void {
   app.post("/api/biometric-devices/:id/harvest", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
     const device = await adms.getDevice(String(req.params.id));
     if (!device) return res.status(404).json({ message: "Device not found" });
-    for (const command of ["DATA QUERY USERINFO", "DATA QUERY FINGERTMP", "DATA QUERY BIODATA"]) {
-      await adms.enqueueCommand(device.id, command);
-    }
-    res.json({ ok: true, queued: 3 });
+    const queued = await queueHarvest(device.id);
+    res.json({ ok: true, queued });
   });
 
   // Fingerprint sync status for this device (for the UI): how many templates are
@@ -307,30 +373,8 @@ function registerAdminRoutes(app: Express): void {
   app.post("/api/biometric-devices/:id/distribute", requireAuth, requirePermission("kiosk.manage"), async (req, res) => {
     const device = await adms.getDevice(String(req.params.id));
     if (!device) return res.status(404).json({ message: "Device not found" });
-    const templates = await adms.getDistributableTemplates(device.companyId ?? null);
-    const seenPins = new Set<string>();
-    let queued = 0;
-    for (const t of templates) {
-      if (!seenPins.has(t.pin)) {
-        await adms.enqueueCommand(device.id, buildUserInfoCommand(t.pin, t.name));
-        await adms.mapDeviceUser(device.id, t.pin, t.userId);
-        seenPins.add(t.pin);
-        queued += 1;
-      }
-      await adms.enqueueCommand(
-        device.id,
-        buildFingerprintUpdateCommand({
-          pin: t.pin,
-          fingerIndex: t.fingerIndex,
-          size: t.size,
-          valid: t.valid,
-          template: t.template,
-          format: t.format,
-        }),
-      );
-      queued += 1;
-    }
-    res.json({ ok: true, people: seenPins.size, queued });
+    const { people, queued } = await queueDistribute(device);
+    res.json({ ok: true, people, queued });
   });
 }
 
