@@ -23,6 +23,11 @@ const CK = {
   bcmBlank: `${stamp}-3`,
   legacy: `${stamp}-4`,
   badpay: `${stamp}-5`,
+  dept: `${stamp}-6`,
+  deptUnknown: `${stamp}-7`,
+  inactive: `${stamp}-8`,
+  roleOk: `${stamp}-9`,
+  roleSystem: `${stamp}-10`,
 };
 
 function wbBuffer(rows: Record<string, unknown>[]): Buffer {
@@ -38,6 +43,44 @@ const [bcm] = await db
   .insert(schema.companies)
   .values({ name: `BCM ${stamp}` })
   .returning();
+
+// A department the importer can match a "Department" cell to (global list,
+// name globally unique — so stamp it). The importer never creates departments.
+const DEPT_NAME = `Oncology ${stamp}`;
+const [dept] = await db
+  .insert(schema.departments)
+  .values({ name: DEPT_NAME })
+  .returning();
+
+// A custom (non-system) role the importer may assign, plus a system role it
+// must refuse to assign from a spreadsheet.
+const NURSE_ROLE = `Nurse ${stamp}`;
+const SYSTEM_ROLE = `Admin ${stamp}`;
+const [nurseRole] = await db
+  .insert(schema.roles)
+  .values({ name: NURSE_ROLE, isSystem: false })
+  .returning();
+const [systemRole] = await db
+  .insert(schema.roles)
+  .values({ name: SYSTEM_ROLE, isSystem: true })
+  .returning();
+
+async function deptIdsFor(clock: string): Promise<string[]> {
+  const prof = await profileFor(clock);
+  if (!prof) return [];
+  const rows = await db
+    .select({ departmentId: schema.employeeDepartments.departmentId })
+    .from(schema.employeeDepartments)
+    .where(eq(schema.employeeDepartments.userId, prof.userId));
+  return rows.map((r) => r.departmentId);
+}
+
+async function userFor(clock: string) {
+  const prof = await profileFor(clock);
+  if (!prof) return undefined;
+  const [u] = await db.select().from(schema.users).where(eq(schema.users.id, prof.userId));
+  return u;
+}
 
 async function profileFor(clock: string) {
   const [row] = await db
@@ -125,6 +168,66 @@ test("legacy columns still work (Employee / ID / Location)", async () => {
   assert.equal(row!.firstName, "Legacy");
 });
 
+test("Department cell assigns a matching (existing) department", async () => {
+  const buf = wbBuffer([
+    { "Employee Name": "Dept Match", "Clock #": CK.dept, "Actual Location": "Sumner", "Department": DEPT_NAME, "Wage Type": "W-2" },
+  ]);
+  const summary = await importEmployeesFromBuffer(buf);
+  assert.ok(summary.departmentsAssigned >= 1, "a department was assigned");
+  assert.deepEqual(await deptIdsFor(CK.dept), [dept.id], "employee linked to the matched department");
+});
+
+test("unknown Department warns and leaves the employee unassigned", async () => {
+  const buf = wbBuffer([
+    { "Employee Name": "Dept Typo", "Clock #": CK.deptUnknown, "Actual Location": "Sumner", "Department": "Nuero", "Wage Type": "W-2" },
+  ]);
+  const summary = await importEmployeesFromBuffer(buf);
+  assert.deepEqual(await deptIdsFor(CK.deptUnknown), [], "no department assigned for an unknown name");
+  assert.ok(summary.warnings.some((w) => /unknown department "Nuero"/i.test(w.reason)), "unknown department warned");
+});
+
+test('Department "Inactive" deactivates the employee (and assigns no department)', async () => {
+  const buf = wbBuffer([
+    { "Employee Name": "Gone Away", "Clock #": CK.inactive, "Actual Location": "Sumner", "Department": "Inactive", "Wage Type": "W-2" },
+  ]);
+  const summary = await importEmployeesFromBuffer(buf);
+  const u = await userFor(CK.inactive);
+  assert.ok(u, "employee still imported");
+  assert.ok(u!.deactivatedAt, "employee deactivated");
+  assert.deepEqual(await deptIdsFor(CK.inactive), [], '"Inactive" is not treated as a department');
+  assert.ok(summary.deactivated.some((d) => d.employeeNumber === CK.inactive), "reported in the deactivated list");
+});
+
+test("re-importing an Inactive row preserves a human-set termination reason", async () => {
+  // Simulate an admin later choosing a reason in the UI.
+  const u = await userFor(CK.inactive);
+  await db.update(schema.users).set({ terminationReason: "Fired" }).where(eq(schema.users.id, u!.id));
+  const buf = wbBuffer([
+    { "Employee Name": "Gone Away", "Clock #": CK.inactive, "Actual Location": "Sumner", "Department": "Inactive", "Wage Type": "W-2" },
+  ]);
+  await importEmployeesFromBuffer(buf);
+  const again = await userFor(CK.inactive);
+  assert.equal(again!.terminationReason, "Fired", "already-deactivated employee not touched; reason kept");
+});
+
+test("Role cell assigns a matching non-system role; system roles are refused", async () => {
+  const buf = wbBuffer([
+    { "Employee Name": "Has Role", "Clock #": CK.roleOk, "Actual Location": "Sumner", "Department": DEPT_NAME, "Role": NURSE_ROLE },
+    { "Employee Name": "No Admin", "Clock #": CK.roleSystem, "Actual Location": "Sumner", "Department": DEPT_NAME, "Role": SYSTEM_ROLE },
+  ]);
+  const summary = await importEmployeesFromBuffer(buf);
+  assert.ok(summary.rolesAssigned >= 1, "at least one role assigned");
+
+  const okProf = await profileFor(CK.roleOk);
+  const okRoles = await db.select().from(schema.userRoles).where(eq(schema.userRoles.userId, okProf!.userId));
+  assert.ok(okRoles.some((r) => r.roleId === nurseRole.id), "non-system role assigned");
+
+  const sysProf = await profileFor(CK.roleSystem);
+  const sysRoles = await db.select().from(schema.userRoles).where(eq(schema.userRoles.userId, sysProf!.userId));
+  assert.equal(sysRoles.length, 0, "a system role is never assigned from the sheet");
+  assert.ok(summary.warnings.some((w) => w.reason.includes(SYSTEM_ROLE)), "system role name warned as unknown");
+});
+
 test.after(async () => {
   // Clean up every user this test created, their profiles, and the BCM record.
   const clocks = Object.values(CK);
@@ -135,8 +238,12 @@ test.after(async () => {
   const userIds = profs.map((p) => p.userId);
   if (userIds.length) {
     await db.delete(schema.employeeLocations).where(inArray(schema.employeeLocations.userId, userIds)).catch(() => {});
+    await db.delete(schema.employeeDepartments).where(inArray(schema.employeeDepartments.userId, userIds)).catch(() => {});
+    await db.delete(schema.userRoles).where(inArray(schema.userRoles.userId, userIds)).catch(() => {});
     await db.delete(schema.userEmploymentProfiles).where(inArray(schema.userEmploymentProfiles.userId, userIds));
     await db.delete(schema.users).where(inArray(schema.users.id, userIds));
   }
+  await db.delete(schema.departments).where(eq(schema.departments.id, dept.id)).catch(() => {});
+  await db.delete(schema.roles).where(inArray(schema.roles.id, [nurseRole.id, systemRole.id])).catch(() => {});
   await db.delete(schema.companies).where(eq(schema.companies.id, bcm.id)).catch(() => {});
 });

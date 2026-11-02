@@ -31,7 +31,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { formatCurrency, formatHoursMinutes, formatDate } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
-import { userDepartmentIds, userLocationIds } from "@shared/schema";
+import { userDepartmentIds, userLocationIds, TERMINATION_REASONS } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
@@ -84,7 +84,14 @@ export default function EmployeesPage() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
-  const [departmentFilter, setDepartmentFilter] = useState(initialDepartment);
+  // Department & location are multi-select with a staged "draft" (what the user
+  // is picking) and an "applied" set (what the query actually uses) — committed
+  // by the Apply button, so selecting several doesn't refetch on every click.
+  const initialDeptIds = initialDepartment !== "all" ? [initialDepartment] : [];
+  const [draftDeptIds, setDraftDeptIds] = useState<string[]>(initialDeptIds);
+  const [appliedDeptIds, setAppliedDeptIds] = useState<string[]>(initialDeptIds);
+  const [draftLocIds, setDraftLocIds] = useState<string[]>([]);
+  const [appliedLocIds, setAppliedLocIds] = useState<string[]>([]);
   const [divisionFilter, setDivisionFilter] = useState("all");
   const [taxClassFilter, setTaxClassFilter] = useState("all");
   const [certStatusFilter, setCertStatusFilter] = useState("all");
@@ -105,13 +112,16 @@ export default function EmployeesPage() {
 
   // Reset to the first page whenever the search or any filter changes so the
   // user isn't stranded on an out-of-range page.
+  const appliedDeptKey = appliedDeptIds.join(",");
+  const appliedLocKey = appliedLocIds.join(",");
   useEffect(() => {
     setPage(0);
-  }, [debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter]);
+  }, [debouncedSearch, appliedDeptKey, appliedLocKey, divisionFilter, taxClassFilter, certStatusFilter]);
 
   const usersParams = new URLSearchParams();
   if (debouncedSearch) usersParams.set("search", debouncedSearch);
-  if (departmentFilter !== "all") usersParams.set("departmentId", departmentFilter);
+  if (appliedDeptIds.length) usersParams.set("departmentIds", appliedDeptKey);
+  if (appliedLocIds.length) usersParams.set("locationIds", appliedLocKey);
   if (divisionFilter !== "all") usersParams.set("companyId", divisionFilter);
   if (taxClassFilter !== "all") usersParams.set("taxClass", taxClassFilter);
   if (certStatusFilter !== "all") usersParams.set("certStatus", certStatusFilter);
@@ -119,7 +129,7 @@ export default function EmployeesPage() {
   usersParams.set("offset", String(page * pageSize));
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
-    queryKey: ["/api/users", debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter, page, pageSize],
+    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, divisionFilter, taxClassFilter, certStatusFilter, page, pageSize],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employees");
@@ -216,17 +226,36 @@ export default function EmployeesPage() {
             <SelectItem value="1099">1099</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-department-filter">
-            <SelectValue placeholder="Department" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Departments</SelectItem>
-            {departments?.map((d) => (
-              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="w-[200px]" data-testid="filter-department-multi">
+          <MultiSelect
+            options={(departments ?? []).map((d) => ({ label: d.name, value: d.id }))}
+            selected={draftDeptIds}
+            onChange={setDraftDeptIds}
+            placeholder="All Departments"
+          />
+        </div>
+        <div className="w-[200px]" data-testid="filter-location-multi">
+          <MultiSelect
+            options={(locations ?? []).map((l) => ({ label: l.name, value: l.id }))}
+            selected={draftLocIds}
+            onChange={setDraftLocIds}
+            placeholder="All Locations"
+          />
+        </div>
+        {(() => {
+          const dirty =
+            draftDeptIds.join(",") !== appliedDeptKey || draftLocIds.join(",") !== appliedLocKey;
+          return (
+            <Button
+              variant={dirty ? "default" : "outline"}
+              onClick={() => { setAppliedDeptIds(draftDeptIds); setAppliedLocIds(draftLocIds); }}
+              disabled={!dirty}
+              data-testid="button-apply-filters"
+            >
+              Apply{(draftDeptIds.length + draftLocIds.length) > 0 ? ` (${draftDeptIds.length + draftLocIds.length})` : ""}
+            </Button>
+          );
+        })()}
         <Select value={certStatusFilter} onValueChange={setCertStatusFilter}>
           <SelectTrigger className="w-[180px]" data-testid="select-cert-status-filter">
             <SelectValue placeholder="Cert Status" />
@@ -804,6 +833,9 @@ interface ImportSummary {
   locationsTotal: number;
   created: number;
   updated: number;
+  departmentsAssigned?: number;
+  rolesAssigned?: number;
+  deactivated?: { row: number; employeeNumber: string; name: string }[];
   skipped: { row: number; reason: string }[];
   warnings: { row: number; reason: string }[];
   profilesWithNumber: number;
@@ -900,6 +932,27 @@ function ImportEmployeesDialog({
               Company: {summary.company} · Locations: {summary.locationsTotal} ·
               Rows read: {summary.rowsParsed}
             </p>
+            {(summary.departmentsAssigned || summary.rolesAssigned) ? (
+              <p className="text-muted-foreground">
+                Departments assigned: {summary.departmentsAssigned ?? 0}
+                {summary.rolesAssigned ? ` · Roles assigned: ${summary.rolesAssigned}` : ""}
+              </p>
+            ) : null}
+            {summary.deactivated && summary.deactivated.length > 0 && (
+              <div className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30">
+                <p className="font-medium text-red-800 dark:text-red-300">
+                  {summary.deactivated.length} employee
+                  {summary.deactivated.length === 1 ? "" : "s"} deactivated (marked "Inactive")
+                </p>
+                <ul className="mt-1 max-h-40 overflow-auto text-xs text-red-700 dark:text-red-400">
+                  {summary.deactivated.slice(0, 25).map((d, i) => (
+                    <li key={i}>
+                      {d.name} (Clock #{d.employeeNumber})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {summary.skipped.length > 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
                 <p className="font-medium text-amber-800 dark:text-amber-300">
@@ -4219,6 +4272,7 @@ function OffboardingTab({ userId }: { userId: string }) {
   const [skipReasonByTask, setSkipReasonByTask] = useState<Record<string, string>>({});
   const [notesByTask, setNotesByTask] = useState<Record<string, string>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deactivateReason, setDeactivateReason] = useState<string>("");
 
   const startMut = useMutation({
     mutationFn: async () => apiRequest("POST", `/api/offboarding/start`, {
@@ -4239,11 +4293,12 @@ function OffboardingTab({ userId }: { userId: string }) {
   });
 
   const deactivateMut = useMutation({
-    mutationFn: async () => checklist ? apiRequest("POST", `/api/offboarding-checklists/${checklist.id}/deactivate`) : Promise.resolve(),
+    mutationFn: async () => checklist ? apiRequest("POST", `/api/offboarding-checklists/${checklist.id}/deactivate`, deactivateReason ? { terminationReason: deactivateReason } : {}) : Promise.resolve(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       setConfirmOpen(false);
+      setDeactivateReason("");
       toast({ title: "Account deactivated" });
     },
     onError: (e: unknown) => {
@@ -4312,6 +4367,15 @@ function OffboardingTab({ userId }: { userId: string }) {
                 <DialogContent>
                   <DialogHeader><DialogTitle>Deactivate account</DialogTitle></DialogHeader>
                   <p className="text-sm">This will set the termination date and prevent the user from logging in.</p>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="deactivate-reason">Reason</Label>
+                    <Select value={deactivateReason} onValueChange={setDeactivateReason}>
+                      <SelectTrigger id="deactivate-reason" data-testid="select-termination-reason"><SelectValue placeholder="Select a reason (optional)" /></SelectTrigger>
+                      <SelectContent>
+                        {TERMINATION_REASONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <DialogFooter>
                     <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
                     <Button variant="destructive" onClick={() => deactivateMut.mutate()} disabled={deactivateMut.isPending} data-testid="button-confirm-deactivate">Deactivate</Button>

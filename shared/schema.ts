@@ -290,6 +290,13 @@ export const insertPolicyAcknowledgmentSchema = createInsertSchema(policyAcknowl
 export type InsertPolicyAcknowledgment = z.infer<typeof insertPolicyAcknowledgmentSchema>;
 export type PolicyAcknowledgment = typeof policyAcknowledgments.$inferSelect;
 
+// Allowed reasons when an employee account is deactivated. Stored on
+// users.termination_reason; surfaced in the Deactivate dialog. "Other" is the
+// catch-all (and what bulk imports use, since the spreadsheet only says
+// "Inactive" without a reason).
+export const TERMINATION_REASONS = ["Resigned", "Fired", "Laid off", "Other"] as const;
+export type TerminationReason = (typeof TERMINATION_REASONS)[number];
+
 export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique().references(() => users.id),

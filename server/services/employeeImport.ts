@@ -49,9 +49,15 @@ export interface ImportSummary {
   locationsTotal: number;
   created: number;
   updated: number;
+  /** Rows whose Department cell was a known department and got assigned. */
+  departmentsAssigned: number;
+  /** Rows whose Role cell matched an existing custom role and got assigned. */
+  rolesAssigned: number;
+  /** Rows whose Department cell was "Inactive" -> the employee was deactivated. */
+  deactivated: { row: number; employeeNumber: string; name: string }[];
   skipped: { row: number; reason: string }[];
-  /** Non-fatal per-row notes (e.g. an unrecognized paying company or wage type
-   * that was left blank); the employee is still imported. */
+  /** Non-fatal per-row notes (e.g. an unrecognized paying company, wage type,
+   * department, or role that was left unset); the employee is still imported. */
   warnings: { row: number; reason: string }[];
   profilesWithNumber: number;
 }
@@ -154,6 +160,27 @@ export async function importEmployeesFromBuffer(
   const allCompanies = await storage.getAllCompanies();
   const resolvePayingCompany = makePayingCompanyResolver(allCompanies, companyId);
 
+  // Departments are a single GLOBAL list (name is globally unique), so we match
+  // a "Department" cell to an existing department by trimmed, case-insensitive
+  // name. We deliberately do NOT create departments here (unlike locations):
+  // the owner curates the department list by hand, and the spreadsheet is full
+  // of typos / trailing spaces ("Nuero", "LAB IN ", "Tranportation"). An
+  // unmatched name warns and is left unassigned so the mess is surfaced, never
+  // silently turned into a junk department.
+  const allDepartments = await storage.getAllDepartments();
+  const departmentByName = new Map<string, string>();
+  for (const d of allDepartments) departmentByName.set(d.name.trim().toLowerCase(), d.id);
+
+  // Roles: match a "Role" cell to an existing NON-SYSTEM role by name. System
+  // roles (Super Admin, Company Admin, …) are permission-bearing and must never
+  // be granted from a spreadsheet, so they are excluded from the lookup; an
+  // unmatched role warns and is left unassigned (never created).
+  const allRoles = await storage.getAllRoles();
+  const roleByName = new Map<string, string>();
+  for (const r of allRoles) {
+    if (!r.isSystem) roleByName.set(r.name.trim().toLowerCase(), r.id);
+  }
+
   // Location cache (cleaned name -> id), seeded from this company's locations so
   // a same-named location in another tenant is never reused.
   const existingLocations = await storage.getLocationsByCompany(companyId);
@@ -175,17 +202,25 @@ export async function importEmployeesFromBuffer(
     .select({
       userId: userEmploymentProfiles.userId,
       employeeNumber: userEmploymentProfiles.employeeNumber,
+      deactivatedAt: users.deactivatedAt,
     })
     .from(userEmploymentProfiles)
     .innerJoin(users, eq(users.id, userEmploymentProfiles.userId))
     .where(eq(users.companyId, companyId));
   const userIdByNumber = new Map<string, string>();
+  const deactivatedByNumber = new Map<string, boolean>();
   for (const p of existingProfiles) {
-    if (p.employeeNumber) userIdByNumber.set(p.employeeNumber, p.userId);
+    if (p.employeeNumber) {
+      userIdByNumber.set(p.employeeNumber, p.userId);
+      deactivatedByNumber.set(p.employeeNumber, !!p.deactivatedAt);
+    }
   }
 
   let created = 0;
   let updated = 0;
+  let departmentsAssigned = 0;
+  let rolesAssigned = 0;
+  const deactivated: { row: number; employeeNumber: string; name: string }[] = [];
   const skipped: { row: number; reason: string }[] = [];
   const warnings: { row: number; reason: string }[] = [];
 
@@ -200,6 +235,12 @@ export async function importEmployeesFromBuffer(
     const legacyDept = pick(row, ["Location", "Department Name", "Dept", "Department"]);
     const payingCompanyRaw = pick(row, ["Paying Company", "Payroll Company"]);
     const wageTypeRaw = pick(row, ["Wage Type", "Tax Classification", "Tax Form"]);
+    // Department / Role only exist on the enriched owner sheet (which always
+    // carries an explicit Actual Location). On legacy files the "Department"
+    // column is actually a location label, so we only act on these when an
+    // Actual Location is present — see `enriched` below.
+    const departmentRaw = pick(row, ["Department", "Dept"]);
+    const roleRaw = pick(row, ["Role", "Job Title", "Position"]);
 
     if (!employeeNumber) {
       skipped.push({ row: rowNum, reason: "missing Clock # / ID" });
@@ -243,7 +284,29 @@ export async function importEmployeesFromBuffer(
       else warnings.push({ row: rowNum, reason: `unrecognized wage type "${wageTypeRaw}" (Clock # ${employeeNumber}); left at default` });
     }
 
+    // Department / Role / Inactive are only meaningful on the enriched sheet.
+    const enriched = !!actualLocation;
+    const isInactiveCell = enriched && departmentRaw.trim().toLowerCase() === "inactive";
+
+    // Resolve the department to an existing (global) department id. Blank and
+    // "Inactive" are not departments; an unknown name warns and is left unset.
+    let resolvedDepartmentId: string | undefined;
+    if (enriched && departmentRaw && !isInactiveCell) {
+      const did = departmentByName.get(departmentRaw.trim().toLowerCase());
+      if (did) resolvedDepartmentId = did;
+      else warnings.push({ row: rowNum, reason: `unknown department "${departmentRaw}" (Clock # ${employeeNumber}); left unassigned` });
+    }
+
+    // Resolve the role to an existing non-system role id; unknown warns.
+    let resolvedRoleId: string | undefined;
+    if (roleRaw) {
+      const rid = roleByName.get(roleRaw.trim().toLowerCase());
+      if (rid) resolvedRoleId = rid;
+      else warnings.push({ row: rowNum, reason: `unknown role "${roleRaw}" (Clock # ${employeeNumber}); not assigned` });
+    }
+
     const existingUserId = userIdByNumber.get(employeeNumber);
+    let userId: string;
     if (existingUserId) {
       // Idempotent update: refresh name/company/location/pay, never duplicate.
       await storage.updateUser(existingUserId, {
@@ -254,20 +317,51 @@ export async function importEmployeesFromBuffer(
       });
       await storage.setUserLocationIds(existingUserId, [locationId]);
       await storage.updateEmploymentProfile(existingUserId, profilePatch);
+      userId = existingUserId;
       updated++;
-      continue;
+    } else {
+      const newUser = await storage.createUser({
+        firstName,
+        lastName,
+        role: "employee",
+        companyId,
+      });
+      await storage.setUserLocationIds(newUser.id, [locationId]);
+      await storage.createEmploymentProfile({ userId: newUser.id, ...profilePatch });
+      userIdByNumber.set(employeeNumber, newUser.id);
+      deactivatedByNumber.set(employeeNumber, false);
+      userId = newUser.id;
+      created++;
     }
 
-    const newUser = await storage.createUser({
-      firstName,
-      lastName,
-      role: "employee",
-      companyId,
-    });
-    await storage.setUserLocationIds(newUser.id, [locationId]);
-    await storage.createEmploymentProfile({ userId: newUser.id, ...profilePatch });
-    userIdByNumber.set(employeeNumber, newUser.id);
-    created++;
+    // Department assignment (only when matched; blank/unknown leave the current
+    // membership untouched so a partial sheet never wipes existing departments).
+    if (resolvedDepartmentId) {
+      await storage.setUserDepartmentIds(userId, [resolvedDepartmentId]);
+      departmentsAssigned++;
+    }
+
+    // Role assignment (non-system roles only; idempotent — never double-assign).
+    if (resolvedRoleId) {
+      const current = await storage.getUserRoles(userId);
+      if (!current.some((r) => r.roleId === resolvedRoleId)) {
+        await storage.assignUserRole(userId, resolvedRoleId, companyId);
+      }
+      rolesAssigned++;
+    }
+
+    // Inactive -> deactivate. Only when not already deactivated, so a re-import
+    // never resets a reason a human picked in the UI. We do NOT auto-reactivate
+    // the reverse case; instead we surface it as a warning.
+    if (isInactiveCell) {
+      if (deactivatedByNumber.get(employeeNumber) !== true) {
+        await storage.setUserDeactivated(userId, "import", null);
+        deactivatedByNumber.set(employeeNumber, true);
+        deactivated.push({ row: rowNum, employeeNumber, name: `${firstName} ${lastName}`.trim() });
+      }
+    } else if (enriched && deactivatedByNumber.get(employeeNumber) === true) {
+      warnings.push({ row: rowNum, reason: `${firstName} ${lastName}`.trim() + ` (Clock # ${employeeNumber}) is deactivated in the system but the sheet lists it active; not reactivated automatically` });
+    }
   }
 
   const companyLocations = await storage.getLocationsByCompany(companyId);
@@ -286,6 +380,9 @@ export async function importEmployeesFromBuffer(
     locationsTotal: companyLocations.length,
     created,
     updated,
+    departmentsAssigned,
+    rolesAssigned,
+    deactivated,
     skipped,
     warnings,
     profilesWithNumber,

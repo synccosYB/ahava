@@ -285,6 +285,10 @@ export interface UsersPageOptions {
   search?: string;
   departmentId?: string;
   locationId?: string;
+  // Multi-select filters: match an employee in ANY of the given departments /
+  // locations. When present these take precedence over the single-id variants.
+  departmentIds?: string[];
+  locationIds?: string[];
   companyId?: string;
   taxClass?: string;
   // "none" = users with no certifications; any other value = users with at
@@ -745,7 +749,7 @@ export interface IStorage {
   setOffboardingChecklistDeactivation(id: string, actorUserId: string): Promise<OffboardingChecklist | undefined>;
   computeOffboardingProgress(checklistId: string): Promise<{ progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }>;
 
-  setUserDeactivated(userId: string, actorUserId: string): Promise<User | undefined>;
+  setUserDeactivated(userId: string, actorUserId: string, reason?: string | null): Promise<User | undefined>;
   clearUserDeactivated(userId: string): Promise<User | undefined>;
 
   // ===== Biometric kiosk =====
@@ -922,16 +926,25 @@ export class DatabaseStorage implements IStorage {
         sql`(${nameExpr} like lower(${like}) or lower(coalesce(${users.email}, '')) like lower(${like}))` as SQL,
       );
     }
-    // Membership semantics: match an employee assigned to the department via the
-    // many-to-many join OR the legacy single column (kept in sync as a shim).
-    if (opts.departmentId) {
+    // Membership semantics: match an employee assigned via the many-to-many join
+    // OR the legacy single column (kept in sync as a shim). The multi-id variants
+    // match ANY of the given ids and take precedence over the single-id ones.
+    const deptIds = (opts.departmentIds && opts.departmentIds.length > 0)
+      ? opts.departmentIds
+      : (opts.departmentId ? [opts.departmentId] : []);
+    if (deptIds.length > 0) {
+      const idList = sql.join(deptIds.map((id) => sql`${id}`), sql`, `);
       conditions.push(
-        sql`(${users.departmentId} = ${opts.departmentId} or exists (select 1 from ${employeeDepartments} ed where ed.user_id = ${users.id} and ed.department_id = ${opts.departmentId}))` as SQL,
+        sql`(${users.departmentId} in (${idList}) or exists (select 1 from ${employeeDepartments} ed where ed.user_id = ${users.id} and ed.department_id in (${idList})))` as SQL,
       );
     }
-    if (opts.locationId) {
+    const locIds = (opts.locationIds && opts.locationIds.length > 0)
+      ? opts.locationIds
+      : (opts.locationId ? [opts.locationId] : []);
+    if (locIds.length > 0) {
+      const idList = sql.join(locIds.map((id) => sql`${id}`), sql`, `);
       conditions.push(
-        sql`(${users.locationId} = ${opts.locationId} or exists (select 1 from ${employeeLocations} el where el.user_id = ${users.id} and el.location_id = ${opts.locationId}))` as SQL,
+        sql`(${users.locationId} in (${idList}) or exists (select 1 from ${employeeLocations} el where el.user_id = ${users.id} and el.location_id in (${idList})))` as SQL,
       );
     }
     if (opts.companyId) conditions.push(eq(users.companyId, opts.companyId));
@@ -4267,13 +4280,21 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async setUserDeactivated(userId: string, _actorUserId: string): Promise<User | undefined> {
-    const [updated] = await db.update(users).set({ deactivatedAt: new Date(), updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+  async setUserDeactivated(userId: string, _actorUserId: string, reason?: string | null): Promise<User | undefined> {
+    const [updated] = await db
+      .update(users)
+      .set({ deactivatedAt: new Date(), terminationReason: reason ?? null, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
     return updated;
   }
 
   async clearUserDeactivated(userId: string): Promise<User | undefined> {
-    const [updated] = await db.update(users).set({ deactivatedAt: null, updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+    const [updated] = await db
+      .update(users)
+      .set({ deactivatedAt: null, terminationReason: null, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
     return updated;
   }
 
