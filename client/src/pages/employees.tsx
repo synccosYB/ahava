@@ -84,7 +84,14 @@ export default function EmployeesPage() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
-  const [departmentFilter, setDepartmentFilter] = useState(initialDepartment);
+  // Department & location are multi-select with a staged "draft" (what the user
+  // is picking) and an "applied" set (what the query actually uses) — committed
+  // by the Apply button, so selecting several doesn't refetch on every click.
+  const initialDeptIds = initialDepartment !== "all" ? [initialDepartment] : [];
+  const [draftDeptIds, setDraftDeptIds] = useState<string[]>(initialDeptIds);
+  const [appliedDeptIds, setAppliedDeptIds] = useState<string[]>(initialDeptIds);
+  const [draftLocIds, setDraftLocIds] = useState<string[]>([]);
+  const [appliedLocIds, setAppliedLocIds] = useState<string[]>([]);
   const [divisionFilter, setDivisionFilter] = useState("all");
   const [taxClassFilter, setTaxClassFilter] = useState("all");
   const [certStatusFilter, setCertStatusFilter] = useState("all");
@@ -105,13 +112,16 @@ export default function EmployeesPage() {
 
   // Reset to the first page whenever the search or any filter changes so the
   // user isn't stranded on an out-of-range page.
+  const appliedDeptKey = appliedDeptIds.join(",");
+  const appliedLocKey = appliedLocIds.join(",");
   useEffect(() => {
     setPage(0);
-  }, [debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter]);
+  }, [debouncedSearch, appliedDeptKey, appliedLocKey, divisionFilter, taxClassFilter, certStatusFilter]);
 
   const usersParams = new URLSearchParams();
   if (debouncedSearch) usersParams.set("search", debouncedSearch);
-  if (departmentFilter !== "all") usersParams.set("departmentId", departmentFilter);
+  if (appliedDeptIds.length) usersParams.set("departmentIds", appliedDeptKey);
+  if (appliedLocIds.length) usersParams.set("locationIds", appliedLocKey);
   if (divisionFilter !== "all") usersParams.set("companyId", divisionFilter);
   if (taxClassFilter !== "all") usersParams.set("taxClass", taxClassFilter);
   if (certStatusFilter !== "all") usersParams.set("certStatus", certStatusFilter);
@@ -119,7 +129,7 @@ export default function EmployeesPage() {
   usersParams.set("offset", String(page * pageSize));
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
-    queryKey: ["/api/users", debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter, page, pageSize],
+    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, divisionFilter, taxClassFilter, certStatusFilter, page, pageSize],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employees");
@@ -216,17 +226,36 @@ export default function EmployeesPage() {
             <SelectItem value="1099">1099</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-department-filter">
-            <SelectValue placeholder="Department" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Departments</SelectItem>
-            {departments?.map((d) => (
-              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="w-[200px]" data-testid="filter-department-multi">
+          <MultiSelect
+            options={(departments ?? []).map((d) => ({ label: d.name, value: d.id }))}
+            selected={draftDeptIds}
+            onChange={setDraftDeptIds}
+            placeholder="All Departments"
+          />
+        </div>
+        <div className="w-[200px]" data-testid="filter-location-multi">
+          <MultiSelect
+            options={(locations ?? []).map((l) => ({ label: l.name, value: l.id }))}
+            selected={draftLocIds}
+            onChange={setDraftLocIds}
+            placeholder="All Locations"
+          />
+        </div>
+        {(() => {
+          const dirty =
+            draftDeptIds.join(",") !== appliedDeptKey || draftLocIds.join(",") !== appliedLocKey;
+          return (
+            <Button
+              variant={dirty ? "default" : "outline"}
+              onClick={() => { setAppliedDeptIds(draftDeptIds); setAppliedLocIds(draftLocIds); }}
+              disabled={!dirty}
+              data-testid="button-apply-filters"
+            >
+              Apply{(draftDeptIds.length + draftLocIds.length) > 0 ? ` (${draftDeptIds.length + draftLocIds.length})` : ""}
+            </Button>
+          );
+        })()}
         <Select value={certStatusFilter} onValueChange={setCertStatusFilter}>
           <SelectTrigger className="w-[180px]" data-testid="select-cert-status-filter">
             <SelectValue placeholder="Cert Status" />

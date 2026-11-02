@@ -663,9 +663,16 @@ export async function registerRoutes(
     });
 
     if (pagination.paginated) {
+      const csvIds = (v: unknown): string[] | undefined => {
+        if (typeof v !== "string" || v.trim() === "") return undefined;
+        const ids = v.split(",").map((s) => s.trim()).filter(Boolean);
+        return ids.length > 0 ? ids : undefined;
+      };
       const { rows, total } = await storage.getUsersPage({
         search: typeof req.query.search === "string" ? req.query.search : undefined,
         departmentId: typeof req.query.departmentId === "string" ? req.query.departmentId : undefined,
+        departmentIds: csvIds(req.query.departmentIds),
+        locationIds: csvIds(req.query.locationIds),
         companyId: typeof req.query.companyId === "string" ? req.query.companyId : undefined,
         taxClass: typeof req.query.taxClass === "string" ? req.query.taxClass : undefined,
         certStatus: typeof req.query.certStatus === "string" ? req.query.certStatus : undefined,
