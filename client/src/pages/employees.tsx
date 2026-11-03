@@ -2027,6 +2027,69 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     },
   });
 
+  // F3: staged edits for the assignment block (Departments / Locations / Roles).
+  // Selecting just updates this local draft — nothing hits the server until the
+  // "Save assignments" button. (Company change stays immediate: it's rare and
+  // rescopes dept/loc.)
+  const [assignDraft, setAssignDraft] = useState<{
+    departmentIds: string[];
+    locationIds: string[];
+    roleIds: string[];
+  }>({ departmentIds: [], locationIds: [], roleIds: [] });
+  const [assignEditing, setAssignEditing] = useState(false);
+  useEffect(() => {
+    if (user && !assignEditing) {
+      setAssignDraft({
+        departmentIds: userDepartmentIds(user),
+        locationIds: userLocationIds(user),
+        roleIds: assignedRoles.map((r) => r.id),
+      });
+    }
+  }, [user, assignedRoles, assignEditing]);
+  const sortedJson = (a: string[]) => JSON.stringify([...a].sort());
+  const assignDirty = useMemo(() => {
+    if (!user) return false;
+    return (
+      sortedJson(userDepartmentIds(user)) !== sortedJson(assignDraft.departmentIds) ||
+      sortedJson(userLocationIds(user)) !== sortedJson(assignDraft.locationIds) ||
+      sortedJson(assignedRoles.map((r) => r.id)) !== sortedJson(assignDraft.roleIds)
+    );
+  }, [user, assignedRoles, assignDraft]);
+  const patchAssignDraft = (p: Partial<typeof assignDraft>) => {
+    setAssignEditing(true);
+    setAssignDraft((d) => ({ ...d, ...p }));
+  };
+  const resetAssignDraft = () => {
+    if (!user) return;
+    setAssignDraft({
+      departmentIds: userDepartmentIds(user),
+      locationIds: userLocationIds(user),
+      roleIds: assignedRoles.map((r) => r.id),
+    });
+    setAssignEditing(false);
+  };
+  const saveAssignmentsMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PATCH", `/api/users/${userId}`, {
+        departmentIds: assignDraft.departmentIds,
+        locationIds: assignDraft.locationIds,
+      });
+      if (sortedJson(assignedRoles.map((r) => r.id)) !== sortedJson(assignDraft.roleIds)) {
+        await apiRequest("PUT", `/api/users/${userId}/roles`, { roleIds: assignDraft.roleIds });
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/permissions"] });
+      setAssignEditing(false);
+      toast({ title: "Assignments saved" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
   const updateMutation = useMutation({
     mutationFn: async (data: {
       companyId?: string | null;
@@ -2135,6 +2198,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     hireDate: "",
     terminationDate: "",
     overtimeEligible: false,
+    taxClassification: "W-2",
+    clockInRequired: true,
   });
 
   useEffect(() => {
@@ -2144,6 +2209,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
         terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
         overtimeEligible: !!profile.overtimeEligible,
+        taxClassification: profile.taxClassification || "W-2",
+        clockInRequired: profile.clockInRequired ?? true,
       });
     }
   }, [profile, editEmployment]);
@@ -2154,6 +2221,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       hireDate: string | null;
       terminationDate: string | null;
       overtimeEligible: boolean;
+      taxClassification: string;
+      clockInRequired: boolean;
     }) => {
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
     },
@@ -2436,13 +2505,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                           .map(([value, label]) => ({ value, label }))
                           .sort((a, b) => a.label.localeCompare(b.label));
                       })()}
-                      selected={assignedRoles.map((r) => r.id)}
-                      onChange={(ids) => setRolesMutation.mutate(ids)}
+                      selected={assignDraft.roleIds}
+                      onChange={(ids) => patchAssignDraft({ roleIds: ids })}
                       placeholder="No roles assigned"
                       allLabel="No roles"
                       searchPlaceholder="Search roles..."
                       emptyMessage="No roles available."
-                      disabled={setRolesMutation.isPending}
+                      disabled={saveAssignmentsMutation.isPending}
                       onAddNew={
                         hasPermission("roles.manage")
                           ? () => setProfileCreateRoleOpen(true)
@@ -2532,17 +2601,17 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </div>
                 <MultiSelect
                   options={scopedDepartments.map((d) => ({ label: d.name, value: d.id }))}
-                  selected={user ? userDepartmentIds(user) : []}
-                  onChange={(values) => updateMutation.mutate({ departmentIds: values })}
+                  selected={assignDraft.departmentIds}
+                  onChange={(values) => patchAssignDraft({ departmentIds: values })}
                   placeholder="Select departments"
                   allLabel="No Department"
                   emptyMessage="No departments available."
                   disabled={!user?.companyId}
                   data-testid="select-profile-department"
                 />
-                {user && userDepartmentIds(user).length > 0 && (
+                {assignDraft.departmentIds.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
-                    {userDepartmentIds(user).map((id) => {
+                    {assignDraft.departmentIds.map((id) => {
                       const d = scopedDepartments.find((x) => x.id === id) || departments?.find((x) => x.id === id);
                       return (
                         <Badge key={id} variant="secondary" data-testid={`badge-profile-department-${id}`}>
@@ -2580,17 +2649,17 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </div>
                 <MultiSelect
                   options={scopedLocations.map((l) => ({ label: l.name, value: l.id }))}
-                  selected={user ? userLocationIds(user) : []}
-                  onChange={(values) => updateMutation.mutate({ locationIds: values })}
+                  selected={assignDraft.locationIds}
+                  onChange={(values) => patchAssignDraft({ locationIds: values })}
                   placeholder="Select locations"
                   allLabel="No Location"
                   emptyMessage="No locations available."
                   disabled={!user?.companyId}
                   data-testid="select-profile-location"
                 />
-                {user && userLocationIds(user).length > 0 && (
+                {assignDraft.locationIds.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
-                    {userLocationIds(user).map((id) => {
+                    {assignDraft.locationIds.map((id) => {
                       const l = scopedLocations.find((x) => x.id === id) || locations?.find((x) => x.id === id);
                       return (
                         <Badge key={id} variant="secondary" data-testid={`badge-profile-location-${id}`}>
@@ -2601,6 +2670,28 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                   </div>
                 )}
               </div>
+              {assignDirty && (
+                <div className="flex items-center justify-end gap-2 pt-3 mt-2 border-t">
+                  <span className="text-xs text-muted-foreground mr-auto">Unsaved assignment changes</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={resetAssignDraft}
+                    disabled={saveAssignmentsMutation.isPending}
+                    data-testid="button-reset-assignments"
+                  >
+                    Reset
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => saveAssignmentsMutation.mutate()}
+                    disabled={saveAssignmentsMutation.isPending}
+                    data-testid="button-save-assignments"
+                  >
+                    {saveAssignmentsMutation.isPending ? "Saving…" : "Save assignments"}
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
           <CreateCompanyDialog
@@ -2616,9 +2707,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             companyId={user?.companyId || ""}
             companyName={div?.name}
             onCreated={(dept) => {
-              const existing = user ? userDepartmentIds(user) : [];
-              const next = existing.includes(dept.id) ? existing : [...existing, dept.id];
-              updateMutation.mutate({ departmentIds: next });
+              const next = assignDraft.departmentIds.includes(dept.id) ? assignDraft.departmentIds : [...assignDraft.departmentIds, dept.id];
+              patchAssignDraft({ departmentIds: next });
             }}
           />
           <CreateLocationDialog
@@ -2627,9 +2717,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             companyId={user?.companyId || ""}
             companyName={div?.name}
             onCreated={(location) => {
-              const existing = user ? userLocationIds(user) : [];
-              const next = existing.includes(location.id) ? existing : [...existing, location.id];
-              updateMutation.mutate({ locationIds: next });
+              const next = assignDraft.locationIds.includes(location.id) ? assignDraft.locationIds : [...assignDraft.locationIds, location.id];
+              patchAssignDraft({ locationIds: next });
             }}
           />
           <CreateRoleDialog
@@ -2667,6 +2756,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                           hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
                           terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
                           overtimeEligible: !!profile.overtimeEligible,
+                          taxClassification: profile.taxClassification || "W-2",
+                          clockInRequired: profile.clockInRequired ?? true,
                         });
                       }
                     }}
@@ -2682,6 +2773,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                         hireDate: employmentForm.hireDate ? employmentForm.hireDate : null,
                         terminationDate: employmentForm.terminationDate ? employmentForm.terminationDate : null,
                         overtimeEligible: employmentForm.overtimeEligible,
+                        taxClassification: employmentForm.taxClassification,
+                        clockInRequired: employmentForm.clockInRequired,
                       })
                     }
                     disabled={employmentMutation.isPending || !profile}
@@ -2738,32 +2831,35 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Tax Classification</Label>
-                <Select
-                  value={profile?.taxClassification || "W-2"}
-                  onValueChange={(v) => taxClassMutation.mutate(v)}
-                  disabled={profileLoading || !profile}
-                >
-                  <SelectTrigger data-testid="select-profile-tax-classification">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="W-2">W-2</SelectItem>
-                    <SelectItem value="1099">1099</SelectItem>
-                    <SelectItem value="Volunteer">Volunteer</SelectItem>
-                  </SelectContent>
-                </Select>
+                {editEmployment ? (
+                  <Select
+                    value={employmentForm.taxClassification}
+                    onValueChange={(v) => setEmploymentForm((f) => ({ ...f, taxClassification: v }))}
+                  >
+                    <SelectTrigger data-testid="select-profile-tax-classification">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="W-2">W-2</SelectItem>
+                      <SelectItem value="1099">1099</SelectItem>
+                      <SelectItem value="Volunteer">Volunteer</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-tax-classification">{profile?.taxClassification || "W-2"}</p>
+                )}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Required to clock in</Label>
                 <div className="flex items-center gap-2 pt-1">
                   <Switch
-                    checked={profile?.clockInRequired ?? true}
-                    onCheckedChange={(v) => clockInRequiredMutation.mutate(v)}
-                    disabled={profileLoading || !profile}
+                    checked={editEmployment ? employmentForm.clockInRequired : (profile?.clockInRequired ?? true)}
+                    onCheckedChange={(v) => setEmploymentForm((f) => ({ ...f, clockInRequired: v }))}
+                    disabled={!editEmployment || profileLoading || !profile}
                     data-testid="switch-profile-clock-in-required"
                   />
                   <span className="text-sm text-muted-foreground">
-                    {(profile?.clockInRequired ?? true)
+                    {(editEmployment ? employmentForm.clockInRequired : (profile?.clockInRequired ?? true))
                       ? "Missing-punch & no-show alerts on"
                       : "Alerts suppressed (not required)"}
                   </span>
