@@ -4338,16 +4338,27 @@ export async function registerRoutes(
       try {
         const actor = req.authUser as User;
         const punchId = String(req.params.id);
-        const { clockIn, clockOut, reason } = req.body as {
+        const { clockIn, clockOut, reason, workDate } = req.body as {
           clockIn?: string | null;
           clockOut?: string | null;
           reason?: string;
+          workDate?: string;
         };
+
+        if (workDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(workDate))) {
+          return res.status(400).json({ message: "workDate must be YYYY-MM-DD" });
+        }
 
         const existing = await storage.getPunchLog(punchId);
         if (!existing) {
           return res.status(404).json({ message: "Punch not found" });
         }
+
+        // The day a punch is filed under. Live punches stamp this in UTC, which
+        // rolls an evening Eastern shift onto the next calendar day; letting a
+        // manager set it explicitly is the supported way to move a mis-dated
+        // punch to the correct local day without touching the clock times.
+        const newWorkDate = workDate !== undefined ? String(workDate) : existing.workDate;
 
         const scope = await resolvePunchScope(req);
         if (!scope || !scope.users.some((u) => u.id === existing.employeeId)) {
@@ -4378,8 +4389,17 @@ export async function registerRoutes(
 
         // Block edits to a punch already baked into a finalized (exported/locked)
         // payroll batch — changing its hours would silently desync payroll. The
-        // manager must reopen the affected batch first.
-        const finalizedExports = await findFinalizedPayrollExportsForPunch(punchId);
+        // manager must reopen the affected batch first. When moving the punch to
+        // a different day, the DESTINATION day must not be in a finalized period
+        // either (so you can't move hours into a locked batch).
+        const finalizedById = new Map<string, PayrollExport>();
+        for (const e of await findFinalizedPayrollExportsForPunch(punchId)) finalizedById.set(e.id, e);
+        if (newWorkDate !== existing.workDate) {
+          for (const e of await findFinalizedPayrollExportsForEmployeeDate(existing.employeeId, newWorkDate)) {
+            finalizedById.set(e.id, e);
+          }
+        }
+        const finalizedExports = [...finalizedById.values()];
         if (finalizedExports.length > 0) {
           return res.status(409).json({
             message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before editing the punch.`,
@@ -4421,6 +4441,7 @@ export async function registerRoutes(
           punchId,
           candidateDates: [
             existing.workDate,
+            newWorkDate,
             newClockIn ? newClockIn.toISOString().split("T")[0] : undefined,
           ],
           allowFuturePunch: allowFuturePunchFromRules(attRules),
@@ -4438,6 +4459,7 @@ export async function registerRoutes(
         const update: Partial<InsertPunchLog> = {
           clockIn: newClockIn,
           roundedClockIn: roundTime(newClockIn, roundingRule, roundingInterval),
+          workDate: newWorkDate,
         };
 
         if (newClockOut) {
@@ -4467,6 +4489,7 @@ export async function registerRoutes(
           clockOut: existing.clockOut,
           hoursWorked: existing.hoursWorked,
           status: existing.status,
+          workDate: existing.workDate,
         };
         const updated = await storage.updatePunchLog(punchId, update);
 
@@ -4481,6 +4504,7 @@ export async function registerRoutes(
             clockOut: updated?.clockOut,
             hoursWorked: updated?.hoursWorked,
             status: updated?.status,
+            workDate: updated?.workDate,
           },
           context: { reason: reason || null, direct: true, employeeId: existing.employeeId },
           ...getAuditContext(req),
@@ -4517,6 +4541,179 @@ export async function registerRoutes(
       } catch (error) {
         console.error("Error editing punch:", error);
         handleRouteError(res, error, "Failed to edit punch");
+      }
+    },
+  );
+
+  // Directly CREATE a punch (manager/admin) — e.g. adding a forgotten/missing
+  // punch from the Review Time Sheet editor. Mirrors the PATCH path: integrity
+  // validation, finalized-payroll guard (by date), rounding + hours via the
+  // shared clock-out enforcement, audit + ledger. No employee notification.
+  app.post(
+    "/api/attendance/punches",
+    requireAuth,
+    requirePermission("attendance.edit"),
+    async (req: any, res) => {
+      try {
+        const actor = req.authUser as User;
+        const { employeeId, clockIn, clockOut, reason } = req.body as {
+          employeeId?: string;
+          clockIn?: string | null;
+          clockOut?: string | null;
+          reason?: string;
+        };
+
+        if (!employeeId) {
+          return res.status(400).json({ message: "employeeId is required" });
+        }
+        if (!clockIn) {
+          return res.status(400).json({ message: "A clock-in time is required." });
+        }
+
+        const scope = await resolvePunchScope(req);
+        if (!scope || !scope.users.some((u) => u.id === employeeId)) {
+          return res.status(403).json({ message: "Not authorized to add a punch for this employee" });
+        }
+
+        const employeeUser = await storage.getUser(employeeId);
+        if (!employeeUser) {
+          return res.status(404).json({ message: "Employee not found" });
+        }
+
+        const newClockIn = new Date(clockIn);
+        if (isNaN(newClockIn.getTime())) {
+          return res.status(400).json({ message: "Invalid clock-in time." });
+        }
+        const newClockOut = clockOut ? new Date(clockOut) : null;
+        if (newClockOut && isNaN(newClockOut.getTime())) {
+          return res.status(400).json({ message: "Invalid clock-out time." });
+        }
+
+        // workDate is the UTC calendar date of the clock-in, matching how live
+        // clock-ins bucket the day (storage.clockIn).
+        const workDate = newClockIn.toISOString().split("T")[0];
+
+        // Block adding a punch inside an already-finalized payroll period.
+        const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
+        if (finalizedExports.length > 0) {
+          return res.status(409).json({
+            message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before adding a punch.`,
+            code: "PAYROLL_FINALIZED",
+            payrollExports: finalizedExports.map((e) => ({
+              id: e.id,
+              startDate: e.startDate,
+              endDate: e.endDate,
+              status: e.status,
+            })),
+          });
+        }
+
+        const attendancePolicy = await getEffectivePolicy(
+          employeeUser.companyId,
+          employeeUser.id,
+          "attendance",
+          employeeUser,
+        );
+        const payrollPolicy = await getEffectivePolicy(
+          employeeUser.companyId,
+          employeeUser.id,
+          "payroll",
+          employeeUser,
+        );
+        const attRules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+        const payrollRules = payrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+        const roundingRule = attRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+        const roundingInterval =
+          attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+
+        // Shared punch-integrity validation: reject impossible/unparseable times,
+        // zero/negative duration, future-dating, a duplicate open shift, or an
+        // overlap with another of this employee's punches.
+        const integrity = await validateProposedPunch({
+          employeeId,
+          clockIn: newClockIn,
+          clockOut: newClockOut,
+          candidateDates: [workDate],
+          allowFuturePunch: allowFuturePunchFromRules(attRules),
+          timezone: await resolveEmployeeTimezone(employeeId),
+        });
+        if (!integrity.ok) {
+          return res.status(400).json({ message: integrity.reason });
+        }
+
+        const roundedClockIn = roundTime(newClockIn, roundingRule, roundingInterval);
+        const values: InsertPunchLog = {
+          employeeId,
+          workDate,
+          clockIn: newClockIn,
+          roundedClockIn,
+          source: "manager",
+          approved: true,
+          status: "in-progress",
+        };
+
+        if (newClockOut) {
+          const enforcement = enforceClockOut(
+            new Date(roundedClockIn),
+            newClockOut,
+            0,
+            attRules,
+            payrollRules,
+            employeeUser,
+            attendancePolicy?.policyName,
+          );
+          values.clockOut = newClockOut;
+          values.roundedClockOut = enforcement.roundedTime;
+          values.hoursWorked = enforcement.hoursWorked;
+          values.status = enforcement.status;
+        }
+
+        const created = await storage.createPunchLog(values);
+
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "punch_log",
+          targetId: created.id,
+          action: "punch_log.created",
+          oldValue: null,
+          newValue: {
+            clockIn: created.clockIn,
+            clockOut: created.clockOut,
+            hoursWorked: created.hoursWorked,
+            status: created.status,
+            workDate: created.workDate,
+          },
+          context: { reason: reason || null, direct: true, employeeId },
+          ...getAuditContext(req),
+        });
+
+        await recomputeLedger(employeeId, [workDate]);
+
+        await writeLedgerEntry({
+          category: "attendance",
+          eventType: "punch_create",
+          employeeId,
+          actorUserId: actor.id,
+          entityType: "punch_log",
+          entityId: created.id,
+          workDate,
+          hoursDelta: hoursDelta(null, created.hoursWorked),
+          beforeValue: null,
+          afterValue: {
+            clockIn: created.clockIn,
+            clockOut: created.clockOut,
+            hoursWorked: created.hoursWorked,
+            status: created.status,
+          },
+          context: { reason: reason || null, direct: true },
+          source: "manager",
+          ...getLedgerContext(req),
+        });
+
+        res.status(201).json(punchLogToApiResponse(created));
+      } catch (error) {
+        console.error("Error creating punch:", error);
+        handleRouteError(res, error, "Failed to create punch");
       }
     },
   );
