@@ -15,6 +15,7 @@ import ManagerDashboardPage from "@/pages/manager-dashboard";
 import ApprovalQueuePage from "@/pages/approval-queue";
 import AdminDashboardPage from "@/pages/admin-dashboard";
 import ReportsPage from "@/pages/reports";
+import TimeSheetReviewPage from "@/pages/timesheet-review";
 import EmployeesPage from "@/pages/employees";
 import LocationsDepartmentsPage from "@/pages/locations-departments";
 import CompaniesPage from "@/pages/companies";
@@ -110,6 +111,11 @@ function AuthenticatedRouter() {
         <Route path="/reports">{() => (
           <ProtectedRoute roles={["manager", "admin"]}>
             <ReportsPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/timesheet-review">{() => (
+          <ProtectedRoute roles={["manager", "admin"]}>
+            <TimeSheetReviewPage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/alerts">{() => (

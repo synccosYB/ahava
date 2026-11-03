@@ -25,6 +25,7 @@ import {
   Activity,
   Settings,
   RefreshCw,
+  CalendarRange,
   ChevronRight,
   PanelLeftClose,
   PanelLeftOpen,
@@ -93,6 +94,7 @@ const adminItems: NavItem[] = [
   { title: "Companies", href: "/companies", icon: Building2 },
   { title: "Employees", href: "/employees", icon: Users },
   { title: "Locations", href: "/locations", icon: MapPin },
+  { title: "Time Sheet Review", href: "/timesheet-review", icon: CalendarRange },
   { title: "Reports", href: "/reports", icon: BarChart3 },
 ];
 

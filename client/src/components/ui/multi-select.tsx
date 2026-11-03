@@ -141,7 +141,14 @@ export function MultiSelect({
             // this portaled list, so the mouse wheel can't scroll it (dragging
             // the scrollbar still works). Apply the delta manually so the wheel
             // scrolls the list; stopPropagation keeps it from bubbling out.
-            e.currentTarget.scrollTop += e.deltaY;
+            //
+            // Normalize by deltaMode: a real mouse wheel (esp. Safari/macOS)
+            // reports deltaMode=1 (lines) with tiny deltaY (~1–3), which would
+            // move only a couple of pixels per notch and feel like it isn't
+            // scrolling; deltaMode=2 is pages. Convert both to pixels.
+            const unit =
+              e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? e.currentTarget.clientHeight : 1;
+            e.currentTarget.scrollTop += e.deltaY * unit;
             e.stopPropagation();
           }}
         >
