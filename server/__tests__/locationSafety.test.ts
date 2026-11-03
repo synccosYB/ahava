@@ -9,19 +9,22 @@ import { db, pool } from "../db";
 import { storage } from "../storage";
 import { registerRoutes } from "../routes";
 import { generateToken } from "../middleware/auth";
-import { users, locations, locationCompanies, employeeLocations, punchLogs } from "@shared/schema";
+import { users, companies, locations, locationCompanies, employeeLocations, punchLogs } from "@shared/schema";
 
 test("location removal preserves linked records and supports reversible deactivation", async (t) => {
   const admin = await storage.getUser("admin-dev-001");
-  assert.ok(admin?.companyId, "seeded admin and company are required");
-  const companyId = admin.companyId;
+  assert.ok(admin, "seeded admin is required");
+  const [company] = await db.insert(companies).values({
+    name: "Location safety test " + randomUUID(),
+  }).returning();
+  const companyId = company.id;
   const app = express();
   app.use(express.json());
   const server = http.createServer(app);
   await registerRoutes(server, app);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const baseUrl = "http://127.0.0.1:" + (server.address() as AddressInfo).port;
-  const token = generateToken({ id: admin.id, email: admin.email, role: admin.role, companyId });
+  const token = generateToken({ id: admin.id, email: admin.email, role: admin.role, companyId: admin.companyId });
   const [employee] = await db.insert(users).values({
     email: "location-safety-" + randomUUID() + "@example.invalid",
     firstName: "Location",
@@ -39,6 +42,7 @@ test("location removal preserves linked records and supports reversible deactiva
       await db.delete(locationCompanies).where(eq(locationCompanies.locationId, id));
       await db.delete(locations).where(eq(locations.id, id));
     }
+    await db.delete(companies).where(eq(companies.id, companyId));
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await pool.end();
   });
