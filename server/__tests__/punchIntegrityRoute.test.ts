@@ -348,3 +348,83 @@ test("clock-out with no overlap does NOT raise an exception", async (t) => {
     "no punch_overlap exception should be raised for a clean clock-out",
   );
 });
+
+// --- Manager "add a missing punch" via POST /api/attendance/punches ---------
+
+async function createPunch(
+  fx: Fixture,
+  body: { employeeId?: string; clockIn?: string | null; clockOut?: string | null; reason?: string },
+) {
+  const res = await fetch(`${fx.baseUrl}/api/attendance/punches`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fx.reviewerToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const resBody = await res.json().catch(() => ({}));
+  return { status: res.status, body: resBody };
+}
+
+test("add punch accepted: creates the row and computes hours", async (t) => {
+  const fx = await setupFixture("addvalid");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-01-09";
+  const { status, body } = await createPunch(fx, {
+    employeeId: fx.employeeId,
+    clockIn: `${workDate}T09:00:00Z`,
+    clockOut: `${workDate}T17:00:00Z`,
+    reason: "forgot to clock in",
+  });
+  assert.equal(status, 201, `expected 201, got ${status}: ${JSON.stringify(body)}`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "exactly one punch created");
+  assert.equal(Number(rows[0].hoursWorked), 8, "hours computed by the shared enforcement");
+  assert.ok(rows[0].clockOut, "clock-out persisted");
+  assert.equal(rows[0].workDate, workDate);
+});
+
+test("add punch rejected: missing clock-in (400)", async (t) => {
+  const fx = await setupFixture("addnocin");
+  t.after(fx.cleanup);
+
+  const { status } = await createPunch(fx, { employeeId: fx.employeeId, clockOut: "2026-01-09T17:00:00Z" });
+  assert.equal(status, 400);
+});
+
+test("add punch rejected: overlaps an existing punch (400)", async (t) => {
+  const fx = await setupFixture("addoverlap");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-01-10";
+  await makePunch(fx.employeeId, workDate, `${workDate}T08:00:00Z`, `${workDate}T12:00:00Z`, 4);
+
+  const { status, body } = await createPunch(fx, {
+    employeeId: fx.employeeId,
+    clockIn: `${workDate}T11:00:00Z`,
+    clockOut: `${workDate}T15:00:00Z`,
+  });
+  assert.equal(status, 400);
+  assert.match(String(body.message), /overlap/i);
+
+  // No extra punch persisted.
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "overlapping add did not create a row");
+});
+
+test("add punch (open, no clock-out) is created in-progress", async (t) => {
+  const fx = await setupFixture("addopen");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-01-11";
+  const { status } = await createPunch(fx, {
+    employeeId: fx.employeeId,
+    clockIn: `${workDate}T09:00:00Z`,
+  });
+  assert.equal(status, 201);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].clockOut, null, "left open");
+  assert.equal(rows[0].status, "in-progress");
+});
