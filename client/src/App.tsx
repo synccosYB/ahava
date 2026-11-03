@@ -16,6 +16,7 @@ import ApprovalQueuePage from "@/pages/approval-queue";
 import AdminDashboardPage from "@/pages/admin-dashboard";
 import ReportsPage from "@/pages/reports";
 import TimeSheetReviewPage from "@/pages/timesheet-review";
+import PunchChangesPage from "@/pages/punch-changes";
 import EmployeesPage from "@/pages/employees";
 import LocationsDepartmentsPage from "@/pages/locations-departments";
 import CompaniesPage from "@/pages/companies";
@@ -116,6 +117,11 @@ function AuthenticatedRouter() {
         <Route path="/timesheet-review">{() => (
           <ProtectedRoute roles={["manager", "admin"]} anyPermission={["attendance.view_all"]}>
             <TimeSheetReviewPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/punch-changes">{() => (
+          <ProtectedRoute roles={["admin"]} anyPermission={["audit.view"]}>
+            <PunchChangesPage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/alerts">{() => (
