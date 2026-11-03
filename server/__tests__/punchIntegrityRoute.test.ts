@@ -126,7 +126,7 @@ async function makePunch(
 async function editPunch(
   fx: Fixture,
   punchId: string,
-  body: { clockIn?: string | null; clockOut?: string | null; reason?: string },
+  body: { clockIn?: string | null; clockOut?: string | null; workDate?: string; reason?: string },
 ) {
   const res = await fetch(`${fx.baseUrl}/api/attendance/punches/${punchId}`, {
     method: "PATCH",
@@ -427,4 +427,31 @@ test("add punch (open, no clock-out) is created in-progress", async (t) => {
   assert.equal(rows.length, 1);
   assert.equal(rows[0].clockOut, null, "left open");
   assert.equal(rows[0].status, "in-progress");
+});
+
+test("edit can move a punch to a different work date (fix a UTC-rolled day)", async (t) => {
+  const fx = await setupFixture("moveday");
+  t.after(fx.cleanup);
+
+  // Simulate the real bug: a 11/2 evening Eastern shift filed under 11/3 (UTC).
+  // clockIn is a real instant (01:00Z on the 3rd); workDate wrongly shows the 3rd.
+  const punchId = await makePunch(fx.employeeId, "2026-11-03", "2026-11-03T01:00:00Z", "2026-11-03T05:00:00Z", 4);
+
+  const { status } = await editPunch(fx, punchId, { workDate: "2026-11-02", reason: "evening shift belongs to 11/2" });
+  assert.equal(status, 200);
+
+  const after = await storage.getPunchLog(punchId);
+  assert.equal(after?.workDate, "2026-11-02", "work date moved to the correct local day");
+  // Times and hours are untouched by a pure day move.
+  assert.equal(Number(after?.hoursWorked), 4);
+  assert.ok(after?.clockIn, "clock-in preserved");
+});
+
+test("edit rejects an invalid work date", async (t) => {
+  const fx = await setupFixture("movebadday");
+  t.after(fx.cleanup);
+
+  const punchId = await makePunch(fx.employeeId, "2026-11-03", "2026-11-03T01:00:00Z", "2026-11-03T05:00:00Z", 4);
+  const { status } = await editPunch(fx, punchId, { workDate: "11/02/2026" } as any);
+  assert.equal(status, 400);
 });

@@ -4338,16 +4338,27 @@ export async function registerRoutes(
       try {
         const actor = req.authUser as User;
         const punchId = String(req.params.id);
-        const { clockIn, clockOut, reason } = req.body as {
+        const { clockIn, clockOut, reason, workDate } = req.body as {
           clockIn?: string | null;
           clockOut?: string | null;
           reason?: string;
+          workDate?: string;
         };
+
+        if (workDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(workDate))) {
+          return res.status(400).json({ message: "workDate must be YYYY-MM-DD" });
+        }
 
         const existing = await storage.getPunchLog(punchId);
         if (!existing) {
           return res.status(404).json({ message: "Punch not found" });
         }
+
+        // The day a punch is filed under. Live punches stamp this in UTC, which
+        // rolls an evening Eastern shift onto the next calendar day; letting a
+        // manager set it explicitly is the supported way to move a mis-dated
+        // punch to the correct local day without touching the clock times.
+        const newWorkDate = workDate !== undefined ? String(workDate) : existing.workDate;
 
         const scope = await resolvePunchScope(req);
         if (!scope || !scope.users.some((u) => u.id === existing.employeeId)) {
@@ -4378,8 +4389,17 @@ export async function registerRoutes(
 
         // Block edits to a punch already baked into a finalized (exported/locked)
         // payroll batch — changing its hours would silently desync payroll. The
-        // manager must reopen the affected batch first.
-        const finalizedExports = await findFinalizedPayrollExportsForPunch(punchId);
+        // manager must reopen the affected batch first. When moving the punch to
+        // a different day, the DESTINATION day must not be in a finalized period
+        // either (so you can't move hours into a locked batch).
+        const finalizedById = new Map<string, PayrollExport>();
+        for (const e of await findFinalizedPayrollExportsForPunch(punchId)) finalizedById.set(e.id, e);
+        if (newWorkDate !== existing.workDate) {
+          for (const e of await findFinalizedPayrollExportsForEmployeeDate(existing.employeeId, newWorkDate)) {
+            finalizedById.set(e.id, e);
+          }
+        }
+        const finalizedExports = [...finalizedById.values()];
         if (finalizedExports.length > 0) {
           return res.status(409).json({
             message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before editing the punch.`,
@@ -4421,6 +4441,7 @@ export async function registerRoutes(
           punchId,
           candidateDates: [
             existing.workDate,
+            newWorkDate,
             newClockIn ? newClockIn.toISOString().split("T")[0] : undefined,
           ],
           allowFuturePunch: allowFuturePunchFromRules(attRules),
@@ -4438,6 +4459,7 @@ export async function registerRoutes(
         const update: Partial<InsertPunchLog> = {
           clockIn: newClockIn,
           roundedClockIn: roundTime(newClockIn, roundingRule, roundingInterval),
+          workDate: newWorkDate,
         };
 
         if (newClockOut) {
@@ -4467,6 +4489,7 @@ export async function registerRoutes(
           clockOut: existing.clockOut,
           hoursWorked: existing.hoursWorked,
           status: existing.status,
+          workDate: existing.workDate,
         };
         const updated = await storage.updatePunchLog(punchId, update);
 
@@ -4481,6 +4504,7 @@ export async function registerRoutes(
             clockOut: updated?.clockOut,
             hoursWorked: updated?.hoursWorked,
             status: updated?.status,
+            workDate: updated?.workDate,
           },
           context: { reason: reason || null, direct: true, employeeId: existing.employeeId },
           ...getAuditContext(req),

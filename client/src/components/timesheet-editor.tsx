@@ -84,6 +84,7 @@ export function TimesheetEditor({
   const [editPunch, setEditPunch] = useState<Punch | null>(null);
   const [editClockIn, setEditClockIn] = useState("");
   const [editClockOut, setEditClockOut] = useState("");
+  const [editWorkDate, setEditWorkDate] = useState("");
   const [editReason, setEditReason] = useState("");
 
   const [addOpen, setAddOpen] = useState(false);
@@ -120,10 +121,11 @@ export function TimesheetEditor({
   };
 
   const editMutation = useMutation({
-    mutationFn: async (vars: { id: string; clockIn: string | null; clockOut: string | null; reason: string }) => {
+    mutationFn: async (vars: { id: string; clockIn: string | null; clockOut: string | null; workDate: string; reason: string }) => {
       const res = await apiRequest("PATCH", `/api/attendance/punches/${vars.id}`, {
         clockIn: vars.clockIn,
         clockOut: vars.clockOut,
+        workDate: vars.workDate,
         reason: vars.reason,
       });
       return res.json();
@@ -178,6 +180,7 @@ export function TimesheetEditor({
     setEditPunch(p);
     setEditClockIn(toLocalInput(p.clockIn));
     setEditClockOut(toLocalInput(p.clockOut));
+    setEditWorkDate(p.workDate);
     setEditReason("");
   };
 
@@ -196,6 +199,7 @@ export function TimesheetEditor({
       id: editPunch.id,
       clockIn: fromLocalInput(editClockIn),
       clockOut: fromLocalInput(editClockOut),
+      workDate: editWorkDate,
       reason: editReason.trim(),
     });
   };
@@ -299,6 +303,11 @@ export function TimesheetEditor({
             <DialogDescription>{editPunch ? formatDate(editPunch.workDate) : ""}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            <div className="space-y-1">
+              <Label htmlFor="editor-edit-workdate">Work date</Label>
+              <Input id="editor-edit-workdate" type="date" value={editWorkDate} onChange={(e) => setEditWorkDate(e.target.value)} data-testid="input-editor-edit-workdate" />
+              <p className="text-xs text-muted-foreground">The day this shift is counted on. Change it to move a shift that landed on the wrong day (e.g. a late-evening shift that rolled to the next day).</p>
+            </div>
             <div className="space-y-1">
               <Label htmlFor="editor-edit-in">Clock In</Label>
               <Input id="editor-edit-in" type="datetime-local" value={editClockIn} onChange={(e) => setEditClockIn(e.target.value)} data-testid="input-editor-edit-in" />
