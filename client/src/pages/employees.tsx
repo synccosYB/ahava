@@ -33,6 +33,7 @@ import { formatCurrency, formatHoursMinutes, formatDate } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
 import { userDepartmentIds, userLocationIds, TERMINATION_REASONS } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
+import { ReviewTimeSheetTab } from "@/components/review-timesheet-tab";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
   INLINE_ADD_NEW_VALUE,
@@ -92,9 +93,14 @@ export default function EmployeesPage() {
   const [appliedDeptIds, setAppliedDeptIds] = useState<string[]>(initialDeptIds);
   const [draftLocIds, setDraftLocIds] = useState<string[]>([]);
   const [appliedLocIds, setAppliedLocIds] = useState<string[]>([]);
-  const [divisionFilter, setDivisionFilter] = useState("all");
-  const [taxClassFilter, setTaxClassFilter] = useState("all");
-  const [certStatusFilter, setCertStatusFilter] = useState("all");
+  // Company / Tax Classification / Cert Status are also staged multi-selects,
+  // committed by the same Apply button (OR within each, AND across filters).
+  const [draftCompanyIds, setDraftCompanyIds] = useState<string[]>([]);
+  const [appliedCompanyIds, setAppliedCompanyIds] = useState<string[]>([]);
+  const [draftTaxClasses, setDraftTaxClasses] = useState<string[]>([]);
+  const [appliedTaxClasses, setAppliedTaxClasses] = useState<string[]>([]);
+  const [draftCertStatuses, setDraftCertStatuses] = useState<string[]>([]);
+  const [appliedCertStatuses, setAppliedCertStatuses] = useState<string[]>([]);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   // Selection persists across pages, so we track the full user objects (not
   // just ids) — the bulk-delete dialog needs them and selected rows may live
@@ -115,22 +121,25 @@ export default function EmployeesPage() {
   // user isn't stranded on an out-of-range page.
   const appliedDeptKey = appliedDeptIds.join(",");
   const appliedLocKey = appliedLocIds.join(",");
+  const appliedCompanyKey = appliedCompanyIds.join(",");
+  const appliedTaxKey = appliedTaxClasses.join(",");
+  const appliedCertKey = appliedCertStatuses.join(",");
   useEffect(() => {
     setPage(0);
-  }, [debouncedSearch, appliedDeptKey, appliedLocKey, divisionFilter, taxClassFilter, certStatusFilter]);
+  }, [debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey]);
 
   const usersParams = new URLSearchParams();
   if (debouncedSearch) usersParams.set("search", debouncedSearch);
   if (appliedDeptIds.length) usersParams.set("departmentIds", appliedDeptKey);
   if (appliedLocIds.length) usersParams.set("locationIds", appliedLocKey);
-  if (divisionFilter !== "all") usersParams.set("companyId", divisionFilter);
-  if (taxClassFilter !== "all") usersParams.set("taxClass", taxClassFilter);
-  if (certStatusFilter !== "all") usersParams.set("certStatus", certStatusFilter);
+  if (appliedCompanyIds.length) usersParams.set("companyIds", appliedCompanyKey);
+  if (appliedTaxClasses.length) usersParams.set("taxClasses", appliedTaxKey);
+  if (appliedCertStatuses.length) usersParams.set("certStatuses", appliedCertKey);
   usersParams.set("limit", String(pageSize));
   usersParams.set("offset", String(page * pageSize));
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
-    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, divisionFilter, taxClassFilter, certStatusFilter, page, pageSize],
+    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, page, pageSize],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employees");
@@ -206,27 +215,28 @@ export default function EmployeesPage() {
             data-testid="input-search-employees"
           />
         </div>
-        <Select value={divisionFilter} onValueChange={setDivisionFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-company-filter">
-            <SelectValue placeholder="Company" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Companies</SelectItem>
-            {divisions?.map((d) => (
-              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={taxClassFilter} onValueChange={setTaxClassFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-tax-class-filter">
-            <SelectValue placeholder="Tax Classification" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Tax Classifications</SelectItem>
-            <SelectItem value="W-2">W-2</SelectItem>
-            <SelectItem value="1099">1099</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="w-[180px]" data-testid="filter-company-multi">
+          <MultiSelect
+            options={(divisions ?? []).map((d) => ({ label: d.name, value: d.id }))}
+            selected={draftCompanyIds}
+            onChange={setDraftCompanyIds}
+            placeholder="All Companies"
+            allLabel="All Companies"
+            searchPlaceholder="Search companies..."
+          />
+        </div>
+        <div className="w-[180px]" data-testid="filter-tax-class-multi">
+          <MultiSelect
+            options={[
+              { label: "W-2", value: "W-2" },
+              { label: "1099", value: "1099" },
+            ]}
+            selected={draftTaxClasses}
+            onChange={setDraftTaxClasses}
+            placeholder="All Tax Classifications"
+            allLabel="All Tax Classifications"
+          />
+        </div>
         <div className="w-[200px]" data-testid="filter-department-multi">
           <MultiSelect
             options={(departments ?? []).map((d) => ({ label: d.name, value: d.id }))}
@@ -243,32 +253,47 @@ export default function EmployeesPage() {
             placeholder="All Locations"
           />
         </div>
+        <div className="w-[180px]" data-testid="filter-cert-status-multi">
+          <MultiSelect
+            options={[
+              { label: "No Certifications", value: "none" },
+              { label: "Valid", value: "valid" },
+              { label: "Expiring Soon", value: "expiring_soon" },
+              { label: "Expired", value: "expired" },
+            ]}
+            selected={draftCertStatuses}
+            onChange={setDraftCertStatuses}
+            placeholder="All Cert Statuses"
+            allLabel="All Cert Statuses"
+          />
+        </div>
         {(() => {
+          const draftCount =
+            draftDeptIds.length + draftLocIds.length + draftCompanyIds.length +
+            draftTaxClasses.length + draftCertStatuses.length;
           const dirty =
-            draftDeptIds.join(",") !== appliedDeptKey || draftLocIds.join(",") !== appliedLocKey;
+            draftDeptIds.join(",") !== appliedDeptKey ||
+            draftLocIds.join(",") !== appliedLocKey ||
+            draftCompanyIds.join(",") !== appliedCompanyKey ||
+            draftTaxClasses.join(",") !== appliedTaxKey ||
+            draftCertStatuses.join(",") !== appliedCertKey;
           return (
             <Button
               variant={dirty ? "default" : "outline"}
-              onClick={() => { setAppliedDeptIds(draftDeptIds); setAppliedLocIds(draftLocIds); }}
+              onClick={() => {
+                setAppliedDeptIds(draftDeptIds);
+                setAppliedLocIds(draftLocIds);
+                setAppliedCompanyIds(draftCompanyIds);
+                setAppliedTaxClasses(draftTaxClasses);
+                setAppliedCertStatuses(draftCertStatuses);
+              }}
               disabled={!dirty}
               data-testid="button-apply-filters"
             >
-              Apply{(draftDeptIds.length + draftLocIds.length) > 0 ? ` (${draftDeptIds.length + draftLocIds.length})` : ""}
+              Apply{draftCount > 0 ? ` (${draftCount})` : ""}
             </Button>
           );
         })()}
-        <Select value={certStatusFilter} onValueChange={setCertStatusFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-cert-status-filter">
-            <SelectValue placeholder="Cert Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Cert Statuses</SelectItem>
-            <SelectItem value="none">No Certifications</SelectItem>
-            <SelectItem value="valid">Valid</SelectItem>
-            <SelectItem value="expiring_soon">Expiring Soon</SelectItem>
-            <SelectItem value="expired">Expired</SelectItem>
-          </SelectContent>
-        </Select>
         {canImport && (
           <Button
             variant="outline"
@@ -1941,7 +1966,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     const section = initialUrlParams.get("section");
     if (section === "certifications") return "basic";
     if (t === "certifications") return "basic";
-    if (t && ["basic", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "history"].includes(t)) return t;
+    if (t && ["basic", "timesheet", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "history"].includes(t)) return t;
     return "basic";
   })();
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -2024,6 +2049,69 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
+  });
+
+  // F3: staged edits for the assignment block (Departments / Locations / Roles).
+  // Selecting just updates this local draft — nothing hits the server until the
+  // "Save assignments" button. (Company change stays immediate: it's rare and
+  // rescopes dept/loc.)
+  const [assignDraft, setAssignDraft] = useState<{
+    departmentIds: string[];
+    locationIds: string[];
+    roleIds: string[];
+  }>({ departmentIds: [], locationIds: [], roleIds: [] });
+  const [assignEditing, setAssignEditing] = useState(false);
+  useEffect(() => {
+    if (user && !assignEditing) {
+      setAssignDraft({
+        departmentIds: userDepartmentIds(user),
+        locationIds: userLocationIds(user),
+        roleIds: assignedRoles.map((r) => r.id),
+      });
+    }
+  }, [user, assignedRoles, assignEditing]);
+  const sortedJson = (a: string[]) => JSON.stringify([...a].sort());
+  const assignDirty = useMemo(() => {
+    if (!user) return false;
+    return (
+      sortedJson(userDepartmentIds(user)) !== sortedJson(assignDraft.departmentIds) ||
+      sortedJson(userLocationIds(user)) !== sortedJson(assignDraft.locationIds) ||
+      sortedJson(assignedRoles.map((r) => r.id)) !== sortedJson(assignDraft.roleIds)
+    );
+  }, [user, assignedRoles, assignDraft]);
+  const patchAssignDraft = (p: Partial<typeof assignDraft>) => {
+    setAssignEditing(true);
+    setAssignDraft((d) => ({ ...d, ...p }));
+  };
+  const resetAssignDraft = () => {
+    if (!user) return;
+    setAssignDraft({
+      departmentIds: userDepartmentIds(user),
+      locationIds: userLocationIds(user),
+      roleIds: assignedRoles.map((r) => r.id),
+    });
+    setAssignEditing(false);
+  };
+  const saveAssignmentsMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PATCH", `/api/users/${userId}`, {
+        departmentIds: assignDraft.departmentIds,
+        locationIds: assignDraft.locationIds,
+      });
+      if (sortedJson(assignedRoles.map((r) => r.id)) !== sortedJson(assignDraft.roleIds)) {
+        await apiRequest("PUT", `/api/users/${userId}/roles`, { roleIds: assignDraft.roleIds });
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/permissions"] });
+      setAssignEditing(false);
+      toast({ title: "Assignments saved" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
   const updateMutation = useMutation({
@@ -2134,6 +2222,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     hireDate: "",
     terminationDate: "",
     overtimeEligible: false,
+    taxClassification: "W-2",
+    clockInRequired: true,
   });
 
   useEffect(() => {
@@ -2143,6 +2233,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
         terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
         overtimeEligible: !!profile.overtimeEligible,
+        taxClassification: profile.taxClassification || "W-2",
+        clockInRequired: profile.clockInRequired ?? true,
       });
     }
   }, [profile, editEmployment]);
@@ -2153,6 +2245,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       hireDate: string | null;
       terminationDate: string | null;
       overtimeEligible: boolean;
+      taxClassification: string;
+      clockInRequired: boolean;
     }) => {
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
     },
@@ -2291,6 +2385,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-employee-profile">
         <TabsList className="flex-wrap" data-testid="tabs-list-employee">
           <TabsTrigger value="basic" data-testid="tab-basic-info">Basic Info</TabsTrigger>
+          <TabsTrigger value="timesheet" data-testid="tab-review-timesheet">Review Time Sheet</TabsTrigger>
           <TabsTrigger value="employment" data-testid="tab-employment">Employment</TabsTrigger>
           <TabsTrigger value="pay" data-testid="tab-pay-setup">Pay Setup</TabsTrigger>
           <TabsTrigger value="timeclock" data-testid="tab-time-clock">Time Clock Settings</TabsTrigger>
@@ -2304,6 +2399,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           <TabsTrigger value="offboarding" data-testid="tab-offboarding">Offboarding</TabsTrigger>
           <TabsTrigger value="history" data-testid="tab-history">History/Audit</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="timesheet">
+          <ReviewTimeSheetTab employeeId={userId} />
+        </TabsContent>
 
         <TabsContent value="basic">
           <Card data-testid="card-basic-info">
@@ -2430,13 +2529,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                           .map(([value, label]) => ({ value, label }))
                           .sort((a, b) => a.label.localeCompare(b.label));
                       })()}
-                      selected={assignedRoles.map((r) => r.id)}
-                      onChange={(ids) => setRolesMutation.mutate(ids)}
+                      selected={assignDraft.roleIds}
+                      onChange={(ids) => patchAssignDraft({ roleIds: ids })}
                       placeholder="No roles assigned"
                       allLabel="No roles"
                       searchPlaceholder="Search roles..."
                       emptyMessage="No roles available."
-                      disabled={setRolesMutation.isPending}
+                      disabled={saveAssignmentsMutation.isPending}
                       onAddNew={
                         hasPermission("roles.manage")
                           ? () => setProfileCreateRoleOpen(true)
@@ -2526,17 +2625,17 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </div>
                 <MultiSelect
                   options={scopedDepartments.map((d) => ({ label: d.name, value: d.id }))}
-                  selected={user ? userDepartmentIds(user) : []}
-                  onChange={(values) => updateMutation.mutate({ departmentIds: values })}
+                  selected={assignDraft.departmentIds}
+                  onChange={(values) => patchAssignDraft({ departmentIds: values })}
                   placeholder="Select departments"
                   allLabel="No Department"
                   emptyMessage="No departments available."
                   disabled={!user?.companyId}
                   data-testid="select-profile-department"
                 />
-                {user && userDepartmentIds(user).length > 0 && (
+                {assignDraft.departmentIds.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
-                    {userDepartmentIds(user).map((id) => {
+                    {assignDraft.departmentIds.map((id) => {
                       const d = scopedDepartments.find((x) => x.id === id) || departments?.find((x) => x.id === id);
                       return (
                         <Badge key={id} variant="secondary" data-testid={`badge-profile-department-${id}`}>
@@ -2574,17 +2673,17 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </div>
                 <MultiSelect
                   options={scopedLocations.map((l) => ({ label: l.name, value: l.id }))}
-                  selected={user ? userLocationIds(user) : []}
-                  onChange={(values) => updateMutation.mutate({ locationIds: values })}
+                  selected={assignDraft.locationIds}
+                  onChange={(values) => patchAssignDraft({ locationIds: values })}
                   placeholder="Select locations"
                   allLabel="No Location"
                   emptyMessage="No locations available."
                   disabled={!user?.companyId}
                   data-testid="select-profile-location"
                 />
-                {user && userLocationIds(user).length > 0 && (
+                {assignDraft.locationIds.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
-                    {userLocationIds(user).map((id) => {
+                    {assignDraft.locationIds.map((id) => {
                       const l = scopedLocations.find((x) => x.id === id) || locations?.find((x) => x.id === id);
                       return (
                         <Badge key={id} variant="secondary" data-testid={`badge-profile-location-${id}`}>
@@ -2595,6 +2694,28 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                   </div>
                 )}
               </div>
+              {assignDirty && (
+                <div className="flex items-center justify-end gap-2 pt-3 mt-2 border-t">
+                  <span className="text-xs text-muted-foreground mr-auto">Unsaved assignment changes</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={resetAssignDraft}
+                    disabled={saveAssignmentsMutation.isPending}
+                    data-testid="button-reset-assignments"
+                  >
+                    Reset
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => saveAssignmentsMutation.mutate()}
+                    disabled={saveAssignmentsMutation.isPending}
+                    data-testid="button-save-assignments"
+                  >
+                    {saveAssignmentsMutation.isPending ? "Saving…" : "Save assignments"}
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
           <CreateCompanyDialog
@@ -2610,9 +2731,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             companyId={user?.companyId || ""}
             companyName={div?.name}
             onCreated={(dept) => {
-              const existing = user ? userDepartmentIds(user) : [];
-              const next = existing.includes(dept.id) ? existing : [...existing, dept.id];
-              updateMutation.mutate({ departmentIds: next });
+              const next = assignDraft.departmentIds.includes(dept.id) ? assignDraft.departmentIds : [...assignDraft.departmentIds, dept.id];
+              patchAssignDraft({ departmentIds: next });
             }}
           />
           <CreateLocationDialog
@@ -2621,9 +2741,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             companyId={user?.companyId || ""}
             companyName={div?.name}
             onCreated={(location) => {
-              const existing = user ? userLocationIds(user) : [];
-              const next = existing.includes(location.id) ? existing : [...existing, location.id];
-              updateMutation.mutate({ locationIds: next });
+              const next = assignDraft.locationIds.includes(location.id) ? assignDraft.locationIds : [...assignDraft.locationIds, location.id];
+              patchAssignDraft({ locationIds: next });
             }}
           />
           <CreateRoleDialog
@@ -2661,6 +2780,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                           hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
                           terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
                           overtimeEligible: !!profile.overtimeEligible,
+                          taxClassification: profile.taxClassification || "W-2",
+                          clockInRequired: profile.clockInRequired ?? true,
                         });
                       }
                     }}
@@ -2676,6 +2797,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                         hireDate: employmentForm.hireDate ? employmentForm.hireDate : null,
                         terminationDate: employmentForm.terminationDate ? employmentForm.terminationDate : null,
                         overtimeEligible: employmentForm.overtimeEligible,
+                        taxClassification: employmentForm.taxClassification,
+                        clockInRequired: employmentForm.clockInRequired,
                       })
                     }
                     disabled={employmentMutation.isPending || !profile}
@@ -2732,32 +2855,35 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Tax Classification</Label>
-                <Select
-                  value={profile?.taxClassification || "W-2"}
-                  onValueChange={(v) => taxClassMutation.mutate(v)}
-                  disabled={profileLoading || !profile}
-                >
-                  <SelectTrigger data-testid="select-profile-tax-classification">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="W-2">W-2</SelectItem>
-                    <SelectItem value="1099">1099</SelectItem>
-                    <SelectItem value="Volunteer">Volunteer</SelectItem>
-                  </SelectContent>
-                </Select>
+                {editEmployment ? (
+                  <Select
+                    value={employmentForm.taxClassification}
+                    onValueChange={(v) => setEmploymentForm((f) => ({ ...f, taxClassification: v }))}
+                  >
+                    <SelectTrigger data-testid="select-profile-tax-classification">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="W-2">W-2</SelectItem>
+                      <SelectItem value="1099">1099</SelectItem>
+                      <SelectItem value="Volunteer">Volunteer</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-tax-classification">{profile?.taxClassification || "W-2"}</p>
+                )}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Required to clock in</Label>
                 <div className="flex items-center gap-2 pt-1">
                   <Switch
-                    checked={profile?.clockInRequired ?? true}
-                    onCheckedChange={(v) => clockInRequiredMutation.mutate(v)}
-                    disabled={profileLoading || !profile}
+                    checked={editEmployment ? employmentForm.clockInRequired : (profile?.clockInRequired ?? true)}
+                    onCheckedChange={(v) => setEmploymentForm((f) => ({ ...f, clockInRequired: v }))}
+                    disabled={!editEmployment || profileLoading || !profile}
                     data-testid="switch-profile-clock-in-required"
                   />
                   <span className="text-sm text-muted-foreground">
-                    {(profile?.clockInRequired ?? true)
+                    {(editEmployment ? employmentForm.clockInRequired : (profile?.clockInRequired ?? true))
                       ? "Missing-punch & no-show alerts on"
                       : "Alerts suppressed (not required)"}
                   </span>

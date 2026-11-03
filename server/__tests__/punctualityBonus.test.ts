@@ -366,9 +366,15 @@ test("e2e: a perfect week (with OT) pays the punctuality differential on the bat
   });
   await db.insert(policyAssignments).values({ policyId: policy.id, userId: empId });
 
-  // Punches Mon–Fri, all clocked in early (06:00Z ≈ 01:00 EST — on-time), the
-  // last day 10h so it yields 2h daily overtime.
-  const dates = [MON, TUE, WED, THU, FRI];
+  // One full Thu–Wed payroll week under the Thursday default (workweekStartDay=4):
+  // the five scheduled weekdays that fall inside Thu 2026-03-05 … Wed 2026-03-11.
+  // (Mon–Fri would straddle two Thursday weeks, so we align to a single week here;
+  // the pure-eval tests above still pin workweekStartDay:0 for the Sun-week cases.)
+  const E2E_START = "2026-03-05"; // Thursday — week start
+  const E2E_END = "2026-03-11"; // Wednesday — week end
+  // Thu, Fri, Mon, Tue, Wed — all clocked in early (06:00Z ≈ 01:00 EST — on-time),
+  // the last day 10h so it yields 2h daily overtime.
+  const dates = ["2026-03-05", "2026-03-06", "2026-03-09", "2026-03-10", "2026-03-11"];
   const hours = [8, 8, 8, 8, 10];
   for (let i = 0; i < dates.length; i++) {
     await db.insert(punchLogs).values({
@@ -396,7 +402,7 @@ test("e2e: a perfect week (with OT) pays the punctuality differential on the bat
   const res = await fetch(`http://127.0.0.1:${port}/api/payroll/exports`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ startDate: MON, endDate: FRI }),
+    body: JSON.stringify({ startDate: E2E_START, endDate: E2E_END }),
   });
   const body = await res.json();
   assert.equal(res.status, 201, `export create failed: ${JSON.stringify(body)}`);

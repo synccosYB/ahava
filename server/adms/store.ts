@@ -11,6 +11,7 @@ import {
   fingerprintTemplates,
   userEmploymentProfiles,
   users,
+  employeeLocations,
   type BiometricDevice,
   type BiometricDeviceEvent,
   type BiometricDeviceCommand,
@@ -204,6 +205,22 @@ export async function ackCommand(seq: number, result: string): Promise<void> {
  * Upserts on (sourceDevice, PIN, finger) so re-harvesting the same clock is
  * idempotent. `userId`/`companyId` bind it to the Ahava employee when known.
  */
+/** The active biometric clocks at every location this employee is assigned to.
+ * Used by the fingerprint auto-push (F4): a person's print only goes to the
+ * clocks where they can actually punch. */
+export async function getClocksForUserLocations(userId: string): Promise<BiometricDevice[]> {
+  const locs = await db
+    .select({ locationId: employeeLocations.locationId })
+    .from(employeeLocations)
+    .where(eq(employeeLocations.userId, userId));
+  const locationIds = Array.from(new Set(locs.map((l) => l.locationId).filter(Boolean))) as string[];
+  if (locationIds.length === 0) return [];
+  return db
+    .select()
+    .from(biometricDevices)
+    .where(and(inArray(biometricDevices.locationId, locationIds), eq(biometricDevices.isActive, true)));
+}
+
 export async function storeFingerprintTemplate(input: {
   sourceDeviceId: string;
   devicePin: string;
@@ -276,9 +293,13 @@ export interface DistributableTemplate {
  * Employee Number when present (so punches auto-attribute everywhere) — otherwise
  * the original source PIN. Templates are decrypted here for the outgoing command.
  */
-export async function getDistributableTemplates(companyId: string | null): Promise<DistributableTemplate[]> {
+export async function getDistributableTemplates(
+  companyId: string | null,
+  userId?: string | null,
+): Promise<DistributableTemplate[]> {
   const conditions = [isNotNull(fingerprintTemplates.userId)];
   if (companyId) conditions.push(eq(users.companyId, companyId));
+  if (userId) conditions.push(eq(fingerprintTemplates.userId, userId));
   const rows = await db
     .select({
       userId: fingerprintTemplates.userId,
