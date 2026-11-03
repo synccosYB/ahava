@@ -1176,7 +1176,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteLocation(id: string): Promise<void> {
-    await db.delete(locationCompanies).where(eq(locationCompanies.locationId, id));
+    // Delete the parent as a single statement. PostgreSQL cascades only the
+    // explicitly configured child relations (such as location_companies and
+    // location_addresses). When another table restricts deletion, the entire
+    // statement fails without first dropping the location's company links.
     await db.delete(locations).where(eq(locations.id, id));
   }
 
