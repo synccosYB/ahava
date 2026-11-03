@@ -23,7 +23,7 @@ import { storage } from "../storage";
 import { registerRoutes } from "../routes";
 import { generateToken } from "../middleware/auth";
 import { users, punchLogs, attendanceLedger, attendanceChangeLedger, attendanceExceptions, systemAlerts } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 const REVIEWER_ID = "admin-dev-001";
 const EMAIL_PREFIX = "punchintegrity-test+";
@@ -36,17 +36,24 @@ type Fixture = {
   cleanup: () => Promise<void>;
 };
 
+async function removeFixtureUser(userId: string) {
+  // Clock-out refreshes the ledger in the background. Lock the parent first so
+  // an in-flight FK insert finishes before cleanup or waits until deletion.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
+    await tx.delete(systemAlerts).where(eq(systemAlerts.employeeId, userId));
+    await tx.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, userId));
+    await tx.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, userId));
+    await tx.delete(punchLogs).where(eq(punchLogs.employeeId, userId));
+    await tx.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, userId));
+    await tx.delete(users).where(eq(users.id, userId));
+  });
+}
+
 async function purgeLeftovers() {
   const all = await db.select().from(users);
   const stale = all.filter((u) => u.email?.startsWith(EMAIL_PREFIX));
-  for (const u of stale) {
-    await db.delete(systemAlerts).where(eq(systemAlerts.employeeId, u.id));
-    await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, u.id));
-    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, u.id));
-    await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, u.id));
-    await db.delete(punchLogs).where(eq(punchLogs.employeeId, u.id));
-    await db.delete(users).where(eq(users.id, u.id));
-  }
+  for (const u of stale) await removeFixtureUser(u.id);
 }
 
 async function setupFixture(label: string): Promise<Fixture> {
@@ -88,13 +95,12 @@ async function setupFixture(label: string): Promise<Fixture> {
   });
 
   const cleanup = async () => {
-    await db.delete(systemAlerts).where(eq(systemAlerts.employeeId, employee.id));
-    await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, employee.id));
-    await db.delete(attendanceChangeLedger).where(eq(attendanceChangeLedger.employeeId, employee.id));
-    await db.delete(attendanceLedger).where(eq(attendanceLedger.employeeId, employee.id));
-    await db.delete(punchLogs).where(eq(punchLogs.employeeId, employee.id));
-    await db.delete(users).where(eq(users.id, employee.id));
-    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    try {
+      await removeFixtureUser(employee.id);
+    } finally {
+      // A cleanup assertion must never leave a listening server and hang CI.
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    }
   };
 
   return { baseUrl, reviewerToken, employeeId: employee.id, employeeToken, cleanup };
