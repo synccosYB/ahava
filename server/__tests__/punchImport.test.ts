@@ -91,15 +91,30 @@ test("a new shift for the same employee is still added on re-run", async () => {
   assert.equal(summary.duplicates, 1);
 });
 
-test("unmatched Clock # and incomplete shifts are reported, not imported", async () => {
+test("unmatched Clock # is reported; an open clock-in is pre-loaded as an open shift", async () => {
   const buf = wbBuffer([
     { "Clock #": CK.missing, "Clock In": "2026-10-29 08:00", "Clock Out": "2026-10-29 12:00" },
-    { "Clock #": CK.b, "Clock In": "2026-10-31 09:00", "Clock Out": "" }, // no out
+    { "Clock #": CK.b, "Clock In": "2026-10-31 09:00", "Clock Out": "" }, // no out -> open
   ]);
   const summary = await importPunchesFromBuffer(buf);
-  assert.equal(summary.imported, 0);
+  assert.equal(summary.imported, 0, "no completed shifts");
+  assert.equal(summary.openImported, 1, "the open clock-in was pre-loaded");
   assert.ok(summary.unmatchedClockNumbers.includes(CK.missing), "unmatched clock # surfaced");
-  assert.ok(summary.skipped.some((s) => /incomplete/i.test(s.reason)), "incomplete shift skipped");
+
+  // empB now has an OPEN punch (clock-out null) that a later live punch can close.
+  const open = (await punchesFor(empB.id)).filter((p) => p.clockIn && !p.clockOut);
+  assert.equal(open.length, 1, "exactly one open punch");
+  assert.equal(open[0].status, "in-progress");
+  assert.equal(new Date(open[0].clockIn!).toISOString(), "2026-10-31T13:00:00.000Z"); // 09:00 EDT
+});
+
+test("a second open clock-in for someone already open is left for manual fix", async () => {
+  const buf = wbBuffer([
+    { "Clock #": CK.b, "Clock In": "2026-10-31 14:00", "Clock Out": "" },
+  ]);
+  const summary = await importPunchesFromBuffer(buf);
+  assert.equal(summary.openImported, 0, "not loaded — only one open punch allowed per employee");
+  assert.ok(summary.skipped.some((s) => /already has an open shift/i.test(s.reason)), "flagged for manual fix");
 });
 
 test.after(async () => {

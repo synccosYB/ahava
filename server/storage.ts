@@ -23,6 +23,8 @@ import {
   userEmploymentProfiles,
   type EmploymentProfile,
   type InsertEmploymentProfile,
+  userReportDefaults,
+  type UserReportDefaults,
   punchLogs,
   type PunchLog,
   type InsertPunchLog,
@@ -294,6 +296,11 @@ export interface UsersPageOptions {
   // "none" = users with no certifications; any other value = users with at
   // least one certification of that status.
   certStatus?: string;
+  // Multi-select variants: OR within each list, AND across the three. When a
+  // list is present it takes precedence over its single-value counterpart.
+  companyIds?: string[];
+  taxClasses?: string[];
+  certStatuses?: string[];
   excludeUserIds?: string[];
   limit: number;
   offset: number;
@@ -348,6 +355,8 @@ export interface IStorage {
   getEmploymentProfilesByUserIds(userIds: string[]): Promise<Map<string, EmploymentProfile>>;
   createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile>;
   updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined>;
+  getUserReportDefaults(userId: string): Promise<UserReportDefaults | undefined>;
+  setUserReportDefaults(userId: string, prefs: { locationIds: string[]; departmentIds: string[] }): Promise<UserReportDefaults>;
 
   getPunchLog(id: string): Promise<PunchLog | undefined>;
   getPunchLogsByEmployee(employeeId: string): Promise<PunchLog[]>;
@@ -947,32 +956,49 @@ export class DatabaseStorage implements IStorage {
         sql`(${users.locationId} in (${idList}) or exists (select 1 from ${employeeLocations} el where el.user_id = ${users.id} and el.location_id in (${idList})))` as SQL,
       );
     }
-    if (opts.companyId) conditions.push(eq(users.companyId, opts.companyId));
-    if (opts.taxClass) {
-      // No employment profile defaults to "W-2" (matches the route/UI default),
-      // so a "W-2" filter must also include users without a profile row.
-      if (opts.taxClass === "W-2") {
-        conditions.push(
-          sql`coalesce(${userEmploymentProfiles.taxClassification}, 'W-2') = ${opts.taxClass}` as SQL,
-        );
-      } else {
-        conditions.push(eq(userEmploymentProfiles.taxClassification, opts.taxClass));
-      }
+    const companyIds = (opts.companyIds && opts.companyIds.length > 0)
+      ? opts.companyIds
+      : (opts.companyId ? [opts.companyId] : []);
+    if (companyIds.length > 0) {
+      conditions.push(
+        sql`${users.companyId} in (${sql.join(companyIds.map((id) => sql`${id}`), sql`, `)})` as SQL,
+      );
     }
-    if (opts.certStatus) {
+
+    const taxClasses = (opts.taxClasses && opts.taxClasses.length > 0)
+      ? opts.taxClasses
+      : (opts.taxClass ? [opts.taxClass] : []);
+    if (taxClasses.length > 0) {
+      // No employment profile defaults to "W-2" (matches the route/UI default),
+      // so a selection that includes "W-2" must also match users without a
+      // profile row. OR all selected classes together.
+      const expr = sql`coalesce(${userEmploymentProfiles.taxClassification}, 'W-2') in (${sql.join(taxClasses.map((t) => sql`${t}`), sql`, `)})`;
+      conditions.push(expr as SQL);
+    }
+
+    const certStatuses = (opts.certStatuses && opts.certStatuses.length > 0)
+      ? opts.certStatuses
+      : (opts.certStatus ? [opts.certStatus] : []);
+    if (certStatuses.length > 0) {
       // Certifications are 1:many, so use EXISTS subqueries rather than a join
       // to avoid multiplying user rows (which would corrupt count/pagination).
-      if (opts.certStatus === "none") {
-        // "No certifications" mirrors the prior client filter, which ignored
-        // archived rows — a user with only archived certs still counts as none.
-        conditions.push(
-          sql`not exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status <> 'archived')` as SQL,
-        );
-      } else {
-        conditions.push(
-          sql`exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status = ${opts.certStatus})` as SQL,
-        );
+      // OR the selected statuses; "none" (no non-archived certs) can mix with
+      // specific statuses — a user matches if ANY selected condition holds.
+      const parts: SQL[] = [];
+      for (const st of certStatuses) {
+        if (st === "none") {
+          // "No certifications" mirrors the prior client filter, which ignored
+          // archived rows — a user with only archived certs still counts as none.
+          parts.push(
+            sql`not exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status <> 'archived')` as SQL,
+          );
+        } else {
+          parts.push(
+            sql`exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status = ${st})` as SQL,
+          );
+        }
       }
+      conditions.push(sql`(${sql.join(parts, sql` or `)})` as SQL);
     }
     if (opts.excludeUserIds && opts.excludeUserIds.length > 0) {
       conditions.push(sql`${users.id} not in (${sql.join(opts.excludeUserIds.map((id) => sql`${id}`), sql`, `)})` as SQL);
@@ -1290,6 +1316,29 @@ export class DatabaseStorage implements IStorage {
   async updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined> {
     const [updated] = await db.update(userEmploymentProfiles).set({ ...profile, updatedAt: new Date() }).where(eq(userEmploymentProfiles.userId, userId)).returning();
     return updated;
+  }
+
+  // F7: per-user Reports defaults (preferred locations + departments).
+  async getUserReportDefaults(userId: string): Promise<UserReportDefaults | undefined> {
+    const [row] = await db.select().from(userReportDefaults).where(eq(userReportDefaults.userId, userId));
+    return row;
+  }
+
+  async setUserReportDefaults(
+    userId: string,
+    prefs: { locationIds: string[]; departmentIds: string[] },
+  ): Promise<UserReportDefaults> {
+    const locationIds = Array.from(new Set((prefs.locationIds || []).filter(Boolean)));
+    const departmentIds = Array.from(new Set((prefs.departmentIds || []).filter(Boolean)));
+    const [row] = await db
+      .insert(userReportDefaults)
+      .values({ userId, locationIds, departmentIds, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: userReportDefaults.userId,
+        set: { locationIds, departmentIds, updatedAt: new Date() },
+      })
+      .returning();
+    return row;
   }
 
   async getPunchLog(id: string): Promise<PunchLog | undefined> {

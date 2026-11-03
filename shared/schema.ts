@@ -347,6 +347,20 @@ export const insertEmploymentProfileSchema = createInsertSchema(userEmploymentPr
 export type InsertEmploymentProfile = z.infer<typeof insertEmploymentProfileSchema>;
 export type EmploymentProfile = typeof userEmploymentProfiles.$inferSelect;
 
+// F7: per-user Reports defaults. One row per user. Stores the locations and
+// departments a user wants Reports pre-filtered to (NOT companies). The Reports
+// filter bar reads this on open and writes it via a "Save as my default" button;
+// each run can still override without changing the saved default. Arrays are
+// stored as jsonb id lists (empty array = "all", no filter).
+export const userReportDefaults = pgTable("user_report_defaults", {
+  userId: varchar("user_id").primaryKey().references(() => users.id),
+  locationIds: jsonb("location_ids").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+  departmentIds: jsonb("department_ids").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type UserReportDefaults = typeof userReportDefaults.$inferSelect;
+
 export const punchLogs = pgTable("punch_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   employeeId: varchar("employee_id").notNull().references(() => users.id),

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { formatHoursMinutes, formatDate, formatTime12, formatTime12InTz } from "@/lib/utils";
 import { EmptyState } from "@/components/empty-state";
@@ -21,6 +21,14 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import type { AuditLog } from "@shared/schema";
+import {
+  currentWeek,
+  currentBiWeek,
+  lastCompletedWeeks,
+  lastCompletedBiWeeks,
+  formatRangeLabel,
+  type DateRange,
+} from "@/lib/payroll-week";
 
 type ReportColumn = {
   key: string;
@@ -167,8 +175,65 @@ function StandardReport({
   const [status, setStatus] = useState("all");
   const [reportData, setReportData] = useState<ReportResult | null>(null);
 
+  // F8: payroll-period picker (Thu–Wed weeks). Weekly / Bi-weekly / Other, with
+  // Current vs Previous; Previous lists the last 8 completed periods; Other falls
+  // back to the two manual date fields.
+  const [periodMode, setPeriodMode] = useState<"weekly" | "biweekly" | "other">("weekly");
+  const [periodWhich, setPeriodWhich] = useState<"current" | "previous">("current");
+  const [previousIdx, setPreviousIdx] = useState(0);
+  const previousOptions = useMemo(
+    () => (periodMode === "biweekly" ? lastCompletedBiWeeks(8) : lastCompletedWeeks(8)),
+    [periodMode],
+  );
+  useEffect(() => {
+    if (periodMode === "other") return;
+    let range: DateRange | undefined;
+    if (periodMode === "weekly") {
+      range = periodWhich === "current" ? currentWeek() : lastCompletedWeeks(8)[previousIdx];
+    } else {
+      range = periodWhich === "current" ? currentBiWeek() : lastCompletedBiWeeks(8)[previousIdx];
+    }
+    if (range) {
+      setStartDate(range.start);
+      setEndDate(range.end);
+    }
+  }, [periodMode, periodWhich, previousIdx]);
+
   const { data: filterOptions } = useQuery<FilterOptions>({
     queryKey: ["/api/reports/filter-options"],
+  });
+
+  // F7: per-user Reports defaults (preferred locations + departments). Loaded
+  // once and pre-filled; each run can still override without saving. "Save as
+  // my default" persists the current location + department selection.
+  const [defaultsApplied, setDefaultsApplied] = useState(false);
+  const { data: myDefaults } = useQuery<{ locationIds: string[]; departmentIds: string[] }>({
+    queryKey: ["/api/reports/my-defaults"],
+  });
+  useEffect(() => {
+    if (defaultsApplied || !myDefaults) return;
+    if (myDefaults.locationIds.length > 0) setLocationIds(myDefaults.locationIds);
+    if (myDefaults.departmentIds.length > 0) setDepartmentIds(myDefaults.departmentIds);
+    setDefaultsApplied(true);
+  }, [myDefaults, defaultsApplied]);
+
+  const saveDefaultsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PUT", "/api/reports/my-defaults", {
+        locationIds,
+        departmentIds,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Saved as your default",
+        description: "Reports will open pre-filtered to these locations and departments.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
   });
 
   const departmentOptions = useMemo(
@@ -266,13 +331,77 @@ function StandardReport({
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="space-y-2">
-              <Label>Start Date</Label>
-              <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} data-testid="input-start-date" />
+              <Label>Period</Label>
+              <Select
+                value={periodMode}
+                onValueChange={(v) => {
+                  setPeriodMode(v as "weekly" | "biweekly" | "other");
+                  setPreviousIdx(0);
+                }}
+              >
+                <SelectTrigger data-testid="select-trigger-period-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="weekly">Weekly (Thu–Wed)</SelectItem>
+                  <SelectItem value="biweekly">Bi-weekly</SelectItem>
+                  <SelectItem value="other">Custom range</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            <div className="space-y-2">
-              <Label>End Date</Label>
-              <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} data-testid="input-end-date" />
-            </div>
+            {periodMode !== "other" ? (
+              <>
+                <div className="space-y-2">
+                  <Label>Which</Label>
+                  <Select value={periodWhich} onValueChange={(v) => setPeriodWhich(v as "current" | "previous")}>
+                    <SelectTrigger data-testid="select-trigger-period-which">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="current">
+                        {periodMode === "biweekly" ? "Current (this + last week)" : "Current week"}
+                      </SelectItem>
+                      <SelectItem value="previous">Most recent / previous</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {periodWhich === "previous" ? (
+                  <div className="space-y-2">
+                    <Label>{periodMode === "biweekly" ? "Pick bi-weekly period" : "Pick week"}</Label>
+                    <Select value={String(previousIdx)} onValueChange={(v) => setPreviousIdx(Number(v))}>
+                      <SelectTrigger data-testid="select-trigger-period-previous">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {previousOptions.map((r, i) => (
+                          <SelectItem key={`${r.start}-${r.end}`} value={String(i)}>
+                            {formatRangeLabel(r)}{i === 0 ? " (most recent)" : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label>Dates</Label>
+                    <div className="flex h-9 items-center rounded-md border border-input bg-muted/40 px-3 text-sm text-muted-foreground" data-testid="text-period-range">
+                      {formatRangeLabel({ start: startDate, end: endDate })}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label>Start Date</Label>
+                  <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} data-testid="input-start-date" />
+                </div>
+                <div className="space-y-2">
+                  <Label>End Date</Label>
+                  <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} data-testid="input-end-date" />
+                </div>
+              </>
+            )}
             <div className="space-y-2">
               <Label>Department</Label>
               <MultiSelect
@@ -348,7 +477,7 @@ function StandardReport({
                 </Select>
               </div>
             )}
-            <div className="flex items-end sm:col-span-2 lg:col-span-3">
+            <div className="flex flex-wrap items-end gap-2 sm:col-span-2 lg:col-span-3">
               <Button
                 onClick={() => generateMutation.mutate()}
                 disabled={generateMutation.isPending}
@@ -361,6 +490,21 @@ function StandardReport({
                   <FileText className="h-4 w-4 mr-2" />
                 )}
                 Generate
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => saveDefaultsMutation.mutate()}
+                disabled={saveDefaultsMutation.isPending}
+                className="w-full sm:w-auto"
+                title="Save the current locations and departments as your default filter for all reports"
+                data-testid="button-save-report-defaults"
+              >
+                {saveDefaultsMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Users className="h-4 w-4 mr-2" />
+                )}
+                Save as my default
               </Button>
             </div>
           </div>

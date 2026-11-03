@@ -122,6 +122,10 @@ function buildIclockRouter(): Router {
       // confirm/adjust the parser against the real firmware.
       logger.info("[adms] bio upload", { source: "adms", sn: serial, sample: redactTemplates(body) });
       let stored = 0;
+      // F4: after harvesting, auto-push each affected employee's print onward to
+      // the clocks at the location(s) they're assigned to. Collect the distinct
+      // users and push once each after the loop.
+      const harvestedUsers = new Set<string>();
       for (const fp of bio.fingerprints) {
         try {
           // Bind to the Ahava employee: an explicit mapping wins; otherwise
@@ -147,11 +151,13 @@ function buildIclockRouter(): Router {
             userId,
             companyId: device.companyId ?? null,
           });
+          if (userId) harvestedUsers.add(userId);
           stored += 1;
         } catch (err) {
           logger.error("[adms] fingerprint store failed", { source: "adms", sn: serial, pin: fp.pin, err });
         }
       }
+      for (const uid of harvestedUsers) autoPushEmployeeSafe(uid);
       logger.info("[adms] bio upload harvested", {
         source: "adms", sn: serial,
         users: bio.users.length, fingerprints: bio.fingerprints.length, stored,
@@ -244,6 +250,58 @@ export async function queueDistribute(device: BiometricDevice): Promise<{ people
     queued += 1;
   }
   return { people: seenPins.size, queued };
+}
+
+// Queue a Distribute of ONE employee's fingerprints onto one device. Same
+// commands as queueDistribute, scoped to a single user.
+export async function queueDistributeForUser(device: BiometricDevice, userId: string): Promise<number> {
+  const templates = await adms.getDistributableTemplates(device.companyId ?? null, userId);
+  const seenPins = new Set<string>();
+  let queued = 0;
+  for (const t of templates) {
+    if (!seenPins.has(t.pin)) {
+      await adms.enqueueCommand(device.id, buildUserInfoCommand(t.pin, t.name));
+      await adms.mapDeviceUser(device.id, t.pin, t.userId);
+      seenPins.add(t.pin);
+      queued += 1;
+    }
+    await adms.enqueueCommand(
+      device.id,
+      buildFingerprintUpdateCommand({
+        pin: t.pin,
+        fingerIndex: t.fingerIndex,
+        size: t.size,
+        valid: t.valid,
+        template: t.template,
+        format: t.format,
+      }),
+    );
+    queued += 1;
+  }
+  return queued;
+}
+
+// F4 auto-push: send an employee's stored fingerprints to the clocks at the
+// location(s) they're assigned to. No-op when they have no template or no clock
+// at their location. Fire-and-forget safe-wrapper below never throws so it can
+// hang off a save/ingest without risking the request.
+export async function autoPushEmployeeToLocations(
+  userId: string,
+): Promise<{ clocks: number; queued: number }> {
+  const devices = await adms.getClocksForUserLocations(userId);
+  let queued = 0;
+  for (const d of devices) queued += await queueDistributeForUser(d, userId);
+  return { clocks: devices.length, queued };
+}
+
+export function autoPushEmployeeSafe(userId: string): void {
+  autoPushEmployeeToLocations(userId)
+    .then((r) => {
+      if (r.queued > 0) {
+        logger.info("[adms] auto-pushed fingerprints to location clocks", { source: "adms", userId, ...r });
+      }
+    })
+    .catch((err) => logger.warn("[adms] fingerprint auto-push failed", { source: "adms", userId, err }));
 }
 
 // Clocks to act on for a bulk operation: all of them, or just one location when
