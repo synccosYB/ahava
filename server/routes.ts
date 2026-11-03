@@ -7759,8 +7759,12 @@ export async function registerRoutes(
     const depts = await storage.getAllDepartments();
     const deptMap = new Map(depts.map(d => [d.id, d.name]));
 
+    // A holder of attendance.view_all (e.g. a bookkeeper) sees every employee,
+    // independent of manager/department scope; everyone else is team-scoped.
+    const reportPerms = await resolveUserPermissions(user.id);
+    const seesAllEmployees = reportPerms.has("system.super_admin") || reportPerms.has("attendance.view_all");
     const teamIds = await getTeamUserIds(user);
-    let filteredUsers = allUsers.filter(u => teamIds.has(u.id));
+    let filteredUsers = seesAllEmployees ? allUsers : allUsers.filter(u => teamIds.has(u.id));
 
     if (reportType === "employee" && employeeId) {
       filteredUsers = filteredUsers.filter(u => u.id === employeeId);
