@@ -424,6 +424,12 @@ export const DEFAULT_ATTENDANCE_RULES = {
   allowedPunchSources: [...DEFAULT_ALLOWED_PUNCH_SOURCES],
   autoClockOutEnabled: false,
   autoClockOutAfterHours: 16,
+  // F5: a single clocked-in shift may not exceed this many hours. When an open
+  // shift crosses it, it is auto-split: shift 1 is capped here (clock-out flagged
+  // unverified) and a fresh open shift begins (clock-in flagged unverified), so a
+  // manager reconciles the "worked too long / forgot to punch out" case. Always
+  // on. Thirteen hours per Ahava policy.
+  maxShiftHours: 13,
   requireBreakAfterHours: 6,
   breakDurationMinutes: 30,
   // Punch-integrity (task #450): when false (default), the shared validator
