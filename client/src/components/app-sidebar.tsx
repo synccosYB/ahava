@@ -26,6 +26,7 @@ import {
   Settings,
   RefreshCw,
   CalendarRange,
+  History,
   ChevronRight,
   PanelLeftClose,
   PanelLeftOpen,
@@ -65,6 +66,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
+import { usePermissions } from "@/hooks/use-permissions";
 import type { TimeOffRequest, AttendanceException } from "@shared/schema";
 
 type NavItem = {
@@ -95,6 +97,7 @@ const adminItems: NavItem[] = [
   { title: "Employees", href: "/employees", icon: Users },
   { title: "Locations", href: "/locations", icon: MapPin },
   { title: "Time Sheet Review", href: "/timesheet-review", icon: CalendarRange },
+  { title: "Punch Changes", href: "/punch-changes", icon: History },
   { title: "Reports", href: "/reports", icon: BarChart3 },
 ];
 
@@ -317,6 +320,10 @@ export function AppSidebar() {
   const role = user?.role ?? "employee";
   const isManager = role === "manager" || role === "admin";
   const isAdmin = role === "admin";
+  const { has } = usePermissions();
+  // A bookkeeper (not an admin) who may review/edit all timesheets — gets just
+  // the Time Sheet Review entry, nothing else.
+  const isBookkeeper = !isAdmin && has("attendance.view_all");
 
   const { data: pendingRequests } = useQuery<TimeOffRequest[]>({
     queryKey: ["/api/time-off/pending"],
@@ -410,6 +417,15 @@ export function AppSidebar() {
               {adminItems.map((item) => (
                 <NavLinkItem key={item.href} item={item} />
               ))}
+            </SidebarMenu>
+          </SidebarGroup>
+        )}
+
+        {isBookkeeper && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Bookkeeping</SidebarGroupLabel>
+            <SidebarMenu>
+              <NavLinkItem item={{ title: "Time Sheet Review", href: "/timesheet-review", icon: CalendarRange }} />
             </SidebarMenu>
           </SidebarGroup>
         )}

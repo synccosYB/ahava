@@ -60,7 +60,7 @@ import { applyScheduleTemplate, validateTemplateDays } from "./services/schedule
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
 import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/rank";
-import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
+import { resolveEmployeeTimezone, localWorkDate, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import {
   resolvePunctualityBonusConfig,
   recomputePunctualityForEmployee,
@@ -2824,13 +2824,162 @@ export async function registerRoutes(
     res.json({ id: updated?.id, editLocked: false });
   });
 
+  // Undo a logged punch change (add / edit / move-day / delete). Restores the
+  // recorded before-state, re-runs the same payroll-safe guards as a manual
+  // edit (finalized-payroll block, ledger recompute), refuses if the punch was
+  // changed again since (so a stale undo can't clobber a newer edit), and logs
+  // the undo itself (context.undoneAuditId links it to the original entry).
+  async function undoPunchChange(
+    entry: NonNullable<Awaited<ReturnType<typeof storage.getAuditLog>>>,
+    actor: User,
+    req: any,
+  ): Promise<{ status: number; body: any }> {
+    const action = entry.action;
+    const punchId = entry.targetId;
+    const ctx = (entry.context ?? {}) as Record<string, any>;
+    const employeeId = typeof ctx.employeeId === "string" ? ctx.employeeId : undefined;
+    if (!employeeId) return { status: 400, body: { message: "This entry has no employee reference to undo." } };
+    const employee = await storage.getUser(employeeId);
+    if (!employee) return { status: 404, body: { message: "The affected employee no longer exists." } };
+
+    const [actorRank, targetRank] = await Promise.all([getUserRank(actor), getUserRank(employee)]);
+    if (actor.id !== employee.id && !outranks(actorRank, targetRank)) {
+      return { status: 403, body: { message: "You can only undo changes on accounts below your authority." } };
+    }
+
+    const old = (entry.oldValue ?? null) as Record<string, any> | null;
+    const neu = (entry.newValue ?? null) as Record<string, any> | null;
+    const toIso = (v: any): string | null => {
+      if (v == null) return null;
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? null : d.toISOString();
+    };
+
+    const attendancePolicy = await getEffectivePolicy(employee.companyId, employee.id, "attendance", employee);
+    const payrollPolicy = await getEffectivePolicy(employee.companyId, employee.id, "payroll", employee);
+    const attRules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+    const payrollRules = payrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+    const roundingRule = attRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+    const roundingInterval = attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+    const buildTimes = (update: Partial<InsertPunchLog>, clockIn: Date, clockOut: Date | null) => {
+      update.clockIn = clockIn;
+      update.roundedClockIn = roundTime(clockIn, roundingRule, roundingInterval);
+      if (clockOut) {
+        const enf = enforceClockOut(new Date(update.roundedClockIn!), clockOut, 0, attRules, payrollRules, employee, attendancePolicy?.policyName);
+        update.clockOut = clockOut;
+        update.roundedClockOut = enf.roundedTime;
+        update.hoursWorked = enf.hoursWorked;
+        update.status = enf.status;
+      } else {
+        update.clockOut = null;
+        update.roundedClockOut = null;
+        update.hoursWorked = null;
+        update.status = "in-progress";
+      }
+    };
+    const finalizedBlock = async (dates: (string | undefined)[]) => {
+      const byId = new Map<string, PayrollExport>();
+      for (const d of dates) {
+        if (!d) continue;
+        for (const e of await findFinalizedPayrollExportsForEmployeeDate(employeeId, d)) byId.set(e.id, e);
+      }
+      const exps = [...byId.values()];
+      return exps.length === 0 ? null : {
+        status: 409,
+        body: {
+          message: `This punch is part of finalized payroll (${describeFinalizedPayroll(exps)}). Reopen the affected payroll batch before undoing.`,
+          code: "PAYROLL_FINALIZED",
+          payrollExports: exps.map((e) => ({ id: e.id, startDate: e.startDate, endDate: e.endDate, status: e.status })),
+        },
+      };
+    };
+
+    let auditTargetId = punchId;
+    const affectedDates = new Set<string>();
+
+    if (action === "punch_log.created") {
+      // Undo an add = delete the created punch (if unchanged since).
+      const cur = await storage.getPunchLog(punchId);
+      if (!cur) return { status: 200, body: { ok: true, note: "already removed" } };
+      if (toIso(cur.clockIn) !== toIso(neu?.clockIn) || toIso(cur.clockOut) !== toIso(neu?.clockOut) || cur.workDate !== neu?.workDate) {
+        return { status: 409, body: { message: "This punch was changed after it was added; review it before undoing." } };
+      }
+      const fin = await finalizedBlock([cur.workDate]);
+      if (fin) return fin;
+      await storage.deletePunchLog(punchId);
+      affectedDates.add(cur.workDate);
+    } else if (action === "punch_log.deleted") {
+      // Undo a delete = recreate the punch from its old values.
+      if (!old) return { status: 400, body: { message: "No prior value to restore." } };
+      const clockIn = old.clockIn ? new Date(old.clockIn) : null;
+      if (!clockIn || isNaN(clockIn.getTime())) return { status: 400, body: { message: "The deleted punch has no clock-in to restore." } };
+      const fin = await finalizedBlock([old.workDate]);
+      if (fin) return fin;
+      const values: Partial<InsertPunchLog> = { employeeId, workDate: old.workDate, source: "manager-undo", approved: true };
+      buildTimes(values, clockIn, old.clockOut ? new Date(old.clockOut) : null);
+      let created;
+      try {
+        created = await storage.createPunchLog(values as InsertPunchLog);
+      } catch {
+        return { status: 409, body: { message: "Could not restore — the employee may already have an open punch that day." } };
+      }
+      auditTargetId = created.id;
+      affectedDates.add(old.workDate);
+    } else if (action === "punch_log.edited" || action === "punch_log.workdate_backfill") {
+      // Undo an edit / day-move = restore the before-values.
+      if (!old || Object.keys(old).length === 0) return { status: 400, body: { message: "No prior value to restore." } };
+      const cur = await storage.getPunchLog(punchId);
+      if (!cur) return { status: 404, body: { message: "This punch no longer exists (it may have been deleted)." } };
+      const stale = !!neu && (
+        ("clockIn" in neu && toIso(cur.clockIn) !== toIso(neu.clockIn)) ||
+        ("clockOut" in neu && toIso(cur.clockOut) !== toIso(neu.clockOut)) ||
+        ("workDate" in neu && cur.workDate !== neu.workDate)
+      );
+      if (stale) return { status: 409, body: { message: "This punch was changed again after this entry; undo the newer change first." } };
+      const newWorkDate = "workDate" in old ? old.workDate : cur.workDate;
+      const fin = await finalizedBlock([cur.workDate, newWorkDate]);
+      if (fin) return fin;
+      const update: Partial<InsertPunchLog> = {};
+      if ("workDate" in old) update.workDate = old.workDate;
+      if ("clockIn" in old) {
+        const clockIn = old.clockIn ? new Date(old.clockIn) : null;
+        if (!clockIn || isNaN(clockIn.getTime())) return { status: 400, body: { message: "The previous value has no valid clock-in." } };
+        buildTimes(update, clockIn, old.clockOut ? new Date(old.clockOut) : null);
+      }
+      await storage.updatePunchLog(punchId, update);
+      affectedDates.add(cur.workDate);
+      affectedDates.add(newWorkDate);
+    } else {
+      return { status: 400, body: { message: `Undo isn't supported for "${action}".` } };
+    }
+
+    await recomputeLedger(employeeId, Array.from(affectedDates).filter(Boolean) as string[]);
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: "punch_log",
+      targetId: auditTargetId,
+      action: `undo.${action}`,
+      oldValue: neu,
+      newValue: old,
+      context: { undoneAuditId: entry.id, employeeId },
+      ...getAuditContext(req),
+    });
+    return { status: 200, body: { ok: true, undone: action } };
+  }
+
   // Undo a logged change: revert the recorded old values. Supports the edits we
-  // log with before/after snapshots (employment_profile, user). The actor must
-  // out-rank the affected employee, and the undo is itself audit-logged.
+  // log with before/after snapshots (employment_profile, user, punch_log). The
+  // actor must out-rank the affected employee, and the undo is itself audit-logged.
   app.post("/api/audit-logs/:id/undo", requireAuth, requirePermission("audit.view"), async (req: any, res) => {
     const actor = req.authUser as User;
     const entry = await storage.getAuditLog(String(req.params.id));
     if (!entry) return res.status(404).json({ message: "Audit entry not found" });
+
+    if (entry.targetType === "punch_log") {
+      const result = await undoPunchChange(entry, actor, req);
+      return res.status(result.status).json(result.body);
+    }
+
     const oldValue = (entry.oldValue ?? null) as Record<string, unknown> | null;
     if (!oldValue || Object.keys(oldValue).length === 0) {
       return res.status(400).json({ message: "This change has no recorded previous value to undo." });
@@ -2861,6 +3010,88 @@ export async function registerRoutes(
       ...getAuditContext(req),
     });
     res.json({ ok: true, reverted: Object.keys(oldValue) });
+  });
+
+  // Punch-changes log: every add / edit / move-day / delete of a punch, newest
+  // first, with who did it, before/after, and whether it's already been undone.
+  // Powers the admin "Punch Changes" review + one-click undo.
+  app.get("/api/attendance/punch-changes", requireAuth, requirePermission("audit.view"), async (req: any, res) => {
+    try {
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "100"), 10) || 100, 1), 500);
+      const offset = Math.max(parseInt(String(req.query.offset ?? "0"), 10) || 0, 0);
+      const employeeId = typeof req.query.employeeId === "string" && req.query.employeeId ? req.query.employeeId : undefined;
+
+      // Pull punch_log audit rows (both the changes and their undo records share
+      // targetType=punch_log). Fetch a wide window so undos pair with changes.
+      const { logs } = await storage.getAuditLogsFiltered({
+        targetType: "punch_log",
+        limit: limit + offset + 200,
+        offset: 0,
+      });
+
+      // Map undo records to the entry they undid, so a change can show "reverted".
+      const undoneIds = new Set<string>();
+      for (const l of logs) {
+        if (l.action.startsWith("undo.")) {
+          const uid = (l.context as any)?.undoneAuditId;
+          if (typeof uid === "string") undoneIds.add(uid);
+        }
+      }
+
+      const changeActions = new Set([
+        "punch_log.created", "punch_log.edited", "punch_log.deleted", "punch_log.workdate_backfill",
+      ]);
+      let changes = logs.filter((l) => changeActions.has(l.action));
+      if (employeeId) changes = changes.filter((l) => ((l.context as any)?.employeeId) === employeeId);
+      const page = changes.slice(offset, offset + limit);
+
+      // Resolve employee + actor names once.
+      const empIds = new Set<string>();
+      const actorIds = new Set<string>();
+      for (const l of page) {
+        const eid = (l.context as any)?.employeeId;
+        if (typeof eid === "string") empIds.add(eid);
+        if (l.actorUserId) actorIds.add(l.actorUserId);
+      }
+      const nameById = new Map<string, string>();
+      for (const id of new Set([...empIds, ...actorIds])) {
+        const u = await storage.getUser(id);
+        nameById.set(id, u ? (`${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || "Unknown") : "Unknown");
+      }
+
+      const kindOf = (action: string, l: any): string => {
+        if (action === "punch_log.created") return "Added";
+        if (action === "punch_log.deleted") return "Deleted";
+        if (action === "punch_log.workdate_backfill") return "Moved day";
+        // edited: distinguish a pure day move from a time change
+        const o = l.oldValue || {}, n = l.newValue || {};
+        const timeChanged = String(o.clockIn) !== String(n.clockIn) || String(o.clockOut) !== String(n.clockOut);
+        const dayChanged = o.workDate !== n.workDate;
+        if (dayChanged && !timeChanged) return "Moved day";
+        return "Edited";
+      };
+
+      const rows = page.map((l) => {
+        const eid = (l.context as any)?.employeeId as string | undefined;
+        return {
+          id: l.id,
+          createdAt: l.createdAt,
+          employeeId: eid ?? null,
+          employeeName: eid ? (nameById.get(eid) ?? "Unknown") : "Unknown",
+          actorName: l.actorUserId ? (nameById.get(l.actorUserId) ?? "Unknown") : "System",
+          kind: kindOf(l.action, l),
+          action: l.action,
+          before: l.oldValue ?? null,
+          after: l.newValue ?? null,
+          reverted: undoneIds.has(l.id),
+        };
+      });
+
+      res.json({ changes: rows, total: changes.length, limit, offset });
+    } catch (error) {
+      console.error("Error loading punch changes:", error);
+      handleRouteError(res, error, "Failed to load punch changes");
+    }
   });
 
   // Task #418: pull optional device coordinates off a clock-in payload. Returns
@@ -3524,6 +3755,9 @@ export async function registerRoutes(
           kioskDeviceId: kioskDevice.id,
           punchLatitude,
           punchLongitude,
+          // Location-local day, not UTC, so evening Eastern punches stay on the
+          // right calendar day.
+          workDate: localWorkDate(now, await resolveEmployeeTimezone(user.id)),
         });
       } catch (err) {
         if (err instanceof DuplicateOpenPunchError) {
@@ -3852,9 +4086,13 @@ export async function registerRoutes(
         }
       }
 
+      // File the punch under the location-local day (not the UTC date) so an
+      // evening Eastern clock-in isn't rolled onto the next calendar day.
+      const clockInTz = await resolveEmployeeTimezone(userId);
       const record = await storage.clockIn(userId, source, enforcement.roundedTime, {
         punchLatitude,
         punchLongitude,
+        workDate: localWorkDate(now, clockInTz),
       });
 
       // Geofencing never blocks the punch; it only raises a manager-facing
@@ -4615,9 +4853,9 @@ export async function registerRoutes(
           return res.status(400).json({ message: "Invalid clock-out time." });
         }
 
-        // workDate is the UTC calendar date of the clock-in, matching how live
-        // clock-ins bucket the day (storage.clockIn).
-        const workDate = newClockIn.toISOString().split("T")[0];
+        // File under the location-local day of the clock-in (not the UTC date),
+        // matching live clock-ins and the importer.
+        const workDate = localWorkDate(newClockIn, await resolveEmployeeTimezone(employeeId));
 
         // Block adding a punch inside an already-finalized payroll period.
         const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
@@ -4835,6 +5073,118 @@ export async function registerRoutes(
       }
     },
   );
+
+  // Maintenance: re-date punches whose workDate was stamped in UTC (an evening
+  // Eastern shift that rolled onto the next calendar day) to the correct
+  // location-local day. Dry-run by default (apply=false) so an admin can see the
+  // impact first; apply=true performs it. NEVER touches a punch whose current or
+  // target day is inside a finalized (exported/locked) payroll period. Each moved
+  // punch is audited and its old + new day's ledger recomputed. Idempotent.
+  app.post("/api/attendance/backfill-work-dates", requireAuth, async (req: any, res) => {
+    try {
+      const actor = req.authUser as User;
+      if (actor.role !== "admin") {
+        return res.status(403).json({ message: "Admin only." });
+      }
+      const apply = req.body?.apply === true;
+
+      const punches = await db
+        .select()
+        .from(punchLogs)
+        .where(isNotNull(punchLogs.clockIn));
+
+      // Resolve each distinct employee's timezone once.
+      const empIds = Array.from(new Set(punches.map((p) => p.employeeId)));
+      const tzByEmp = new Map<string, string>();
+      for (const id of empIds) tzByEmp.set(id, await resolveEmployeeTimezone(id));
+
+      // Candidates: workDate differs from the local-tz date of the clock-in.
+      type Cand = { id: string; employeeId: string; oldDate: string; newDate: string };
+      const candidates: Cand[] = [];
+      for (const p of punches) {
+        if (!p.clockIn) continue;
+        const correct = localWorkDate(new Date(p.clockIn), tzByEmp.get(p.employeeId) || "America/New_York");
+        if (correct !== p.workDate) {
+          candidates.push({ id: p.id, employeeId: p.employeeId, oldDate: p.workDate, newDate: correct });
+        }
+      }
+
+      // Only run the (costlier) finalized-payroll guard if any finalized payroll
+      // exists; after a fresh switchover there usually is none.
+      const [anyFinalized] = await db
+        .select({ id: payrollExportsTable.id })
+        .from(payrollExportsTable)
+        .where(inArray(payrollExportsTable.status, [...FINALIZED_PAYROLL_STATUSES]))
+        .limit(1);
+
+      const toFix: Cand[] = [];
+      let skippedFinalized = 0;
+      for (const c of candidates) {
+        if (anyFinalized) {
+          const locked = [
+            ...(await findFinalizedPayrollExportsForEmployeeDate(c.employeeId, c.oldDate)),
+            ...(await findFinalizedPayrollExportsForEmployeeDate(c.employeeId, c.newDate)),
+          ];
+          if (locked.length > 0) { skippedFinalized += 1; continue; }
+        }
+        toFix.push(c);
+      }
+
+      // Summarize the day moves for the preview (how many land on each new day).
+      const byMove = new Map<string, number>();
+      for (const c of toFix) {
+        const k = `${c.oldDate} → ${c.newDate}`;
+        byMove.set(k, (byMove.get(k) || 0) + 1);
+      }
+      const moves = Array.from(byMove.entries())
+        .map(([move, count]) => ({ move, count }))
+        .sort((a, b) => b.count - a.count);
+
+      if (!apply) {
+        return res.json({
+          applied: false,
+          totalPunches: punches.length,
+          toFix: toFix.length,
+          skippedFinalized,
+          moves,
+        });
+      }
+
+      // Apply: update each punch's workDate, audit, and recompute both days.
+      const affectedDates = new Map<string, Set<string>>();
+      for (const c of toFix) {
+        await storage.updatePunchLog(c.id, { workDate: c.newDate });
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "punch_log",
+          targetId: c.id,
+          action: "punch_log.workdate_backfill",
+          oldValue: { workDate: c.oldDate },
+          newValue: { workDate: c.newDate },
+          context: { reason: "timezone work-date backfill", employeeId: c.employeeId },
+          ...getAuditContext(req),
+        });
+        let set = affectedDates.get(c.employeeId);
+        if (!set) { set = new Set(); affectedDates.set(c.employeeId, set); }
+        set.add(c.oldDate);
+        set.add(c.newDate);
+      }
+      for (const [employeeId, dates] of affectedDates) {
+        await recomputeLedger(employeeId, Array.from(dates));
+      }
+
+      return res.json({
+        applied: true,
+        totalPunches: punches.length,
+        fixed: toFix.length,
+        skippedFinalized,
+        moves,
+      });
+    } catch (error) {
+      console.error("Error backfilling work dates:", error);
+      handleRouteError(res, error, "Failed to backfill work dates");
+    }
+  });
 
   app.get("/api/attendance/timesheet/:employeeId", requireAuth, async (req: any, res) => {
     try {
@@ -7640,8 +7990,12 @@ export async function registerRoutes(
     const depts = await storage.getAllDepartments();
     const deptMap = new Map(depts.map(d => [d.id, d.name]));
 
+    // A holder of attendance.view_all (e.g. a bookkeeper) sees every employee,
+    // independent of manager/department scope; everyone else is team-scoped.
+    const reportPerms = await resolveUserPermissions(user.id);
+    const seesAllEmployees = reportPerms.has("system.super_admin") || reportPerms.has("attendance.view_all");
     const teamIds = await getTeamUserIds(user);
-    let filteredUsers = allUsers.filter(u => teamIds.has(u.id));
+    let filteredUsers = seesAllEmployees ? allUsers : allUsers.filter(u => teamIds.has(u.id));
 
     if (reportType === "employee" && employeeId) {
       filteredUsers = filteredUsers.filter(u => u.id === employeeId);
