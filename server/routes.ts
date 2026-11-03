@@ -693,6 +693,9 @@ export async function registerRoutes(
         companyId: typeof req.query.companyId === "string" ? req.query.companyId : undefined,
         taxClass: typeof req.query.taxClass === "string" ? req.query.taxClass : undefined,
         certStatus: typeof req.query.certStatus === "string" ? req.query.certStatus : undefined,
+        companyIds: csvIds(req.query.companyIds),
+        taxClasses: csvIds(req.query.taxClasses),
+        certStatuses: csvIds(req.query.certStatuses),
         excludeUserIds,
         limit: pagination.limit,
         offset: pagination.offset,
@@ -7323,6 +7326,43 @@ export async function registerRoutes(
         companies: companies.map(c => ({ id: c.id, name: c.name }))
           .sort((a, b) => a.name.localeCompare(b.name)),
       });
+    },
+  );
+
+  // F7: per-user Reports defaults (preferred locations + departments). The
+  // Reports filter bar reads this on open and writes it via "Save as my
+  // default". Per-user, across all report types; each run can still override.
+  app.get(
+    "/api/reports/my-defaults",
+    requireAuth,
+    requirePermission("reports.view"),
+    async (req, res) => {
+      const user = (req as any).authUser as User;
+      const row = await storage.getUserReportDefaults(user.id);
+      res.json({
+        locationIds: row?.locationIds ?? [],
+        departmentIds: row?.departmentIds ?? [],
+      });
+    },
+  );
+
+  const reportDefaultsSchema = z.object({
+    locationIds: z.array(z.string().min(1)).default([]),
+    departmentIds: z.array(z.string().min(1)).default([]),
+  });
+
+  app.put(
+    "/api/reports/my-defaults",
+    requireAuth,
+    requirePermission("reports.view"),
+    async (req, res) => {
+      const user = (req as any).authUser as User;
+      const parsed = reportDefaultsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid report defaults", errors: parsed.error.flatten() });
+      }
+      const row = await storage.setUserReportDefaults(user.id, parsed.data);
+      res.json({ locationIds: row.locationIds, departmentIds: row.departmentIds });
     },
   );
 

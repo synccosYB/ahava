@@ -533,6 +533,13 @@
       "when": 1780302300000,
       "tag": "0075_termination_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1780302400000,
+      "tag": "0076_user_report_defaults",
+      "breakpoints": true
     }
   ]
 }

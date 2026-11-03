@@ -93,9 +93,14 @@ export default function EmployeesPage() {
   const [appliedDeptIds, setAppliedDeptIds] = useState<string[]>(initialDeptIds);
   const [draftLocIds, setDraftLocIds] = useState<string[]>([]);
   const [appliedLocIds, setAppliedLocIds] = useState<string[]>([]);
-  const [divisionFilter, setDivisionFilter] = useState("all");
-  const [taxClassFilter, setTaxClassFilter] = useState("all");
-  const [certStatusFilter, setCertStatusFilter] = useState("all");
+  // Company / Tax Classification / Cert Status are also staged multi-selects,
+  // committed by the same Apply button (OR within each, AND across filters).
+  const [draftCompanyIds, setDraftCompanyIds] = useState<string[]>([]);
+  const [appliedCompanyIds, setAppliedCompanyIds] = useState<string[]>([]);
+  const [draftTaxClasses, setDraftTaxClasses] = useState<string[]>([]);
+  const [appliedTaxClasses, setAppliedTaxClasses] = useState<string[]>([]);
+  const [draftCertStatuses, setDraftCertStatuses] = useState<string[]>([]);
+  const [appliedCertStatuses, setAppliedCertStatuses] = useState<string[]>([]);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   // Selection persists across pages, so we track the full user objects (not
   // just ids) — the bulk-delete dialog needs them and selected rows may live
@@ -116,22 +121,25 @@ export default function EmployeesPage() {
   // user isn't stranded on an out-of-range page.
   const appliedDeptKey = appliedDeptIds.join(",");
   const appliedLocKey = appliedLocIds.join(",");
+  const appliedCompanyKey = appliedCompanyIds.join(",");
+  const appliedTaxKey = appliedTaxClasses.join(",");
+  const appliedCertKey = appliedCertStatuses.join(",");
   useEffect(() => {
     setPage(0);
-  }, [debouncedSearch, appliedDeptKey, appliedLocKey, divisionFilter, taxClassFilter, certStatusFilter]);
+  }, [debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey]);
 
   const usersParams = new URLSearchParams();
   if (debouncedSearch) usersParams.set("search", debouncedSearch);
   if (appliedDeptIds.length) usersParams.set("departmentIds", appliedDeptKey);
   if (appliedLocIds.length) usersParams.set("locationIds", appliedLocKey);
-  if (divisionFilter !== "all") usersParams.set("companyId", divisionFilter);
-  if (taxClassFilter !== "all") usersParams.set("taxClass", taxClassFilter);
-  if (certStatusFilter !== "all") usersParams.set("certStatus", certStatusFilter);
+  if (appliedCompanyIds.length) usersParams.set("companyIds", appliedCompanyKey);
+  if (appliedTaxClasses.length) usersParams.set("taxClasses", appliedTaxKey);
+  if (appliedCertStatuses.length) usersParams.set("certStatuses", appliedCertKey);
   usersParams.set("limit", String(pageSize));
   usersParams.set("offset", String(page * pageSize));
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
-    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, divisionFilter, taxClassFilter, certStatusFilter, page, pageSize],
+    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, page, pageSize],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employees");
@@ -207,27 +215,28 @@ export default function EmployeesPage() {
             data-testid="input-search-employees"
           />
         </div>
-        <Select value={divisionFilter} onValueChange={setDivisionFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-company-filter">
-            <SelectValue placeholder="Company" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Companies</SelectItem>
-            {divisions?.map((d) => (
-              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={taxClassFilter} onValueChange={setTaxClassFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-tax-class-filter">
-            <SelectValue placeholder="Tax Classification" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Tax Classifications</SelectItem>
-            <SelectItem value="W-2">W-2</SelectItem>
-            <SelectItem value="1099">1099</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="w-[180px]" data-testid="filter-company-multi">
+          <MultiSelect
+            options={(divisions ?? []).map((d) => ({ label: d.name, value: d.id }))}
+            selected={draftCompanyIds}
+            onChange={setDraftCompanyIds}
+            placeholder="All Companies"
+            allLabel="All Companies"
+            searchPlaceholder="Search companies..."
+          />
+        </div>
+        <div className="w-[180px]" data-testid="filter-tax-class-multi">
+          <MultiSelect
+            options={[
+              { label: "W-2", value: "W-2" },
+              { label: "1099", value: "1099" },
+            ]}
+            selected={draftTaxClasses}
+            onChange={setDraftTaxClasses}
+            placeholder="All Tax Classifications"
+            allLabel="All Tax Classifications"
+          />
+        </div>
         <div className="w-[200px]" data-testid="filter-department-multi">
           <MultiSelect
             options={(departments ?? []).map((d) => ({ label: d.name, value: d.id }))}
@@ -244,32 +253,47 @@ export default function EmployeesPage() {
             placeholder="All Locations"
           />
         </div>
+        <div className="w-[180px]" data-testid="filter-cert-status-multi">
+          <MultiSelect
+            options={[
+              { label: "No Certifications", value: "none" },
+              { label: "Valid", value: "valid" },
+              { label: "Expiring Soon", value: "expiring_soon" },
+              { label: "Expired", value: "expired" },
+            ]}
+            selected={draftCertStatuses}
+            onChange={setDraftCertStatuses}
+            placeholder="All Cert Statuses"
+            allLabel="All Cert Statuses"
+          />
+        </div>
         {(() => {
+          const draftCount =
+            draftDeptIds.length + draftLocIds.length + draftCompanyIds.length +
+            draftTaxClasses.length + draftCertStatuses.length;
           const dirty =
-            draftDeptIds.join(",") !== appliedDeptKey || draftLocIds.join(",") !== appliedLocKey;
+            draftDeptIds.join(",") !== appliedDeptKey ||
+            draftLocIds.join(",") !== appliedLocKey ||
+            draftCompanyIds.join(",") !== appliedCompanyKey ||
+            draftTaxClasses.join(",") !== appliedTaxKey ||
+            draftCertStatuses.join(",") !== appliedCertKey;
           return (
             <Button
               variant={dirty ? "default" : "outline"}
-              onClick={() => { setAppliedDeptIds(draftDeptIds); setAppliedLocIds(draftLocIds); }}
+              onClick={() => {
+                setAppliedDeptIds(draftDeptIds);
+                setAppliedLocIds(draftLocIds);
+                setAppliedCompanyIds(draftCompanyIds);
+                setAppliedTaxClasses(draftTaxClasses);
+                setAppliedCertStatuses(draftCertStatuses);
+              }}
               disabled={!dirty}
               data-testid="button-apply-filters"
             >
-              Apply{(draftDeptIds.length + draftLocIds.length) > 0 ? ` (${draftDeptIds.length + draftLocIds.length})` : ""}
+              Apply{draftCount > 0 ? ` (${draftCount})` : ""}
             </Button>
           );
         })()}
-        <Select value={certStatusFilter} onValueChange={setCertStatusFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-cert-status-filter">
-            <SelectValue placeholder="Cert Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Cert Statuses</SelectItem>
-            <SelectItem value="none">No Certifications</SelectItem>
-            <SelectItem value="valid">Valid</SelectItem>
-            <SelectItem value="expiring_soon">Expiring Soon</SelectItem>
-            <SelectItem value="expired">Expired</SelectItem>
-          </SelectContent>
-        </Select>
         {canImport && (
           <Button
             variant="outline"
