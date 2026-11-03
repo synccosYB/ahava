@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pencil, Check } from "lucide-react";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
+import { TimesheetEditor } from "@/components/timesheet-editor";
+import { usePermissions } from "@/hooks/use-permissions";
 import { currentWeek, shiftWeeks, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
 
 /**
@@ -12,13 +14,32 @@ import { currentWeek, shiftWeeks, formatRangeLabel, type DateRange } from "@/lib
  */
 export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
   const [range, setRange] = useState<DateRange>(() => currentWeek());
+  const [editing, setEditing] = useState(false);
+  const { has } = usePermissions();
+  const canEdit = has("attendance.edit");
   const isCurrent = range.end === currentWeek().end;
 
   return (
     <Card data-testid="card-review-timesheet">
       <CardHeader>
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <CardTitle>Review Time Sheet</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle>Review Time Sheet</CardTitle>
+            {canEdit && (
+              <Button
+                variant={editing ? "default" : "outline"}
+                size="sm"
+                onClick={() => setEditing((v) => !v)}
+                data-testid="button-timesheet-edit-toggle"
+              >
+                {editing ? (
+                  <><Check className="h-4 w-4 mr-1" /> Done</>
+                ) : (
+                  <><Pencil className="h-4 w-4 mr-1" /> Edit</>
+                )}
+              </Button>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
@@ -55,6 +76,15 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
           showExport
           exportFileName={`timesheet-${range.start}-to-${range.end}`}
         />
+        {editing && canEdit && (
+          <div className="mt-4">
+            <TimesheetEditor
+              employeeId={employeeId}
+              startDate={range.start}
+              endDate={range.end}
+            />
+          </div>
+        )}
       </CardContent>
     </Card>
   );
