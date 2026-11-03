@@ -393,9 +393,42 @@ export async function getLedgerForEmployee(
 }
 
 /**
+ * Run `fn` over `items` with at most `limit` in flight at once. The DB pool is
+ * small (DB_POOL_MAX, default 5), and each employee task opens a couple of
+ * connections (policy resolve + schedules, plus a ledger write), so firing the
+ * whole roster at once (hundreds of employees) stampedes the pool and callers
+ * wait past connectionTimeoutMillis — surfacing as "timeout exceeded when
+ * trying to connect". Bounding concurrency keeps peak connection demand within
+ * the pool while still overlapping work.
+ */
+async function forEachLimited<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  const run = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      await fn(items[i], i);
+    }
+  };
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, run);
+  await Promise.all(workers);
+}
+
+// Max employees recomputed concurrently in getLedgerForEmployees. Kept well
+// under the DB pool (default 5) because each employee's recompute itself issues
+// a few parallel queries + a write; a larger roster is paced, not parallelized
+// all at once.
+const LEDGER_RECOMPUTE_CONCURRENCY = 3;
+
+/**
  * Bulk variant for multi-employee surfaces (reports, dashboards). Returns a map
  * of employeeId -> per-day ledger entries. Fetches punches/time-off in one pass
- * and resolves each employee's policy in parallel.
+ * and resolves each employee's policy with bounded concurrency so a large
+ * roster does not exhaust the DB connection pool.
  */
 export async function getLedgerForEmployees(
   employees: User[],
@@ -434,27 +467,25 @@ export async function getLedgerForEmployees(
   }
 
   const dates = eachDate(startDate, endDate);
-  await Promise.all(
-    employees.map(async (employee) => {
-      const ctx = await resolveEmployeeContext(employee);
-      const byDate = punchesByEmp.get(employee.id) || new Map<string, PunchLog[]>();
-      const approvedTimeOff = approvedTimeOffOverlapping(
-        timeOffByEmp.get(employee.id) || [],
-        startDate,
-        endDate,
-      );
-      const computed = buildLedgerDays(
-        employee.id,
-        dates,
-        byDate,
-        approvedTimeOff,
-        ctx,
-        now,
-      );
-      await persistEmployeeRange(employee.id, startDate, endDate, computed);
-      result.set(employee.id, computed);
-    }),
-  );
+  await forEachLimited(employees, LEDGER_RECOMPUTE_CONCURRENCY, async (employee) => {
+    const ctx = await resolveEmployeeContext(employee);
+    const byDate = punchesByEmp.get(employee.id) || new Map<string, PunchLog[]>();
+    const approvedTimeOff = approvedTimeOffOverlapping(
+      timeOffByEmp.get(employee.id) || [],
+      startDate,
+      endDate,
+    );
+    const computed = buildLedgerDays(
+      employee.id,
+      dates,
+      byDate,
+      approvedTimeOff,
+      ctx,
+      now,
+    );
+    await persistEmployeeRange(employee.id, startDate, endDate, computed);
+    result.set(employee.id, computed);
+  });
 
   return result;
 }
