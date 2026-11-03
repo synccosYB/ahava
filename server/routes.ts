@@ -21,6 +21,7 @@ import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, s
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
 import { importPunchesFromBuffer } from "./services/punchImport";
+import { autoPushEmployeeSafe } from "./adms/routes";
 import {
   computeAttendanceReconciliation,
   applyAttendanceReconciliation,
@@ -1485,6 +1486,9 @@ export async function registerRoutes(
     }
     if (locIdsProvided || parsed.data.locationId !== undefined || parsed.data.companyId !== undefined) {
       await storage.setUserLocationIds(String(req.params.id), nextLocIds);
+      // F4: pushing this employee's fingerprint(s) to the clocks at their
+      // (possibly new) location(s). Fire-and-forget — never blocks the save.
+      autoPushEmployeeSafe(String(req.params.id));
     }
 
     try {
