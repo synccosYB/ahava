@@ -60,7 +60,7 @@ import { applyScheduleTemplate, validateTemplateDays } from "./services/schedule
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
 import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/rank";
-import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
+import { resolveEmployeeTimezone, localWorkDate, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import {
   resolvePunctualityBonusConfig,
   recomputePunctualityForEmployee,
@@ -3524,6 +3524,9 @@ export async function registerRoutes(
           kioskDeviceId: kioskDevice.id,
           punchLatitude,
           punchLongitude,
+          // Location-local day, not UTC, so evening Eastern punches stay on the
+          // right calendar day.
+          workDate: localWorkDate(now, await resolveEmployeeTimezone(user.id)),
         });
       } catch (err) {
         if (err instanceof DuplicateOpenPunchError) {
@@ -3852,9 +3855,13 @@ export async function registerRoutes(
         }
       }
 
+      // File the punch under the location-local day (not the UTC date) so an
+      // evening Eastern clock-in isn't rolled onto the next calendar day.
+      const clockInTz = await resolveEmployeeTimezone(userId);
       const record = await storage.clockIn(userId, source, enforcement.roundedTime, {
         punchLatitude,
         punchLongitude,
+        workDate: localWorkDate(now, clockInTz),
       });
 
       // Geofencing never blocks the punch; it only raises a manager-facing
@@ -4615,9 +4622,9 @@ export async function registerRoutes(
           return res.status(400).json({ message: "Invalid clock-out time." });
         }
 
-        // workDate is the UTC calendar date of the clock-in, matching how live
-        // clock-ins bucket the day (storage.clockIn).
-        const workDate = newClockIn.toISOString().split("T")[0];
+        // File under the location-local day of the clock-in (not the UTC date),
+        // matching live clock-ins and the importer.
+        const workDate = localWorkDate(newClockIn, await resolveEmployeeTimezone(employeeId));
 
         // Block adding a punch inside an already-finalized payroll period.
         const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
@@ -4835,6 +4842,118 @@ export async function registerRoutes(
       }
     },
   );
+
+  // Maintenance: re-date punches whose workDate was stamped in UTC (an evening
+  // Eastern shift that rolled onto the next calendar day) to the correct
+  // location-local day. Dry-run by default (apply=false) so an admin can see the
+  // impact first; apply=true performs it. NEVER touches a punch whose current or
+  // target day is inside a finalized (exported/locked) payroll period. Each moved
+  // punch is audited and its old + new day's ledger recomputed. Idempotent.
+  app.post("/api/attendance/backfill-work-dates", requireAuth, async (req: any, res) => {
+    try {
+      const actor = req.authUser as User;
+      if (actor.role !== "admin") {
+        return res.status(403).json({ message: "Admin only." });
+      }
+      const apply = req.body?.apply === true;
+
+      const punches = await db
+        .select()
+        .from(punchLogs)
+        .where(isNotNull(punchLogs.clockIn));
+
+      // Resolve each distinct employee's timezone once.
+      const empIds = Array.from(new Set(punches.map((p) => p.employeeId)));
+      const tzByEmp = new Map<string, string>();
+      for (const id of empIds) tzByEmp.set(id, await resolveEmployeeTimezone(id));
+
+      // Candidates: workDate differs from the local-tz date of the clock-in.
+      type Cand = { id: string; employeeId: string; oldDate: string; newDate: string };
+      const candidates: Cand[] = [];
+      for (const p of punches) {
+        if (!p.clockIn) continue;
+        const correct = localWorkDate(new Date(p.clockIn), tzByEmp.get(p.employeeId) || "America/New_York");
+        if (correct !== p.workDate) {
+          candidates.push({ id: p.id, employeeId: p.employeeId, oldDate: p.workDate, newDate: correct });
+        }
+      }
+
+      // Only run the (costlier) finalized-payroll guard if any finalized payroll
+      // exists; after a fresh switchover there usually is none.
+      const [anyFinalized] = await db
+        .select({ id: payrollExportsTable.id })
+        .from(payrollExportsTable)
+        .where(inArray(payrollExportsTable.status, [...FINALIZED_PAYROLL_STATUSES]))
+        .limit(1);
+
+      const toFix: Cand[] = [];
+      let skippedFinalized = 0;
+      for (const c of candidates) {
+        if (anyFinalized) {
+          const locked = [
+            ...(await findFinalizedPayrollExportsForEmployeeDate(c.employeeId, c.oldDate)),
+            ...(await findFinalizedPayrollExportsForEmployeeDate(c.employeeId, c.newDate)),
+          ];
+          if (locked.length > 0) { skippedFinalized += 1; continue; }
+        }
+        toFix.push(c);
+      }
+
+      // Summarize the day moves for the preview (how many land on each new day).
+      const byMove = new Map<string, number>();
+      for (const c of toFix) {
+        const k = `${c.oldDate} → ${c.newDate}`;
+        byMove.set(k, (byMove.get(k) || 0) + 1);
+      }
+      const moves = Array.from(byMove.entries())
+        .map(([move, count]) => ({ move, count }))
+        .sort((a, b) => b.count - a.count);
+
+      if (!apply) {
+        return res.json({
+          applied: false,
+          totalPunches: punches.length,
+          toFix: toFix.length,
+          skippedFinalized,
+          moves,
+        });
+      }
+
+      // Apply: update each punch's workDate, audit, and recompute both days.
+      const affectedDates = new Map<string, Set<string>>();
+      for (const c of toFix) {
+        await storage.updatePunchLog(c.id, { workDate: c.newDate });
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "punch_log",
+          targetId: c.id,
+          action: "punch_log.workdate_backfill",
+          oldValue: { workDate: c.oldDate },
+          newValue: { workDate: c.newDate },
+          context: { reason: "timezone work-date backfill", employeeId: c.employeeId },
+          ...getAuditContext(req),
+        });
+        let set = affectedDates.get(c.employeeId);
+        if (!set) { set = new Set(); affectedDates.set(c.employeeId, set); }
+        set.add(c.oldDate);
+        set.add(c.newDate);
+      }
+      for (const [employeeId, dates] of affectedDates) {
+        await recomputeLedger(employeeId, Array.from(dates));
+      }
+
+      return res.json({
+        applied: true,
+        totalPunches: punches.length,
+        fixed: toFix.length,
+        skippedFinalized,
+        moves,
+      });
+    } catch (error) {
+      console.error("Error backfilling work dates:", error);
+      handleRouteError(res, error, "Failed to backfill work dates");
+    }
+  });
 
   app.get("/api/attendance/timesheet/:employeeId", requireAuth, async (req: any, res) => {
     try {

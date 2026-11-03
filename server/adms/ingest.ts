@@ -10,6 +10,7 @@
 // rejected by a half-configured policy. Every raw punch is persisted in
 // biometric_device_events regardless, so nothing is lost.
 import { storage, DuplicateOpenPunchError } from "../storage";
+import { workDateForEmployee } from "../services/punchOverlap";
 import { writeLedgerEntry } from "../services/ledger";
 import { logger } from "../lib/logger";
 import type { BiometricDevice } from "@shared/schema";
@@ -89,7 +90,11 @@ export async function ingestPunches(
           // Biometric clocks have their own table and must not be written to
           // punch_logs.kiosk_device_id (FK references kiosk_devices only).
           // Device provenance is stored in biometric_device_events.punch_log_id.
-          record = await storage.clockIn(userId, "biometric");
+          // File under the location-local day (not UTC) so an evening Eastern
+          // punch isn't rolled onto the next calendar day.
+          record = await storage.clockIn(userId, "biometric", undefined, {
+            workDate: await workDateForEmployee(userId, new Date()),
+          });
         } catch (err) {
           if (err instanceof DuplicateOpenPunchError) {
             await adms.updateEvent(event.id, { userId, status: "duplicate", direction: "clock_in" });

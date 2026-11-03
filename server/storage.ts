@@ -225,6 +225,13 @@ export interface ClockInOptions {
   kioskDeviceId?: string;
   punchLatitude?: number | null;
   punchLongitude?: number | null;
+  /**
+   * The day (YYYY-MM-DD) to file this punch under, in the employee's local
+   * timezone. Callers compute it from the location tz (workDateForEmployee) so
+   * an evening Eastern shift is not rolled to the next day by the UTC date.
+   * Falls back to the UTC date only when omitted.
+   */
+  workDate?: string;
 }
 
 // Result of a start/end break action. `ok: false` carries a machine-readable
@@ -1427,7 +1434,10 @@ export class DatabaseStorage implements IStorage {
   ): Promise<PunchLog> {
     const actualNow = new Date();
     const rounded = roundedTime || actualNow;
-    const dateStr = actualNow.toISOString().split("T")[0];
+    // Local (location-tz) work date when the caller resolved it; UTC date only
+    // as a fallback. Dating in UTC rolls an evening Eastern shift onto the next
+    // calendar day — the bug this guards against.
+    const dateStr = opts?.workDate || actualNow.toISOString().split("T")[0];
     // The "are you already clocked in?" check and the insert must be atomic, or
     // two near-simultaneous requests (kiosk double-tap, two devices, retried
     // request) both pass the check and create two open punches. We serialize
