@@ -197,6 +197,36 @@ export function serialFromQuery(query: Record<string, unknown>): string | null {
   return s.length > 0 ? s : null;
 }
 
+// All Ahava locations are US Eastern. The clock's displayed time comes from the
+// `TimeZone` we send here (minutes offset from GMT, negative west). Hard-coding
+// 0 pinned every clock to UTC — ~4–5 hours ahead — and the device re-synced to
+// it every poll, so a manual time never held. (Recorded punch times are
+// unaffected: the server timestamps each punch on arrival, not from the clock.)
+const CLOCK_DISPLAY_TZ = "America/New_York";
+
+/**
+ * Current UTC offset, in whole minutes, for an IANA zone (negative west of
+ * GMT) — computed live so the value follows daylight-saving automatically
+ * (EST = -300, EDT = -240). Intl only, no tz dependency.
+ */
+export function tzOffsetMinutes(tz: string, at: Date = new Date()): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const m: Record<string, string> = {};
+  for (const p of dtf.formatToParts(at)) if (p.type !== "literal") m[p.type] = p.value;
+  const asUTC = Date.UTC(+m.year, +m.month - 1, +m.day, +m.hour, +m.minute, +m.second);
+  // `|| 0` normalizes a -0 (GMT itself) to 0.
+  return Math.round((asUTC - at.getTime()) / 60000) || 0;
+}
+
 /**
  * The options/registry block a device expects in reply to its initial
  * `GET /iclock/cdata?...options=all` handshake. These values tell the clock how
@@ -214,7 +244,7 @@ export function buildOptionsResponse(serial: string): string {
     "TransTimes=00:00;23:59",
     "TransInterval=1",
     "TransFlag=1000000000",
-    "TimeZone=0",
+    `TimeZone=${tzOffsetMinutes(CLOCK_DISPLAY_TZ)}`,
     "Realtime=1",
     "Encrypt=0",
   ].join("\n");
