@@ -114,7 +114,7 @@ function AuthenticatedRouter() {
           </ProtectedRoute>
         )}</Route>
         <Route path="/timesheet-review">{() => (
-          <ProtectedRoute roles={["manager", "admin"]}>
+          <ProtectedRoute roles={["manager", "admin"]} anyPermission={["attendance.view_all"]}>
             <TimeSheetReviewPage />
           </ProtectedRoute>
         )}</Route>

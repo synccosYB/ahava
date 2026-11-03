@@ -16,7 +16,9 @@ import {
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/empty-state";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
+import { TimesheetEditor } from "@/components/timesheet-editor";
 import { WorkDateBackfillCard } from "@/components/workdate-backfill-card";
+import { usePermissions } from "@/hooks/use-permissions";
 import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange } from "lucide-react";
 import { formatHoursMinutes } from "@/lib/utils";
 import {
@@ -27,6 +29,7 @@ type ViewMode = "weekly" | "biweekly";
 type PeriodScope = "current" | "current_plus_last";
 
 type FilterOptions = {
+  employees: { id: string; name: string }[];
   departments: { id: string; name: string }[];
   locations: { id: string; name: string }[];
 };
@@ -49,12 +52,12 @@ function isTimeResult(data: unknown): data is TimeResult {
 }
 
 // Per-account defaults for this page, remembered in the browser (guarded).
-type Prefs = { viewMode: ViewMode; scope: PeriodScope; locationIds: string[]; departmentIds: string[] };
+type Prefs = { viewMode: ViewMode; scope: PeriodScope; locationIds: string[]; departmentIds: string[]; employeeIds: string[] };
 function prefKey(userId: string | undefined) {
   return `ahava.timesheetReview.prefs.${userId ?? "anon"}`;
 }
 function loadPrefs(userId: string | undefined): Prefs {
-  const fallback: Prefs = { viewMode: "weekly", scope: "current", locationIds: [], departmentIds: [] };
+  const fallback: Prefs = { viewMode: "weekly", scope: "current", locationIds: [], departmentIds: [], employeeIds: [] };
   try {
     const raw = localStorage.getItem(prefKey(userId));
     if (!raw) return fallback;
@@ -64,6 +67,7 @@ function loadPrefs(userId: string | undefined): Prefs {
       scope: p.scope === "current_plus_last" ? "current_plus_last" : "current",
       locationIds: Array.isArray(p.locationIds) ? p.locationIds : [],
       departmentIds: Array.isArray(p.departmentIds) ? p.departmentIds : [],
+      employeeIds: Array.isArray(p.employeeIds) ? p.employeeIds : [],
     };
   } catch {
     return fallback;
@@ -88,12 +92,15 @@ function rangeFor(viewMode: ViewMode, scope: PeriodScope): DateRange {
 export default function TimeSheetReviewPage() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const { has } = usePermissions();
+  const canEdit = has("attendance.edit");
 
   const initial = useMemo(() => loadPrefs(user?.id), [user?.id]);
   const [viewMode, setViewMode] = useState<ViewMode>(initial.viewMode);
   const [scope, setScope] = useState<PeriodScope>(initial.scope);
   const [locationIds, setLocationIds] = useState<string[]>(initial.locationIds);
   const [departmentIds, setDepartmentIds] = useState<string[]>(initial.departmentIds);
+  const [employeeIds, setEmployeeIds] = useState<string[]>(initial.employeeIds);
   const [result, setResult] = useState<TimeResult | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -104,6 +111,7 @@ export default function TimeSheetReviewPage() {
     setScope(p.scope);
     setLocationIds(p.locationIds);
     setDepartmentIds(p.departmentIds);
+    setEmployeeIds(p.employeeIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
@@ -112,10 +120,10 @@ export default function TimeSheetReviewPage() {
     try {
       localStorage.setItem(
         prefKey(user?.id),
-        JSON.stringify({ viewMode, scope, locationIds, departmentIds }),
+        JSON.stringify({ viewMode, scope, locationIds, departmentIds, employeeIds }),
       );
     } catch { /* ignore */ }
-  }, [user?.id, viewMode, scope, locationIds, departmentIds]);
+  }, [user?.id, viewMode, scope, locationIds, departmentIds, employeeIds]);
 
   const range = useMemo(() => rangeFor(viewMode, scope), [viewMode, scope]);
 
@@ -130,6 +138,10 @@ export default function TimeSheetReviewPage() {
     () => (filterOptions?.departments ?? []).map((d) => ({ label: d.name, value: d.id })),
     [filterOptions],
   );
+  const employeeOptions = useMemo(
+    () => (filterOptions?.employees ?? []).map((e) => ({ label: e.name, value: e.id })),
+    [filterOptions],
+  );
 
   const loadMutation = useMutation({
     mutationFn: async () => {
@@ -140,6 +152,7 @@ export default function TimeSheetReviewPage() {
         endDate: range.end,
         departmentIds: departmentIds.length > 0 ? departmentIds : undefined,
         locationIds: locationIds.length > 0 ? locationIds : undefined,
+        employeeIds: employeeIds.length > 0 ? employeeIds : undefined,
       });
       return res.json();
     },
@@ -231,6 +244,18 @@ export default function TimeSheetReviewPage() {
                 data-testid="multiselect-review-department"
               />
             </div>
+            <div className="space-y-2 sm:col-span-2">
+              <Label>Employee</Label>
+              <MultiSelect
+                options={employeeOptions}
+                selected={employeeIds}
+                onChange={setEmployeeIds}
+                placeholder="All employees"
+                allLabel="All employees"
+                searchPlaceholder="Search by name..."
+                data-testid="multiselect-review-employee"
+              />
+            </div>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
             <Button onClick={() => loadMutation.mutate()} disabled={loadMutation.isPending} data-testid="button-review-load">
@@ -295,7 +320,7 @@ export default function TimeSheetReviewPage() {
                         {isOpen && (
                           <TableRow>
                             <TableCell colSpan={6} className="bg-muted/30">
-                              <div className="py-2" data-testid={`detail-review-${r.id}`}>
+                              <div className="py-2 space-y-3" data-testid={`detail-review-${r.id}`}>
                                 <EmployeeTimesheetTable
                                   employeeId={r.id}
                                   startDate={range.start}
@@ -303,6 +328,13 @@ export default function TimeSheetReviewPage() {
                                   showExport
                                   exportFileName={`timesheet-${r.employeeName.replace(/\s+/g, "_")}-${range.start}-to-${range.end}`}
                                 />
+                                {canEdit && (
+                                  <TimesheetEditor
+                                    employeeId={r.id}
+                                    startDate={range.start}
+                                    endDate={range.end}
+                                  />
+                                )}
                               </div>
                             </TableCell>
                           </TableRow>
