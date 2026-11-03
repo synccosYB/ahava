@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/empty-state";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
+import { WorkDateBackfillCard } from "@/components/workdate-backfill-card";
 import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange } from "lucide-react";
 import { formatHoursMinutes } from "@/lib/utils";
 import {
@@ -176,6 +177,8 @@ export default function TimeSheetReviewPage() {
   return (
     <div className="max-w-6xl space-y-6" data-testid="timesheet-review-page">
       <PageHeader title="Time Sheet Review" subtitle="Review everyone's time sheets by location, department and payroll period" />
+
+      {user?.role === "admin" && <WorkDateBackfillCard />}
 
       <Card>
         <CardContent className="pt-6 space-y-4">

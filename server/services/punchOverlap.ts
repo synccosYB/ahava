@@ -12,6 +12,28 @@ import type { PunchOverlapInfo } from "../punchValidation";
 import { DEFAULT_TIMEZONE, normalizeTimezone } from "@shared/timezone";
 
 /**
+ * The local calendar date (YYYY-MM-DD) of a UTC instant, rendered in `tz`. A
+ * punch is filed under the day it STARTED in the location's wall-clock time.
+ * Live clock-ins must use this (not the UTC date) or an evening Eastern shift
+ * rolls onto the next calendar day. Mirrors the importer's own date logic so
+ * clock-punched and imported punches bucket the same way.
+ */
+export function localWorkDate(instant: Date, tz: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(instant); // en-CA => YYYY-MM-DD
+}
+
+/** Convenience: resolve the employee's timezone and return the local work date. */
+export async function workDateForEmployee(userId: string, instant: Date): Promise<string> {
+  const tz = await resolveEmployeeTimezone(userId);
+  return localWorkDate(instant, tz);
+}
+
+/**
  * Resolve the employee's local/business IANA timezone for rendering punch times
  * in rejection / flag messages and for lateness math. Prefers the employee's
  * location timezone, then the company timezone, then a sane default. Each
