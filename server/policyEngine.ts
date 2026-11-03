@@ -417,7 +417,10 @@ export const DEFAULT_ATTENDANCE_RULES = {
   otThresholdDaily: 8,
   otThresholdWeekly: 40,
   weeklyOvertimeEnabled: true,
-  workweekStartDay: 0,
+  // Ahava payroll week runs Thursday→Wednesday, so Thursday (4) is day 1 of the
+  // workweek. All week boundaries (timesheets, reports, weekly-OT grouping)
+  // anchor on this. Global for every company/location.
+  workweekStartDay: 4,
   allowedPunchSources: [...DEFAULT_ALLOWED_PUNCH_SOURCES],
   autoClockOutEnabled: false,
   autoClockOutAfterHours: 16,

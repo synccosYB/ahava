@@ -33,6 +33,7 @@ import { formatCurrency, formatHoursMinutes, formatDate } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
 import { userDepartmentIds, userLocationIds, TERMINATION_REASONS } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
+import { ReviewTimeSheetTab } from "@/components/review-timesheet-tab";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
   INLINE_ADD_NEW_VALUE,
@@ -1941,7 +1942,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     const section = initialUrlParams.get("section");
     if (section === "certifications") return "basic";
     if (t === "certifications") return "basic";
-    if (t && ["basic", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "history"].includes(t)) return t;
+    if (t && ["basic", "timesheet", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "history"].includes(t)) return t;
     return "basic";
   })();
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -2291,6 +2292,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-employee-profile">
         <TabsList className="flex-wrap" data-testid="tabs-list-employee">
           <TabsTrigger value="basic" data-testid="tab-basic-info">Basic Info</TabsTrigger>
+          <TabsTrigger value="timesheet" data-testid="tab-review-timesheet">Review Time Sheet</TabsTrigger>
           <TabsTrigger value="employment" data-testid="tab-employment">Employment</TabsTrigger>
           <TabsTrigger value="pay" data-testid="tab-pay-setup">Pay Setup</TabsTrigger>
           <TabsTrigger value="timeclock" data-testid="tab-time-clock">Time Clock Settings</TabsTrigger>
@@ -2304,6 +2306,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           <TabsTrigger value="offboarding" data-testid="tab-offboarding">Offboarding</TabsTrigger>
           <TabsTrigger value="history" data-testid="tab-history">History/Audit</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="timesheet">
+          <ReviewTimeSheetTab employeeId={userId} />
+        </TabsContent>
 
         <TabsContent value="basic">
           <Card data-testid="card-basic-info">
