@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { punchLogs, users, policies, policyRules, policyAssignments, policyTypes } from "@shared/schema";
+import { punchLogs, users, policies, policyRules, policyAssignments, policyTypes, userEmploymentProfiles } from "@shared/schema";
 import { eq, and, lte, gte, isNull, ne, desc, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "../policyEngine";
@@ -30,12 +30,25 @@ export interface GeneratedAlert {
   details: Record<string, unknown>;
 }
 
+// Note #5: employees marked "not required to clock in" (a salaried manager paid
+// regardless of hours, or a volunteer) are exempt from presence-based alerts —
+// missing clock-out, no-show, late arrival, stale open punch. Their punching is
+// optional, so nagging about it is noise.
+export async function getClockExemptEmployeeIds(): Promise<Set<string>> {
+  const rows = await db
+    .select({ userId: userEmploymentProfiles.userId })
+    .from(userEmploymentProfiles)
+    .where(eq(userEmploymentProfiles.clockInRequired, false));
+  return new Set(rows.map((r) => r.userId));
+}
+
 export async function detectMissingClockOuts(): Promise<GeneratedAlert[]> {
   const alerts: GeneratedAlert[] = [];
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const yesterdayStr = yesterday.toISOString().split("T")[0];
 
+  const exempt = await getClockExemptEmployeeIds();
   const openPunches = await db
     .select()
     .from(punchLogs)
@@ -48,6 +61,7 @@ export async function detectMissingClockOuts(): Promise<GeneratedAlert[]> {
     );
 
   for (const punch of openPunches) {
+    if (exempt.has(punch.employeeId)) continue;
     alerts.push({
       type: "missing_clock_out",
       severity: "high",
@@ -204,9 +218,11 @@ export async function detectNoShows(): Promise<GeneratedAlert[]> {
 
   const yesterdayStr = yesterday.toISOString().split("T")[0];
   const allUsers = await storage.getAllUsers();
+  const exempt = await getClockExemptEmployeeIds();
 
   for (const user of allUsers) {
     if (user.role === "admin") continue;
+    if (exempt.has(user.id)) continue;
 
     const records = await db
       .select()
@@ -251,7 +267,9 @@ export async function detectLateArrivals(): Promise<GeneratedAlert[]> {
     .from(punchLogs)
     .where(eq(punchLogs.workDate, today));
 
+  const exempt = await getClockExemptEmployeeIds();
   for (const punch of todayPunches) {
+    if (exempt.has(punch.employeeId)) continue;
     if (!punch.clockIn) continue;
 
     const user = await storage.getUser(punch.employeeId);
@@ -296,8 +314,10 @@ export async function detectLateArrivals(): Promise<GeneratedAlert[]> {
 export async function detectStaleOpenPunches(): Promise<GeneratedAlert[]> {
   const alerts: GeneratedAlert[] = [];
   const openPunches = await storage.getOpenPunchLogs();
+  const exempt = await getClockExemptEmployeeIds();
 
   for (const punch of openPunches) {
+    if (exempt.has(punch.employeeId)) continue;
     if (!punch.clockIn) continue;
 
     const user = await storage.getUser(punch.employeeId);

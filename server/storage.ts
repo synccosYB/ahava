@@ -23,6 +23,8 @@ import {
   userEmploymentProfiles,
   type EmploymentProfile,
   type InsertEmploymentProfile,
+  userReportDefaults,
+  type UserReportDefaults,
   punchLogs,
   type PunchLog,
   type InsertPunchLog,
@@ -62,6 +64,11 @@ import {
   type UserAccessScope,
   employeeDepartments,
   employeeLocations,
+  departmentLocations,
+  type DepartmentLocation,
+  managerScopes,
+  type ManagerScope,
+  type InsertManagerScope,
   ptoPolicies,
   type PtoPolicy,
   type InsertPtoPolicy,
@@ -280,11 +287,20 @@ export interface UsersPageOptions {
   search?: string;
   departmentId?: string;
   locationId?: string;
+  // Multi-select filters: match an employee in ANY of the given departments /
+  // locations. When present these take precedence over the single-id variants.
+  departmentIds?: string[];
+  locationIds?: string[];
   companyId?: string;
   taxClass?: string;
   // "none" = users with no certifications; any other value = users with at
   // least one certification of that status.
   certStatus?: string;
+  // Multi-select variants: OR within each list, AND across the three. When a
+  // list is present it takes precedence over its single-value counterpart.
+  companyIds?: string[];
+  taxClasses?: string[];
+  certStatuses?: string[];
   excludeUserIds?: string[];
   limit: number;
   offset: number;
@@ -305,6 +321,7 @@ export interface IStorage {
 
   getCompany(id: string): Promise<Company | undefined>;
   getAllCompanies(): Promise<Company[]>;
+  getOperationalCompany(): Promise<Company | undefined>;
   createCompany(company: InsertCompany): Promise<Company>;
   updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
   deleteCompany(id: string): Promise<void>;
@@ -338,6 +355,8 @@ export interface IStorage {
   getEmploymentProfilesByUserIds(userIds: string[]): Promise<Map<string, EmploymentProfile>>;
   createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile>;
   updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined>;
+  getUserReportDefaults(userId: string): Promise<UserReportDefaults | undefined>;
+  setUserReportDefaults(userId: string, prefs: { locationIds: string[]; departmentIds: string[] }): Promise<UserReportDefaults>;
 
   getPunchLog(id: string): Promise<PunchLog | undefined>;
   getPunchLogsByEmployee(employeeId: string): Promise<PunchLog[]>;
@@ -488,10 +507,12 @@ export interface IStorage {
   computeAnnualVacationEntitlement(userId: string): Promise<number>;
 
   createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
+  getAuditLog(id: string): Promise<AuditLog | undefined>;
   getAuditLogs(module?: string, limit?: number): Promise<AuditLog[]>;
 
   getCompany(id: string): Promise<Company | undefined>;
   getAllCompanies(): Promise<Company[]>;
+  getOperationalCompany(): Promise<Company | undefined>;
   createCompany(company: InsertCompany): Promise<Company>;
   updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
   deleteCompany(id: string): Promise<void>;
@@ -537,6 +558,12 @@ export interface IStorage {
   removeUserAccessScope(id: string): Promise<void>;
 
   getScopedUserIds(user: User): Promise<Set<string>>;
+  getManagerScopedUserIds(userId: string): Promise<Set<string> | null>;
+  getManagerScopes(userId: string): Promise<ManagerScope[]>;
+  setManagerScopes(userId: string, hats: Array<{ locationId?: string | null; departmentId?: string | null }>): Promise<void>;
+  getLocationDepartmentIds(locationId: string): Promise<string[]>;
+  getDepartmentLocationIds(departmentId: string): Promise<string[]>;
+  setLocationDepartmentIds(locationId: string, departmentIds: string[]): Promise<void>;
 
   getPolicy(id: string): Promise<Policy | undefined>;
   getPoliciesByCompany(companyId: string | null): Promise<Policy[]>;
@@ -731,7 +758,7 @@ export interface IStorage {
   setOffboardingChecklistDeactivation(id: string, actorUserId: string): Promise<OffboardingChecklist | undefined>;
   computeOffboardingProgress(checklistId: string): Promise<{ progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }>;
 
-  setUserDeactivated(userId: string, actorUserId: string): Promise<User | undefined>;
+  setUserDeactivated(userId: string, actorUserId: string, reason?: string | null): Promise<User | undefined>;
   clearUserDeactivated(userId: string): Promise<User | undefined>;
 
   // ===== Biometric kiosk =====
@@ -908,44 +935,70 @@ export class DatabaseStorage implements IStorage {
         sql`(${nameExpr} like lower(${like}) or lower(coalesce(${users.email}, '')) like lower(${like}))` as SQL,
       );
     }
-    // Membership semantics: match an employee assigned to the department via the
-    // many-to-many join OR the legacy single column (kept in sync as a shim).
-    if (opts.departmentId) {
+    // Membership semantics: match an employee assigned via the many-to-many join
+    // OR the legacy single column (kept in sync as a shim). The multi-id variants
+    // match ANY of the given ids and take precedence over the single-id ones.
+    const deptIds = (opts.departmentIds && opts.departmentIds.length > 0)
+      ? opts.departmentIds
+      : (opts.departmentId ? [opts.departmentId] : []);
+    if (deptIds.length > 0) {
+      const idList = sql.join(deptIds.map((id) => sql`${id}`), sql`, `);
       conditions.push(
-        sql`(${users.departmentId} = ${opts.departmentId} or exists (select 1 from ${employeeDepartments} ed where ed.user_id = ${users.id} and ed.department_id = ${opts.departmentId}))` as SQL,
+        sql`(${users.departmentId} in (${idList}) or exists (select 1 from ${employeeDepartments} ed where ed.user_id = ${users.id} and ed.department_id in (${idList})))` as SQL,
       );
     }
-    if (opts.locationId) {
+    const locIds = (opts.locationIds && opts.locationIds.length > 0)
+      ? opts.locationIds
+      : (opts.locationId ? [opts.locationId] : []);
+    if (locIds.length > 0) {
+      const idList = sql.join(locIds.map((id) => sql`${id}`), sql`, `);
       conditions.push(
-        sql`(${users.locationId} = ${opts.locationId} or exists (select 1 from ${employeeLocations} el where el.user_id = ${users.id} and el.location_id = ${opts.locationId}))` as SQL,
+        sql`(${users.locationId} in (${idList}) or exists (select 1 from ${employeeLocations} el where el.user_id = ${users.id} and el.location_id in (${idList})))` as SQL,
       );
     }
-    if (opts.companyId) conditions.push(eq(users.companyId, opts.companyId));
-    if (opts.taxClass) {
+    const companyIds = (opts.companyIds && opts.companyIds.length > 0)
+      ? opts.companyIds
+      : (opts.companyId ? [opts.companyId] : []);
+    if (companyIds.length > 0) {
+      conditions.push(
+        sql`${users.companyId} in (${sql.join(companyIds.map((id) => sql`${id}`), sql`, `)})` as SQL,
+      );
+    }
+
+    const taxClasses = (opts.taxClasses && opts.taxClasses.length > 0)
+      ? opts.taxClasses
+      : (opts.taxClass ? [opts.taxClass] : []);
+    if (taxClasses.length > 0) {
       // No employment profile defaults to "W-2" (matches the route/UI default),
-      // so a "W-2" filter must also include users without a profile row.
-      if (opts.taxClass === "W-2") {
-        conditions.push(
-          sql`coalesce(${userEmploymentProfiles.taxClassification}, 'W-2') = ${opts.taxClass}` as SQL,
-        );
-      } else {
-        conditions.push(eq(userEmploymentProfiles.taxClassification, opts.taxClass));
-      }
+      // so a selection that includes "W-2" must also match users without a
+      // profile row. OR all selected classes together.
+      const expr = sql`coalesce(${userEmploymentProfiles.taxClassification}, 'W-2') in (${sql.join(taxClasses.map((t) => sql`${t}`), sql`, `)})`;
+      conditions.push(expr as SQL);
     }
-    if (opts.certStatus) {
+
+    const certStatuses = (opts.certStatuses && opts.certStatuses.length > 0)
+      ? opts.certStatuses
+      : (opts.certStatus ? [opts.certStatus] : []);
+    if (certStatuses.length > 0) {
       // Certifications are 1:many, so use EXISTS subqueries rather than a join
       // to avoid multiplying user rows (which would corrupt count/pagination).
-      if (opts.certStatus === "none") {
-        // "No certifications" mirrors the prior client filter, which ignored
-        // archived rows — a user with only archived certs still counts as none.
-        conditions.push(
-          sql`not exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status <> 'archived')` as SQL,
-        );
-      } else {
-        conditions.push(
-          sql`exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status = ${opts.certStatus})` as SQL,
-        );
+      // OR the selected statuses; "none" (no non-archived certs) can mix with
+      // specific statuses — a user matches if ANY selected condition holds.
+      const parts: SQL[] = [];
+      for (const st of certStatuses) {
+        if (st === "none") {
+          // "No certifications" mirrors the prior client filter, which ignored
+          // archived rows — a user with only archived certs still counts as none.
+          parts.push(
+            sql`not exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status <> 'archived')` as SQL,
+          );
+        } else {
+          parts.push(
+            sql`exists (select 1 from ${certifications} c where c.employee_id = ${users.id} and c.status = ${st})` as SQL,
+          );
+        }
       }
+      conditions.push(sql`(${sql.join(parts, sql` or `)})` as SQL);
     }
     if (opts.excludeUserIds && opts.excludeUserIds.length > 0) {
       conditions.push(sql`${users.id} not in (${sql.join(opts.excludeUserIds.map((id) => sql`${id}`), sql`, `)})` as SQL);
@@ -1266,6 +1319,29 @@ export class DatabaseStorage implements IStorage {
   async updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined> {
     const [updated] = await db.update(userEmploymentProfiles).set({ ...profile, updatedAt: new Date() }).where(eq(userEmploymentProfiles.userId, userId)).returning();
     return updated;
+  }
+
+  // F7: per-user Reports defaults (preferred locations + departments).
+  async getUserReportDefaults(userId: string): Promise<UserReportDefaults | undefined> {
+    const [row] = await db.select().from(userReportDefaults).where(eq(userReportDefaults.userId, userId));
+    return row;
+  }
+
+  async setUserReportDefaults(
+    userId: string,
+    prefs: { locationIds: string[]; departmentIds: string[] },
+  ): Promise<UserReportDefaults> {
+    const locationIds = Array.from(new Set((prefs.locationIds || []).filter(Boolean)));
+    const departmentIds = Array.from(new Set((prefs.departmentIds || []).filter(Boolean)));
+    const [row] = await db
+      .insert(userReportDefaults)
+      .values({ userId, locationIds, departmentIds, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: userReportDefaults.userId,
+        set: { locationIds, departmentIds, updatedAt: new Date() },
+      })
+      .returning();
+    return row;
   }
 
   async getPunchLog(id: string): Promise<PunchLog | undefined> {
@@ -2373,6 +2449,19 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(companies);
   }
 
+  // Note #1: the single operational company every employee belongs to —
+  // "Ahava Medical". Matched by name (BCM and any other company are payroll-only
+  // payees, never operational). Falls back to the first active company, then any
+  // company, so a rename can't orphan new hires.
+  async getOperationalCompany(): Promise<Company | undefined> {
+    const all = await db.select().from(companies);
+    return (
+      all.find((c) => /ahava\s*medical/i.test(c.name || "")) ??
+      all.find((c) => c.isActive) ??
+      all[0]
+    );
+  }
+
   async createCompany(company: InsertCompany): Promise<Company> {
     const [created] = await db.insert(companies).values(company).returning();
     return created;
@@ -2552,10 +2641,72 @@ export class DatabaseStorage implements IStorage {
     await db.delete(userAccessScopes).where(eq(userAccessScopes.id, id));
   }
 
+  // Note #3: a manager's visible employees = the UNION of their "hats". Each hat
+  // is one (location?, department?) pair in manager_scopes:
+  //   * location only  → everyone at that location (all departments)
+  //   * department only → that department across all locations
+  //   * both           → that department at that location
+  // Returns null when the manager has NO hats, so callers fall back to the
+  // legacy membership-based scoping and existing managers keep working untouched.
+  async getManagerScopedUserIds(userId: string): Promise<Set<string> | null> {
+    const hats = await db.select().from(managerScopes).where(eq(managerScopes.userId, userId));
+    if (hats.length === 0) return null;
+    const result = new Set<string>();
+    for (const hat of hats) {
+      if (!hat.locationId && !hat.departmentId) continue;
+      const perHat = await this.usersMatchingScope(hat.locationId, hat.departmentId);
+      perHat.forEach((id) => result.add(id));
+    }
+    return result;
+  }
+
+  // Employees matching a single (location?, department?) hat. A null dimension
+  // is unconstrained; when both are set the two constraints are AND-ed. Checks
+  // both the legacy single column and the many-to-many join for each dimension.
+  private async usersMatchingScope(
+    locationId: string | null,
+    departmentId: string | null,
+  ): Promise<Set<string>> {
+    const conditions: any[] = [];
+    if (locationId) {
+      conditions.push(
+        or(
+          eq(users.locationId, locationId),
+          inArray(
+            users.id,
+            db.select({ id: employeeLocations.userId }).from(employeeLocations).where(eq(employeeLocations.locationId, locationId)),
+          ),
+        ),
+      );
+    }
+    if (departmentId) {
+      conditions.push(
+        or(
+          eq(users.departmentId, departmentId),
+          inArray(
+            users.id,
+            db.select({ id: employeeDepartments.userId }).from(employeeDepartments).where(eq(employeeDepartments.departmentId, departmentId)),
+          ),
+        ),
+      );
+    }
+    if (conditions.length === 0) return new Set();
+    const rows = await db.select({ id: users.id }).from(users).where(and(...conditions));
+    return new Set(rows.map((r) => r.id));
+  }
+
   async getScopedUserIds(user: User): Promise<Set<string>> {
     if (user.role === "admin") {
       const allUsers = await this.getAllUsers();
       return new Set(allUsers.map(u => u.id));
+    }
+
+    // Hats (manager_scopes) win when defined; otherwise fall back to the legacy
+    // membership scoping below. A manager always sees themselves too.
+    const hatScoped = await this.getManagerScopedUserIds(user.id);
+    if (hatScoped) {
+      hatScoped.add(user.id);
+      return hatScoped;
     }
 
     const conditions: any[] = [];
@@ -2602,6 +2753,56 @@ export class DatabaseStorage implements IStorage {
 
     const scopedUsers = await db.select({ id: users.id }).from(users).where(and(...conditions));
     return new Set(scopedUsers.map(u => u.id));
+  }
+
+  // --- Manager hats (Note #3) ------------------------------------------------
+  async getManagerScopes(userId: string): Promise<ManagerScope[]> {
+    return db.select().from(managerScopes).where(eq(managerScopes.userId, userId));
+  }
+
+  // Replace a manager's full set of hats in one shot. Each hat must name at
+  // least one dimension; empty pairs are dropped.
+  async setManagerScopes(
+    userId: string,
+    hats: Array<{ locationId?: string | null; departmentId?: string | null }>,
+  ): Promise<void> {
+    const clean = hats
+      .map((h) => ({ locationId: h.locationId || null, departmentId: h.departmentId || null }))
+      .filter((h) => h.locationId || h.departmentId);
+    await db.transaction(async (tx) => {
+      await tx.delete(managerScopes).where(eq(managerScopes.userId, userId));
+      if (clean.length > 0) {
+        await tx.insert(managerScopes).values(clean.map((h) => ({ userId, ...h })));
+      }
+    });
+  }
+
+  // --- Department ↔ location mapping (Note #3) -------------------------------
+  async getLocationDepartmentIds(locationId: string): Promise<string[]> {
+    const rows = await db
+      .select({ departmentId: departmentLocations.departmentId })
+      .from(departmentLocations)
+      .where(eq(departmentLocations.locationId, locationId));
+    return rows.map((r) => r.departmentId);
+  }
+
+  async getDepartmentLocationIds(departmentId: string): Promise<string[]> {
+    const rows = await db
+      .select({ locationId: departmentLocations.locationId })
+      .from(departmentLocations)
+      .where(eq(departmentLocations.departmentId, departmentId));
+    return rows.map((r) => r.locationId);
+  }
+
+  // Replace the full set of departments that exist at a location.
+  async setLocationDepartmentIds(locationId: string, departmentIds: string[]): Promise<void> {
+    const unique = Array.from(new Set(departmentIds.filter(Boolean)));
+    await db.transaction(async (tx) => {
+      await tx.delete(departmentLocations).where(eq(departmentLocations.locationId, locationId));
+      if (unique.length > 0) {
+        await tx.insert(departmentLocations).values(unique.map((departmentId) => ({ locationId, departmentId })));
+      }
+    });
   }
 
   async getPtoPolicy(id: string): Promise<PtoPolicy | undefined> {
@@ -2955,6 +3156,11 @@ export class DatabaseStorage implements IStorage {
   async createAuditLog(log: InsertAuditLog): Promise<AuditLog> {
     const [created] = await db.insert(auditLogs).values(log).returning();
     return created;
+  }
+
+  async getAuditLog(id: string): Promise<AuditLog | undefined> {
+    const [row] = await db.select().from(auditLogs).where(eq(auditLogs.id, id));
+    return row;
   }
 
   async getAuditLogs(targetType?: string, limit: number = 50): Promise<AuditLog[]> {
@@ -4126,13 +4332,21 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async setUserDeactivated(userId: string, _actorUserId: string): Promise<User | undefined> {
-    const [updated] = await db.update(users).set({ deactivatedAt: new Date(), updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+  async setUserDeactivated(userId: string, _actorUserId: string, reason?: string | null): Promise<User | undefined> {
+    const [updated] = await db
+      .update(users)
+      .set({ deactivatedAt: new Date(), terminationReason: reason ?? null, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
     return updated;
   }
 
   async clearUserDeactivated(userId: string): Promise<User | undefined> {
-    const [updated] = await db.update(users).set({ deactivatedAt: null, updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+    const [updated] = await db
+      .update(users)
+      .set({ deactivatedAt: null, terminationReason: null, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
     return updated;
   }
 

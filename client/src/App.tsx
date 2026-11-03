@@ -27,6 +27,7 @@ import AuditLogPage from "@/pages/audit-log";
 import PermissionsPage from "@/pages/permissions";
 import RoleManagementPage from "@/pages/role-management";
 import KioskManagementPage from "@/pages/kiosk-management";
+import FingerprintClocksPage from "@/pages/fingerprint-clocks";
 import ChangePasswordPage from "@/pages/change-password";
 import MyPayrollDocsPage from "@/pages/my-payroll-docs";
 import AdminPayrollDocsPage from "@/pages/admin-payroll-docs";
@@ -139,6 +140,11 @@ function AuthenticatedRouter() {
         <Route path="/kiosk-management">{() => (
           <ProtectedRoute roles={["admin"]}>
             <KioskManagementPage />
+          </ProtectedRoute>
+        )}</Route>
+        <Route path="/fingerprint-clocks">{() => (
+          <ProtectedRoute roles={["admin"]}>
+            <FingerprintClocksPage />
           </ProtectedRoute>
         )}</Route>
         <Route path="/biometrics">{() => (

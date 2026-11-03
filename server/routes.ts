@@ -8,7 +8,7 @@ import { employeeLocations as employeeLocationsTable } from "@shared/schema";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
-import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType } from "@shared/schema";
+import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType, TERMINATION_REASONS } from "@shared/schema";
 import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport, OverlapPunchPair, OverlapPunchSummary, EmployeeSchedule } from "@shared/schema";
 import { userDepartmentIds, userLocationIds } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
@@ -21,6 +21,8 @@ import { buildEmployeeTimesheet } from "./timesheetService";
 import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, summarizeLedger, recomputeLedger } from "./attendanceLedger";
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
+import { importPunchesFromBuffer } from "./services/punchImport";
+import { autoPushEmployeeSafe } from "./adms/routes";
 import {
   computeAttendanceReconciliation,
   applyAttendanceReconciliation,
@@ -56,7 +58,8 @@ import { drainPending, enqueue } from "./services/jobs";
 import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
-import { flagClockInGeofence, attachGeofenceMapToExceptions, type GeofenceMapData } from "./services/geofence";
+import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
+import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/rank";
 import { resolveEmployeeTimezone, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import {
   resolvePunctualityBonusConfig,
@@ -188,6 +191,21 @@ const employeeImportUpload = multer({
       cb(null, true);
     } else {
       cb(new Error("Only Excel (.xlsx) spreadsheets are allowed"));
+    }
+  },
+});
+
+// Punch (timesheet) migration import — accepts .xlsx/.xls and .csv.
+const punchImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = [".xlsx", ".xls", ".csv"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only Excel (.xlsx) or CSV files are allowed"));
     }
   },
 });
@@ -663,12 +681,22 @@ export async function registerRoutes(
     });
 
     if (pagination.paginated) {
+      const csvIds = (v: unknown): string[] | undefined => {
+        if (typeof v !== "string" || v.trim() === "") return undefined;
+        const ids = v.split(",").map((s) => s.trim()).filter(Boolean);
+        return ids.length > 0 ? ids : undefined;
+      };
       const { rows, total } = await storage.getUsersPage({
         search: typeof req.query.search === "string" ? req.query.search : undefined,
         departmentId: typeof req.query.departmentId === "string" ? req.query.departmentId : undefined,
+        departmentIds: csvIds(req.query.departmentIds),
+        locationIds: csvIds(req.query.locationIds),
         companyId: typeof req.query.companyId === "string" ? req.query.companyId : undefined,
         taxClass: typeof req.query.taxClass === "string" ? req.query.taxClass : undefined,
         certStatus: typeof req.query.certStatus === "string" ? req.query.certStatus : undefined,
+        companyIds: csvIds(req.query.companyIds),
+        taxClasses: csvIds(req.query.taxClasses),
+        certStatuses: csvIds(req.query.certStatuses),
         excludeUserIds,
         limit: pagination.limit,
         offset: pagination.offset,
@@ -948,7 +976,23 @@ export async function registerRoutes(
     departmentIds: z.array(z.string()).optional(),
     locationIds: z.array(z.string()).optional(),
     employmentType: z.string().optional(),
-    taxClassification: z.enum(["W-2", "1099"]).optional(),
+    taxClassification: z.enum(["W-2", "1099", "Volunteer"]).optional(),
+    // Note #5: which company issues this person's pay (W-2 → the person is paid
+    // by this company; 1099 → the check is made out to this company). Null for
+    // volunteers / people not on payroll. Picked manually from existing companies.
+    payrollCompanyId: z.string().optional().nullable(),
+    // Note #5 (1099 payee): who the 1099 check is made out to. Only the name is
+    // required (enforced below when tax form is 1099); the rest are optional.
+    payeeName: z.string().optional().nullable(),
+    payeeAddress: z.string().optional().nullable(),
+    payeeCity: z.string().optional().nullable(),
+    payeeState: z.string().optional().nullable(),
+    payeeZip: z.string().optional().nullable(),
+    payeeTaxId: z.string().optional().nullable(),
+    payeeMemo: z.string().optional().nullable(),
+    // Note #5: when false the person is not required to punch; missing-clock-out
+    // and no-show alerts are suppressed. Defaults true.
+    clockInRequired: z.boolean().optional(),
     hireDate: z.string().optional(),
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
@@ -973,27 +1017,13 @@ export async function registerRoutes(
       });
     }
 
-    if (parsed.data.companyId) {
-      if (parsed.data.locationId) {
-        const loc = await storage.getLocation(parsed.data.locationId);
-        if (!loc) {
-          return res.status(400).json({ message: "Location does not belong to the selected company" });
-        }
-        const locCompanies = new Set([
-          ...(loc.companyId ? [loc.companyId] : []),
-          ...(await storage.getLocationCompanyIds(loc.id)),
-        ]);
-        if (!locCompanies.has(parsed.data.companyId)) {
-          return res.status(400).json({ message: "Location does not belong to the selected company" });
-        }
-      }
-      if (parsed.data.departmentId) {
-        const dept = await storage.getDepartment(parsed.data.departmentId);
-        if (!dept || (dept.companyId && dept.companyId !== parsed.data.companyId)) {
-          return res.status(400).json({ message: "Department does not belong to the selected company" });
-        }
-      }
-    }
+    // Note #1: operationally there is a single company (Ahava Medical). The
+    // client no longer asks for it, so default any missing companyId to the
+    // operational company and let every hire land under it. Locations and
+    // departments are no longer gated by company (one operational company;
+    // departments are a shared list), so the old membership validation is gone.
+    const operationalCompanyId =
+      parsed.data.companyId || (await storage.getOperationalCompany())?.id || null;
 
     // Always create an employment profile so every new hire has a tax
     // classification on record (defaults to W-2). Reports and payroll filters
@@ -1008,6 +1038,9 @@ export async function registerRoutes(
     if (profilePayType === "salary" && !(parsed.data.weeklySalary && parsed.data.weeklySalary > 0)) {
       return res.status(400).json({ message: "Salary pay type requires a positive Weekly Salary." });
     }
+    if (parsed.data.taxClassification === "1099" && !(parsed.data.payeeName && parsed.data.payeeName.trim())) {
+      return res.status(400).json({ message: 'A 1099 worker needs a "Pay to the order of" name.' });
+    }
 
     const tempPassword = generateTempPassword();
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
@@ -1020,7 +1053,7 @@ export async function registerRoutes(
       password: hashedPassword,
       passwordHash: hashedPassword,
       forcePasswordChange: true,
-      companyId: parsed.data.companyId || null,
+      companyId: operationalCompanyId,
       locationId: parsed.data.locationId || null,
       departmentId: parsed.data.departmentId || null,
     });
@@ -1036,6 +1069,18 @@ export async function registerRoutes(
       userId: newUser.id,
       employmentType: parsed.data.employmentType || "full_time",
       taxClassification: parsed.data.taxClassification || "W-2",
+      // Volunteers are never on payroll, so they never carry a paying company.
+      payrollCompanyId:
+        parsed.data.taxClassification === "Volunteer" ? null : parsed.data.payrollCompanyId || null,
+      // 1099 payee ("pay to the order of") — only kept for 1099 workers.
+      payeeName: parsed.data.taxClassification === "1099" ? parsed.data.payeeName || null : null,
+      payeeAddress: parsed.data.taxClassification === "1099" ? parsed.data.payeeAddress || null : null,
+      payeeCity: parsed.data.taxClassification === "1099" ? parsed.data.payeeCity || null : null,
+      payeeState: parsed.data.taxClassification === "1099" ? parsed.data.payeeState || null : null,
+      payeeZip: parsed.data.taxClassification === "1099" ? parsed.data.payeeZip || null : null,
+      payeeTaxId: parsed.data.taxClassification === "1099" ? parsed.data.payeeTaxId || null : null,
+      payeeMemo: parsed.data.taxClassification === "1099" ? parsed.data.payeeMemo || null : null,
+      clockInRequired: parsed.data.clockInRequired ?? true,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
       weeklySalary: parsed.data.weeklySalary || null,
@@ -1291,6 +1336,7 @@ export async function registerRoutes(
             created: summary.created,
             updated: summary.updated,
             skipped: summary.skipped.length,
+            warnings: summary.warnings.length,
             company: summary.company,
           },
           context: { fileName: req.file.originalname },
@@ -1303,9 +1349,60 @@ export async function registerRoutes(
     },
   );
 
+  // Bulk-import historical punches (clock in/out) from the prior time-clock
+  // system. Admin-only. Idempotent: a shift whose (employee, clock-in minute)
+  // already exists is skipped, so the report can be re-uploaded as each machine
+  // is switched over without doubling.
+  app.post(
+    "/api/attendance/import",
+    requireAuth,
+    requireRole("admin"),
+    (req: any, res, next) => {
+      punchImportUpload.single("file")(req, res, (err: any) => {
+        if (err) {
+          return res.status(400).json({ message: err.message || "Invalid upload" });
+        }
+        next();
+      });
+    },
+    async (req: any, res) => {
+      if (!req.file?.buffer) {
+        return res.status(400).json({ message: "No spreadsheet file uploaded" });
+      }
+      const actor = (req as any).authUser as User;
+      const auditCtx = getAuditContext(req);
+      try {
+        const summary = await importPunchesFromBuffer(req.file.buffer);
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "attendance",
+          targetId: actor.id,
+          action: "attendance.bulk_import",
+          oldValue: null,
+          newValue: {
+            imported: summary.imported,
+            duplicates: summary.duplicates,
+            skipped: summary.skipped.length,
+            employeesTouched: summary.employeesTouched,
+          },
+          context: { fileName: req.file.originalname },
+          ...auditCtx,
+        });
+        res.json(summary);
+      } catch (err) {
+        handleRouteError(res, err, "Failed to import punches");
+      }
+    },
+  );
+
   app.patch("/api/users/:id", requireAuth, requirePermission("users.edit"), async (req, res) => {
     if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(404).json({ message: "User not found" });
+    }
+    // Additive lock guard (does NOT change who can edit): a locked account can't
+    // make edits until unlocked. Super admin is never locked.
+    if ((req as any).authUser?.editLocked && !isSuperAdmin(req)) {
+      return res.status(403).json({ message: "Your account is locked from making changes." });
     }
     const parsed = updateUserSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -1393,6 +1490,9 @@ export async function registerRoutes(
     }
     if (locIdsProvided || parsed.data.locationId !== undefined || parsed.data.companyId !== undefined) {
       await storage.setUserLocationIds(String(req.params.id), nextLocIds);
+      // F4: pushing this employee's fingerprint(s) to the clocks at their
+      // (possibly new) location(s). Fire-and-forget — never blocks the save.
+      autoPushEmployeeSafe(String(req.params.id));
     }
 
     try {
@@ -2612,6 +2712,157 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
+  // Note #3: which departments exist at a location (edited from the location
+  // side). Returns/replaces the full set of department ids.
+  app.get("/api/locations/:locationId/departments", requireAuth, requirePermission("locations.view"), async (req, res) => {
+    const location = await storage.getLocation(String(req.params.locationId));
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    const departmentIds = await storage.getLocationDepartmentIds(String(req.params.locationId));
+    res.json({ departmentIds });
+  });
+
+  app.put("/api/locations/:locationId/departments", requireAuth, requirePermission("locations.manage"), async (req, res) => {
+    const location = await storage.getLocation(String(req.params.locationId));
+    if (!location) return res.status(404).json({ message: "Location not found" });
+    const parsed = z.object({ departmentIds: z.array(z.string()) }).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid department list", errors: parsed.error.flatten() });
+    }
+    await storage.setLocationDepartmentIds(String(req.params.locationId), parsed.data.departmentIds);
+    const departmentIds = await storage.getLocationDepartmentIds(String(req.params.locationId));
+    res.json({ departmentIds });
+  });
+
+  // Note #3: a manager's "hats" — the (location?, department?) scopes that
+  // decide which employees they can see. Empty = legacy membership scoping.
+  app.get("/api/users/:id/manager-scopes", requireAuth, requirePermission("users.view"), async (req, res) => {
+    const scopes = await storage.getManagerScopes(String(req.params.id));
+    res.json({ scopes });
+  });
+
+  app.put("/api/users/:id/manager-scopes", requireAuth, requirePermission("users.edit"), async (req, res) => {
+    const target = await storage.getUser(String(req.params.id));
+    if (!target) return res.status(404).json({ message: "User not found" });
+    const parsed = z
+      .object({
+        scopes: z.array(
+          z.object({
+            locationId: z.string().nullish(),
+            departmentId: z.string().nullish(),
+          }),
+        ),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid manager scopes", errors: parsed.error.flatten() });
+    }
+    await storage.setManagerScopes(String(req.params.id), parsed.data.scopes);
+    const scopes = await storage.getManagerScopes(String(req.params.id));
+    res.json({ scopes });
+  });
+
+  // --- Account edit-lock (chain of command) --------------------------------
+  // Lock: freeze a lower-ranked account from making edits. Stores the locker's
+  // rank so only someone at that rank or higher can unlock later.
+  app.post("/api/users/:id/lock", requireAuth, async (req: any, res) => {
+    const actor = req.authUser as User;
+    const target = await storage.getUser(String(req.params.id));
+    if (!target) return res.status(404).json({ message: "User not found" });
+    if (actor.id === target.id) return res.status(400).json({ message: "You can't lock your own account." });
+    const [actorRank, targetRank] = await Promise.all([getUserRank(actor), getUserRank(target)]);
+    if (!outranks(actorRank, targetRank)) {
+      return res.status(403).json({ message: "You can only lock accounts below your authority." });
+    }
+    const updated = await storage.updateUser(target.id, {
+      editLocked: true,
+      lockedByUserId: actor.id,
+      lockedByRank: actorRank,
+      lockedAt: new Date(),
+    } as any);
+    invalidateUserCache();
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: "user",
+      targetId: target.id,
+      action: "account.lock",
+      oldValue: { editLocked: false },
+      newValue: { editLocked: true, lockedByRank: actorRank },
+      ...getAuditContext(req),
+    });
+    res.json({ id: updated?.id, editLocked: true });
+  });
+
+  // Unlock: only someone at the locker's rank or higher may unlock.
+  app.post("/api/users/:id/unlock", requireAuth, async (req: any, res) => {
+    const actor = req.authUser as User;
+    const target = await storage.getUser(String(req.params.id));
+    if (!target) return res.status(404).json({ message: "User not found" });
+    if (!target.editLocked) return res.json({ id: target.id, editLocked: false });
+    const actorRank = await getUserRank(actor);
+    const lockedByRank = target.lockedByRank ?? RANK.OWNER;
+    if (!canUnlock(actorRank, lockedByRank)) {
+      return res.status(403).json({
+        message: `This account was locked by a ${RANK_LABEL[lockedByRank] || "higher authority"} — only a ${RANK_LABEL[lockedByRank] || "higher authority"} or above can unlock it.`,
+      });
+    }
+    const updated = await storage.updateUser(target.id, {
+      editLocked: false,
+      lockedByUserId: null,
+      lockedByRank: null,
+      lockedAt: null,
+    } as any);
+    invalidateUserCache();
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: "user",
+      targetId: target.id,
+      action: "account.unlock",
+      oldValue: { editLocked: true, lockedByRank },
+      newValue: { editLocked: false },
+      ...getAuditContext(req),
+    });
+    res.json({ id: updated?.id, editLocked: false });
+  });
+
+  // Undo a logged change: revert the recorded old values. Supports the edits we
+  // log with before/after snapshots (employment_profile, user). The actor must
+  // out-rank the affected employee, and the undo is itself audit-logged.
+  app.post("/api/audit-logs/:id/undo", requireAuth, requirePermission("audit.view"), async (req: any, res) => {
+    const actor = req.authUser as User;
+    const entry = await storage.getAuditLog(String(req.params.id));
+    if (!entry) return res.status(404).json({ message: "Audit entry not found" });
+    const oldValue = (entry.oldValue ?? null) as Record<string, unknown> | null;
+    if (!oldValue || Object.keys(oldValue).length === 0) {
+      return res.status(400).json({ message: "This change has no recorded previous value to undo." });
+    }
+    if (entry.targetType !== "employment_profile" && entry.targetType !== "user") {
+      return res.status(400).json({ message: `Undo isn't supported for "${entry.targetType}" changes yet.` });
+    }
+    // The affected employee is the audit target (userId for both types).
+    const affected = await storage.getUser(entry.targetId);
+    if (!affected) return res.status(404).json({ message: "The affected account no longer exists." });
+    const [actorRank, targetRank] = await Promise.all([getUserRank(actor), getUserRank(affected)]);
+    if (actor.id !== affected.id && !outranks(actorRank, targetRank)) {
+      return res.status(403).json({ message: "You can only undo changes on accounts below your authority." });
+    }
+    if (entry.targetType === "employment_profile") {
+      await storage.updateEmploymentProfile(entry.targetId, oldValue as any);
+    } else {
+      await storage.updateUser(entry.targetId, oldValue as any);
+      invalidateUserCache();
+    }
+    await writeAuditLog({
+      actorUserId: actor.id,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      action: `undo.${entry.action}`,
+      oldValue: (entry.newValue ?? null) as any,
+      newValue: oldValue as any,
+      ...getAuditContext(req),
+    });
+    res.json({ ok: true, reverted: Object.keys(oldValue) });
+  });
+
   // Task #418: pull optional device coordinates off a clock-in payload. Returns
   // nulls for anything missing or non-finite — geofencing treats "no coords" as
   // a required-but-missing signal rather than throwing.
@@ -2846,6 +3097,11 @@ export async function registerRoutes(
   });
 
   app.patch("/api/employment-profiles/:userId", requireAuth, requirePermission("users.edit"), async (req, res) => {
+    // Additive lock guard (does NOT change who can edit): a locked account can't
+    // make edits until unlocked. Super admin is never locked.
+    if ((req as any).authUser?.editLocked && !isSuperAdmin(req)) {
+      return res.status(403).json({ message: "Your account is locked from making changes." });
+    }
     const parsed = insertEmploymentProfileSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid employment profile data", errors: parsed.error.flatten() });
@@ -2896,6 +3152,14 @@ export async function registerRoutes(
         "voluntaryPayEnabled",
         "taxClassification",
         "payrollCompanyId",
+        "payeeName",
+        "payeeAddress",
+        "payeeCity",
+        "payeeState",
+        "payeeZip",
+        "payeeTaxId",
+        "payeeMemo",
+        "clockInRequired",
         "hireDate",
         "terminationDate",
       ] as const;
@@ -2962,6 +3226,14 @@ export async function registerRoutes(
     if (user.role === "admin") {
       const allUsers = (await storage.getAllUsers()).filter(u => u.id !== SUPER_ADMIN_USER_ID);
       return new Set(allUsers.filter(u => u.id !== user.id).map(u => u.id));
+    }
+    // Note #3: manager hats (manager_scopes) win when defined — the union of the
+    // manager's (location?, department?) scopes. Falls through to the legacy
+    // department-manager logic when the manager has no hats yet.
+    const hatScoped = await storage.getManagerScopedUserIds(user.id);
+    if (hatScoped) {
+      hatScoped.delete(user.id);
+      return hatScoped;
     }
     const managedDepts = await storage.getDepartmentsForManager(user.id);
     if (managedDepts.length > 0) {
@@ -3553,6 +3825,33 @@ export async function registerRoutes(
       const { latitude: punchLatitude, longitude: punchLongitude } =
         parsePunchCoords(req.body);
 
+      // Note #2: STRICT geofencing for self-service (phone/web) clock-ins. The
+      // wall fingerprint clock and on-site kiosk are physical proof of presence
+      // and are exempt (they punch through their own paths / sources). A manager
+      // or admin can override for a stuck employee by passing overrideGeofence.
+      const physicalSource = source === "kiosk" || source === "biometric";
+      const canOverrideGeofence =
+        (user.role === "manager" || user.role === "admin") && req.body?.overrideGeofence === true;
+      if (!physicalSource && !canOverrideGeofence) {
+        const geoEval = await evaluateClockInGeofence(userId, punchLatitude, punchLongitude);
+        if (geoEval.required && !geoEval.withinRadius) {
+          await recordGeofenceBlockedAttempt({
+            userId,
+            workDate: now.toISOString().split("T")[0],
+            punchTime: now,
+            evaluation: geoEval,
+            punchLatitude,
+            punchLongitude,
+          });
+          return res.status(403).json({
+            message: buildGeofenceBlockMessage(geoEval),
+            code: "geofence_blocked",
+            coordsMissing: geoEval.coordsMissing,
+            nearestDistanceMeters: geoEval.nearestDistanceMeters,
+          });
+        }
+      }
+
       const record = await storage.clockIn(userId, source, enforcement.roundedTime, {
         punchLatitude,
         punchLongitude,
@@ -4065,16 +4364,27 @@ export async function registerRoutes(
       try {
         const actor = req.authUser as User;
         const punchId = String(req.params.id);
-        const { clockIn, clockOut, reason } = req.body as {
+        const { clockIn, clockOut, reason, workDate } = req.body as {
           clockIn?: string | null;
           clockOut?: string | null;
           reason?: string;
+          workDate?: string;
         };
+
+        if (workDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(workDate))) {
+          return res.status(400).json({ message: "workDate must be YYYY-MM-DD" });
+        }
 
         const existing = await storage.getPunchLog(punchId);
         if (!existing) {
           return res.status(404).json({ message: "Punch not found" });
         }
+
+        // The day a punch is filed under. Live punches stamp this in UTC, which
+        // rolls an evening Eastern shift onto the next calendar day; letting a
+        // manager set it explicitly is the supported way to move a mis-dated
+        // punch to the correct local day without touching the clock times.
+        const newWorkDate = workDate !== undefined ? String(workDate) : existing.workDate;
 
         const scope = await resolvePunchScope(req);
         if (!scope || !scope.users.some((u) => u.id === existing.employeeId)) {
@@ -4105,8 +4415,17 @@ export async function registerRoutes(
 
         // Block edits to a punch already baked into a finalized (exported/locked)
         // payroll batch — changing its hours would silently desync payroll. The
-        // manager must reopen the affected batch first.
-        const finalizedExports = await findFinalizedPayrollExportsForPunch(punchId);
+        // manager must reopen the affected batch first. When moving the punch to
+        // a different day, the DESTINATION day must not be in a finalized period
+        // either (so you can't move hours into a locked batch).
+        const finalizedById = new Map<string, PayrollExport>();
+        for (const e of await findFinalizedPayrollExportsForPunch(punchId)) finalizedById.set(e.id, e);
+        if (newWorkDate !== existing.workDate) {
+          for (const e of await findFinalizedPayrollExportsForEmployeeDate(existing.employeeId, newWorkDate)) {
+            finalizedById.set(e.id, e);
+          }
+        }
+        const finalizedExports = [...finalizedById.values()];
         if (finalizedExports.length > 0) {
           return res.status(409).json({
             message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before editing the punch.`,
@@ -4148,6 +4467,7 @@ export async function registerRoutes(
           punchId,
           candidateDates: [
             existing.workDate,
+            newWorkDate,
             newClockIn ? newClockIn.toISOString().split("T")[0] : undefined,
           ],
           allowFuturePunch: allowFuturePunchFromRules(attRules),
@@ -4165,6 +4485,7 @@ export async function registerRoutes(
         const update: Partial<InsertPunchLog> = {
           clockIn: newClockIn,
           roundedClockIn: roundTime(newClockIn, roundingRule, roundingInterval),
+          workDate: newWorkDate,
         };
 
         if (newClockOut) {
@@ -4194,6 +4515,7 @@ export async function registerRoutes(
           clockOut: existing.clockOut,
           hoursWorked: existing.hoursWorked,
           status: existing.status,
+          workDate: existing.workDate,
         };
         const updated = await storage.updatePunchLog(punchId, update);
 
@@ -4208,6 +4530,7 @@ export async function registerRoutes(
             clockOut: updated?.clockOut,
             hoursWorked: updated?.hoursWorked,
             status: updated?.status,
+            workDate: updated?.workDate,
           },
           context: { reason: reason || null, direct: true, employeeId: existing.employeeId },
           ...getAuditContext(req),
@@ -4244,6 +4567,179 @@ export async function registerRoutes(
       } catch (error) {
         console.error("Error editing punch:", error);
         handleRouteError(res, error, "Failed to edit punch");
+      }
+    },
+  );
+
+  // Directly CREATE a punch (manager/admin) — e.g. adding a forgotten/missing
+  // punch from the Review Time Sheet editor. Mirrors the PATCH path: integrity
+  // validation, finalized-payroll guard (by date), rounding + hours via the
+  // shared clock-out enforcement, audit + ledger. No employee notification.
+  app.post(
+    "/api/attendance/punches",
+    requireAuth,
+    requirePermission("attendance.edit"),
+    async (req: any, res) => {
+      try {
+        const actor = req.authUser as User;
+        const { employeeId, clockIn, clockOut, reason } = req.body as {
+          employeeId?: string;
+          clockIn?: string | null;
+          clockOut?: string | null;
+          reason?: string;
+        };
+
+        if (!employeeId) {
+          return res.status(400).json({ message: "employeeId is required" });
+        }
+        if (!clockIn) {
+          return res.status(400).json({ message: "A clock-in time is required." });
+        }
+
+        const scope = await resolvePunchScope(req);
+        if (!scope || !scope.users.some((u) => u.id === employeeId)) {
+          return res.status(403).json({ message: "Not authorized to add a punch for this employee" });
+        }
+
+        const employeeUser = await storage.getUser(employeeId);
+        if (!employeeUser) {
+          return res.status(404).json({ message: "Employee not found" });
+        }
+
+        const newClockIn = new Date(clockIn);
+        if (isNaN(newClockIn.getTime())) {
+          return res.status(400).json({ message: "Invalid clock-in time." });
+        }
+        const newClockOut = clockOut ? new Date(clockOut) : null;
+        if (newClockOut && isNaN(newClockOut.getTime())) {
+          return res.status(400).json({ message: "Invalid clock-out time." });
+        }
+
+        // workDate is the UTC calendar date of the clock-in, matching how live
+        // clock-ins bucket the day (storage.clockIn).
+        const workDate = newClockIn.toISOString().split("T")[0];
+
+        // Block adding a punch inside an already-finalized payroll period.
+        const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
+        if (finalizedExports.length > 0) {
+          return res.status(409).json({
+            message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before adding a punch.`,
+            code: "PAYROLL_FINALIZED",
+            payrollExports: finalizedExports.map((e) => ({
+              id: e.id,
+              startDate: e.startDate,
+              endDate: e.endDate,
+              status: e.status,
+            })),
+          });
+        }
+
+        const attendancePolicy = await getEffectivePolicy(
+          employeeUser.companyId,
+          employeeUser.id,
+          "attendance",
+          employeeUser,
+        );
+        const payrollPolicy = await getEffectivePolicy(
+          employeeUser.companyId,
+          employeeUser.id,
+          "payroll",
+          employeeUser,
+        );
+        const attRules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+        const payrollRules = payrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+        const roundingRule = attRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+        const roundingInterval =
+          attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+
+        // Shared punch-integrity validation: reject impossible/unparseable times,
+        // zero/negative duration, future-dating, a duplicate open shift, or an
+        // overlap with another of this employee's punches.
+        const integrity = await validateProposedPunch({
+          employeeId,
+          clockIn: newClockIn,
+          clockOut: newClockOut,
+          candidateDates: [workDate],
+          allowFuturePunch: allowFuturePunchFromRules(attRules),
+          timezone: await resolveEmployeeTimezone(employeeId),
+        });
+        if (!integrity.ok) {
+          return res.status(400).json({ message: integrity.reason });
+        }
+
+        const roundedClockIn = roundTime(newClockIn, roundingRule, roundingInterval);
+        const values: InsertPunchLog = {
+          employeeId,
+          workDate,
+          clockIn: newClockIn,
+          roundedClockIn,
+          source: "manager",
+          approved: true,
+          status: "in-progress",
+        };
+
+        if (newClockOut) {
+          const enforcement = enforceClockOut(
+            new Date(roundedClockIn),
+            newClockOut,
+            0,
+            attRules,
+            payrollRules,
+            employeeUser,
+            attendancePolicy?.policyName,
+          );
+          values.clockOut = newClockOut;
+          values.roundedClockOut = enforcement.roundedTime;
+          values.hoursWorked = enforcement.hoursWorked;
+          values.status = enforcement.status;
+        }
+
+        const created = await storage.createPunchLog(values);
+
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "punch_log",
+          targetId: created.id,
+          action: "punch_log.created",
+          oldValue: null,
+          newValue: {
+            clockIn: created.clockIn,
+            clockOut: created.clockOut,
+            hoursWorked: created.hoursWorked,
+            status: created.status,
+            workDate: created.workDate,
+          },
+          context: { reason: reason || null, direct: true, employeeId },
+          ...getAuditContext(req),
+        });
+
+        await recomputeLedger(employeeId, [workDate]);
+
+        await writeLedgerEntry({
+          category: "attendance",
+          eventType: "punch_create",
+          employeeId,
+          actorUserId: actor.id,
+          entityType: "punch_log",
+          entityId: created.id,
+          workDate,
+          hoursDelta: hoursDelta(null, created.hoursWorked),
+          beforeValue: null,
+          afterValue: {
+            clockIn: created.clockIn,
+            clockOut: created.clockOut,
+            hoursWorked: created.hoursWorked,
+            status: created.status,
+          },
+          context: { reason: reason || null, direct: true },
+          source: "manager",
+          ...getLedgerContext(req),
+        });
+
+        res.status(201).json(punchLogToApiResponse(created));
+      } catch (error) {
+        console.error("Error creating punch:", error);
+        handleRouteError(res, error, "Failed to create punch");
       }
     },
   );
@@ -7056,6 +7552,43 @@ export async function registerRoutes(
     },
   );
 
+  // F7: per-user Reports defaults (preferred locations + departments). The
+  // Reports filter bar reads this on open and writes it via "Save as my
+  // default". Per-user, across all report types; each run can still override.
+  app.get(
+    "/api/reports/my-defaults",
+    requireAuth,
+    requirePermission("reports.view"),
+    async (req, res) => {
+      const user = (req as any).authUser as User;
+      const row = await storage.getUserReportDefaults(user.id);
+      res.json({
+        locationIds: row?.locationIds ?? [],
+        departmentIds: row?.departmentIds ?? [],
+      });
+    },
+  );
+
+  const reportDefaultsSchema = z.object({
+    locationIds: z.array(z.string().min(1)).default([]),
+    departmentIds: z.array(z.string().min(1)).default([]),
+  });
+
+  app.put(
+    "/api/reports/my-defaults",
+    requireAuth,
+    requirePermission("reports.view"),
+    async (req, res) => {
+      const user = (req as any).authUser as User;
+      const parsed = reportDefaultsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid report defaults", errors: parsed.error.flatten() });
+      }
+      const row = await storage.setUserReportDefaults(user.id, parsed.data);
+      res.json({ locationIds: row.locationIds, departmentIds: row.departmentIds });
+    },
+  );
+
   const idArrayField = z.preprocess(
     (v) => (typeof v === "string" ? [v] : v),
     z.array(z.string().min(1)).optional(),
@@ -8461,6 +8994,7 @@ export async function registerRoutes(
         payrollRules: Record<string, any>;
         rate: number;
         scheduledDays: number[];
+        taxClassification: string;
         payrollCompanyId: string | null;
         payrollCompanyName: string | null;
         // Punctuality-bonus inputs (Task: punctuality-bonus).
@@ -8515,6 +9049,9 @@ export async function registerRoutes(
           scheduledDays: schedules.filter(s => s.isActive).map(s => s.dayOfWeek),
           payrollCompanyId,
           payrollCompanyName,
+          // Note #5: volunteers are never on payroll. Carried here so the export
+          // loop can skip them entirely rather than list them at $0.
+          taxClassification: profile?.taxClassification ?? "W-2",
           schedules,
           graceMinutes,
           timezone,
@@ -8567,7 +9104,9 @@ export async function registerRoutes(
         }
 
         for (const [employeeId, groups] of groupsByEmployee) {
-          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName, schedules: empSchedules, graceMinutes, timezone: empTimezone, punctualityConfig } = await resolveEmp(employeeId);
+          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName, taxClassification, schedules: empSchedules, graceMinutes, timezone: empTimezone, punctualityConfig } = await resolveEmp(employeeId);
+          // Note #5: volunteers get no pay — exclude them from payroll entirely.
+          if (taxClassification === "Volunteer") continue;
 
           type DayMeta = {
             workDate: string;
@@ -9005,7 +9544,7 @@ export async function registerRoutes(
         approvedExceptionsForBatch.map(e => e.punchLogId).filter(Boolean) as string[]
       );
 
-      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
+      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; payee: string; payeeMemo: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
       const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
@@ -9082,6 +9621,10 @@ export async function registerRoutes(
             employeeName,
             taxClassification: profile?.taxClassification || "W-2",
             payrollCompany,
+            // Note #5: 1099 payee ("pay to the order of") + memo for the payroll
+            // company. Blank for W-2 / volunteers.
+            payee: profile?.payeeName || "",
+            payeeMemo: profile?.payeeMemo || "",
             amount,
             payType,
             department,
@@ -9103,7 +9646,7 @@ export async function registerRoutes(
       }
 
       let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
-      csv += "Employee Name,Tax Classification,Payroll Company,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
+      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
 
       for (const [, dayMap] of employeeRecords) {
         const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
@@ -9114,7 +9657,7 @@ export async function registerRoutes(
         for (const row of rows) {
           const bonusAmtCell = row.bonusAmount > 0 ? formatAmountCurrency(row.bonusAmount) : "";
           const bonusDescCell = row.bonusDescriptions.length > 0 ? escapeCSV(row.bonusDescriptions.join("; ")) : "";
-          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
+          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${escapeCSV(row.payee)},${escapeCSV(row.payeeMemo)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
           totalAmount += row.amount;
           totalPaidHours += row.paidHours;
           totalBonusAmount += row.bonusAmount;
@@ -9123,8 +9666,10 @@ export async function registerRoutes(
         const empName = rows[0].employeeName;
         const taxClass = rows[0].taxClassification;
         const payrollCompany = rows[0].payrollCompany;
+        const payee = rows[0].payee;
+        const payeeMemo = rows[0].payeeMemo;
         const totalBonusCell = totalBonusAmount > 0 ? formatAmountCurrency(totalBonusAmount) : "";
-        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${escapeCSV(payee)},${escapeCSV(payeeMemo)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
       }
 
       const adminUser = req.authUser as User;
@@ -11722,10 +12267,16 @@ export async function registerRoutes(
       );
     }
 
-    await storage.setUserDeactivated(cl.employeeId, actor.id);
+    // Optional termination reason (Resigned / Fired / Laid off / Other). Only a
+    // recognized value is stored; anything else is ignored so a bad body can't
+    // write junk into the column.
+    const reasonRaw = typeof (req.body as any)?.terminationReason === "string" ? String((req.body as any).terminationReason).trim() : "";
+    const terminationReason = (TERMINATION_REASONS as readonly string[]).includes(reasonRaw) ? reasonRaw : null;
+
+    await storage.setUserDeactivated(cl.employeeId, actor.id, terminationReason);
     const updated = await storage.setOffboardingChecklistDeactivation(String(req.params.id), actor.id);
 
-    await writeAuditLog({ action: "user.deactivate", actorUserId: actor.id, targetType: "user", targetId: cl.employeeId, newValue: { checklistId: cl.id, terminationDate }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    await writeAuditLog({ action: "user.deactivate", actorUserId: actor.id, targetType: "user", targetId: cl.employeeId, newValue: { checklistId: cl.id, terminationDate, terminationReason }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
     // Per arch §6: explicit checklist state-transition audit alongside the
     // user-level event so the offboarding lifecycle has its own trail.
     await writeAuditLog({

@@ -152,6 +152,17 @@ export const users = pgTable("users", {
   forcePasswordChange: boolean("force_password_change").default(false).notNull(),
   roleManuallyOverriddenAt: timestamp("role_manually_overridden_at"),
   deactivatedAt: timestamp("deactivated_at"),
+  // Why the account was deactivated (Resigned / Fired / Laid off / Other).
+  // Nullable: null on active accounts and on legacy deactivations that predate
+  // this field. See TERMINATION_REASONS in shared/schema.ts for the allowed set.
+  terminationReason: varchar("termination_reason", { length: 30 }),
+  // Account edit-lock (chain of command). When true, this account cannot make
+  // edits; only someone at lockedByRank or higher can unlock it. See
+  // server/services/rank.ts.
+  editLocked: boolean("edit_locked").default(false).notNull(),
+  lockedByUserId: varchar("locked_by_user_id"),
+  lockedByRank: integer("locked_by_rank"),
+  lockedAt: timestamp("locked_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -399,6 +410,63 @@ export const insertEmployeeLocationSchema = createInsertSchema(employeeLocations
 });
 export type InsertEmployeeLocation = z.infer<typeof insertEmployeeLocationSchema>;
 export type EmployeeLocation = typeof employeeLocations.$inferSelect;
+
+// Many-to-many: which departments exist at which location (Note #3). Not all
+// locations have all departments — Sumner may have Pediatrics, Kingston may
+// not. Edited from the location side. Backfilled from the legacy single
+// `departments.location_id`, which is retained as a compatibility shim.
+export const departmentLocations = pgTable(
+  "department_locations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    departmentId: varchar("department_id").notNull().references(() => departments.id, { onDelete: "cascade" }),
+    locationId: varchar("location_id").notNull().references(() => locations.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    unique("department_locations_unique").on(table.departmentId, table.locationId),
+    index("IDX_department_locations_department").on(table.departmentId),
+    index("IDX_department_locations_location").on(table.locationId),
+  ],
+);
+
+export const insertDepartmentLocationSchema = createInsertSchema(departmentLocations).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertDepartmentLocation = z.infer<typeof insertDepartmentLocationSchema>;
+export type DepartmentLocation = typeof departmentLocations.$inferSelect;
+
+// A manager's "hats" (Note #3). Each row is ONE scope the manager can see:
+//   * locationId set,  departmentId null → ALL departments at that location
+//   * departmentId set, locationId null  → that department across ALL locations
+//   * both set                           → that department at that location
+// A manager's visible employees = the UNION of their hats. One person can hold
+// several hats (e.g. Location Manager @ Sumner AND Vision Manager @ Kingston).
+// When a manager has NO rows here, storage.getScopedUserIds falls back to the
+// legacy membership-based scoping so existing managers keep working.
+export const managerScopes = pgTable(
+  "manager_scopes",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    locationId: varchar("location_id").references(() => locations.id, { onDelete: "cascade" }),
+    departmentId: varchar("department_id").references(() => departments.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    index("IDX_manager_scopes_user").on(table.userId),
+  ],
+);
+
+export const insertManagerScopeSchema = createInsertSchema(managerScopes)
+  .omit({ id: true, createdAt: true })
+  .extend({
+    locationId: z.string().nullish(),
+    departmentId: z.string().nullish(),
+  });
+export type InsertManagerScope = z.infer<typeof insertManagerScopeSchema>;
+export type ManagerScope = typeof managerScopes.$inferSelect;
 
 export const policyTypes = pgTable("policy_types", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

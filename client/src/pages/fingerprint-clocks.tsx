@@ -1,0 +1,744 @@
+import { useMemo, useState } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Plus, Fingerprint, Loader2, Activity, Link2, DownloadCloud, Pencil, Trash2 } from "lucide-react";
+import { PageHeader } from "@/components/page-header";
+
+type BiometricDevice = {
+  id: string;
+  serialNumber: string;
+  name: string;
+  locationId: string | null;
+  companyId: string | null;
+  isActive: boolean;
+  lastSeenAt: string | null;
+  firmware: string | null;
+  createdAt: string;
+};
+
+type BiometricDeviceEvent = {
+  id: string;
+  deviceId: string;
+  deviceUserId: string;
+  devicePunchTime: string;
+  deviceStatus: string | null;
+  userId: string | null;
+  punchLogId: string | null;
+  direction: string | null;
+  status: string;
+  error: string | null;
+  createdAt: string;
+};
+
+type LocationLite = { id: string; name: string };
+type UserLite = { id: string; firstName?: string | null; lastName?: string | null; email?: string | null };
+
+const EVENT_STATUS_META: Record<string, { label: string; className: string }> = {
+  processed: { label: "Recorded", className: "bg-emerald-500 hover:bg-emerald-500 text-white" },
+  pending_mapping: { label: "Needs employee", className: "bg-amber-500 hover:bg-amber-500 text-white" },
+  duplicate: { label: "Duplicate", className: "bg-slate-400 hover:bg-slate-400 text-white" },
+  error: { label: "Error", className: "bg-red-500 hover:bg-red-500 text-white" },
+  pending: { label: "Pending", className: "bg-slate-300 hover:bg-slate-300 text-slate-700" },
+};
+
+function userName(u: UserLite | undefined): string {
+  if (!u) return "—";
+  const name = `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim();
+  return name || u.email || u.id;
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return "Never";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return "just now";
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return new Date(iso).toLocaleString();
+}
+
+export default function FingerprintClocksPage() {
+  const { toast } = useToast();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formName, setFormName] = useState("");
+  const [formSerial, setFormSerial] = useState("");
+  const [formLocationId, setFormLocationId] = useState("none");
+  const [activityFor, setActivityFor] = useState<BiometricDevice | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BiometricDevice | null>(null);
+  // Per unmatched device-user-number, the employee the admin has picked to map.
+  const [mapPicks, setMapPicks] = useState<Record<string, string>>({});
+
+  const { data: devices, isLoading } = useQuery<BiometricDevice[]>({
+    queryKey: ["/api/biometric-devices"],
+    refetchInterval: 15_000,
+  });
+
+  const { data: locations } = useQuery<LocationLite[]>({ queryKey: ["/api/locations"] });
+  const { data: users } = useQuery<UserLite[]>({ queryKey: ["/api/users"] });
+
+  // Live event feed for the clock whose monitor dialog is open.
+  const { data: events } = useQuery<BiometricDeviceEvent[]>({
+    queryKey: ["/api/biometric-devices", activityFor?.id, "events"],
+    enabled: !!activityFor,
+    refetchInterval: activityFor ? 8_000 : false,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: any) => apiRequest("POST", "/api/biometric-devices", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/biometric-devices"] });
+      closeDialog();
+      toast({ title: "Fingerprint clock added" });
+    },
+    onError: (err: any) =>
+      toast({
+        title: err?.payload?.message || "Failed to add clock",
+        variant: "destructive",
+      }),
+  });
+
+  const editMutation = useMutation({
+    mutationFn: ({ id, ...data }: any) => apiRequest("PATCH", `/api/biometric-devices/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/biometric-devices"] });
+      closeDialog();
+      toast({ title: "Clock updated" });
+    },
+    onError: (err: any) =>
+      toast({
+        title: err?.payload?.message || "Failed to update clock",
+        variant: "destructive",
+      }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/biometric-devices/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/biometric-devices"] });
+      setDeleteTarget(null);
+      toast({ title: "Clock removed" });
+    },
+    onError: (err: any) =>
+      toast({
+        title: err?.payload?.message || "Failed to remove clock",
+        variant: "destructive",
+      }),
+  });
+
+  const mapMutation = useMutation({
+    mutationFn: ({ id, deviceUserId, userId }: { id: string; deviceUserId: string; userId: string }) =>
+      apiRequest("POST", `/api/biometric-devices/${id}/map-user`, { deviceUserId, userId }),
+    onSuccess: (_res, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/biometric-devices", vars.id, "events"] });
+      setMapPicks((p) => {
+        const next = { ...p };
+        delete next[vars.deviceUserId];
+        return next;
+      });
+      toast({ title: "Employee linked", description: "Future punches from this finger will attach to them." });
+    },
+    onError: () => toast({ title: "Failed to link employee", variant: "destructive" }),
+  });
+
+  const harvestMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/biometric-devices/${id}/harvest`, {}),
+    onSuccess: () =>
+      toast({
+        title: "Fingerprint pull requested",
+        description: "The clock will upload its fingerprints on its next check-in (a few seconds). Refresh to see the count.",
+      }),
+    onError: () => toast({ title: "Couldn't request fingerprints", variant: "destructive" }),
+  });
+
+  const distributeMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("POST", `/api/biometric-devices/${id}/distribute`, {}),
+    onSuccess: async (res: any) => {
+      const data = await res.json().catch(() => ({}));
+      toast({
+        title: "Fingerprints queued for this clock",
+        description: `${data.people ?? 0} people queued. The clock will load them on its next check-in (a few seconds).`,
+      });
+    },
+    onError: () => toast({ title: "Couldn't push fingerprints", variant: "destructive" }),
+  });
+
+  // Bulk sync: locationId null => every clock; a locationId => just that location.
+  const bulkHarvest = useMutation({
+    mutationFn: (locationId: string | null) =>
+      apiRequest("POST", "/api/biometric-devices/bulk-harvest", locationId ? { locationId } : {}),
+    onSuccess: async (res: any) => {
+      const d = await res.json().catch(() => ({}));
+      toast({
+        title: "Pull requested",
+        description: `${d.clocks ?? 0} clock${(d.clocks ?? 0) === 1 ? "" : "s"} will upload fingerprints on next check-in.`,
+      });
+    },
+    onError: () => toast({ title: "Couldn't request pull", variant: "destructive" }),
+  });
+
+  const bulkDistribute = useMutation({
+    mutationFn: (locationId: string | null) =>
+      apiRequest("POST", "/api/biometric-devices/bulk-distribute", locationId ? { locationId } : {}),
+    onSuccess: async (res: any) => {
+      const d = await res.json().catch(() => ({}));
+      toast({
+        title: "Push queued",
+        description: `${d.people ?? 0} people queued to ${d.clocks ?? 0} clock${(d.clocks ?? 0) === 1 ? "" : "s"}. They load on next check-in.`,
+      });
+    },
+    onError: () => toast({ title: "Couldn't push fingerprints", variant: "destructive" }),
+  });
+
+  function openCreate() {
+    setEditingId(null);
+    setFormName("");
+    setFormSerial("");
+    setFormLocationId("none");
+    setDialogOpen(true);
+  }
+
+  function openEdit(device: BiometricDevice) {
+    setEditingId(device.id);
+    setFormName(device.name);
+    setFormSerial(device.serialNumber);
+    setFormLocationId(device.locationId ?? "none");
+    setDialogOpen(true);
+  }
+
+  function closeDialog() {
+    setDialogOpen(false);
+    setEditingId(null);
+  }
+
+  function handleSubmit() {
+    const payload = {
+      name: formName.trim(),
+      serialNumber: formSerial.trim(),
+      locationId: formLocationId === "none" ? null : formLocationId,
+    };
+    if (editingId) {
+      editMutation.mutate({ id: editingId, ...payload });
+    } else {
+      createMutation.mutate(payload);
+    }
+  }
+
+  const locationMap = useMemo(
+    () => new Map((locations || []).map((l) => [l.id, l.name])),
+    [locations],
+  );
+  const userMap = useMemo(() => new Map((users || []).map((u) => [u.id, u])), [users]);
+
+  // Distinct locations that actually have clocks, for the per-location sync buttons.
+  const clockLocations = useMemo(() => {
+    const ids = Array.from(new Set((devices || []).map((d) => d.locationId).filter(Boolean))) as string[];
+    return ids
+      .map((id) => ({ id, name: locationMap.get(id) || "Unknown" }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [devices, locationMap]);
+  const bulkBusy = bulkHarvest.isPending || bulkDistribute.isPending;
+
+  // Distinct device user-numbers that have punched but aren't linked to an
+  // employee yet — surfaced so an admin can bind them in one place.
+  const unmatched = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const e of events || []) {
+      if (e.status === "pending_mapping" && !seen.has(e.deviceUserId)) {
+        seen.add(e.deviceUserId);
+        out.push(e.deviceUserId);
+      }
+    }
+    return out;
+  }, [events]);
+
+  // The connection values an installer types into each clock. Derived from the
+  // live host so it's correct for whichever domain Ahava is served on.
+  const host = typeof window !== "undefined" ? window.location.host : "your-ahava-domain";
+  const isHttps = typeof window !== "undefined" ? window.location.protocol === "https:" : true;
+
+  return (
+    <div className="max-w-6xl space-y-6" data-testid="fingerprint-clocks-page">
+      <PageHeader
+        title="Fingerprint Clocks"
+        subtitle="Connect wall-mounted fingerprint clocks that push punches straight to Ahava"
+        actions={
+          <Button onClick={openCreate} data-testid="button-add-clock">
+            <Plus className="h-4 w-4 mr-2" /> Add Clock
+          </Button>
+        }
+      />
+
+      {/* Setup card: the exact values to enter on the clock (Comm → Cloud Server). */}
+      <Card data-testid="card-connection-settings">
+        <CardHeader>
+          <CardTitle className="text-base">Clock connection settings</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm">
+          <p className="text-muted-foreground mb-3">
+            On each clock, open <strong>Menu → Comm → Cloud Server</strong> and enter:
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <Setting label="Server Mode" value="ADMS" />
+            <Setting label="Enable Domain Name" value="ON" />
+            <Setting label="Server Address" value={host} />
+            <Setting label="Server Port" value={isHttps ? "443" : "80"} />
+            <Setting label="HTTPS" value={isHttps ? "ON" : "OFF"} />
+            <Setting label="Enable Proxy Server" value="OFF" />
+          </div>
+          <p className="text-amber-700 mt-3">
+            Security setup required: Ahava rejects unauthenticated clock traffic by default.
+            Configure a trusted HTTPS gateway to provide the X-Ahava-ADMS-Key header and
+            set ADMS_INGEST_TOKEN on the server. Confirm your clock firmware or gateway
+            supports this before using live payroll punches.
+          </p>
+          <p className="text-muted-foreground mt-3">
+            Tip: give each employee an <strong>Employee Number</strong> in Ahava that matches the
+            number they're enrolled as on the clock — then their punches link automatically.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Bulk fingerprint sync: push/pull across all clocks or a whole location */}
+      {devices && devices.length > 0 && (
+        <Card data-testid="card-bulk-sync">
+          <CardHeader>
+            <CardTitle className="text-base">Fingerprint sync</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm space-y-4">
+            <p className="text-muted-foreground">
+              <strong>Push</strong> sends everyone's stored fingerprints down onto the clocks (so a new
+              hire works everywhere). <strong>Pull</strong> brings the clocks' fingerprints up into Ahava.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => bulkDistribute.mutate(null)}
+                disabled={bulkBusy}
+                data-testid="button-push-all"
+              >
+                <DownloadCloud className="h-4 w-4 mr-2" /> Push to all clocks
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => bulkHarvest.mutate(null)}
+                disabled={bulkBusy}
+                data-testid="button-pull-all"
+              >
+                <Fingerprint className="h-4 w-4 mr-2" /> Pull from all clocks
+              </Button>
+            </div>
+            {clockLocations.length > 0 && (
+              <div>
+                <p className="text-muted-foreground mb-2">By location:</p>
+                <div className="space-y-2">
+                  {clockLocations.map((loc) => (
+                    <div key={loc.id} className="flex items-center gap-2" data-testid={`row-bulk-${loc.id}`}>
+                      <span className="w-40 shrink-0 font-medium">{loc.name}</span>
+                      <Button
+                        size="sm"
+                        onClick={() => bulkDistribute.mutate(loc.id)}
+                        disabled={bulkBusy}
+                        data-testid={`button-push-loc-${loc.id}`}
+                      >
+                        <DownloadCloud className="h-3 w-3 mr-1" /> Push
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => bulkHarvest.mutate(loc.id)}
+                        disabled={bulkBusy}
+                        data-testid={`button-pull-loc-${loc.id}`}
+                      >
+                        <Fingerprint className="h-3 w-3 mr-1" /> Pull
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      <Card data-testid="card-clock-list">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Fingerprint className="h-5 w-5" /> Clocks
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <div className="space-y-3">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : devices && devices.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Serial</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Location</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Last Seen</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Fingerprints</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {devices.map((device) => {
+                  const connected = device.lastSeenAt
+                    ? Date.now() - new Date(device.lastSeenAt).getTime() < 5 * 60_000
+                    : false;
+                  return (
+                    <TableRow key={device.id} data-testid={`row-clock-${device.id}`}>
+                      <TableCell className="font-medium" data-testid={`text-name-${device.id}`}>
+                        {device.name}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs" data-testid={`text-serial-${device.id}`}>
+                        {device.serialNumber}
+                      </TableCell>
+                      <TableCell data-testid={`text-location-${device.id}`}>
+                        {device.locationId ? locationMap.get(device.locationId) || "Unknown" : "—"}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            className={
+                              connected
+                                ? "bg-emerald-500 hover:bg-emerald-500 text-white"
+                                : "bg-slate-400 hover:bg-slate-400 text-white"
+                            }
+                            data-testid={`badge-connected-${device.id}`}
+                          >
+                            {connected ? "Connected" : "Not seen"}
+                          </Badge>
+                          <span data-testid={`text-lastseen-${device.id}`}>{timeAgo(device.lastSeenAt)}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell data-testid={`cell-fingerprints-${device.id}`}>
+                        <FingerprintCount deviceId={device.id} />
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1 justify-end">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => harvestMutation.mutate(device.id)}
+                            disabled={harvestMutation.isPending}
+                            title="Pull fingerprints FROM this clock into Ahava (harvest)"
+                            data-testid={`button-harvest-${device.id}`}
+                          >
+                            <Fingerprint className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => distributeMutation.mutate(device.id)}
+                            disabled={distributeMutation.isPending}
+                            title="Push everyone's fingerprints TO this clock (distribute)"
+                            data-testid={`button-distribute-${device.id}`}
+                          >
+                            <DownloadCloud className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setActivityFor(device)}
+                            title="Live punches"
+                            data-testid={`button-activity-${device.id}`}
+                          >
+                            <Activity className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openEdit(device)}
+                            title="Edit name / serial / location"
+                            data-testid={`button-edit-${device.id}`}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setDeleteTarget(device)}
+                            title="Remove this clock"
+                            data-testid={`button-delete-${device.id}`}
+                          >
+                            <Trash2 className="h-3 w-3 text-red-600" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          ) : (
+            <p className="text-muted-foreground text-center py-8" data-testid="text-no-clocks">
+              No fingerprint clocks yet. Add one, then point it at Ahava using the settings above.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Add / edit clock dialog */}
+      <Dialog open={dialogOpen} onOpenChange={(open) => (open ? setDialogOpen(true) : closeDialog())}>
+        <DialogContent data-testid="dialog-clock-form">
+          <DialogHeader>
+            <DialogTitle>{editingId ? "Edit Fingerprint Clock" : "Add Fingerprint Clock"}</DialogTitle>
+            <DialogDescription>
+              {editingId
+                ? "Update the clock's details. Changing the serial re-points which physical unit Ahava trusts for punches."
+                : "Register the clock by its hardware serial number so Ahava trusts its punches."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Name</Label>
+              <Input
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g. Williamsburg — 2nd floor"
+                data-testid="input-clock-name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Serial Number</Label>
+              <Input
+                value={formSerial}
+                onChange={(e) => setFormSerial(e.target.value)}
+                placeholder="From the clock: Menu → System Info → Device Info"
+                data-testid="input-clock-serial"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Location</Label>
+              <Select value={formLocationId} onValueChange={setFormLocationId}>
+                <SelectTrigger data-testid="select-trigger-location">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No specific location</SelectItem>
+                  {(locations || []).map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeDialog} data-testid="button-cancel">Cancel</Button>
+            <Button
+              onClick={handleSubmit}
+              disabled={!formName.trim() || !formSerial.trim() || createMutation.isPending || editMutation.isPending}
+              data-testid="button-submit-clock"
+            >
+              {(createMutation.isPending || editMutation.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {editingId ? "Save Changes" : "Add Clock"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent data-testid="dialog-clock-delete">
+          <DialogHeader>
+            <DialogTitle>Remove this clock?</DialogTitle>
+            <DialogDescription>
+              {deleteTarget ? (
+                <>
+                  <span className="font-medium">{deleteTarget.name}</span> (serial{" "}
+                  <span className="font-mono">{deleteTarget.serialNumber}</span>) will be removed, along
+                  with its punch history, employee links, and the fingerprints harvested from it. This
+                  can't be undone. Fingerprints already pushed to other clocks are not affected.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} data-testid="button-delete-cancel">
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-delete-confirm"
+            >
+              {deleteMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Remove Clock
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Live punches + map-unmatched dialog */}
+      <Dialog open={!!activityFor} onOpenChange={(open) => !open && setActivityFor(null)}>
+        <DialogContent className="max-w-3xl" data-testid="dialog-clock-activity">
+          <DialogHeader>
+            <DialogTitle>Live punches — {activityFor?.name}</DialogTitle>
+            <DialogDescription>
+              Punches arrive here within seconds of a finger press. Updates automatically.
+            </DialogDescription>
+          </DialogHeader>
+
+          {unmatched.length > 0 && (
+            <div className="border border-amber-300 bg-amber-50 rounded p-3 mb-3" data-testid="section-unmatched">
+              <p className="text-sm font-medium text-amber-900 mb-2 flex items-center gap-2">
+                <Link2 className="h-4 w-4" /> Unlinked clock users — pick who they are
+              </p>
+              <div className="space-y-2">
+                {unmatched.map((deviceUserId) => (
+                  <div key={deviceUserId} className="flex items-center gap-2" data-testid={`row-unmatched-${deviceUserId}`}>
+                    <span className="text-sm font-mono w-24 shrink-0">#{deviceUserId}</span>
+                    <Select
+                      value={mapPicks[deviceUserId] || ""}
+                      onValueChange={(v) => setMapPicks((p) => ({ ...p, [deviceUserId]: v }))}
+                    >
+                      <SelectTrigger className="flex-1" data-testid={`select-employee-${deviceUserId}`}>
+                        <SelectValue placeholder="Choose employee…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(users || []).map((u) => (
+                          <SelectItem key={u.id} value={u.id}>{userName(u)}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="sm"
+                      disabled={!mapPicks[deviceUserId] || mapMutation.isPending}
+                      onClick={() =>
+                        activityFor &&
+                        mapMutation.mutate({
+                          id: activityFor.id,
+                          deviceUserId,
+                          userId: mapPicks[deviceUserId],
+                        })
+                      }
+                      data-testid={`button-map-${deviceUserId}`}
+                    >
+                      Link
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="max-h-96 overflow-y-auto border rounded">
+            {!events ? (
+              <div className="p-6 text-center"><Loader2 className="h-5 w-5 mx-auto animate-spin" /></div>
+            ) : events.length === 0 ? (
+              <p className="p-6 text-center text-muted-foreground" data-testid="text-no-events">
+                No punches yet. Press a finger on the clock to test.
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Employee</TableHead>
+                    <TableHead>Clock user</TableHead>
+                    <TableHead>Direction</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>When</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {events.map((e) => {
+                    const meta = EVENT_STATUS_META[e.status] || EVENT_STATUS_META.pending;
+                    return (
+                      <TableRow key={e.id} data-testid={`row-event-${e.id}`}>
+                        <TableCell className="font-medium">
+                          {e.userId ? userName(userMap.get(e.userId)) : <span className="text-muted-foreground">—</span>}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">#{e.deviceUserId}</TableCell>
+                        <TableCell>
+                          {e.direction ? (
+                            <Badge variant={e.direction === "clock_in" ? "default" : "secondary"}>
+                              {e.direction === "clock_in" ? "Clock in" : "Clock out"}
+                            </Badge>
+                          ) : "—"}
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={meta.className}>{meta.label}</Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground" data-testid={`text-event-time-${e.id}`}>
+                          {timeAgo(e.createdAt)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setActivityFor(null)} data-testid="button-close-activity">Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function Setting({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border bg-muted/40 px-3 py-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="font-mono text-sm font-medium break-all">{value}</div>
+    </div>
+  );
+}
+
+// Harvested-fingerprint count for a clock (polls so it updates after a Harvest).
+function FingerprintCount({ deviceId }: { deviceId: string }) {
+  const { data } = useQuery<{ total: number; linked: number }>({
+    queryKey: ["/api/biometric-devices", deviceId, "fingerprints"],
+    queryFn: async () => {
+      const res = await fetch(`/api/biometric-devices/${deviceId}/fingerprints`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load fingerprint count");
+      return res.json();
+    },
+    refetchInterval: 10_000,
+  });
+  if (!data) return <span className="text-sm text-muted-foreground">—</span>;
+  if (data.total === 0) return <span className="text-sm text-muted-foreground" data-testid={`text-fp-count-${deviceId}`}>0 synced</span>;
+  return (
+    <span className="text-sm" data-testid={`text-fp-count-${deviceId}`}>
+      <span className="font-medium">{data.total}</span> synced
+      <span className="text-muted-foreground"> · {data.linked} linked</span>
+    </span>
+  );
+}

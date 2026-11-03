@@ -18,6 +18,8 @@ import {
   userAccessScopes,
   employeeDepartments,
   employeeLocations,
+  departmentLocations,
+  managerScopes,
   policyTypes,
 } from "./models/auth";
 
@@ -39,6 +41,8 @@ export {
   userAccessScopes,
   employeeDepartments,
   employeeLocations,
+  departmentLocations,
+  managerScopes,
   policyTypes,
   passwordResetTokens,
   normalizeEmail,
@@ -74,6 +78,10 @@ export type {
   InsertEmployeeDepartment,
   EmployeeLocation,
   InsertEmployeeLocation,
+  DepartmentLocation,
+  InsertDepartmentLocation,
+  ManagerScope,
+  InsertManagerScope,
   PolicyType,
   InsertPolicyType,
   PasswordResetToken,
@@ -89,6 +97,8 @@ export {
   insertDepartmentManagerSchema,
   insertEmployeeDepartmentSchema,
   insertEmployeeLocationSchema,
+  insertDepartmentLocationSchema,
+  insertManagerScopeSchema,
   insertRoleSchema,
   insertPermissionSchema,
   insertPolicyTypeSchema,
@@ -280,6 +290,13 @@ export const insertPolicyAcknowledgmentSchema = createInsertSchema(policyAcknowl
 export type InsertPolicyAcknowledgment = z.infer<typeof insertPolicyAcknowledgmentSchema>;
 export type PolicyAcknowledgment = typeof policyAcknowledgments.$inferSelect;
 
+// Allowed reasons when an employee account is deactivated. Stored on
+// users.termination_reason; surfaced in the Deactivate dialog. "Other" is the
+// catch-all (and what bulk imports use, since the spreadsheet only says
+// "Inactive" without a reason).
+export const TERMINATION_REASONS = ["Resigned", "Fired", "Laid off", "Other"] as const;
+export type TerminationReason = (typeof TERMINATION_REASONS)[number];
+
 export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique().references(() => users.id),
@@ -292,12 +309,30 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   holidayPayEnabled: boolean("holiday_pay_enabled").default(false).notNull(),
   voluntaryPayEnabled: boolean("voluntary_pay_enabled").default(false).notNull(),
   taxClassification: varchar("tax_classification", { length: 10 }).default("W-2").notNull(),
+  // Note #5: when false the person is NOT required to punch (e.g. a salaried
+  // 1099 manager paid regardless of hours, or a volunteer). Missing-clock-out
+  // and no-show alerts are suppressed for them. Defaults true so existing
+  // employees stay on the normal "must clock in" footing.
+  clockInRequired: boolean("clock_in_required").default(true).notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
   // Payroll-only company (Task #475): which company this employee belongs to for
   // payroll identification. Deliberately INDEPENDENT of the assignment-derived
   // company (users.companyId / department & location assignments). Nullable —
   // existing employees fall back to a blank placeholder, not an error.
   payrollCompanyId: varchar("payroll_company_id").references(() => companies.id),
+  // Note #5 (1099 payee): a 1099 worker's check is written to this company/LLC
+  // ("pay to the order of"), distinct from the paying entity above. Only the
+  // name is required at entry; address + Tax ID are optional. Null for W-2 and
+  // volunteers.
+  payeeName: varchar("payee_name", { length: 200 }),
+  payeeAddress: varchar("payee_address", { length: 500 }),
+  payeeCity: varchar("payee_city", { length: 100 }),
+  payeeState: varchar("payee_state", { length: 50 }),
+  payeeZip: varchar("payee_zip", { length: 20 }),
+  payeeTaxId: varchar("payee_tax_id", { length: 40 }),
+  // Free-text memo for the 1099 payee, surfaced on the payroll report sent to
+  // the paying companies (e.g. a check memo / note).
+  payeeMemo: varchar("payee_memo", { length: 500 }),
   hireDate: date("hire_date"),
   terminationDate: date("termination_date"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -311,6 +346,20 @@ export const insertEmploymentProfileSchema = createInsertSchema(userEmploymentPr
 });
 export type InsertEmploymentProfile = z.infer<typeof insertEmploymentProfileSchema>;
 export type EmploymentProfile = typeof userEmploymentProfiles.$inferSelect;
+
+// F7: per-user Reports defaults. One row per user. Stores the locations and
+// departments a user wants Reports pre-filtered to (NOT companies). The Reports
+// filter bar reads this on open and writes it via a "Save as my default" button;
+// each run can still override without changing the saved default. Arrays are
+// stored as jsonb id lists (empty array = "all", no filter).
+export const userReportDefaults = pgTable("user_report_defaults", {
+  userId: varchar("user_id").primaryKey().references(() => users.id),
+  locationIds: jsonb("location_ids").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+  departmentIds: jsonb("department_ids").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type UserReportDefaults = typeof userReportDefaults.$inferSelect;
 
 export const punchLogs = pgTable("punch_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -676,6 +725,139 @@ export const insertKioskDeviceSchema = createInsertSchema(kioskDevices).omit({
 });
 export type InsertKioskDevice = z.infer<typeof insertKioskDeviceSchema>;
 export type KioskDevice = typeof kioskDevices.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Biometric wall clocks (ADMS push devices) — e.g. Compumatic XLS Bio v2 /
+// ZKTeco fingerprint terminals. These are physical clocks that match a finger
+// locally and PUSH each punch to us over the ADMS/"iclock" protocol. Unlike a
+// kiosk tablet (which runs our UI), these are headless appliances identified by
+// a hardware serial number. See server/adms/* for the ingest.
+// ---------------------------------------------------------------------------
+export const biometricDevices = pgTable("biometric_devices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // The hardware serial the device reports as `SN=` on every ADMS request. This
+  // IS the device's identity on the wire, so it is unique and pre-registered.
+  serialNumber: varchar("serial_number", { length: 64 }).notNull().unique(),
+  name: varchar("name", { length: 100 }).notNull(),
+  // A biometric clock belongs to a physical location; every employee assigned to
+  // that location may punch on it (department-independent, per the owner's spec).
+  locationId: varchar("location_id").references(() => locations.id),
+  companyId: varchar("company_id").references(() => companies.id),
+  // Reserved for Phase 2 (per-device HMAC/token). ADMS itself carries no secret,
+  // so today trust = "serial is pre-registered + reaches us over HTTPS".
+  secret: varchar("secret", { length: 128 }),
+  isActive: boolean("is_active").default(true).notNull(),
+  lastSeenAt: timestamp("last_seen_at"),
+  firmware: varchar("firmware", { length: 64 }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("biometric_devices_location_idx").on(table.locationId),
+]);
+
+export const insertBiometricDeviceSchema = createInsertSchema(biometricDevices).omit({
+  id: true,
+  createdAt: true,
+  lastSeenAt: true,
+});
+export type InsertBiometricDevice = z.infer<typeof insertBiometricDeviceSchema>;
+export type BiometricDevice = typeof biometricDevices.$inferSelect;
+
+// Maps a device's LOCAL enrolled user-number (what the clock knows the employee
+// as, sent in each punch) to the Ahava employee. Per-device because each
+// physical clock holds its own local enrollment today; central template sync
+// (Phase 2) will keep these numbers consistent across a location's clocks.
+export const biometricDeviceUsers = pgTable("biometric_device_users", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  deviceId: varchar("device_id").notNull().references(() => biometricDevices.id),
+  deviceUserId: varchar("device_user_id", { length: 64 }).notNull(),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  uniqueIndex("biometric_device_users_device_user_uq").on(table.deviceId, table.deviceUserId),
+  index("biometric_device_users_user_idx").on(table.userId),
+]);
+
+export const insertBiometricDeviceUserSchema = createInsertSchema(biometricDeviceUsers).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertBiometricDeviceUser = z.infer<typeof insertBiometricDeviceUserSchema>;
+export type BiometricDeviceUser = typeof biometricDeviceUsers.$inferSelect;
+
+// Every raw punch a device pushes, kept for (a) idempotency — devices re-send
+// until ACKed, so (deviceId, deviceUserId, devicePunchTime) is a dedupe key —
+// and (b) audit/debugging, including punches we couldn't yet map to an employee
+// (status = "pending_mapping") so nothing is ever silently dropped.
+export const biometricDeviceEvents = pgTable("biometric_device_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  deviceId: varchar("device_id").notNull().references(() => biometricDevices.id),
+  deviceUserId: varchar("device_user_id", { length: 64 }).notNull(),
+  // Device-reported local time string, verbatim — the idempotency key.
+  devicePunchTime: varchar("device_punch_time", { length: 32 }).notNull(),
+  deviceStatus: varchar("device_status", { length: 16 }),
+  rawLine: text("raw_line"),
+  userId: varchar("user_id").references(() => users.id),
+  punchLogId: varchar("punch_log_id"),
+  direction: varchar("direction", { length: 12 }),
+  // "processed" | "pending_mapping" | "duplicate" | "error"
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  uniqueIndex("biometric_device_events_dedup_uq").on(table.deviceId, table.deviceUserId, table.devicePunchTime),
+  index("biometric_device_events_device_idx").on(table.deviceId),
+]);
+
+export type BiometricDeviceEvent = typeof biometricDeviceEvents.$inferSelect;
+
+// Fingerprint "cloud brain" (Phase 2). Per-finger ZK/Compumatic templates
+// harvested off a clock, encrypted at rest, tied to the Ahava employee once
+// mapped. Distinct from biometric_templates (face descriptors, one per user).
+export const fingerprintTemplates = pgTable("fingerprint_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
+  companyId: varchar("company_id").references(() => companies.id),
+  // The device this template was pulled off (its serial-backed row id).
+  sourceDeviceId: varchar("source_device_id"),
+  // The device's local user-number (PIN) the template was enrolled under.
+  devicePin: varchar("device_pin", { length: 64 }).notNull(),
+  fingerIndex: integer("finger_index").notNull(),
+  // Encrypted (AES-256-GCM) base64 of the vendor template blob. Never cleartext.
+  templateData: text("template_data").notNull(),
+  // "FP" (legacy FINGERTMP) or "BIODATA" (newer push firmware), for re-encoding.
+  templateFormat: varchar("template_format", { length: 16 }),
+  size: integer("size"),
+  valid: boolean("valid").default(true).notNull(),
+  encryptionKeyVersion: integer("encryption_key_version").default(1).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("fingerprint_templates_source_unique").on(table.sourceDeviceId, table.devicePin, table.fingerIndex),
+  index("fingerprint_templates_user_idx").on(table.userId),
+  index("fingerprint_templates_pin_idx").on(table.devicePin),
+]);
+export type FingerprintTemplate = typeof fingerprintTemplates.$inferSelect;
+
+// Per-device command queue. getrequest hands a clock its next pending command
+// (e.g. "upload all templates" for Harvest, "store this template" for Distribute);
+// the clock reports the result to /devicecmd. `seq` is the numeric id sent on the
+// wire (C:<seq>:<command>).
+export const biometricDeviceCommands = pgTable("biometric_device_commands", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  seq: bigserial("seq", { mode: "number" }).notNull(),
+  deviceId: varchar("device_id").notNull(),
+  command: text("command").notNull(),
+  // "pending" | "sent" | "acked"
+  status: varchar("status", { length: 16 }).default("pending").notNull(),
+  result: text("result"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  sentAt: timestamp("sent_at"),
+  ackedAt: timestamp("acked_at"),
+}, (table) => [
+  index("biometric_device_commands_device_idx").on(table.deviceId, table.status),
+  uniqueIndex("biometric_device_commands_seq_unique").on(table.seq),
+]);
+export type BiometricDeviceCommand = typeof biometricDeviceCommands.$inferSelect;
 
 // LEGACY / DORMANT (task #454): after the PTO consolidation, NO balance/accrual
 // number is read from this table. Every PTO read surface resolves the effective

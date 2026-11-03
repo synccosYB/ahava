@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X, Lock, LockOpen } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -31,8 +31,9 @@ import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { formatCurrency, formatHoursMinutes, formatDate } from "@/lib/utils";
 import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, Division, PerformanceReviewReminder, PerformanceReviewCycle } from "@shared/schema";
-import { userDepartmentIds, userLocationIds } from "@shared/schema";
+import { userDepartmentIds, userLocationIds, TERMINATION_REASONS } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
+import { ReviewTimeSheetTab } from "@/components/review-timesheet-tab";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
   INLINE_ADD_NEW_VALUE,
@@ -84,10 +85,22 @@ export default function EmployeesPage() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
-  const [departmentFilter, setDepartmentFilter] = useState(initialDepartment);
-  const [divisionFilter, setDivisionFilter] = useState("all");
-  const [taxClassFilter, setTaxClassFilter] = useState("all");
-  const [certStatusFilter, setCertStatusFilter] = useState("all");
+  // Department & location are multi-select with a staged "draft" (what the user
+  // is picking) and an "applied" set (what the query actually uses) — committed
+  // by the Apply button, so selecting several doesn't refetch on every click.
+  const initialDeptIds = initialDepartment !== "all" ? [initialDepartment] : [];
+  const [draftDeptIds, setDraftDeptIds] = useState<string[]>(initialDeptIds);
+  const [appliedDeptIds, setAppliedDeptIds] = useState<string[]>(initialDeptIds);
+  const [draftLocIds, setDraftLocIds] = useState<string[]>([]);
+  const [appliedLocIds, setAppliedLocIds] = useState<string[]>([]);
+  // Company / Tax Classification / Cert Status are also staged multi-selects,
+  // committed by the same Apply button (OR within each, AND across filters).
+  const [draftCompanyIds, setDraftCompanyIds] = useState<string[]>([]);
+  const [appliedCompanyIds, setAppliedCompanyIds] = useState<string[]>([]);
+  const [draftTaxClasses, setDraftTaxClasses] = useState<string[]>([]);
+  const [appliedTaxClasses, setAppliedTaxClasses] = useState<string[]>([]);
+  const [draftCertStatuses, setDraftCertStatuses] = useState<string[]>([]);
+  const [appliedCertStatuses, setAppliedCertStatuses] = useState<string[]>([]);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   // Selection persists across pages, so we track the full user objects (not
   // just ids) — the bulk-delete dialog needs them and selected rows may live
@@ -96,6 +109,7 @@ export default function EmployeesPage() {
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importPunchesOpen, setImportPunchesOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   const { user: currentUser } = useAuth();
@@ -105,21 +119,27 @@ export default function EmployeesPage() {
 
   // Reset to the first page whenever the search or any filter changes so the
   // user isn't stranded on an out-of-range page.
+  const appliedDeptKey = appliedDeptIds.join(",");
+  const appliedLocKey = appliedLocIds.join(",");
+  const appliedCompanyKey = appliedCompanyIds.join(",");
+  const appliedTaxKey = appliedTaxClasses.join(",");
+  const appliedCertKey = appliedCertStatuses.join(",");
   useEffect(() => {
     setPage(0);
-  }, [debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter]);
+  }, [debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey]);
 
   const usersParams = new URLSearchParams();
   if (debouncedSearch) usersParams.set("search", debouncedSearch);
-  if (departmentFilter !== "all") usersParams.set("departmentId", departmentFilter);
-  if (divisionFilter !== "all") usersParams.set("companyId", divisionFilter);
-  if (taxClassFilter !== "all") usersParams.set("taxClass", taxClassFilter);
-  if (certStatusFilter !== "all") usersParams.set("certStatus", certStatusFilter);
+  if (appliedDeptIds.length) usersParams.set("departmentIds", appliedDeptKey);
+  if (appliedLocIds.length) usersParams.set("locationIds", appliedLocKey);
+  if (appliedCompanyIds.length) usersParams.set("companyIds", appliedCompanyKey);
+  if (appliedTaxClasses.length) usersParams.set("taxClasses", appliedTaxKey);
+  if (appliedCertStatuses.length) usersParams.set("certStatuses", appliedCertKey);
   usersParams.set("limit", String(pageSize));
   usersParams.set("offset", String(page * pageSize));
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
-    queryKey: ["/api/users", debouncedSearch, departmentFilter, divisionFilter, taxClassFilter, certStatusFilter, page, pageSize],
+    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, page, pageSize],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employees");
@@ -195,50 +215,85 @@ export default function EmployeesPage() {
             data-testid="input-search-employees"
           />
         </div>
-        <Select value={divisionFilter} onValueChange={setDivisionFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-company-filter">
-            <SelectValue placeholder="Company" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Companies</SelectItem>
-            {divisions?.map((d) => (
-              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={taxClassFilter} onValueChange={setTaxClassFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-tax-class-filter">
-            <SelectValue placeholder="Tax Classification" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Tax Classifications</SelectItem>
-            <SelectItem value="W-2">W-2</SelectItem>
-            <SelectItem value="1099">1099</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-department-filter">
-            <SelectValue placeholder="Department" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Departments</SelectItem>
-            {departments?.map((d) => (
-              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={certStatusFilter} onValueChange={setCertStatusFilter}>
-          <SelectTrigger className="w-[180px]" data-testid="select-cert-status-filter">
-            <SelectValue placeholder="Cert Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Cert Statuses</SelectItem>
-            <SelectItem value="none">No Certifications</SelectItem>
-            <SelectItem value="valid">Valid</SelectItem>
-            <SelectItem value="expiring_soon">Expiring Soon</SelectItem>
-            <SelectItem value="expired">Expired</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="w-[180px]" data-testid="filter-company-multi">
+          <MultiSelect
+            options={(divisions ?? []).map((d) => ({ label: d.name, value: d.id }))}
+            selected={draftCompanyIds}
+            onChange={setDraftCompanyIds}
+            placeholder="All Companies"
+            allLabel="All Companies"
+            searchPlaceholder="Search companies..."
+          />
+        </div>
+        <div className="w-[180px]" data-testid="filter-tax-class-multi">
+          <MultiSelect
+            options={[
+              { label: "W-2", value: "W-2" },
+              { label: "1099", value: "1099" },
+            ]}
+            selected={draftTaxClasses}
+            onChange={setDraftTaxClasses}
+            placeholder="All Tax Classifications"
+            allLabel="All Tax Classifications"
+          />
+        </div>
+        <div className="w-[200px]" data-testid="filter-department-multi">
+          <MultiSelect
+            options={(departments ?? []).map((d) => ({ label: d.name, value: d.id }))}
+            selected={draftDeptIds}
+            onChange={setDraftDeptIds}
+            placeholder="All Departments"
+          />
+        </div>
+        <div className="w-[200px]" data-testid="filter-location-multi">
+          <MultiSelect
+            options={(locations ?? []).map((l) => ({ label: l.name, value: l.id }))}
+            selected={draftLocIds}
+            onChange={setDraftLocIds}
+            placeholder="All Locations"
+          />
+        </div>
+        <div className="w-[180px]" data-testid="filter-cert-status-multi">
+          <MultiSelect
+            options={[
+              { label: "No Certifications", value: "none" },
+              { label: "Valid", value: "valid" },
+              { label: "Expiring Soon", value: "expiring_soon" },
+              { label: "Expired", value: "expired" },
+            ]}
+            selected={draftCertStatuses}
+            onChange={setDraftCertStatuses}
+            placeholder="All Cert Statuses"
+            allLabel="All Cert Statuses"
+          />
+        </div>
+        {(() => {
+          const draftCount =
+            draftDeptIds.length + draftLocIds.length + draftCompanyIds.length +
+            draftTaxClasses.length + draftCertStatuses.length;
+          const dirty =
+            draftDeptIds.join(",") !== appliedDeptKey ||
+            draftLocIds.join(",") !== appliedLocKey ||
+            draftCompanyIds.join(",") !== appliedCompanyKey ||
+            draftTaxClasses.join(",") !== appliedTaxKey ||
+            draftCertStatuses.join(",") !== appliedCertKey;
+          return (
+            <Button
+              variant={dirty ? "default" : "outline"}
+              onClick={() => {
+                setAppliedDeptIds(draftDeptIds);
+                setAppliedLocIds(draftLocIds);
+                setAppliedCompanyIds(draftCompanyIds);
+                setAppliedTaxClasses(draftTaxClasses);
+                setAppliedCertStatuses(draftCertStatuses);
+              }}
+              disabled={!dirty}
+              data-testid="button-apply-filters"
+            >
+              Apply{draftCount > 0 ? ` (${draftCount})` : ""}
+            </Button>
+          );
+        })()}
         {canImport && (
           <Button
             variant="outline"
@@ -247,6 +302,16 @@ export default function EmployeesPage() {
           >
             <Upload className="h-4 w-4 mr-2" />
             Import Employees
+          </Button>
+        )}
+        {canImport && (
+          <Button
+            variant="outline"
+            onClick={() => setImportPunchesOpen(true)}
+            data-testid="button-import-punches"
+          >
+            <Upload className="h-4 w-4 mr-2" />
+            Import Punches
           </Button>
         )}
         <AddEmployeeDialog
@@ -262,6 +327,13 @@ export default function EmployeesPage() {
         <ImportEmployeesDialog
           open={importDialogOpen}
           onOpenChange={setImportDialogOpen}
+        />
+      )}
+
+      {canImport && (
+        <ImportPunchesDialog
+          open={importPunchesOpen}
+          onOpenChange={setImportPunchesOpen}
         />
       )}
 
@@ -804,7 +876,11 @@ interface ImportSummary {
   locationsTotal: number;
   created: number;
   updated: number;
+  departmentsAssigned?: number;
+  rolesAssigned?: number;
+  deactivated?: { row: number; employeeNumber: string; name: string }[];
   skipped: { row: number; reason: string }[];
+  warnings: { row: number; reason: string }[];
   profilesWithNumber: number;
 }
 
@@ -876,9 +952,15 @@ function ImportEmployeesDialog({
         <DialogHeader>
           <DialogTitle>Import Employees</DialogTitle>
           <DialogDescription>
-            Upload an Excel (.xlsx) spreadsheet with columns Employee, ID, Dept,
-            and Location. Existing staff (matched by ID) are updated, new ones
-            are added. Names, ID numbers, company, and location are imported.
+            Upload an Excel (.xlsx) spreadsheet. Recognized columns:{" "}
+            <span className="font-medium">Employee Name</span>,{" "}
+            <span className="font-medium">Clock #</span>,{" "}
+            <span className="font-medium">Actual Location</span>,{" "}
+            <span className="font-medium">Paying Company</span>, and{" "}
+            <span className="font-medium">Wage Type</span> (W-2 / 1099 /
+            Volunteer). Existing staff (matched by Clock #) are updated, new ones
+            are added. Blank Paying Company / Wage Type cells are left for you to
+            set by hand. (Legacy files using Employee / ID / Location still work.)
           </DialogDescription>
         </DialogHeader>
 
@@ -893,6 +975,27 @@ function ImportEmployeesDialog({
               Company: {summary.company} · Locations: {summary.locationsTotal} ·
               Rows read: {summary.rowsParsed}
             </p>
+            {(summary.departmentsAssigned || summary.rolesAssigned) ? (
+              <p className="text-muted-foreground">
+                Departments assigned: {summary.departmentsAssigned ?? 0}
+                {summary.rolesAssigned ? ` · Roles assigned: ${summary.rolesAssigned}` : ""}
+              </p>
+            ) : null}
+            {summary.deactivated && summary.deactivated.length > 0 && (
+              <div className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30">
+                <p className="font-medium text-red-800 dark:text-red-300">
+                  {summary.deactivated.length} employee
+                  {summary.deactivated.length === 1 ? "" : "s"} deactivated (marked "Inactive")
+                </p>
+                <ul className="mt-1 max-h-40 overflow-auto text-xs text-red-700 dark:text-red-400">
+                  {summary.deactivated.slice(0, 25).map((d, i) => (
+                    <li key={i}>
+                      {d.name} (Clock #{d.employeeNumber})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {summary.skipped.length > 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
                 <p className="font-medium text-amber-800 dark:text-amber-300">
@@ -903,6 +1006,21 @@ function ImportEmployeesDialog({
                   {summary.skipped.slice(0, 25).map((s, i) => (
                     <li key={i}>
                       Row {s.row}: {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {summary.warnings?.length > 0 && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950/30">
+                <p className="font-medium text-blue-800 dark:text-blue-300">
+                  {summary.warnings.length} note
+                  {summary.warnings.length === 1 ? "" : "s"} (employee still imported)
+                </p>
+                <ul className="mt-1 max-h-40 overflow-auto text-xs text-blue-700 dark:text-blue-400">
+                  {summary.warnings.slice(0, 25).map((w, i) => (
+                    <li key={i}>
+                      Row {w.row}: {w.reason}
                     </li>
                   ))}
                 </ul>
@@ -956,6 +1074,174 @@ function ImportEmployeesDialog({
   );
 }
 
+interface PunchImportSummary {
+  rowsParsed: number;
+  imported: number;
+  openImported?: number;
+  duplicates: number;
+  employeesTouched: number;
+  skipped: { row: number; reason: string }[];
+  unmatchedClockNumbers: string[];
+}
+
+function ImportPunchesDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [summary, setSummary] = useState<PunchImportSummary | null>(null);
+
+  const importMutation = useMutation({
+    mutationFn: async (selectedFile: File): Promise<PunchImportSummary> => {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      const res = await fetch("/api/attendance/import", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        let message = "Failed to import punches";
+        try {
+          const body = await res.json();
+          if (body?.message) message = body.message;
+        } catch {
+          /* keep default */
+        }
+        throw new Error(message);
+      }
+      return res.json();
+    },
+    onSuccess: (result) => {
+      setSummary(result);
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/records"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/punches"] });
+      toast({
+        title: "Punch import complete",
+        description: `${result.imported} imported${result.openImported ? `, ${result.openImported} open clock-ins` : ""}, ${result.duplicates} already present.`,
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Import failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleClose = (next: boolean) => {
+    if (!next) {
+      setFile(null);
+      setSummary(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+    onOpenChange(next);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent data-testid="dialog-import-punches">
+        <DialogHeader>
+          <DialogTitle>Import Punches</DialogTitle>
+          <DialogDescription>
+            Upload a punch report (.xlsx or .csv) with one row per shift:{" "}
+            <span className="font-medium">Clock #</span>,{" "}
+            <span className="font-medium">Clock In</span>,{" "}
+            <span className="font-medium">Clock Out</span> (local time). Employees are
+            matched by Clock #. Safe to re-run — a shift that already exists is skipped,
+            so you can re-upload as each machine is switched over.
+          </DialogDescription>
+        </DialogHeader>
+
+        {summary ? (
+          <div className="space-y-2 text-sm" data-testid="text-punch-import-summary">
+            <p>
+              <span className="font-medium">{summary.imported}</span> punches imported
+              for <span className="font-medium">{summary.employeesTouched}</span>{" "}
+              employees. <span className="font-medium">{summary.duplicates}</span> already
+              present (skipped).
+            </p>
+            {summary.openImported ? (
+              <p className="text-muted-foreground">
+                <span className="font-medium text-foreground">{summary.openImported}</span>{" "}
+                open clock-in{summary.openImported === 1 ? "" : "s"} pre-loaded — these pair
+                automatically when the person clocks out on the new clock.
+              </p>
+            ) : null}
+            <p className="text-muted-foreground">Rows read: {summary.rowsParsed}</p>
+            {summary.unmatchedClockNumbers.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+                <p className="font-medium text-amber-800 dark:text-amber-300">
+                  {summary.unmatchedClockNumbers.length} Clock # not found (add these
+                  employees first, then re-import)
+                </p>
+                <p className="mt-1 max-h-40 overflow-auto text-xs text-amber-700 dark:text-amber-400">
+                  {summary.unmatchedClockNumbers.join(", ")}
+                </p>
+              </div>
+            )}
+            {summary.skipped.length > 0 && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950/30">
+                <p className="font-medium text-blue-800 dark:text-blue-300">
+                  {summary.skipped.length} row{summary.skipped.length === 1 ? "" : "s"} skipped
+                </p>
+                <ul className="mt-1 max-h-40 overflow-auto text-xs text-blue-700 dark:text-blue-400">
+                  {summary.skipped.slice(0, 25).map((s, i) => (
+                    <li key={i}>Row {s.row}: {s.reason}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <Input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              data-testid="input-punch-import-file"
+            />
+            {file && (
+              <p className="text-sm text-muted-foreground" data-testid="text-punch-selected-file">
+                Selected: {file.name}
+              </p>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          {summary ? (
+            <Button onClick={() => handleClose(false)} data-testid="button-punch-import-done">
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => handleClose(false)}
+                disabled={importMutation.isPending}
+                data-testid="button-punch-import-cancel"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => file && importMutation.mutate(file)}
+                disabled={!file || importMutation.isPending}
+                data-testid="button-punch-import-submit"
+              >
+                {importMutation.isPending ? "Importing…" : "Import"}
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AddEmployeeDialog({
   open,
   onOpenChange,
@@ -984,6 +1270,15 @@ function AddEmployeeDialog({
     locationIds: [] as string[],
     employmentType: "full_time",
     taxClassification: "W-2",
+    payrollCompanyId: "",
+    payeeName: "",
+    payeeAddress: "",
+    payeeCity: "",
+    payeeState: "",
+    payeeZip: "",
+    payeeTaxId: "",
+    payeeMemo: "",
+    clockInRequired: true,
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
     hourlyRate: "",
@@ -996,6 +1291,23 @@ function AddEmployeeDialog({
   const [createDepartmentOpen, setCreateDepartmentOpen] = useState(false);
   const [createLocationOpen, setCreateLocationOpen] = useState(false);
   const selectedCompanyName = divisions.find((d) => d.id === formData.companyId)?.name;
+
+  // Note #1: operationally there is a single company (Ahava Medical). We no
+  // longer ask for it — resolve it automatically and assign every hire to it.
+  // Matched by name; falls back to the first company so a rename can't break
+  // Add Employee. BCM and any other company are payroll-only payees (see the
+  // paying-company picker on the Pay step), never the operational company.
+  const operationalCompany = useMemo(
+    () =>
+      divisions.find((d) => /ahava\s*medical/i.test(d.name)) ?? divisions[0],
+    [divisions],
+  );
+  useEffect(() => {
+    if (open && operationalCompany && formData.companyId !== operationalCompany.id) {
+      setFormData((f) => ({ ...f, companyId: operationalCompany.id }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, operationalCompany]);
 
   const { data: onboardingTemplates = [] } = useQuery<Array<{ id: string; name: string; isDefault: boolean; companyId: string | null; isActive: boolean }>>({
     queryKey: ["/api/onboarding-templates", { companyId: formData.companyId }],
@@ -1016,19 +1328,20 @@ function AddEmployeeDialog({
     queryKey: ["/api/departments"],
   });
 
+  // Note #1: locations are no longer gated by company (one operational company),
+  // so fetch the full list.
   const { data: scopedLocations = [] } = useQuery<Location[]>({
-    queryKey: ["/api/locations", { companyId: formData.companyId }],
-    queryFn: async () => {
-      const res = await fetch(`/api/locations?companyId=${formData.companyId}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch locations");
-      return res.json();
-    },
-    enabled: !!formData.companyId,
+    queryKey: ["/api/locations"],
+    enabled: open,
   });
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const body: Record<string, string | number | null | string[]> = {
+      const isVolunteer = formData.taxClassification === "Volunteer";
+      // Volunteers have no pay: force the no-rate pay type and never attach a
+      // paying company. Everyone else carries the manually-picked paying company.
+      const effectivePayType = isVolunteer ? "contractual" : formData.payType;
+      const body: Record<string, string | number | boolean | null | string[]> = {
         firstName: formData.firstName,
         lastName: formData.lastName,
         email: formData.email.trim().toLowerCase(),
@@ -1040,16 +1353,27 @@ function AddEmployeeDialog({
         locationId: formData.locationIds[0] || null,
         employmentType: formData.employmentType,
         taxClassification: formData.taxClassification,
+        payrollCompanyId: isVolunteer ? null : formData.payrollCompanyId || null,
+        clockInRequired: formData.clockInRequired,
         hireDate: formData.hireDate,
-        payType: formData.payType,
+        payType: effectivePayType,
       };
-      if (formData.payType === "hourly" && formData.hourlyRate) {
+      if (formData.taxClassification === "1099") {
+        body.payeeName = formData.payeeName.trim();
+        body.payeeAddress = formData.payeeAddress.trim() || null;
+        body.payeeCity = formData.payeeCity.trim() || null;
+        body.payeeState = formData.payeeState.trim() || null;
+        body.payeeZip = formData.payeeZip.trim() || null;
+        body.payeeTaxId = formData.payeeTaxId.trim() || null;
+        body.payeeMemo = formData.payeeMemo.trim() || null;
+      }
+      if (effectivePayType === "hourly" && formData.hourlyRate) {
         body.hourlyRate = parseFloat(formData.hourlyRate);
       }
-      if (formData.payType === "salary" && formData.weeklySalary) {
+      if (effectivePayType === "salary" && formData.weeklySalary) {
         body.weeklySalary = parseFloat(formData.weeklySalary);
       }
-      if (formData.payType === "daily" && formData.dailySalary) {
+      if (effectivePayType === "daily" && formData.dailySalary) {
         body.dailySalary = parseFloat(formData.dailySalary);
       }
       if (formData.onboardingTemplateId) {
@@ -1101,7 +1425,8 @@ function AddEmployeeDialog({
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
-      taxClassification: "W-2",
+      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true,
+      payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "", payeeMemo: "",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
     });
@@ -1115,18 +1440,27 @@ function AddEmployeeDialog({
     }
   };
 
-  const canProceedStep1 = !!(formData.firstName && formData.lastName && formData.email && formData.companyId);
-  const canProceedStep2 = !!(formData.hireDate && formData.taxClassification && formData.employmentType);
+  // Note #1/#4: company is no longer asked for here (auto-assigned). Page 1 is
+  // identity + assignment; the money questions live on the Pay step.
+  const canProceedStep1 = !!(formData.firstName && formData.lastName && formData.email);
+  const canProceedStep2 = !!(formData.hireDate && formData.employmentType);
   const ratePositive = (v: string) => {
     const n = parseFloat(v);
     return Number.isFinite(n) && n > 0;
   };
+  const isVolunteer = formData.taxClassification === "Volunteer";
   const payRateValid =
+    isVolunteer ||
     formData.payType === "contractual" ||
     (formData.payType === "hourly" && ratePositive(formData.hourlyRate)) ||
     (formData.payType === "daily" && ratePositive(formData.dailySalary)) ||
     (formData.payType === "salary" && ratePositive(formData.weeklySalary));
-  const canProceedStep3 = canProceedStep1 && canProceedStep2 && payRateValid;
+  // Everyone except volunteers must be assigned a paying company (Ahava / BCM).
+  const payrollCompanyValid = isVolunteer || !!formData.payrollCompanyId;
+  // A 1099 worker must have a "Pay to the order of" name (the rest is optional).
+  const payeeValid = formData.taxClassification !== "1099" || !!formData.payeeName.trim();
+  const canProceedStep3 =
+    canProceedStep1 && canProceedStep2 && formData.taxClassification && payRateValid && payrollCompanyValid && payeeValid;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(v); }}>
@@ -1208,38 +1542,6 @@ function AddEmployeeDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Company *</Label>
-              <Select
-                value={formData.companyId}
-                onValueChange={(v) => {
-                  if (v === INLINE_ADD_NEW_VALUE) {
-                    setCreateCompanyOpen(true);
-                    return;
-                  }
-                  setFormData({ ...formData, companyId: v, departmentIds: [], locationIds: [] });
-                }}
-              >
-                <SelectTrigger data-testid="select-add-division">
-                  <SelectValue placeholder="Select company" />
-                </SelectTrigger>
-                <SelectContent>
-                  {divisions.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-                  ))}
-                  <PermissionedAddNewItem
-                    permission="company.create"
-                    label="Add new company"
-                    testId="option-add-new-company"
-                  />
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="space-y-4">
-            <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label>Departments</Label>
                 <Button
@@ -1284,17 +1586,7 @@ function AddEmployeeDialog({
                   size="sm"
                   className="h-7 px-2 text-xs"
                   data-testid="button-add-new-location"
-                  onClick={() => {
-                    if (!formData.companyId) {
-                      toast({
-                        title: "Select a company first",
-                        description: "Choose a company in Step 1 before adding a location.",
-                        variant: "destructive",
-                      });
-                      return;
-                    }
-                    setCreateLocationOpen(true);
-                  }}
+                  onClick={() => setCreateLocationOpen(true)}
                 >
                   <Plus className="h-3.5 w-3.5 mr-1" /> Add new
                 </Button>
@@ -1321,6 +1613,11 @@ function AddEmployeeDialog({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="space-y-4">
             <div className="space-y-2">
               <Label>Employment Type</Label>
               <Select value={formData.employmentType} onValueChange={(v) => setFormData({ ...formData, employmentType: v })}>
@@ -1335,18 +1632,18 @@ function AddEmployeeDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>Tax Classification</Label>
-              <Select value={formData.taxClassification} onValueChange={(v) => setFormData({ ...formData, taxClassification: v })}>
-                <SelectTrigger data-testid="select-add-tax-classification">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="W-2">W-2</SelectItem>
-                  <SelectItem value="1099">1099</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">Tax form classification — independent from employment type.</p>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label>Required to clock in</Label>
+                <p className="text-xs text-muted-foreground">
+                  Turn off for people paid regardless of hours (e.g. a salaried manager) or volunteers. When off, missing-clock-out and no-show alerts are suppressed for this person.
+                </p>
+              </div>
+              <Switch
+                checked={formData.clockInRequired}
+                onCheckedChange={(v) => setFormData({ ...formData, clockInRequired: v })}
+                data-testid="switch-add-clock-in-required"
+              />
             </div>
             <div className="space-y-2">
               <Label>Hire Date</Label>
@@ -1384,6 +1681,109 @@ function AddEmployeeDialog({
 
         {step === 3 && (
           <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Tax Form</Label>
+              <Select
+                value={formData.taxClassification}
+                onValueChange={(v) =>
+                  setFormData({
+                    ...formData,
+                    taxClassification: v,
+                    payrollCompanyId: v === "Volunteer" ? "" : formData.payrollCompanyId,
+                  })
+                }
+              >
+                <SelectTrigger data-testid="select-add-tax-classification">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="W-2">W-2</SelectItem>
+                  <SelectItem value="1099">1099</SelectItem>
+                  <SelectItem value="Volunteer">Volunteer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {!isVolunteer && (
+              <div className="space-y-2">
+                <Label>Paying Company *</Label>
+                <Select
+                  value={formData.payrollCompanyId}
+                  onValueChange={(v) => setFormData({ ...formData, payrollCompanyId: v })}
+                >
+                  <SelectTrigger data-testid="select-add-payroll-company">
+                    <SelectValue placeholder="Who pays this person" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {divisions.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Which entity issues this person's payment.
+                </p>
+              </div>
+            )}
+            {formData.taxClassification === "1099" && (
+              <div className="space-y-2 rounded-md border p-3">
+                <div className="space-y-1">
+                  <Label>Pay to the order of *</Label>
+                  <Input
+                    value={formData.payeeName}
+                    onChange={(e) => setFormData({ ...formData, payeeName: e.target.value })}
+                    placeholder="Company / LLC name"
+                    data-testid="input-add-payee-name"
+                  />
+                </div>
+                <Input
+                  value={formData.payeeAddress}
+                  onChange={(e) => setFormData({ ...formData, payeeAddress: e.target.value })}
+                  placeholder="Address (optional)"
+                  data-testid="input-add-payee-address"
+                />
+                <div className="grid grid-cols-3 gap-2">
+                  <Input
+                    value={formData.payeeCity}
+                    onChange={(e) => setFormData({ ...formData, payeeCity: e.target.value })}
+                    placeholder="City"
+                    data-testid="input-add-payee-city"
+                  />
+                  <Input
+                    value={formData.payeeState}
+                    onChange={(e) => setFormData({ ...formData, payeeState: e.target.value })}
+                    placeholder="State"
+                    data-testid="input-add-payee-state"
+                  />
+                  <Input
+                    value={formData.payeeZip}
+                    onChange={(e) => setFormData({ ...formData, payeeZip: e.target.value })}
+                    placeholder="ZIP"
+                    data-testid="input-add-payee-zip"
+                  />
+                </div>
+                <Input
+                  value={formData.payeeTaxId}
+                  onChange={(e) => setFormData({ ...formData, payeeTaxId: e.target.value })}
+                  placeholder="Tax ID (optional)"
+                  data-testid="input-add-payee-tax-id"
+                />
+                <Input
+                  value={formData.payeeMemo}
+                  onChange={(e) => setFormData({ ...formData, payeeMemo: e.target.value })}
+                  placeholder="Memo (optional) — shown on the payroll report"
+                  data-testid="input-add-payee-memo"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Only the name is required — address, Tax ID and memo can be added later.
+                </p>
+              </div>
+            )}
+            {isVolunteer ? (
+              <p className="text-sm text-muted-foreground" data-testid="text-add-volunteer-note">
+                Volunteers are not paid — only their attendance is tracked. No pay rate or paying company is needed.
+              </p>
+            ) : (
+            <>
             <div className="space-y-2">
               <Label>Pay Type</Label>
               <Select
@@ -1452,6 +1852,13 @@ function AddEmployeeDialog({
                   data-testid="input-add-weekly-salary"
                 />
               </div>
+            )}
+            {formData.payType === "salary" && (
+              <p className="text-xs text-muted-foreground" data-testid="text-add-salary-note">
+                Fixed salary — pay is not affected by hours worked. Hours are still shown on reports for reference.
+              </p>
+            )}
+            </>
             )}
           </div>
         )}
@@ -1559,7 +1966,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     const section = initialUrlParams.get("section");
     if (section === "certifications") return "basic";
     if (t === "certifications") return "basic";
-    if (t && ["basic", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "history"].includes(t)) return t;
+    if (t && ["basic", "timesheet", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "history"].includes(t)) return t;
     return "basic";
   })();
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -1642,6 +2049,69 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
+  });
+
+  // F3: staged edits for the assignment block (Departments / Locations / Roles).
+  // Selecting just updates this local draft — nothing hits the server until the
+  // "Save assignments" button. (Company change stays immediate: it's rare and
+  // rescopes dept/loc.)
+  const [assignDraft, setAssignDraft] = useState<{
+    departmentIds: string[];
+    locationIds: string[];
+    roleIds: string[];
+  }>({ departmentIds: [], locationIds: [], roleIds: [] });
+  const [assignEditing, setAssignEditing] = useState(false);
+  useEffect(() => {
+    if (user && !assignEditing) {
+      setAssignDraft({
+        departmentIds: userDepartmentIds(user),
+        locationIds: userLocationIds(user),
+        roleIds: assignedRoles.map((r) => r.id),
+      });
+    }
+  }, [user, assignedRoles, assignEditing]);
+  const sortedJson = (a: string[]) => JSON.stringify([...a].sort());
+  const assignDirty = useMemo(() => {
+    if (!user) return false;
+    return (
+      sortedJson(userDepartmentIds(user)) !== sortedJson(assignDraft.departmentIds) ||
+      sortedJson(userLocationIds(user)) !== sortedJson(assignDraft.locationIds) ||
+      sortedJson(assignedRoles.map((r) => r.id)) !== sortedJson(assignDraft.roleIds)
+    );
+  }, [user, assignedRoles, assignDraft]);
+  const patchAssignDraft = (p: Partial<typeof assignDraft>) => {
+    setAssignEditing(true);
+    setAssignDraft((d) => ({ ...d, ...p }));
+  };
+  const resetAssignDraft = () => {
+    if (!user) return;
+    setAssignDraft({
+      departmentIds: userDepartmentIds(user),
+      locationIds: userLocationIds(user),
+      roleIds: assignedRoles.map((r) => r.id),
+    });
+    setAssignEditing(false);
+  };
+  const saveAssignmentsMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PATCH", `/api/users/${userId}`, {
+        departmentIds: assignDraft.departmentIds,
+        locationIds: assignDraft.locationIds,
+      });
+      if (sortedJson(assignedRoles.map((r) => r.id)) !== sortedJson(assignDraft.roleIds)) {
+        await apiRequest("PUT", `/api/users/${userId}/roles`, { roleIds: assignDraft.roleIds });
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "roles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/permissions"] });
+      setAssignEditing(false);
+      toast({ title: "Assignments saved" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
   const updateMutation = useMutation({
@@ -1732,12 +2202,28 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     },
   });
 
+  const clockInRequiredMutation = useMutation({
+    mutationFn: async (clockInRequired: boolean) => {
+      await apiRequest("PATCH", `/api/employment-profiles/${userId}`, { clockInRequired });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      toast({ title: "Clock-in requirement updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const [editEmployment, setEditEmployment] = useState(false);
   const [employmentForm, setEmploymentForm] = useState({
     employmentType: "full_time",
     hireDate: "",
     terminationDate: "",
     overtimeEligible: false,
+    taxClassification: "W-2",
+    clockInRequired: true,
   });
 
   useEffect(() => {
@@ -1747,6 +2233,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
         terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
         overtimeEligible: !!profile.overtimeEligible,
+        taxClassification: profile.taxClassification || "W-2",
+        clockInRequired: profile.clockInRequired ?? true,
       });
     }
   }, [profile, editEmployment]);
@@ -1757,6 +2245,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       hireDate: string | null;
       terminationDate: string | null;
       overtimeEligible: boolean;
+      taxClassification: string;
+      clockInRequired: boolean;
     }) => {
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
     },
@@ -1785,6 +2275,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     holidayPayEnabled: false,
     overtimeEligible: false,
     payrollCompanyId: "none",
+    payeeName: "",
+    payeeAddress: "",
+    payeeCity: "",
+    payeeState: "",
+    payeeZip: "",
+    payeeTaxId: "",
+    payeeMemo: "",
   });
 
   const openPayDialog = () => {
@@ -1796,6 +2293,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       holidayPayEnabled: !!profile?.holidayPayEnabled,
       overtimeEligible: !!profile?.overtimeEligible,
       payrollCompanyId: profile?.payrollCompanyId || "none",
+      payeeName: profile?.payeeName || "",
+      payeeAddress: profile?.payeeAddress || "",
+      payeeCity: profile?.payeeCity || "",
+      payeeState: profile?.payeeState || "",
+      payeeZip: profile?.payeeZip || "",
+      payeeTaxId: profile?.payeeTaxId || "",
+      payeeMemo: profile?.payeeMemo || "",
     });
     setEditPayOpen(true);
   };
@@ -1821,6 +2325,16 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         weeklySalary: payForm.payType === "salary" ? parseFloat(payForm.weeklySalary) : null,
         payrollCompanyId: payForm.payrollCompanyId === "none" ? null : payForm.payrollCompanyId,
       };
+      // 1099 payee ("pay to the order of") + memo — only for 1099 workers.
+      if (profile?.taxClassification === "1099") {
+        body.payeeName = payForm.payeeName.trim() || null;
+        body.payeeAddress = payForm.payeeAddress.trim() || null;
+        body.payeeCity = payForm.payeeCity.trim() || null;
+        body.payeeState = payForm.payeeState.trim() || null;
+        body.payeeZip = payForm.payeeZip.trim() || null;
+        body.payeeTaxId = payForm.payeeTaxId.trim() || null;
+        body.payeeMemo = payForm.payeeMemo.trim() || null;
+      }
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, body);
     },
     onSuccess: () => {
@@ -1857,6 +2371,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             <Badge variant="outline" data-testid="badge-employee-profile-role">
               {user?.role}
             </Badge>
+            {user?.editLocked && (
+              <Badge variant="destructive" data-testid="badge-employee-locked">Locked</Badge>
+            )}
+            <LockAccountButton userId={userId} locked={!!user?.editLocked} />
             <ResetPasswordButton userId={userId} />
           </div>
         }
@@ -1867,6 +2385,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-employee-profile">
         <TabsList className="flex-wrap" data-testid="tabs-list-employee">
           <TabsTrigger value="basic" data-testid="tab-basic-info">Basic Info</TabsTrigger>
+          <TabsTrigger value="timesheet" data-testid="tab-review-timesheet">Review Time Sheet</TabsTrigger>
           <TabsTrigger value="employment" data-testid="tab-employment">Employment</TabsTrigger>
           <TabsTrigger value="pay" data-testid="tab-pay-setup">Pay Setup</TabsTrigger>
           <TabsTrigger value="timeclock" data-testid="tab-time-clock">Time Clock Settings</TabsTrigger>
@@ -1880,6 +2399,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           <TabsTrigger value="offboarding" data-testid="tab-offboarding">Offboarding</TabsTrigger>
           <TabsTrigger value="history" data-testid="tab-history">History/Audit</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="timesheet">
+          <ReviewTimeSheetTab employeeId={userId} />
+        </TabsContent>
 
         <TabsContent value="basic">
           <Card data-testid="card-basic-info">
@@ -2006,13 +2529,13 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                           .map(([value, label]) => ({ value, label }))
                           .sort((a, b) => a.label.localeCompare(b.label));
                       })()}
-                      selected={assignedRoles.map((r) => r.id)}
-                      onChange={(ids) => setRolesMutation.mutate(ids)}
+                      selected={assignDraft.roleIds}
+                      onChange={(ids) => patchAssignDraft({ roleIds: ids })}
                       placeholder="No roles assigned"
                       allLabel="No roles"
                       searchPlaceholder="Search roles..."
                       emptyMessage="No roles available."
-                      disabled={setRolesMutation.isPending}
+                      disabled={saveAssignmentsMutation.isPending}
                       onAddNew={
                         hasPermission("roles.manage")
                           ? () => setProfileCreateRoleOpen(true)
@@ -2102,17 +2625,17 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </div>
                 <MultiSelect
                   options={scopedDepartments.map((d) => ({ label: d.name, value: d.id }))}
-                  selected={user ? userDepartmentIds(user) : []}
-                  onChange={(values) => updateMutation.mutate({ departmentIds: values })}
+                  selected={assignDraft.departmentIds}
+                  onChange={(values) => patchAssignDraft({ departmentIds: values })}
                   placeholder="Select departments"
                   allLabel="No Department"
                   emptyMessage="No departments available."
                   disabled={!user?.companyId}
                   data-testid="select-profile-department"
                 />
-                {user && userDepartmentIds(user).length > 0 && (
+                {assignDraft.departmentIds.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
-                    {userDepartmentIds(user).map((id) => {
+                    {assignDraft.departmentIds.map((id) => {
                       const d = scopedDepartments.find((x) => x.id === id) || departments?.find((x) => x.id === id);
                       return (
                         <Badge key={id} variant="secondary" data-testid={`badge-profile-department-${id}`}>
@@ -2150,17 +2673,17 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                 </div>
                 <MultiSelect
                   options={scopedLocations.map((l) => ({ label: l.name, value: l.id }))}
-                  selected={user ? userLocationIds(user) : []}
-                  onChange={(values) => updateMutation.mutate({ locationIds: values })}
+                  selected={assignDraft.locationIds}
+                  onChange={(values) => patchAssignDraft({ locationIds: values })}
                   placeholder="Select locations"
                   allLabel="No Location"
                   emptyMessage="No locations available."
                   disabled={!user?.companyId}
                   data-testid="select-profile-location"
                 />
-                {user && userLocationIds(user).length > 0 && (
+                {assignDraft.locationIds.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
-                    {userLocationIds(user).map((id) => {
+                    {assignDraft.locationIds.map((id) => {
                       const l = scopedLocations.find((x) => x.id === id) || locations?.find((x) => x.id === id);
                       return (
                         <Badge key={id} variant="secondary" data-testid={`badge-profile-location-${id}`}>
@@ -2171,6 +2694,28 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                   </div>
                 )}
               </div>
+              {assignDirty && (
+                <div className="flex items-center justify-end gap-2 pt-3 mt-2 border-t">
+                  <span className="text-xs text-muted-foreground mr-auto">Unsaved assignment changes</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={resetAssignDraft}
+                    disabled={saveAssignmentsMutation.isPending}
+                    data-testid="button-reset-assignments"
+                  >
+                    Reset
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => saveAssignmentsMutation.mutate()}
+                    disabled={saveAssignmentsMutation.isPending}
+                    data-testid="button-save-assignments"
+                  >
+                    {saveAssignmentsMutation.isPending ? "Saving…" : "Save assignments"}
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
           <CreateCompanyDialog
@@ -2186,9 +2731,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             companyId={user?.companyId || ""}
             companyName={div?.name}
             onCreated={(dept) => {
-              const existing = user ? userDepartmentIds(user) : [];
-              const next = existing.includes(dept.id) ? existing : [...existing, dept.id];
-              updateMutation.mutate({ departmentIds: next });
+              const next = assignDraft.departmentIds.includes(dept.id) ? assignDraft.departmentIds : [...assignDraft.departmentIds, dept.id];
+              patchAssignDraft({ departmentIds: next });
             }}
           />
           <CreateLocationDialog
@@ -2197,9 +2741,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
             companyId={user?.companyId || ""}
             companyName={div?.name}
             onCreated={(location) => {
-              const existing = user ? userLocationIds(user) : [];
-              const next = existing.includes(location.id) ? existing : [...existing, location.id];
-              updateMutation.mutate({ locationIds: next });
+              const next = assignDraft.locationIds.includes(location.id) ? assignDraft.locationIds : [...assignDraft.locationIds, location.id];
+              patchAssignDraft({ locationIds: next });
             }}
           />
           <CreateRoleDialog
@@ -2217,7 +2760,10 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
           </div>
         </TabsContent>
 
-        <TabsContent value="employment">
+        <TabsContent value="employment" className="space-y-6">
+          {user?.role === "manager" && (
+            <ManagerScopeEditor userId={userId} />
+          )}
           <Card data-testid="card-employment">
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Employment Details</CardTitle>
@@ -2234,6 +2780,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                           hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
                           terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
                           overtimeEligible: !!profile.overtimeEligible,
+                          taxClassification: profile.taxClassification || "W-2",
+                          clockInRequired: profile.clockInRequired ?? true,
                         });
                       }
                     }}
@@ -2249,6 +2797,8 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                         hireDate: employmentForm.hireDate ? employmentForm.hireDate : null,
                         terminationDate: employmentForm.terminationDate ? employmentForm.terminationDate : null,
                         overtimeEligible: employmentForm.overtimeEligible,
+                        taxClassification: employmentForm.taxClassification,
+                        clockInRequired: employmentForm.clockInRequired,
                       })
                     }
                     disabled={employmentMutation.isPending || !profile}
@@ -2305,19 +2855,39 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Tax Classification</Label>
-                <Select
-                  value={profile?.taxClassification || "W-2"}
-                  onValueChange={(v) => taxClassMutation.mutate(v)}
-                  disabled={profileLoading || !profile}
-                >
-                  <SelectTrigger data-testid="select-profile-tax-classification">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="W-2">W-2</SelectItem>
-                    <SelectItem value="1099">1099</SelectItem>
-                  </SelectContent>
-                </Select>
+                {editEmployment ? (
+                  <Select
+                    value={employmentForm.taxClassification}
+                    onValueChange={(v) => setEmploymentForm((f) => ({ ...f, taxClassification: v }))}
+                  >
+                    <SelectTrigger data-testid="select-profile-tax-classification">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="W-2">W-2</SelectItem>
+                      <SelectItem value="1099">1099</SelectItem>
+                      <SelectItem value="Volunteer">Volunteer</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-tax-classification">{profile?.taxClassification || "W-2"}</p>
+                )}
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Required to clock in</Label>
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={editEmployment ? employmentForm.clockInRequired : (profile?.clockInRequired ?? true)}
+                    onCheckedChange={(v) => setEmploymentForm((f) => ({ ...f, clockInRequired: v }))}
+                    disabled={!editEmployment || profileLoading || !profile}
+                    data-testid="switch-profile-clock-in-required"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {(editEmployment ? employmentForm.clockInRequired : (profile?.clockInRequired ?? true))
+                      ? "Missing-punch & no-show alerts on"
+                      : "Alerts suppressed (not required)"}
+                  </span>
+                </div>
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Hire Date</Label>
@@ -2548,6 +3118,30 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     Used for payroll reporting only — independent of department/location assignment.
                   </p>
                 </div>
+                {profile?.taxClassification === "1099" && (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <Label>Pay to the order of</Label>
+                    <Input
+                      value={payForm.payeeName}
+                      onChange={(e) => setPayForm((f) => ({ ...f, payeeName: e.target.value }))}
+                      placeholder="Company / LLC name"
+                      data-testid="input-pay-payee-name"
+                    />
+                    <Input
+                      value={payForm.payeeAddress}
+                      onChange={(e) => setPayForm((f) => ({ ...f, payeeAddress: e.target.value }))}
+                      placeholder="Address (optional)"
+                      data-testid="input-pay-payee-address"
+                    />
+                    <div className="grid grid-cols-3 gap-2">
+                      <Input value={payForm.payeeCity} onChange={(e) => setPayForm((f) => ({ ...f, payeeCity: e.target.value }))} placeholder="City" data-testid="input-pay-payee-city" />
+                      <Input value={payForm.payeeState} onChange={(e) => setPayForm((f) => ({ ...f, payeeState: e.target.value }))} placeholder="State" data-testid="input-pay-payee-state" />
+                      <Input value={payForm.payeeZip} onChange={(e) => setPayForm((f) => ({ ...f, payeeZip: e.target.value }))} placeholder="ZIP" data-testid="input-pay-payee-zip" />
+                    </div>
+                    <Input value={payForm.payeeTaxId} onChange={(e) => setPayForm((f) => ({ ...f, payeeTaxId: e.target.value }))} placeholder="Tax ID (optional)" data-testid="input-pay-payee-tax-id" />
+                    <Input value={payForm.payeeMemo} onChange={(e) => setPayForm((f) => ({ ...f, payeeMemo: e.target.value }))} placeholder="Memo (optional) — shown on the payroll report" data-testid="input-pay-payee-memo" />
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button
@@ -2910,6 +3504,165 @@ function CorrectionRequestStat({ userId }: { userId: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Note #3: edit a manager's "hats" — each row is a (location?, department?)
+// scope. The manager sees the UNION of their hats. "All" on a dimension means
+// unconstrained (all locations / all departments).
+type ManagerHat = { locationId: string; departmentId: string };
+
+function ManagerScopeEditor({ userId }: { userId: string }) {
+  const { toast } = useToast();
+  const { data: locations = [] } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
+  const { data: departments = [] } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
+  const { data: scopeData } = useQuery<{ scopes: Array<{ id: string; locationId: string | null; departmentId: string | null }> }>({
+    queryKey: ["/api/users", userId, "manager-scopes"],
+    queryFn: async () => {
+      const res = await fetch(`/api/users/${userId}/manager-scopes`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load management scope");
+      return res.json();
+    },
+  });
+
+  const [hats, setHats] = useState<ManagerHat[]>([]);
+  useEffect(() => {
+    if (scopeData?.scopes) {
+      setHats(scopeData.scopes.map((s) => ({ locationId: s.locationId || "", departmentId: s.departmentId || "" })));
+    }
+  }, [scopeData]);
+
+  const locName = (id: string) => locations.find((l) => l.id === id)?.name || "that location";
+  const deptName = (id: string) => departments.find((d) => d.id === id)?.name || "that department";
+  const describeHat = (h: ManagerHat) => {
+    if (h.locationId && h.departmentId) return `${deptName(h.departmentId)} at ${locName(h.locationId)}`;
+    if (h.locationId) return `Everyone at ${locName(h.locationId)} (all departments)`;
+    if (h.departmentId) return `${deptName(h.departmentId)} across all locations`;
+    return "Pick a location and/or department";
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const scopes = hats
+        .map((h) => ({ locationId: h.locationId || null, departmentId: h.departmentId || null }))
+        .filter((h) => h.locationId || h.departmentId);
+      await apiRequest("PUT", `/api/users/${userId}/manager-scopes`, { scopes });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "manager-scopes"] });
+      toast({ title: "Management scope updated" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const setHat = (i: number, patch: Partial<ManagerHat>) =>
+    setHats((prev) => prev.map((h, idx) => (idx === i ? { ...h, ...patch } : h)));
+
+  return (
+    <Card data-testid="card-manager-scope">
+      <CardHeader>
+        <CardTitle>Management Scope</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          What this manager can see. Each row is one "hat" — the manager sees the
+          sum of all rows. Leave a location or department as "All" to cover every
+          one. Example: <em>All of Sumner</em> plus <em>Vision at Kingston</em>.
+          With no rows, the manager falls back to their own department memberships.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {hats.length === 0 && (
+          <p className="text-sm text-muted-foreground" data-testid="text-no-manager-scopes">
+            No scopes set.
+          </p>
+        )}
+        {hats.map((h, i) => (
+          <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border p-2" data-testid={`manager-scope-row-${i}`}>
+            <Select value={h.locationId || "all"} onValueChange={(v) => setHat(i, { locationId: v === "all" ? "" : v })}>
+              <SelectTrigger className="w-[200px]" data-testid={`select-scope-location-${i}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All locations</SelectItem>
+                {locations.map((l) => (
+                  <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={h.departmentId || "all"} onValueChange={(v) => setHat(i, { departmentId: v === "all" ? "" : v })}>
+              <SelectTrigger className="w-[200px]" data-testid={`select-scope-department-${i}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All departments</SelectItem>
+                {departments.map((d) => (
+                  <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="text-xs text-muted-foreground flex-1 min-w-[160px]">{describeHat(h)}</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setHats((prev) => prev.filter((_, idx) => idx !== i))}
+              data-testid={`button-remove-scope-${i}`}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setHats((prev) => [...prev, { locationId: "", departmentId: "" }])}
+            data-testid="button-add-scope"
+          >
+            <Plus className="h-4 w-4 mr-1" /> Add scope
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending}
+            data-testid="button-save-manager-scope"
+          >
+            Save scope
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Lock / unlock an account's ability to make edits (chain of command). Shown to
+// owners and managers; the server enforces who may actually lock/unlock.
+function LockAccountButton({ userId, locked }: { userId: string; locked: boolean }) {
+  const { toast } = useToast();
+  const { user: viewer } = useAuth();
+  const canSee = viewer?.role === "admin" || viewer?.role === "manager";
+  const mutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/users/${userId}/${locked ? "unlock" : "lock"}`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({ title: locked ? "Account unlocked" : "Account locked" });
+    },
+    onError: (err: Error) => toast({ title: "Couldn't change lock", description: err.message, variant: "destructive" }),
+  });
+  if (!canSee) return null;
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => mutation.mutate()}
+      disabled={mutation.isPending}
+      data-testid="button-lock-account"
+      title={locked ? "Unlock this account's editing" : "Lock this account from editing"}
+    >
+      {locked ? <LockOpen className="h-4 w-4 mr-1" /> : <Lock className="h-4 w-4 mr-1" />}
+      {locked ? "Unlock" : "Lock"}
+    </Button>
   );
 }
 
@@ -3831,6 +4584,7 @@ function OffboardingTab({ userId }: { userId: string }) {
   const [skipReasonByTask, setSkipReasonByTask] = useState<Record<string, string>>({});
   const [notesByTask, setNotesByTask] = useState<Record<string, string>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deactivateReason, setDeactivateReason] = useState<string>("");
 
   const startMut = useMutation({
     mutationFn: async () => apiRequest("POST", `/api/offboarding/start`, {
@@ -3851,11 +4605,12 @@ function OffboardingTab({ userId }: { userId: string }) {
   });
 
   const deactivateMut = useMutation({
-    mutationFn: async () => checklist ? apiRequest("POST", `/api/offboarding-checklists/${checklist.id}/deactivate`) : Promise.resolve(),
+    mutationFn: async () => checklist ? apiRequest("POST", `/api/offboarding-checklists/${checklist.id}/deactivate`, deactivateReason ? { terminationReason: deactivateReason } : {}) : Promise.resolve(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       setConfirmOpen(false);
+      setDeactivateReason("");
       toast({ title: "Account deactivated" });
     },
     onError: (e: unknown) => {
@@ -3924,6 +4679,15 @@ function OffboardingTab({ userId }: { userId: string }) {
                 <DialogContent>
                   <DialogHeader><DialogTitle>Deactivate account</DialogTitle></DialogHeader>
                   <p className="text-sm">This will set the termination date and prevent the user from logging in.</p>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="deactivate-reason">Reason</Label>
+                    <Select value={deactivateReason} onValueChange={setDeactivateReason}>
+                      <SelectTrigger id="deactivate-reason" data-testid="select-termination-reason"><SelectValue placeholder="Select a reason (optional)" /></SelectTrigger>
+                      <SelectContent>
+                        {TERMINATION_REASONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <DialogFooter>
                     <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
                     <Button variant="destructive" onClick={() => deactivateMut.mutate()} disabled={deactivateMut.isPending} data-testid="button-confirm-deactivate">Deactivate</Button>

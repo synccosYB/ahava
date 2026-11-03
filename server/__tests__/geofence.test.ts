@@ -6,10 +6,10 @@
  * No external test runner — asserts inline and exits non-zero on first failure
  * so it can be wired into CI without adding a dev-dep to package.json.
  *
- * Covers the pure evaluation logic only (Haversine + radius decision). The
- * decision must be correct because geofencing never blocks a clock-in — it only
- * decides whether to raise a manager-facing "geofence" exception, so a wrong
- * decision silently misses (or fabricates) out-of-area alerts.
+ * Covers the pure evaluation logic plus the self-service BLOCK path (Note #2):
+ * a phone/web clock-in outside the fence (or with no GPS) must be denied and
+ * recorded as a manager-facing "geofence" exception, so a wrong decision either
+ * wrongly traps an on-site employee or lets a remote one punch in.
  */
 import assert from "node:assert/strict";
 
@@ -19,6 +19,9 @@ const {
   flagClockInGeofence,
   buildGeofenceMapData,
   attachGeofenceMapToExceptions,
+  evaluateClockInGeofence,
+  buildGeofenceBlockMessage,
+  recordGeofenceBlockedAttempt,
 } = await import("../services/geofence.js");
 const { storage } = await import("../storage.js");
 
@@ -236,6 +239,51 @@ test("flagClockInGeofence never throws and returns null on storage error", async
       assert.equal(calls.created.length, 0);
     },
   );
+});
+
+// --- Note #2: strict block path ---
+test("buildGeofenceBlockMessage: coordsMissing asks to enable location / use wall clock", () => {
+  const r = evaluateGeofenceForAddresses([addr()], null, null);
+  const msg = buildGeofenceBlockMessage(r);
+  assert.match(msg, /location/i);
+  assert.match(msg, /wall clock/i);
+});
+
+test("buildGeofenceBlockMessage: out of area reports distance + wall clock", () => {
+  const r = evaluateGeofenceForAddresses([addr()], 40.01, -75.0);
+  const msg = buildGeofenceBlockMessage(r);
+  assert.match(msg, /\dm away|too far/i);
+  assert.match(msg, /wall clock/i);
+});
+
+test("evaluateClockInGeofence pulls the employee's addresses and evaluates", async () => {
+  await withStubbedStorage({ addresses: [addr()] }, async () => {
+    const inside = await evaluateClockInGeofence("u1", 40.00012, -75.0);
+    assert.equal(inside.withinRadius, true);
+    const outside = await evaluateClockInGeofence("u1", 40.01, -75.0);
+    assert.equal(outside.withinRadius, false);
+    assert.equal(outside.required, true);
+  });
+});
+
+test("recordGeofenceBlockedAttempt writes a pending BLOCKED geofence exception, no punch link", async () => {
+  await withStubbedStorage({ addresses: [addr()] }, async (calls) => {
+    const evaluation = evaluateGeofenceForAddresses([addr()], 40.01, -75.0);
+    await recordGeofenceBlockedAttempt({
+      userId: "u1",
+      workDate: "2026-06-15",
+      punchTime: new Date("2026-06-15T09:00:00Z"),
+      evaluation,
+      punchLatitude: 40.01,
+      punchLongitude: -75.0,
+    });
+    assert.equal(calls.created.length, 1);
+    assert.equal(calls.created[0].type, "geofence");
+    assert.equal(calls.created[0].status, "pending");
+    assert.match(calls.created[0].reason, /^BLOCKED/);
+    // No punch was created, so nothing is linked.
+    assert.equal(calls.updates.length, 0);
+  });
 });
 
 // --- buildGeofenceMapData: pure map payload composition ---
