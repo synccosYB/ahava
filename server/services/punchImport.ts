@@ -22,7 +22,7 @@
  *    time are skipped with a reason.
  */
 import XLSX from "xlsx";
-import { and, eq, gte, lte } from "drizzle-orm";
+import { and, eq, gte, lte, isNull, isNotNull } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
 import {
@@ -38,7 +38,10 @@ export const COMPANY_NAME = "Ahava Medical Center";
 
 export interface PunchImportSummary {
   rowsParsed: number;
+  /** Completed shifts (in + out) created. */
   imported: number;
+  /** Open clock-ins (in, no out) pre-loaded so a later live clock-out pairs. */
+  openImported: number;
   /** Shifts skipped because an identical punch already existed (idempotent). */
   duplicates: number;
   skipped: { row: number; reason: string }[];
@@ -174,6 +177,7 @@ export async function importPunchesFromBuffer(
   }
 
   let imported = 0;
+  let openImported = 0;
   let duplicates = 0;
   const skipped: { row: number; reason: string }[] = [];
   const touched = new Set<string>();
@@ -196,30 +200,25 @@ export async function importPunchesFromBuffer(
       skipped.push({ row: rowNum, reason: `no employee with Clock # ${clockNumber}` });
       continue;
     }
-    if (!clockInRaw || !clockOutRaw) {
-      skipped.push({ row: rowNum, reason: `incomplete shift (Clock # ${clockNumber}); needs both in and out` });
+    if (!clockInRaw) {
+      skipped.push({ row: rowNum, reason: `missing clock-in (Clock # ${clockNumber})` });
       continue;
     }
     const inParts = parseLocalParts(clockInRaw);
-    const outParts = parseLocalParts(clockOutRaw);
-    if (!inParts || !outParts) {
-      skipped.push({ row: rowNum, reason: `unparsable time (Clock # ${clockNumber}): "${clockInRaw}" / "${clockOutRaw}"` });
+    if (!inParts) {
+      skipped.push({ row: rowNum, reason: `unparsable clock-in (Clock # ${clockNumber}): "${clockInRaw}"` });
       continue;
     }
 
     const tz = tzByUser.get(userId) ?? DEFAULT_TIMEZONE;
     const clockIn = wallToUtc(inParts, tz);
-    const clockOut = wallToUtc(outParts, tz);
-    if (clockOut.getTime() <= clockIn.getTime()) {
-      skipped.push({ row: rowNum, reason: `clock-out not after clock-in (Clock # ${clockNumber})` });
-      continue;
-    }
+    const workDate = localDateStr(clockIn, tz);
 
     // Idempotent: skip when a punch for this employee already starts at this
-    // exact minute. (Re-uploading the report only adds genuinely new shifts.)
+    // exact minute — open or closed. (Re-uploading only adds genuinely new ones.)
     const minuteStart = new Date(Math.floor(clockIn.getTime() / 60000) * 60000);
     const minuteEnd = new Date(minuteStart.getTime() + 60000 - 1);
-    const existing = await db
+    const sameStart = await db
       .select({ id: punchLogs.id })
       .from(punchLogs)
       .where(
@@ -230,12 +229,63 @@ export async function importPunchesFromBuffer(
         ),
       )
       .limit(1);
-    if (existing.length > 0) {
+    if (sameStart.length > 0) {
       duplicates++;
       continue;
     }
 
-    const workDate = localDateStr(clockIn, tz);
+    // OPEN shift (clock-in, no clock-out): pre-load it so a later LIVE clock-out
+    // on the new machine pairs with it automatically — the whole point of the
+    // mid-week switchover. The DB allows only ONE open punch per employee, so if
+    // they already have one open (e.g. a punch the live clock mis-recorded),
+    // leave it for a manual fix instead of failing.
+    if (!clockOutRaw) {
+      const openExisting = await db
+        .select({ id: punchLogs.id })
+        .from(punchLogs)
+        .where(
+          and(
+            eq(punchLogs.employeeId, userId),
+            isNotNull(punchLogs.clockIn),
+            isNull(punchLogs.clockOut),
+          ),
+        )
+        .limit(1);
+      if (openExisting.length > 0) {
+        skipped.push({ row: rowNum, reason: `Clock # ${clockNumber} already has an open shift; open clock-in not loaded (fix by hand)` });
+        continue;
+      }
+      try {
+        await storage.createPunchLog({
+          employeeId: userId,
+          workDate,
+          clockIn,
+          clockOut: null,
+          hoursWorked: null,
+          status: "in-progress",
+          source: "manager",
+          approved: true,
+          notes: "Imported open clock-in (mid-week switchover)",
+        });
+        openImported++;
+        touched.add(userId);
+      } catch {
+        skipped.push({ row: rowNum, reason: `Clock # ${clockNumber} open clock-in could not be loaded (already open?); fix by hand` });
+      }
+      continue;
+    }
+
+    // COMPLETED shift: both in and out.
+    const outParts = parseLocalParts(clockOutRaw);
+    if (!outParts) {
+      skipped.push({ row: rowNum, reason: `unparsable clock-out (Clock # ${clockNumber}): "${clockOutRaw}"` });
+      continue;
+    }
+    const clockOut = wallToUtc(outParts, tz);
+    if (clockOut.getTime() <= clockIn.getTime()) {
+      skipped.push({ row: rowNum, reason: `clock-out not after clock-in (Clock # ${clockNumber})` });
+      continue;
+    }
     const hoursWorked = (clockOut.getTime() - clockIn.getTime()) / 3600000;
     await storage.createPunchLog({
       employeeId: userId,
@@ -255,6 +305,7 @@ export async function importPunchesFromBuffer(
   return {
     rowsParsed: rows.length,
     imported,
+    openImported,
     duplicates,
     skipped,
     employeesTouched: touched.size,

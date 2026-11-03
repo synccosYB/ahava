@@ -1052,6 +1052,7 @@ function ImportEmployeesDialog({
 interface PunchImportSummary {
   rowsParsed: number;
   imported: number;
+  openImported?: number;
   duplicates: number;
   employeesTouched: number;
   skipped: { row: number; reason: string }[];
@@ -1097,7 +1098,7 @@ function ImportPunchesDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/punches"] });
       toast({
         title: "Punch import complete",
-        description: `${result.imported} imported, ${result.duplicates} already present.`,
+        description: `${result.imported} imported${result.openImported ? `, ${result.openImported} open clock-ins` : ""}, ${result.duplicates} already present.`,
       });
     },
     onError: (err: Error) => {
@@ -1137,6 +1138,13 @@ function ImportPunchesDialog({
               employees. <span className="font-medium">{summary.duplicates}</span> already
               present (skipped).
             </p>
+            {summary.openImported ? (
+              <p className="text-muted-foreground">
+                <span className="font-medium text-foreground">{summary.openImported}</span>{" "}
+                open clock-in{summary.openImported === 1 ? "" : "s"} pre-loaded — these pair
+                automatically when the person clocks out on the new clock.
+              </p>
+            ) : null}
             <p className="text-muted-foreground">Rows read: {summary.rowsParsed}</p>
             {summary.unmatchedClockNumbers.length > 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
