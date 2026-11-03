@@ -188,7 +188,9 @@ check("summarize honors per-day holiday exclusion", () => {
 });
 
 // --- computeWeeklyHours: weekly overtime (the 40h/week rule) ---
-// A Sun-anchored workweek (default workweekStartDay = 0). 2024-01-07 is a Sunday.
+// A Sun-anchored workweek. 2024-01-07 is a Sunday. These weekly-OT cases pin
+// workweekStartDay: 0 explicitly (the global default is Thursday), so the
+// bucketing they assert is independent of the org-wide default.
 const week = (offset: number) => {
   const dt = new Date(Date.UTC(2024, 0, 7 + offset));
   return dt.toISOString().split("T")[0];
@@ -201,7 +203,7 @@ const fiveDays = (hoursPerDay: number) =>
 // 5 × 9h = 45h, daily OT threshold 10 (so each 9h day is all regular), weekly 40.
 check("weekly: 5x9h with high daily threshold → 5h weekly OT", () => {
   const policy = buildPayCalcPolicy(
-    { otThresholdDaily: 10, otThresholdWeekly: 40 },
+    { otThresholdDaily: 10, otThresholdWeekly: 40, workweekStartDay: 0 },
     { doubleTimeThresholdDaily: 12 },
     {},
   );
@@ -226,7 +228,7 @@ check("weekly: 5x9h with high daily threshold → 5h weekly OT", () => {
 // = reg40/OT10 for the week; weekly threshold 40 sees 40 regular → 0 weekly OT.
 check("weekly: 5x10h default thresholds → daily OT only, no extra weekly OT", () => {
   const policy = buildPayCalcPolicy(
-    { otThresholdDaily: 8, otThresholdWeekly: 40 },
+    { otThresholdDaily: 8, otThresholdWeekly: 40, workweekStartDay: 0 },
     { doubleTimeThresholdDaily: 12 },
     {},
   );
@@ -241,7 +243,7 @@ check("weekly: 5x10h default thresholds → daily OT only, no extra weekly OT", 
 // disabling weekly OT (or auto-OT) leaves them regular — same hours, policy-driven.
 check("weekly: lower weekly threshold reclassifies more; disabled keeps regular", () => {
   const at35 = buildPayCalcPolicy(
-    { otThresholdDaily: 10, otThresholdWeekly: 35 },
+    { otThresholdDaily: 10, otThresholdWeekly: 35, workweekStartDay: 0 },
     { doubleTimeThresholdDaily: 12 },
     {},
   );
@@ -252,7 +254,7 @@ check("weekly: lower weekly threshold reclassifies more; disabled keeps regular"
   assert.equal(res35.summary.weeklyOvertimeHours, 10);
 
   const off = buildPayCalcPolicy(
-    { otThresholdDaily: 10, otThresholdWeekly: 35, weeklyOvertimeEnabled: false },
+    { otThresholdDaily: 10, otThresholdWeekly: 35, weeklyOvertimeEnabled: false, workweekStartDay: 0 },
     { doubleTimeThresholdDaily: 12 },
     {},
   );
@@ -305,7 +307,7 @@ check("weekly: workweeks bucket independently; per-day rows reconcile to summary
 // threshold → 5h weekly OT; the holiday day stays all-regular and outside it.
 check("weekly: holiday-excluded day stays out of the weekly threshold (alert/pay parity)", () => {
   const policy = buildPayCalcPolicy(
-    { otThresholdDaily: 10, otThresholdWeekly: 40 },
+    { otThresholdDaily: 10, otThresholdWeekly: 40, workweekStartDay: 0 },
     { doubleTimeThresholdDaily: 12 },
     { holidayOtExclusion: true },
   );
@@ -331,7 +333,7 @@ check("weekly: holiday-excluded day stays out of the weekly threshold (alert/pay
 // accounted for exactly once, and the per-day rows sum to the summary.
 check("weekly: daily + weekly OT combine without double-counting", () => {
   const policy = buildPayCalcPolicy(
-    { otThresholdDaily: 8, otThresholdWeekly: 40 },
+    { otThresholdDaily: 8, otThresholdWeekly: 40, workweekStartDay: 0 },
     { doubleTimeThresholdDaily: 20 },
     {},
   );
