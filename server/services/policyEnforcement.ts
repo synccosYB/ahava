@@ -1,9 +1,9 @@
 import { storage } from "../storage";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "../policyEngine";
-import { buildPayCalcPolicy, splitDailyHours, resolvePayCalcPolicy } from "../payrollEngine";
+import { buildPayCalcPolicy, splitDailyHours } from "../payrollEngine";
 import { recomputeLedger } from "../attendanceLedger";
-import { computeBreakElapsedMinutes } from "../punchHours";
-import type { User } from "@shared/schema";
+import { MISSING_CLOCKOUT_STATUS } from "../punchHours";
+import type { User, PunchLog } from "@shared/schema";
 
 export interface DayOfWeekBonusRule {
   id: string;
@@ -403,6 +403,62 @@ export function computeAutoClockOutValues(opts: {
   return { autoClockOutActual, autoClockOutRounded, hoursWorked };
 }
 
+/**
+ * Mark a stale open shift (one that ran past the max-shift limit with no
+ * punch-out) as a MISSING PUNCH — the agreed behavior for a forgotten punch-out:
+ * stop the clock, record NO worked hours (not a "13h worked" shift), and flag it
+ * for the manager. The clock-out is set to a placeholder at the max-shift mark
+ * ONLY so the row leaves the one-open-punch slot (freeing the employee's next
+ * punch to start a brand-new shift); hours are 0 and the status marks it missing,
+ * so no hours surface ever counts the placeholder (see `MISSING_CLOCKOUT_STATUS`
+ * handling in punchHours / timesheetService / attendanceLedger / the SQL
+ * aggregates). Returns the manager alert to raise; the caller records it.
+ */
+async function markShiftMissingClockout(
+  punch: PunchLog,
+  maxShiftHours: number,
+  policyName?: string,
+): Promise<PolicyAlert> {
+  const actualClockInTime = new Date(punch.clockIn as any);
+  // Placeholder clock-out at the max-shift mark — a marker, NOT a real punch-out.
+  const cap = new Date(actualClockInTime.getTime() + maxShiftHours * 60 * 60 * 1000);
+
+  await storage.updatePunchLog(punch.id, {
+    clockOut: cap,
+    roundedClockOut: cap,
+    hoursWorked: 0,
+    status: MISSING_CLOCKOUT_STATUS,
+    breakStartedAt: null,
+  });
+  const ex = await storage.createAttendanceException({
+    employeeId: punch.employeeId,
+    exceptionDate: punch.workDate,
+    exceptionTime: cap,
+    type: "missing_clockout",
+    reason:
+      `Shift passed the ${maxShiftHours}-hour limit with no punch-out — the employee forgot to clock out. ` +
+      `The clock is stopped and this is recorded as a MISSING PUNCH (no hours counted). ` +
+      `Enter the real clock-out to record the actual hours.`,
+    status: "pending",
+  });
+  if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: punch.id });
+  await recomputeLedger(punch.employeeId, [punch.workDate]);
+
+  return {
+    type: "missing_clockout",
+    severity: "high",
+    employeeId: punch.employeeId,
+    message: `Missing punch-out: a shift ran past the ${maxShiftHours}h limit with no clock-out and was marked a missing punch (no hours counted). Confirm the real clock-out time.`,
+    details: {
+      punchLogId: punch.id,
+      clockIn: actualClockInTime.toISOString(),
+      stoppedAt: cap.toISOString(),
+      maxShiftHours,
+      policyName: policyName || "Default",
+    },
+  };
+}
+
 export async function runAutoClockOut(): Promise<PolicyAlert[]> {
   const alerts: PolicyAlert[] = [];
   const openPunches = await storage.getOpenPunchLogs();
@@ -415,103 +471,17 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
 
     const attendancePolicy = await getEffectivePolicy(user.companyId, punch.employeeId, "attendance", user);
     const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
-
-    // F5: a shift may not exceed maxShiftHours (13). This REPLACES the old clean
-    // auto-clock-out: instead of trusting a computed close, we split the shift and
-    // flag BOTH new boundary punches as unverified so a manager reconciles the
-    // "worked 13h+ / forgot to punch out" case. Always on (not gated on a toggle).
     const maxShiftHours = rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
-    const roundingRule = rules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
-    const roundingInterval = rules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
 
     const actualClockInTime = new Date(punch.clockIn);
-    const roundedClockInTime = new Date(punch.roundedClockIn ?? punch.clockIn);
-    const now = new Date();
-    const hoursOpen = (now.getTime() - actualClockInTime.getTime()) / (1000 * 60 * 60);
+    const hoursOpen = (Date.now() - actualClockInTime.getTime()) / (1000 * 60 * 60);
 
+    // A shift may not exceed maxShiftHours (13) without a punch-out. We do NOT
+    // auto-clock-out (that would record hours the employee may not have worked)
+    // and we do NOT open a placeholder next shift. We STOP the clock and mark it
+    // a missing punch; the employee's next real punch starts a fresh shift.
     if (hoursOpen >= maxShiftHours) {
-      // Cap shift 1 at exactly clock-in + maxShiftHours (NOT the wall-clock time
-      // this job ran). An in-progress break is folded only up to that cap.
-      const cap = new Date(actualClockInTime.getTime() + maxShiftHours * 60 * 60 * 1000);
-      const breakMinutes =
-        (punch.breakMinutes || 0) +
-        computeBreakElapsedMinutes(punch.breakStartedAt, cap);
-
-      const { autoClockOutActual, autoClockOutRounded, hoursWorked } = computeAutoClockOutValues({
-        actualClockIn: actualClockInTime,
-        roundedClockIn: roundedClockInTime,
-        breakMinutes,
-        autoClockOutAfterHours: maxShiftHours,
-        roundingRule,
-        roundingIntervalMinutes: roundingInterval,
-      });
-
-      const payCalc = await resolvePayCalcPolicy(user);
-      const { status } = splitDailyHours(hoursWorked, payCalc);
-
-      // 1) Close shift 1 at the cap (placeholder clock-out) — must happen BEFORE
-      //    opening shift 2 so there's never two open punches (DB allows one).
-      await storage.updatePunchLog(punch.id, {
-        clockOut: autoClockOutActual,
-        roundedClockOut: autoClockOutRounded,
-        hoursWorked,
-        status,
-        breakMinutes,
-        breakStartedAt: null,
-      });
-      const ex1 = await storage.createAttendanceException({
-        employeeId: punch.employeeId,
-        exceptionDate: punch.workDate,
-        exceptionTime: autoClockOutActual,
-        type: "max_shift_split",
-        reason: `Shift reached the ${maxShiftHours}-hour limit. A clock-out was inserted at the ${maxShiftHours}h mark but is UNVERIFIED (the employee did not actually punch out). Confirm the real clock-out time.`,
-        status: "pending",
-      });
-      if (ex1?.id) await storage.updateAttendanceException(ex1.id, { punchLogId: punch.id });
-      void recomputeLedger(punch.employeeId, [punch.workDate]);
-
-      // 2) Open a fresh shift at the cap (placeholder clock-in), so the employee
-      //    is still clocked in and their real punch-out closes shift 2.
-      //    NOTE: workDate uses the cap's UTC date; near midnight in a non-UTC
-      //    location it can land a day off — a manager's review corrects it.
-      const shift2WorkDate = autoClockOutActual.toISOString().slice(0, 10);
-      const shift2 = await storage.createPunchLog({
-        employeeId: punch.employeeId,
-        workDate: shift2WorkDate,
-        clockIn: autoClockOutActual,
-        roundedClockIn: autoClockOutRounded,
-        clockOut: null,
-        hoursWorked: null,
-        status: "in-progress",
-        source: "manager",
-        approved: true,
-        notes: `Auto-started: the previous shift hit the ${maxShiftHours}h limit. Clock-in is unverified — confirm the real start of this shift.`,
-      });
-      const ex2 = await storage.createAttendanceException({
-        employeeId: punch.employeeId,
-        exceptionDate: shift2WorkDate,
-        exceptionTime: autoClockOutActual,
-        type: "max_shift_split",
-        reason: `New shift auto-started at the ${maxShiftHours}h mark because the prior shift was still open. Clock-in is UNVERIFIED — confirm the real start time with the employee.`,
-        status: "pending",
-      });
-      if (ex2?.id) await storage.updateAttendanceException(ex2.id, { punchLogId: shift2.id });
-      void recomputeLedger(punch.employeeId, [shift2WorkDate]);
-
-      alerts.push({
-        type: "max_shift_split",
-        severity: "high",
-        employeeId: punch.employeeId,
-        message: `Shift over ${maxShiftHours}h was auto-split. The clock-out of the first shift and the clock-in of the new shift are unverified (missing punches) — manager review required.`,
-        details: {
-          punchLogId: punch.id,
-          newShiftPunchLogId: shift2.id,
-          clockIn: actualClockInTime.toISOString(),
-          capAt: autoClockOutActual.toISOString(),
-          maxShiftHours,
-          policyName: attendancePolicy?.policyName || "Default",
-        },
-      });
+      alerts.push(await markShiftMissingClockout(punch, maxShiftHours, attendancePolicy?.policyName));
     }
   }
 
@@ -539,50 +509,20 @@ export async function capStaleOpenShiftAtMaxShift(userId: string): Promise<boole
   const attendancePolicy = await getEffectivePolicy(user.companyId, userId, "attendance", user);
   const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
   const maxShiftHours = rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
-  const roundingRule = rules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
-  const roundingInterval = rules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
 
   const actualClockInTime = new Date(punch.clockIn);
-  const roundedClockInTime = new Date(punch.roundedClockIn ?? punch.clockIn);
   const hoursOpen = (Date.now() - actualClockInTime.getTime()) / (1000 * 60 * 60);
   // Within the limit (incl. legit overnight shifts under maxShiftHours): let the
   // punch close it as a normal clock-out.
   if (hoursOpen < maxShiftHours) return false;
 
-  const cap = new Date(actualClockInTime.getTime() + maxShiftHours * 60 * 60 * 1000);
-  const breakMinutes =
-    (punch.breakMinutes || 0) + computeBreakElapsedMinutes(punch.breakStartedAt, cap);
-
-  const { autoClockOutActual, autoClockOutRounded, hoursWorked } = computeAutoClockOutValues({
-    actualClockIn: actualClockInTime,
-    roundedClockIn: roundedClockInTime,
-    breakMinutes,
-    autoClockOutAfterHours: maxShiftHours,
-    roundingRule,
-    roundingIntervalMinutes: roundingInterval,
-  });
-
-  const payCalc = await resolvePayCalcPolicy(user);
-  const { status } = splitDailyHours(hoursWorked, payCalc);
-
-  await storage.updatePunchLog(punch.id, {
-    clockOut: autoClockOutActual,
-    roundedClockOut: autoClockOutRounded,
-    hoursWorked,
-    status,
-    breakMinutes,
-    breakStartedAt: null,
-  });
-  const ex = await storage.createAttendanceException({
-    employeeId: userId,
-    exceptionDate: punch.workDate,
-    exceptionTime: autoClockOutActual,
-    type: "max_shift_split",
-    reason: `Shift reached the ${maxShiftHours}-hour limit without a punch-out — the employee likely forgot to clock out and punched in again later. A clock-out was inserted at the ${maxShiftHours}h mark but is UNVERIFIED; confirm the real clock-out time.`,
-    status: "pending",
-  });
-  if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: punch.id });
-  void recomputeLedger(userId, [punch.workDate]);
+  // Over the limit with no punch-out: the employee forgot to clock out and is
+  // punching again later. Don't let this punch close the stale shift (that would
+  // record a bogus long shift) and don't auto-record hours. Stop the clock, mark
+  // the stale shift a MISSING PUNCH (no hours), alert the manager, and return true
+  // so the caller treats the incoming punch as a fresh clock-in.
+  const alert = await markShiftMissingClockout(punch, maxShiftHours, attendancePolicy?.policyName);
+  await createPolicyAlert(alert);
   return true;
 }
 

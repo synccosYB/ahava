@@ -238,7 +238,10 @@ export function TimesheetEditor({
   const openEdit = (p: Punch) => {
     setEditPunch(p);
     setEditClockIn(toLocalInput(p.clockIn));
-    setEditClockOut(toLocalInput(p.clockOut));
+    // A missing-clock-out punch carries only a placeholder clock-out (the point
+    // the clock was stopped). Start the field empty so the manager enters the
+    // REAL clock-out rather than editing the placeholder.
+    setEditClockOut(p.status === "missing_clockout" ? "" : toLocalInput(p.clockOut));
     setEditWorkDate(p.workDate);
     setEditReason("");
   };
@@ -358,8 +361,14 @@ export function TimesheetEditor({
                 <TableRow key={p.id} data-testid={`row-editor-punch-${p.id}`}>
                   <TableCell className="text-sm font-medium">{formatDate(p.workDate) || "—"}</TableCell>
                   <TableCell className="text-sm tabular-nums">{formatTime12InTz(p.clockIn, p.timezone) || "—"}</TableCell>
-                  <TableCell className="text-sm tabular-nums">{formatTime12InTz(p.clockOut, p.timezone) || "—"}</TableCell>
-                  <TableCell className="text-sm tabular-nums">{p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—"}</TableCell>
+                  <TableCell className="text-sm tabular-nums">
+                    {p.status === "missing_clockout" ? (
+                      <span className="text-destructive font-medium">Missing</span>
+                    ) : (
+                      formatTime12InTz(p.clockOut, p.timezone) || "—"
+                    )}
+                  </TableCell>
+                  <TableCell className="text-sm tabular-nums">{p.status === "missing_clockout" ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}</TableCell>
                   {showActions && (
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
@@ -368,7 +377,7 @@ export function TimesheetEditor({
                             <Pencil className="h-4 w-4" />
                           </Button>
                         )}
-                        {canEdit && p.clockIn && p.clockOut && (
+                        {canEdit && p.clockIn && p.clockOut && p.status !== "missing_clockout" && (
                           <Button size="icon" variant="ghost" onClick={() => openSplit(p)} aria-label="Split shift (clock-out is a new clock-in)" title="Split: the clock-out is really a new clock-in" data-testid={`button-editor-split-${p.id}`}>
                             <Scissors className="h-4 w-4" />
                           </Button>

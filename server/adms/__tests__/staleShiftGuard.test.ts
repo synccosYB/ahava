@@ -52,7 +52,7 @@ async function cleanup() {
   await db.delete(users).where(eq(users.id, employeeId)).catch(() => {});
 }
 
-test("a next-day punch caps the stale shift at 13h and opens a new shift (no 24h shift)", async (t) => {
+test("a next-day punch marks the stale shift a MISSING PUNCH (no hours) and opens a new shift (no 24h shift)", async (t) => {
   await setup();
 
   // Employee clocked in ~24h ago and never clocked out (forgot).
@@ -72,11 +72,16 @@ test("a next-day punch caps the stale shift at 13h and opens a new shift (no 24h
   const r = await ingestPunches(device(), parseAttlog(`${DEVICE_USER}\t2026-10-20 08:00:00\t0\t1`));
   assert.equal(r.processed, 1, "the new punch is processed");
 
-  // The stale shift is now CLOSED, capped near the 13h mark — NOT ~24h.
+  // The stale shift is STOPPED and marked a missing punch: NO worked hours
+  // recorded (not a "13h worked" shift), status = missing_clockout. The
+  // clock-out is only a placeholder at the 13h mark so the row leaves the
+  // one-open-punch slot — it must NOT be ~24h and must carry 0 hours.
   const closed = await storage.getPunchLog(stale.id);
-  assert.ok(closed?.clockOut, "stale shift was given a clock-out");
+  assert.equal(closed?.status, "missing_clockout", "stale shift marked missing_clockout");
+  assert.equal(closed?.hoursWorked, 0, "no worked hours recorded for the missing punch");
+  assert.ok(closed?.clockOut, "stale shift left the open slot (placeholder clock-out)");
   const hrs = (new Date(closed!.clockOut as any).getTime() - staleIn.getTime()) / 3600000;
-  assert.ok(hrs > 12 && hrs < 13.5, `stale shift capped near 13h, got ${hrs.toFixed(2)}h`);
+  assert.ok(hrs > 12 && hrs < 13.5, `placeholder sits near the 13h mark, got ${hrs.toFixed(2)}h`);
 
   // A fresh OPEN shift exists for the new punch (started ~now, not 24h long).
   const latest = await storage.getLatestAttendanceForUser(employeeId);
@@ -85,10 +90,10 @@ test("a next-day punch caps the stale shift at 13h and opens a new shift (no 24h
   const newAgeH = (Date.now() - new Date(latest!.clockIn as any).getTime()) / 3600000;
   assert.ok(newAgeH < 1, `the new shift started ~now, got ${newAgeH.toFixed(2)}h ago`);
 
-  // The capped shift is flagged for manager review.
+  // The missing punch is flagged for manager review.
   const flags = await db.select().from(attendanceExceptions)
-    .where(and(eq(attendanceExceptions.employeeId, employeeId), eq(attendanceExceptions.type, "max_shift_split")));
-  assert.ok(flags.length >= 1, "a max_shift_split exception was raised for the capped shift");
+    .where(and(eq(attendanceExceptions.employeeId, employeeId), eq(attendanceExceptions.type, "missing_clockout")));
+  assert.ok(flags.length >= 1, "a missing_clockout exception was raised for the stale shift");
 });
 
 test("a normal same-day punch-out still closes the shift at the punch (no spurious cap)", async (t) => {
