@@ -23,7 +23,8 @@ export type JobType =
   | "apply-schedule-template"
   | "evaluate-missing-documents"
   | "evaluate-expiring-certifications"
-  | "biometric-retention";
+  | "biometric-retention"
+  | "overtime-warning";
 
 const DAILY_RECURRING_HOURS = 24;
 
@@ -47,6 +48,7 @@ const EXPECTED_WINDOW_HOURS: Partial<Record<JobType, number>> = {
   "evaluate-missing-documents": 26,
   "evaluate-expiring-certifications": 26,
   "re-evaluate-role-assignments": 2,
+  "overtime-warning": 2,
 };
 
 const ALL_JOB_TYPES: JobType[] = [
@@ -59,6 +61,7 @@ const ALL_JOB_TYPES: JobType[] = [
   "evaluate-missing-documents",
   "evaluate-expiring-certifications",
   "biometric-retention",
+  "overtime-warning",
 ];
 
 async function recordJobOutcome(
@@ -205,6 +208,11 @@ async function processJob(job: Job): Promise<void> {
     }
     case "biometric-retention": {
       await runBiometricRetention();
+      return;
+    }
+    case "overtime-warning": {
+      const { runApproachingOvertimeWarnings } = await import("./overtimeWarning");
+      await runApproachingOvertimeWarnings();
       return;
     }
     case "apply-schedule-template": {
@@ -432,6 +440,7 @@ export async function ensureRecurringEnqueued(): Promise<void> {
     "apply-pto-anniversary-adjustments",
     "evaluate-performance-reviews",
     "biometric-retention",
+    "overtime-warning",
   ];
   for (const type of recurring) {
     const existing = await db

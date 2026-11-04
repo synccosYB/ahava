@@ -452,6 +452,38 @@ test("add punch (open, no clock-out) is created in-progress", async (t) => {
   assert.equal(rows[0].status, "in-progress");
 });
 
+test("back-fill: a clock-in-only add while a shift is in progress is recorded as a missing punch (not rejected)", async (t) => {
+  const fx = await setupFixture("backfill");
+  t.after(fx.cleanup);
+
+  // Employee is clocked in NOW (a live, open shift).
+  const liveIn = new Date(Date.now() - 2 * 60 * 60 * 1000); // 2h ago, still open
+  const liveId = await makePunch(fx.employeeId, liveIn.toISOString().slice(0, 10), liveIn.toISOString(), null, null);
+
+  // Manager back-fills yesterday's forgotten clock-in (no clock-out yet).
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const ymd = yesterday.toISOString().slice(0, 10);
+  const { status, body } = await createPunch(fx, {
+    employeeId: fx.employeeId,
+    clockIn: `${ymd}T09:00:00Z`,
+  });
+  assert.equal(status, 201, `expected 201, got ${status}: ${JSON.stringify(body)}`);
+
+  // The back-filled punch is a flagged missing-clock-out (no hours), NOT a
+  // second open shift — and it did not disturb the live shift.
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 2, "both punches exist");
+  const backfilled = rows.find((r) => r.id !== liveId)!;
+  assert.equal(backfilled.status, "missing_clockout", "back-fill marked missing_clockout");
+  assert.equal(backfilled.hoursWorked, 0, "no hours until the real clock-out is entered");
+  assert.ok(backfilled.clockIn, "clock-in preserved");
+
+  // The live shift is still open and untouched (status unchanged from setup).
+  const live = await storage.getPunchLog(liveId);
+  assert.equal(live?.clockOut, null, "live shift still open");
+  assert.equal(live?.status, "present", "live shift untouched");
+});
+
 test("edit can move a punch to a different work date (fix a UTC-rolled day)", async (t) => {
   const fx = await setupFixture("moveday");
   t.after(fx.cleanup);

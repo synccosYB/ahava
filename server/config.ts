@@ -35,6 +35,14 @@ export const config = {
   jobsBatchSize: num("JOBS_BATCH_SIZE", 25),
 
   cronSecret: process.env.CRON_SECRET || "",
+
+  // In-process background job runner: enqueues the recurring jobs (auto-clock-out
+  // / missing-punch detection, PTO anniversaries, etc.) and drains the queue on a
+  // timer, so they run even when no external cron pings /internal/jobs/run. Set
+  // JOBS_IN_PROCESS_RUNNER=off to disable (e.g. when an external scheduler owns
+  // the queue). Interval is clamped to a sane minimum in the scheduler.
+  jobsRunnerEnabled: (process.env.JOBS_IN_PROCESS_RUNNER || "on").toLowerCase() !== "off",
+  jobsRunnerIntervalMs: num("JOBS_RUNNER_INTERVAL_MS", 10 * 60 * 1000),
 };
 
 export type AppConfig = typeof config;

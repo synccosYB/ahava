@@ -226,6 +226,11 @@ app.use((req, res, next) => {
       logger.info(`serving on port ${port}`, { source: "express", port });
     },
   );
+
+  // Run the recurring background jobs (incl. the max-shift / missing-punch
+  // safeguard) on an in-process timer so they fire even with no external cron.
+  const { startJobScheduler } = await import("./services/jobScheduler");
+  startJobScheduler();
 })();
 
 // Process-level safety nets. Without these, an unhandled async error silently
