@@ -146,6 +146,21 @@ async function sendViaResend(msg: EmailMessage): Promise<SendResult> {
   }
 }
 
+/**
+ * Send an arbitrary transactional email through the configured provider.
+ * Returns a non-throwing SendResult; callers log/handle failures. No-op-safe
+ * when the email service isn't configured (returns ok:false with a reason).
+ */
+export async function sendEmail(msg: EmailMessage): Promise<SendResult> {
+  if (!msg.to) {
+    return { ok: false, provider: PROVIDER, error: "No recipient" };
+  }
+  // sendViaResend guards on the API key + from address itself; a generic email
+  // doesn't need APP_URL (that's only for reset-link safety), so we don't gate
+  // on the full reset-oriented status here.
+  return sendViaResend(msg);
+}
+
 export async function sendPasswordResetEmail(
   user: User,
   resetUrl: string,

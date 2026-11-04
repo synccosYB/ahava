@@ -11767,6 +11767,7 @@ export async function registerRoutes(
       "apply-schedule-template",
       "evaluate-missing-documents",
       "evaluate-expiring-certifications",
+      "overtime-warning",
     ] as const;
     type AllowedJobType = typeof ALLOWED_JOB_TYPES[number];
     const rawType = req.body?.type ?? "auto-clock-out";
