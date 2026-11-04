@@ -390,11 +390,28 @@ test("add punch accepted: creates the row and computes hours", async (t) => {
   assert.equal(rows[0].workDate, workDate);
 });
 
-test("add punch rejected: missing clock-in (400)", async (t) => {
+test("add punch accepted: clock-out only (missing clock-in) is in-progress with no hours", async (t) => {
   const fx = await setupFixture("addnocin");
   t.after(fx.cleanup);
 
-  const { status } = await createPunch(fx, { employeeId: fx.employeeId, clockOut: "2026-01-09T17:00:00Z" });
+  // A manager recording the time an employee left when the clock-in is unknown.
+  // The mirror of an open punch: the clock-out is kept, the clock-in stays a
+  // missing punch, and hours are left unresolved until it's filled in.
+  const { status, body } = await createPunch(fx, { employeeId: fx.employeeId, clockOut: "2026-01-09T17:00:00Z" });
+  assert.equal(status, 201, `expected 201, got ${status}: ${JSON.stringify(body)}`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "exactly one punch created");
+  assert.equal(rows[0].clockIn, null, "clock-in left missing");
+  assert.ok(rows[0].clockOut, "clock-out persisted");
+  assert.equal(rows[0].hoursWorked, null, "hours unresolved without a clock-in");
+});
+
+test("add punch rejected: neither clock-in nor clock-out (400)", async (t) => {
+  const fx = await setupFixture("addnoeither");
+  t.after(fx.cleanup);
+
+  const { status } = await createPunch(fx, { employeeId: fx.employeeId });
   assert.equal(status, 400);
 });
 

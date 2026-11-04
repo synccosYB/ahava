@@ -321,3 +321,80 @@ test("validator messages use the supplied timezone", () => {
   assert.doesNotMatch(r.reason!, /UTC/);
   assert.match(r.reason!, /AM|PM/);
 });
+
+// --- Clock-out-only ("missing clock-in") punches -----------------------------
+// The mirror of an open punch: a manager records the time an employee left when
+// the clock-in is genuinely unknown. Only allowed when allowMissingClockIn.
+
+test("rejects a missing clock-in by default", () => {
+  const r = validatePunchIntegrity({
+    clockIn: null,
+    clockOut: new Date("2026-06-17T17:00:00Z"),
+    existingPunches: NONE,
+    now: NOW,
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.reason!, /clock-in/i);
+});
+
+test("accepts a clock-out-only punch when allowMissingClockIn is set", () => {
+  const r = validatePunchIntegrity({
+    clockIn: null,
+    clockOut: new Date("2026-06-17T17:00:00Z"),
+    existingPunches: NONE,
+    now: NOW,
+    allowMissingClockIn: true,
+  });
+  assert.equal(r.ok, true);
+});
+
+test("a clock-out-only punch still needs a clock-out", () => {
+  const r = validatePunchIntegrity({
+    clockIn: null,
+    clockOut: null,
+    existingPunches: NONE,
+    now: NOW,
+    allowMissingClockIn: true,
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.reason!, /clock-in or a clock-out/i);
+});
+
+test("a clock-out-only punch rejects a future clock-out", () => {
+  const r = validatePunchIntegrity({
+    clockIn: null,
+    clockOut: new Date("2026-06-18T17:00:00Z"), // after NOW
+    existingPunches: NONE,
+    now: NOW,
+    allowMissingClockIn: true,
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.reason!, /future/i);
+});
+
+test("a clock-out-only punch rejects an unparseable clock-out", () => {
+  const r = validatePunchIntegrity({
+    clockIn: null,
+    clockOut: "not-a-date",
+    existingPunches: NONE,
+    now: NOW,
+    allowMissingClockIn: true,
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.reason!, /not a valid date/i);
+});
+
+test("a clock-out-only punch does not conflict with an existing open shift", () => {
+  // No interval, so the duplicate-open / overlap checks are skipped.
+  const existing: ExistingPunchForValidation[] = [
+    { id: "open1", clockIn: new Date("2026-06-17T08:00:00Z"), clockOut: null },
+  ];
+  const r = validatePunchIntegrity({
+    clockIn: null,
+    clockOut: new Date("2026-06-17T17:00:00Z"),
+    existingPunches: existing,
+    now: NOW,
+    allowMissingClockIn: true,
+  });
+  assert.equal(r.ok, true);
+});

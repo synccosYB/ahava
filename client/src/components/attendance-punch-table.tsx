@@ -345,6 +345,7 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
                 onChange={(e) => setEditClockIn(e.target.value)}
                 data-testid="input-edit-clock-in"
               />
+              <p className="text-xs text-muted-foreground">Leave clock-in empty to keep it a missing punch (clock-out only).</p>
             </div>
             <div className="space-y-1">
               <Label htmlFor="edit-clock-out">Clock Out</Label>
