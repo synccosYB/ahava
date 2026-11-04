@@ -484,6 +484,36 @@ test("back-fill: a clock-in-only add while a shift is in progress is recorded as
   assert.equal(live?.status, "present", "live shift untouched");
 });
 
+test("back-fill: a clock-in-only add for a PRIOR day is a missing punch even when a LATER shift is already completed (no overlap)", async (t) => {
+  const fx = await setupFixture("backfillprior");
+  t.after(fx.cleanup);
+
+  // Grajalas's case: already clocked IN and OUT on 11/4 (a completed shift).
+  const laterId = await makePunch(fx.employeeId, "2026-11-04", "2026-11-04T13:10:00Z", "2026-11-04T21:02:00Z", 7.87);
+
+  // Manager back-fills the forgotten 11/3 clock-in (no clock-out).
+  const { status, body } = await createPunch(fx, {
+    employeeId: fx.employeeId,
+    clockIn: "2026-11-03T13:09:00Z",
+  });
+  assert.equal(status, 201, `expected 201, got ${status}: ${JSON.stringify(body)}`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 2, "both punches exist");
+  const backfilled = rows.find((r) => r.id !== laterId)!;
+  assert.equal(backfilled.status, "missing_clockout", "prior-day back-fill marked missing_clockout");
+  assert.equal(backfilled.hoursWorked, 0, "no hours");
+  // Its placeholder clock-out must land before the later shift starts (no overlap).
+  assert.ok(
+    new Date(backfilled.clockOut as any).getTime() < new Date("2026-11-04T13:10:00Z").getTime(),
+    "placeholder clock-out does not reach into the later shift",
+  );
+
+  // The later completed shift is untouched.
+  const later = await storage.getPunchLog(laterId);
+  assert.equal(Number(later?.hoursWorked), 7.87, "later shift hours untouched");
+});
+
 test("edit can move a punch to a different work date (fix a UTC-rolled day)", async (t) => {
   const fx = await setupFixture("moveday");
   t.after(fx.cleanup);
