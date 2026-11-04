@@ -35,6 +35,7 @@ import {
 import { runAlertDetection } from "./services/alerts";
 import { auditUnrecoverableTimezones } from "./services/timezoneHeal";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
+import { MISSING_CLOCKOUT_STATUS } from "./punchHours";
 import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./services/onboarding";
 import { materializeOffboardingChecklist, evaluateDeactivationGate } from "./services/offboarding";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
@@ -4938,14 +4939,36 @@ export async function registerRoutes(
         const roundingRule = attRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
         const roundingInterval =
           attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+        const maxShiftHours = attRules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
+
+        // Back-filling a forgotten clock-in while the employee ALREADY has an
+        // open shift (e.g. they forgot to clock in yesterday and are clocked in
+        // today): we can't hold two open punches (one-open-punch rule), and the
+        // manager will enter the real clock-out later. So instead of rejecting it
+        // as a duplicate open shift, record the back-filled punch as a
+        // MISSING-CLOCK-OUT punch — flagged, no hours — which coexists with the
+        // live shift and shows as a missing punch until its clock-out is set.
+        let backfillMissing = false;
+        if (newClockIn && !newClockOut) {
+          const latest = await storage.getLatestAttendanceForUser(employeeId);
+          if (latest && latest.clockIn && !latest.clockOut) backfillMissing = true;
+        }
+        // Placeholder clock-out at the max-shift mark (never in the future) so the
+        // row leaves the one-open-punch slot. Hours stay 0 via the missing status.
+        const placeholderOut =
+          backfillMissing && newClockIn
+            ? new Date(Math.min(newClockIn.getTime() + maxShiftHours * 60 * 60 * 1000, Date.now()))
+            : null;
 
         // Shared punch-integrity validation: reject impossible/unparseable times,
         // zero/negative duration, future-dating, a duplicate open shift, or an
-        // overlap with another of this employee's punches.
+        // overlap with another of this employee's punches. For a back-fill we
+        // validate the placeholder interval so the duplicate-open rule doesn't
+        // fire (it's being recorded as a closed, flagged missing punch).
         const integrity = await validateProposedPunch({
           employeeId,
           clockIn: newClockIn,
-          clockOut: newClockOut,
+          clockOut: backfillMissing ? placeholderOut : newClockOut,
           candidateDates: [workDate],
           allowFuturePunch: allowFuturePunchFromRules(attRules),
           allowMissingClockIn: true,
@@ -4979,6 +5002,14 @@ export async function registerRoutes(
           values.roundedClockOut = enforcement.roundedTime;
           values.hoursWorked = enforcement.hoursWorked;
           values.status = enforcement.status;
+        } else if (backfillMissing && placeholderOut) {
+          // Back-filled clock-in that collides with a live open shift: store it as
+          // a flagged missing-clock-out punch (no hours) so it coexists and shows
+          // as a missing punch until the manager enters the real clock-out.
+          values.clockOut = placeholderOut;
+          values.roundedClockOut = placeholderOut;
+          values.hoursWorked = 0;
+          values.status = MISSING_CLOCKOUT_STATUS;
         } else if (newClockOut) {
           // Clock-out-only (missing clock-in): record the clock-out but leave
           // hours unresolved until a manager fills in the real clock-in. Rounding
@@ -4990,6 +5021,22 @@ export async function registerRoutes(
         }
 
         const created = await storage.createPunchLog(values);
+
+        // Flag the back-filled missing punch for manager review (surfaces in the
+        // Review Time Sheet / exceptions, same as an auto-detected missing punch).
+        if (backfillMissing) {
+          const ex = await storage.createAttendanceException({
+            employeeId,
+            exceptionDate: workDate,
+            exceptionTime: created.clockIn as Date,
+            type: "missing_clockout",
+            reason:
+              "Clock-in was back-filled while the employee had another shift in progress, so the clock-out is unknown. " +
+              "Recorded as a MISSING PUNCH (no hours) — enter the real clock-out to record the hours.",
+            status: "pending",
+          });
+          if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: created.id });
+        }
 
         await writeAuditLog({
           actorUserId: actor.id,
@@ -11767,6 +11814,7 @@ export async function registerRoutes(
       "apply-schedule-template",
       "evaluate-missing-documents",
       "evaluate-expiring-certifications",
+      "overtime-warning",
     ] as const;
     type AllowedJobType = typeof ALLOWED_JOB_TYPES[number];
     const rawType = req.body?.type ?? "auto-clock-out";
