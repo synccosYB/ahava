@@ -1475,6 +1475,14 @@ export class DatabaseStorage implements IStorage {
     // as a fallback. Dating in UTC rolls an evening Eastern shift onto the next
     // calendar day — the bug this guards against.
     const dateStr = opts?.workDate || actualNow.toISOString().split("T")[0];
+
+    // Confirmation-only employees (fixed salary, clock = attendance confirmation
+    // only): a clock is a daily "present" marker, not an open shift. Record a
+    // self-contained 0-hour punch (one per day) so hours aren't counted and it
+    // never shows as an open/missing punch.
+    if (await this.isClockConfirmationOnly(userId)) {
+      return this.recordConfirmationPunch(userId, source, dateStr, actualNow);
+    }
     // The "are you already clocked in?" check and the insert must be atomic, or
     // two near-simultaneous requests (kiosk double-tap, two devices, retried
     // request) both pass the check and create two open punches. We serialize
@@ -1517,6 +1525,56 @@ export class DatabaseStorage implements IStorage {
       if (isOpenPunchUniqueViolation(err)) throw new DuplicateOpenPunchError();
       throw err;
     }
+  }
+
+  // Whether an employee's clock is attendance-confirmation only (fixed-salary;
+  // one clock per day, hours not counted, never a missing punch).
+  async isClockConfirmationOnly(userId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ v: userEmploymentProfiles.clockConfirmationOnly })
+      .from(userEmploymentProfiles)
+      .where(eq(userEmploymentProfiles.userId, userId))
+      .limit(1);
+    return !!row?.v;
+  }
+
+  // Record (idempotently, per day) a confirmation "present" punch: a closed,
+  // 0-hour punch that marks the day worked without tracking hours and without
+  // ever being an open/missing punch. Serialized per employee so a double-tap
+  // can't create two markers for the same day.
+  async recordConfirmationPunch(
+    userId: string,
+    source: string,
+    workDate: string,
+    when: Date,
+  ): Promise<PunchLog> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId}))`);
+      const [existing] = await tx
+        .select()
+        .from(punchLogs)
+        .where(and(
+          eq(punchLogs.employeeId, userId),
+          eq(punchLogs.workDate, workDate),
+          eq(punchLogs.status, "confirmation"),
+        ))
+        .limit(1);
+      if (existing) return punchLogToLegacy(existing);
+
+      const [record] = await tx.insert(punchLogs).values({
+        employeeId: userId,
+        workDate,
+        clockIn: when,
+        clockOut: when,
+        roundedClockIn: when,
+        roundedClockOut: when,
+        hoursWorked: 0,
+        status: "confirmation",
+        source,
+        approved: true,
+      }).returning();
+      return punchLogToLegacy(record);
+    });
   }
 
   // Close a punch only if it is still open. The WHERE guard on clock_out makes

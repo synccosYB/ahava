@@ -290,12 +290,14 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
                   <TableCell data-testid={`text-punch-out-${p.id}`}>
                     {p.status === "missing_clockout" ? (
                       <span className="text-destructive font-medium">Missing</span>
+                    ) : p.status === "confirmation" ? (
+                      <span className="text-muted-foreground">Present ✓</span>
                     ) : (
                       formatTime12InTz(p.clockOut, p.timezone) || "—"
                     )}
                   </TableCell>
                   <TableCell className="tabular-nums" data-testid={`text-punch-hours-${p.id}`}>
-                    {p.status === "missing_clockout" ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}
+                    {(p.status === "missing_clockout" || p.status === "confirmation") ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}
                   </TableCell>
                   <TableCell data-testid={`text-punch-location-${p.id}`}>
                     {p.locationNames.length > 0 ? p.locationNames.join(", ") : "—"}
