@@ -4941,24 +4941,41 @@ export async function registerRoutes(
           attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
         const maxShiftHours = attRules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
 
-        // Back-filling a forgotten clock-in while the employee ALREADY has an
-        // open shift (e.g. they forgot to clock in yesterday and are clocked in
-        // today): we can't hold two open punches (one-open-punch rule), and the
-        // manager will enter the real clock-out later. So instead of rejecting it
-        // as a duplicate open shift, record the back-filled punch as a
-        // MISSING-CLOCK-OUT punch — flagged, no hours — which coexists with the
-        // live shift and shows as a missing punch until its clock-out is set.
+        // Back-filling a forgotten clock-in when the employee has LATER activity
+        // (an open shift they're on now, or any later shift already recorded):
+        // this clock-in can't be the current in-progress shift, and leaving it
+        // open would make it run to "now" and overlap/extend past those later
+        // shifts. The manager will enter the real clock-out later. So instead of
+        // rejecting it, record the back-filled punch as a MISSING-CLOCK-OUT punch
+        // — flagged, no hours — which coexists with the other shifts and shows as
+        // a missing punch until its clock-out is set. (A clock-in that IS the
+        // latest activity stays a normal open/in-progress shift.)
         let backfillMissing = false;
+        let placeholderOut: Date | null = null;
         if (newClockIn && !newClockOut) {
-          const latest = await storage.getLatestAttendanceForUser(employeeId);
-          if (latest && latest.clockIn && !latest.clockOut) backfillMissing = true;
+          const existing = await db
+            .select({ clockIn: punchLogs.clockIn, clockOut: punchLogs.clockOut })
+            .from(punchLogs)
+            .where(and(eq(punchLogs.employeeId, employeeId), isNotNull(punchLogs.clockIn)));
+          const inMs = newClockIn.getTime();
+          let hasOpen = false;
+          let nextStart: number | null = null;
+          for (const p of existing) {
+            if (!p.clockIn) continue;
+            if (!p.clockOut) hasOpen = true;
+            const s = new Date(p.clockIn as any).getTime();
+            if (Number.isFinite(s) && s > inMs) nextStart = nextStart === null ? s : Math.min(nextStart, s);
+          }
+          if (hasOpen || nextStart !== null) {
+            backfillMissing = true;
+            // Placeholder clock-out at the max-shift mark, but never in the
+            // future and never into the next shift (so it can't overlap). Hours
+            // stay 0 via the missing status; the time is just a slot-freeing marker.
+            const caps = [inMs + maxShiftHours * 60 * 60 * 1000, Date.now()];
+            if (nextStart !== null) caps.push(nextStart - 60_000);
+            placeholderOut = new Date(Math.max(Math.min(...caps), inMs + 60_000));
+          }
         }
-        // Placeholder clock-out at the max-shift mark (never in the future) so the
-        // row leaves the one-open-punch slot. Hours stay 0 via the missing status.
-        const placeholderOut =
-          backfillMissing && newClockIn
-            ? new Date(Math.min(newClockIn.getTime() + maxShiftHours * 60 * 60 * 1000, Date.now()))
-            : null;
 
         // Shared punch-integrity validation: reject impossible/unparseable times,
         // zero/negative duration, future-dating, a duplicate open shift, or an
