@@ -11,6 +11,7 @@
 // biometric_device_events regardless, so nothing is lost.
 import { storage, DuplicateOpenPunchError } from "../storage";
 import { workDateForEmployee } from "../services/punchOverlap";
+import { capStaleOpenShiftAtMaxShift } from "../services/policyEnforcement";
 import { writeLedgerEntry } from "../services/ledger";
 import { logger } from "../lib/logger";
 import type { BiometricDevice } from "@shared/schema";
@@ -66,7 +67,17 @@ export async function ingestPunches(
 
       // 3) Derive in/out from current open-punch state and write it.
       const last = await storage.getLatestAttendanceForUser(userId);
-      const isOpen = !!(last && last.clockIn && !last.clockOut);
+      let isOpen = !!(last && last.clockIn && !last.clockOut);
+
+      // Guard: if the open shift already ran past the max-shift limit, the
+      // employee forgot to punch out (and is usually punching in on a later day).
+      // Don't close that stale shift with THIS punch — that would record one
+      // 24h+ shift. Cap the stale shift at the max and flag it; this punch then
+      // starts a fresh clock-in. Overnight shifts under the limit are untouched.
+      if (isOpen) {
+        const capped = await capStaleOpenShiftAtMaxShift(userId);
+        if (capped) isOpen = false;
+      }
 
       if (isOpen) {
         const updated = await storage.clockOut(userId);

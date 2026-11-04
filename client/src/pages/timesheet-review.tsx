@@ -18,6 +18,7 @@ import { EmptyState } from "@/components/empty-state";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
 import { TimesheetEditor } from "@/components/timesheet-editor";
 import { WorkDateBackfillCard } from "@/components/workdate-backfill-card";
+import { OverlongShiftReconcileCard } from "@/components/overlong-shift-reconcile-card";
 import { usePermissions } from "@/hooks/use-permissions";
 import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange } from "lucide-react";
 import { formatHoursMinutes } from "@/lib/utils";
@@ -192,6 +193,7 @@ export default function TimeSheetReviewPage() {
       <PageHeader title="Time Sheet Review" subtitle="Review everyone's time sheets by location, department and payroll period" />
 
       {user?.role === "admin" && <WorkDateBackfillCard />}
+      {user?.role === "admin" && <OverlongShiftReconcileCard />}
 
       <Card>
         <CardContent className="pt-6 space-y-4">

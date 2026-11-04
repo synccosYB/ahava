@@ -22,6 +22,7 @@ import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, s
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
 import { importPunchesFromBuffer } from "./services/punchImport";
+import { reconcileOverlongShifts } from "./services/overlongShiftReconcile";
 import { autoPushEmployeeSafe } from "./adms/routes";
 import {
   computeAttendanceReconciliation,
@@ -1000,6 +1001,10 @@ export async function registerRoutes(
     dailySalary: z.number().optional(),
     onboardingTemplateId: z.string().optional().nullable(),
     skipOnboarding: z.boolean().optional(),
+    // Clock number (= the User ID the person is enrolled under on the fingerprint
+    // clocks). Optional: when omitted we auto-assign the next free number across
+    // all clocks. When given, it's an explicit override (validated unique below).
+    employeeNumber: z.string().trim().max(20).optional(),
   });
 
   app.post("/api/users", requireAuth, requirePermission("users.edit"), async (req, res) => {
@@ -1042,6 +1047,28 @@ export async function registerRoutes(
       return res.status(400).json({ message: 'A 1099 worker needs a "Pay to the order of" name.' });
     }
 
+    // Clock number: honor an explicit override if it's free, otherwise auto-assign
+    // the next number available across every clock. Done before the insert so the
+    // new hire's profile carries it and their very first punch auto-links.
+    let assignedEmployeeNumber: string;
+    const overrideNumber = parsed.data.employeeNumber?.trim();
+    if (overrideNumber) {
+      if (!/^\d+$/.test(overrideNumber)) {
+        return res.status(400).json({ message: "Clock # must be a number.", field: "employeeNumber" });
+      }
+      const taken = await storage.getUserIdByEmployeeNumber(overrideNumber);
+      if (taken) {
+        return res.status(409).json({
+          message: `Clock # ${overrideNumber} is already assigned to another employee.`,
+          code: "EMPLOYEE_NUMBER_TAKEN",
+          field: "employeeNumber",
+        });
+      }
+      assignedEmployeeNumber = overrideNumber;
+    } else {
+      assignedEmployeeNumber = await storage.getNextEmployeeNumber();
+    }
+
     const tempPassword = generateTempPassword();
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
@@ -1067,6 +1094,7 @@ export async function registerRoutes(
 
     await storage.createEmploymentProfile({
       userId: newUser.id,
+      employeeNumber: assignedEmployeeNumber,
       employmentType: parsed.data.employmentType || "full_time",
       taxClassification: parsed.data.taxClassification || "W-2",
       // Volunteers are never on payroll, so they never carry a paying company.
@@ -1129,7 +1157,15 @@ export async function registerRoutes(
 
     const refreshed = await storage.getUser(newUser.id);
     const { password: _, passwordHash: _ph, ...safeUser } = refreshed || newUser;
-    res.status(201).json({ ...safeUser, temporaryPassword: tempPassword });
+    res.status(201).json({ ...safeUser, temporaryPassword: tempPassword, employeeNumber: assignedEmployeeNumber });
+  });
+
+  // Preview the next free clock number (for the Add Employee form). The number
+  // actually assigned is recomputed server-side at create time, so this is a
+  // best-effort hint that stays correct unless someone else creates a hire first.
+  app.get("/api/users/next-employee-number", requireAuth, requirePermission("users.edit"), async (_req, res) => {
+    const nextNumber = await storage.getNextEmployeeNumber();
+    res.json({ nextNumber });
   });
 
   const updateUserSchema = z.object({
@@ -5183,6 +5219,36 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error backfilling work dates:", error);
       handleRouteError(res, error, "Failed to backfill work dates");
+    }
+  });
+
+  // Admin cleanup for shifts recorded over the 13h max (a forgotten punch-out
+  // that the old ingest closed with the next clock-in → a ~24h shift). Caps each
+  // at the limit and flags it for review. Preview with { apply:false } first.
+  app.post("/api/attendance/reconcile-overlong-shifts", requireAuth, async (req: any, res) => {
+    try {
+      const actor = req.authUser as User;
+      if (actor.role !== "admin") {
+        return res.status(403).json({ message: "Admin only." });
+      }
+      const apply = req.body?.apply === true;
+      const summary = await reconcileOverlongShifts({ apply });
+      if (apply) {
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "attendance",
+          targetId: actor.id,
+          action: "attendance.reconcile_overlong_shifts",
+          oldValue: null,
+          newValue: { fixed: summary.fixed, employeesAffected: summary.employeesAffected, thresholdHours: summary.thresholdHours },
+          context: { reason: "cap over-long (24h) shifts at the max-shift limit" },
+          ...getAuditContext(req),
+        });
+      }
+      return res.json(summary);
+    } catch (error) {
+      console.error("Error reconciling over-long shifts:", error);
+      handleRouteError(res, error, "Failed to reconcile over-long shifts");
     }
   });
 
