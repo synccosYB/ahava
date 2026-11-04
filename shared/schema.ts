@@ -314,6 +314,12 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // and no-show alerts are suppressed for them. Defaults true so existing
   // employees stay on the normal "must clock in" footing.
   clockInRequired: boolean("clock_in_required").default(true).notNull(),
+  // A fixed-salary (daily/weekly) employee whose clock is only an attendance
+  // CONFIRMATION, not an hours record: one clock per day marks the day present,
+  // hours are NOT counted, and a single daily punch is never flagged a missing
+  // punch (each clock is recorded as a self-contained 0-hour "confirmation"
+  // punch). Defaults false — normal employees still clock in AND out.
+  clockConfirmationOnly: boolean("clock_confirmation_only").default(false).notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
   // Payroll-only company (Task #475): which company this employee belongs to for
   // payroll identification. Deliberately INDEPENDENT of the assignment-derived

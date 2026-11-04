@@ -997,6 +997,9 @@ export async function registerRoutes(
     // Note #5: when false the person is not required to punch; missing-clock-out
     // and no-show alerts are suppressed. Defaults true.
     clockInRequired: z.boolean().optional(),
+    // Fixed-salary employee whose clock is only an attendance confirmation: one
+    // clock per day, hours not counted, never a missing punch. Defaults false.
+    clockConfirmationOnly: z.boolean().optional(),
     hireDate: z.string().optional(),
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
@@ -1112,6 +1115,7 @@ export async function registerRoutes(
       payeeTaxId: parsed.data.taxClassification === "1099" ? parsed.data.payeeTaxId || null : null,
       payeeMemo: parsed.data.taxClassification === "1099" ? parsed.data.payeeMemo || null : null,
       clockInRequired: parsed.data.clockInRequired ?? true,
+      clockConfirmationOnly: parsed.data.clockConfirmationOnly ?? false,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
       weeklySalary: parsed.data.weeklySalary || null,
@@ -3430,6 +3434,7 @@ export async function registerRoutes(
         "payeeTaxId",
         "payeeMemo",
         "clockInRequired",
+        "clockConfirmationOnly",
         "hireDate",
         "terminationDate",
       ] as const;

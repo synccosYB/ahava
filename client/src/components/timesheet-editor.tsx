@@ -364,11 +364,13 @@ export function TimesheetEditor({
                   <TableCell className="text-sm tabular-nums">
                     {p.status === "missing_clockout" ? (
                       <span className="text-destructive font-medium">Missing</span>
+                    ) : p.status === "confirmation" ? (
+                      <span className="text-muted-foreground">Present ✓</span>
                     ) : (
                       formatTime12InTz(p.clockOut, p.timezone) || "—"
                     )}
                   </TableCell>
-                  <TableCell className="text-sm tabular-nums">{p.status === "missing_clockout" ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}</TableCell>
+                  <TableCell className="text-sm tabular-nums">{(p.status === "missing_clockout" || p.status === "confirmation") ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}</TableCell>
                   {showActions && (
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
