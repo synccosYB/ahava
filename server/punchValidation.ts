@@ -63,6 +63,15 @@ export interface PunchValidationInput {
    */
   timezone?: string;
   /**
+   * When true, a punch with NO clock-in but a valid clock-out is accepted (a
+   * "missing clock-in" punch — the mirror of an open/in-progress punch). Only the
+   * manager add/edit paths set this; employee and kiosk punches always require a
+   * clock-in. With no clock-in there is no interval, so the duration and
+   * overlap/duplicate-open checks are skipped; the clock-out is still validated
+   * for parseability and future-dating. Defaults to false.
+   */
+  allowMissingClockIn?: boolean;
+  /**
    * How to treat an overlap / duplicate-open conflict with ANOTHER of the
    * employee's punches:
    *   - "block" (default): the conflict is a hard rejection (`ok: false`). Used
@@ -147,13 +156,36 @@ export function validatePunchIntegrity(input: PunchValidationInput): PunchValida
 
   // --- clock-in: required + parseable -------------------------------------
   const clockInParsed = toDate(input.clockIn);
-  if (clockInParsed === undefined || clockInParsed === null) {
-    return { ok: false, reason: "A punch must have a clock-in time." };
+  const clockInMissing = clockInParsed === undefined || clockInParsed === null;
+
+  // A "missing clock-in" punch (clock-out only) is the mirror of an open punch:
+  // the manager is recording the time the employee left but the clock-in is
+  // genuinely unknown. Only allowed when the caller opts in; it still needs a
+  // valid, non-future clock-out, but has no interval so the duration and
+  // overlap/duplicate-open checks below don't apply.
+  if (clockInMissing) {
+    if (!input.allowMissingClockIn) {
+      return { ok: false, reason: "A punch must have a clock-in time." };
+    }
+    const outParsed = toDate(input.clockOut);
+    if (outParsed === undefined || outParsed === null) {
+      return { ok: false, reason: "A punch must have a clock-in or a clock-out time." };
+    }
+    if (Number.isNaN(outParsed.getTime())) {
+      return { ok: false, reason: "The clock-out time is not a valid date." };
+    }
+    if (!allowFuture && outParsed.getTime() > now.getTime()) {
+      return {
+        ok: false,
+        reason: `Clock-out (${formatPunchTime(outParsed, tz)}) is in the future. Future-dated punches are not allowed.`,
+      };
+    }
+    return VALID;
   }
-  if (Number.isNaN(clockInParsed.getTime())) {
+  if (Number.isNaN(clockInParsed!.getTime())) {
     return { ok: false, reason: "The clock-in time is not a valid date." };
   }
-  const clockIn = clockInParsed;
+  const clockIn = clockInParsed!;
 
   // --- clock-out: optional, but parseable when present --------------------
   let clockOut: Date | null = null;

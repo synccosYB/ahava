@@ -386,6 +386,7 @@ async function validateProposedPunch(opts: {
   punchId?: string | null;
   candidateDates?: (string | null | undefined)[];
   allowFuturePunch: boolean;
+  allowMissingClockIn?: boolean;
   now?: Date;
   timezone?: string;
   overlapPolicy?: "block" | "flag";
@@ -401,6 +402,7 @@ async function validateProposedPunch(opts: {
     existingPunches,
     now: opts.now,
     allowFuturePunch: opts.allowFuturePunch,
+    allowMissingClockIn: opts.allowMissingClockIn,
     timezone: opts.timezone,
     overlapPolicy: opts.overlapPolicy,
   });
@@ -4745,26 +4747,27 @@ export async function registerRoutes(
             newClockIn ? newClockIn.toISOString().split("T")[0] : undefined,
           ],
           allowFuturePunch: allowFuturePunchFromRules(attRules),
+          allowMissingClockIn: true,
           timezone: await resolveEmployeeTimezone(existing.employeeId),
         });
         if (!integrity.ok) {
           return res.status(400).json({ message: integrity.reason });
         }
-        // The validator guarantees a non-null, valid clock-in once we get here;
-        // narrow the type for the rounding/enforcement code below.
-        if (!newClockIn) {
-          return res.status(400).json({ message: "A punch must have a clock-in time." });
+        // The validator guarantees at least one of clock-in / clock-out is a
+        // valid time once we get here.
+        if (!newClockIn && !newClockOut) {
+          return res.status(400).json({ message: "A punch must have a clock-in or a clock-out time." });
         }
 
         const update: Partial<InsertPunchLog> = {
           clockIn: newClockIn,
-          roundedClockIn: roundTime(newClockIn, roundingRule, roundingInterval),
+          roundedClockIn: newClockIn ? roundTime(newClockIn, roundingRule, roundingInterval) : null,
           workDate: newWorkDate,
         };
 
-        if (newClockOut) {
+        if (newClockIn && newClockOut) {
           const enforcement = enforceClockOut(
-            new Date(update.roundedClockIn!),
+            new Date(update.roundedClockIn as Date),
             newClockOut,
             existing.breakMinutes || 0,
             attRules,
@@ -4776,6 +4779,14 @@ export async function registerRoutes(
           update.roundedClockOut = enforcement.roundedTime;
           update.hoursWorked = enforcement.hoursWorked;
           update.status = enforcement.status;
+        } else if (newClockOut) {
+          // Clock-out-only (missing clock-in): keep the clock-out, leave hours
+          // unresolved until a real clock-in is entered. The mirror of the
+          // re-opened case below.
+          update.clockOut = newClockOut;
+          update.roundedClockOut = newClockOut;
+          update.hoursWorked = null;
+          update.status = "in-progress";
         } else {
           // Re-opened punch: clear the clock-out side (matches a fresh clock-in).
           update.clockOut = null;
@@ -4866,8 +4877,8 @@ export async function registerRoutes(
         if (!employeeId) {
           return res.status(400).json({ message: "employeeId is required" });
         }
-        if (!clockIn) {
-          return res.status(400).json({ message: "A clock-in time is required." });
+        if (!clockIn && !clockOut) {
+          return res.status(400).json({ message: "A clock-in or clock-out time is required." });
         }
 
         const scope = await resolvePunchScope(req);
@@ -4880,8 +4891,8 @@ export async function registerRoutes(
           return res.status(404).json({ message: "Employee not found" });
         }
 
-        const newClockIn = new Date(clockIn);
-        if (isNaN(newClockIn.getTime())) {
+        const newClockIn = clockIn ? new Date(clockIn) : null;
+        if (newClockIn && isNaN(newClockIn.getTime())) {
           return res.status(400).json({ message: "Invalid clock-in time." });
         }
         const newClockOut = clockOut ? new Date(clockOut) : null;
@@ -4890,8 +4901,10 @@ export async function registerRoutes(
         }
 
         // File under the location-local day of the clock-in (not the UTC date),
-        // matching live clock-ins and the importer.
-        const workDate = localWorkDate(newClockIn, await resolveEmployeeTimezone(employeeId));
+        // matching live clock-ins and the importer. A clock-out-only "missing
+        // clock-in" punch has no clock-in, so file it under the clock-out's day.
+        const tzForWorkDate = await resolveEmployeeTimezone(employeeId);
+        const workDate = localWorkDate((newClockIn ?? newClockOut) as Date, tzForWorkDate);
 
         // Block adding a punch inside an already-finalized payroll period.
         const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
@@ -4935,26 +4948,26 @@ export async function registerRoutes(
           clockOut: newClockOut,
           candidateDates: [workDate],
           allowFuturePunch: allowFuturePunchFromRules(attRules),
-          timezone: await resolveEmployeeTimezone(employeeId),
+          allowMissingClockIn: true,
+          timezone: tzForWorkDate,
         });
         if (!integrity.ok) {
           return res.status(400).json({ message: integrity.reason });
         }
 
-        const roundedClockIn = roundTime(newClockIn, roundingRule, roundingInterval);
         const values: InsertPunchLog = {
           employeeId,
           workDate,
           clockIn: newClockIn,
-          roundedClockIn,
+          roundedClockIn: newClockIn ? roundTime(newClockIn, roundingRule, roundingInterval) : null,
           source: "manager",
           approved: true,
           status: "in-progress",
         };
 
-        if (newClockOut) {
+        if (newClockIn && newClockOut) {
           const enforcement = enforceClockOut(
-            new Date(roundedClockIn),
+            new Date(values.roundedClockIn as Date),
             newClockOut,
             0,
             attRules,
@@ -4966,6 +4979,14 @@ export async function registerRoutes(
           values.roundedClockOut = enforcement.roundedTime;
           values.hoursWorked = enforcement.hoursWorked;
           values.status = enforcement.status;
+        } else if (newClockOut) {
+          // Clock-out-only (missing clock-in): record the clock-out but leave
+          // hours unresolved until a manager fills in the real clock-in. Rounding
+          // of the clock-out needs the clock-in, so keep the raw time only.
+          values.clockOut = newClockOut;
+          values.roundedClockOut = newClockOut;
+          values.hoursWorked = null;
+          values.status = "in-progress";
         }
 
         const created = await storage.createPunchLog(values);
