@@ -163,7 +163,9 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
   const openEdit = (p: Punch) => {
     setEditPunch(p);
     setEditClockIn(toLocalInput(p.clockIn));
-    setEditClockOut(toLocalInput(p.clockOut));
+    // A missing-clock-out punch carries only a placeholder clock-out; start the
+    // field empty so the manager enters the REAL clock-out.
+    setEditClockOut(p.status === "missing_clockout" ? "" : toLocalInput(p.clockOut));
     setEditReason("");
   };
 
@@ -285,9 +287,15 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
                   </TableCell>
                   <TableCell data-testid={`text-punch-date-${p.id}`}>{formatDate(p.workDate) || "—"}</TableCell>
                   <TableCell data-testid={`text-punch-in-${p.id}`}>{formatTime12InTz(p.clockIn, p.timezone) || "—"}</TableCell>
-                  <TableCell data-testid={`text-punch-out-${p.id}`}>{formatTime12InTz(p.clockOut, p.timezone) || "—"}</TableCell>
+                  <TableCell data-testid={`text-punch-out-${p.id}`}>
+                    {p.status === "missing_clockout" ? (
+                      <span className="text-destructive font-medium">Missing</span>
+                    ) : (
+                      formatTime12InTz(p.clockOut, p.timezone) || "—"
+                    )}
+                  </TableCell>
                   <TableCell className="tabular-nums" data-testid={`text-punch-hours-${p.id}`}>
-                    {p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—"}
+                    {p.status === "missing_clockout" ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}
                   </TableCell>
                   <TableCell data-testid={`text-punch-location-${p.id}`}>
                     {p.locationNames.length > 0 ? p.locationNames.join(", ") : "—"}

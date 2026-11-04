@@ -1,8 +1,9 @@
 import type { PunchLog, TimeOffRequest, User } from "@shared/schema";
 import { storage } from "./storage";
-import { DEFAULT_ATTENDANCE_RULES } from "./policyEngine";
+import { DEFAULT_ATTENDANCE_RULES, getEffectivePolicy } from "./policyEngine";
 import { resolvePayCalcPolicy } from "./payrollEngine";
 import { getLedgerForEmployee, summarizeLedger, type LedgerDay } from "./attendanceLedger";
+import { MISSING_CLOCKOUT_STATUS, openPunchExceedsMaxShift } from "./punchHours";
 
 export type TimesheetStatus =
   | "complete"
@@ -51,9 +52,17 @@ const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
  * `storage.getDailyHoursByDateRange`, so no surface can drift on break
  * deductions or rounding.
  */
-function punchWorkedHours(p: PunchLog, now: Date): number {
+function punchWorkedHours(
+  p: PunchLog,
+  now: Date,
+  maxShiftHours: number = DEFAULT_ATTENDANCE_RULES.maxShiftHours,
+): number {
+  // Forgotten punch-out (marked, or still open past the max shift): unverified,
+  // contributes no hours until a manager sets the real clock-out.
+  if (p.status === MISSING_CLOCKOUT_STATUS) return 0;
   if (p.hoursWorked != null) return p.hoursWorked;
   if (!p.clockIn) return 0;
+  if (openPunchExceedsMaxShift(p, now, maxShiftHours)) return 0;
   const start = new Date(p.roundedClockIn ?? p.clockIn).getTime();
   const end = p.clockOut ? new Date(p.roundedClockOut ?? p.clockOut).getTime() : now.getTime();
   if (!(end > start)) return 0;
@@ -64,10 +73,14 @@ function punchWorkedHours(p: PunchLog, now: Date): number {
 /**
  * Worked hours for a single day's punches (break-deducted, via punchWorkedHours).
  */
-function computeDayHours(punches: PunchLog[], now: Date = new Date()): number {
+function computeDayHours(
+  punches: PunchLog[],
+  now: Date = new Date(),
+  maxShiftHours: number = DEFAULT_ATTENDANCE_RULES.maxShiftHours,
+): number {
   let hours = 0;
   for (const p of punches) {
-    hours += punchWorkedHours(p, now);
+    hours += punchWorkedHours(p, now, maxShiftHours);
   }
   return hours;
 }
@@ -81,12 +94,13 @@ function computeDayHours(punches: PunchLog[], now: Date = new Date()): number {
 export function computeAttendanceTotals(
   punches: PunchLog[],
   now: Date = new Date(),
+  maxShiftHours: number = DEFAULT_ATTENDANCE_RULES.maxShiftHours,
 ): { totalHours: number; daysWorked: number } {
   const daysWorked = new Set<string>();
   let totalHours = 0;
   for (const p of punches) {
     if (!p.clockIn) continue;
-    totalHours += punchWorkedHours(p, now);
+    totalHours += punchWorkedHours(p, now, maxShiftHours);
     daysWorked.add(p.workDate);
   }
   return { totalHours, daysWorked: daysWorked.size };
@@ -134,6 +148,8 @@ export async function buildEmployeeTimesheet(
   // payroll or the dashboards (which read the same ledger).
   const payCalc = await resolvePayCalcPolicy(employee);
   const otThreshold = payCalc.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
+  const attendancePolicy = await getEffectivePolicy(employee.companyId, employee.id, "attendance", employee);
+  const maxShiftHours = attendancePolicy?.rules?.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
   const ledgerDays = await getLedgerForEmployee(employee, startDate, endDate, now);
   const ledgerByDate = new Map<string, LedgerDay>(ledgerDays.map((d) => [d.workDate, d]));
 
@@ -205,7 +221,11 @@ export async function buildEmployeeTimesheet(
           if (!lastOut || t > lastOut) lastOut = t;
         }
         breakMin += p.breakMinutes || 0;
-        if (p.status === "in-progress") {
+        if (p.status === MISSING_CLOCKOUT_STATUS || openPunchExceedsMaxShift(p, now, maxShiftHours)) {
+          // Forgotten punch-out (marked, or open past the max shift): a missing
+          // punch, NOT an in-progress shift — it no longer accrues hours.
+          missingPunch = true;
+        } else if (p.status === "in-progress") {
           inProgress = true;
         } else if (p.clockIn && !p.clockOut && !p.hoursWorked) {
           missingPunch = true;
@@ -218,7 +238,7 @@ export async function buildEmployeeTimesheet(
       const ledgerDay = ledgerByDate.get(dateStr);
       const roundedHours = ledgerDay
         ? ledgerDay.totalHours
-        : Math.round(computeDayHours(datePunches, now) * 100) / 100;
+        : Math.round(computeDayHours(datePunches, now, maxShiftHours) * 100) / 100;
       // The timesheet's one "Overtime" column shows OT + double-time combined;
       // holidayOtExclusion (when set) already zeroed these in the ledger.
       const dayOvertime = ledgerDay

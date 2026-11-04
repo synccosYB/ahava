@@ -215,9 +215,9 @@ import {
   type CorrectionCountSummary,
   type PayPeriodType,
 } from "@shared/correctionCounts";
-import { getEffectivePolicy, buildPtoPolicyFromRules } from "./policyEngine";
+import { getEffectivePolicy, buildPtoPolicyFromRules, DEFAULT_ATTENDANCE_RULES } from "./policyEngine";
 import { resolvePayCalcPolicy, splitDailyHours, DEFAULT_PAY_CALC_POLICY } from "./payrollEngine";
-import { computeBreakElapsedMinutes } from "./punchHours";
+import { computeBreakElapsedMinutes, MISSING_CLOCKOUT_STATUS } from "./punchHours";
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
@@ -2306,7 +2306,11 @@ export class DatabaseStorage implements IStorage {
         employeeId: punchLogs.employeeId,
         totalHours: sql<string>`COALESCE(SUM(
           CASE
+            WHEN ${punchLogs.status} = ${MISSING_CLOCKOUT_STATUS} THEN 0
             WHEN ${punchLogs.hoursWorked} IS NOT NULL THEN ${punchLogs.hoursWorked}
+            WHEN ${punchLogs.clockIn} IS NOT NULL AND ${punchLogs.clockOut} IS NULL
+              AND EXTRACT(EPOCH FROM (${nowLiteral}::timestamp - COALESCE(${punchLogs.roundedClockIn}, ${punchLogs.clockIn}))) > ${DEFAULT_ATTENDANCE_RULES.maxShiftHours * 3600}
+              THEN 0
             WHEN ${punchLogs.clockIn} IS NOT NULL
               THEN GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(${punchLogs.clockOut}, ${nowLiteral}::timestamp) - COALESCE(${punchLogs.roundedClockIn}, ${punchLogs.clockIn}))) / 3600.0 - COALESCE(${punchLogs.breakMinutes}, 0) / 60.0)
             ELSE 0 END
@@ -2362,7 +2366,11 @@ export class DatabaseStorage implements IStorage {
         workDate: punchLogs.workDate,
         hours: sql<string>`COALESCE(SUM(
           CASE
+            WHEN ${punchLogs.status} = ${MISSING_CLOCKOUT_STATUS} THEN 0
             WHEN ${punchLogs.hoursWorked} IS NOT NULL THEN ${punchLogs.hoursWorked}
+            WHEN ${punchLogs.clockIn} IS NOT NULL AND ${punchLogs.clockOut} IS NULL
+              AND EXTRACT(EPOCH FROM (${nowLiteral}::timestamp - COALESCE(${punchLogs.roundedClockIn}, ${punchLogs.clockIn}))) > ${DEFAULT_ATTENDANCE_RULES.maxShiftHours * 3600}
+              THEN 0
             WHEN ${punchLogs.clockIn} IS NOT NULL
               THEN GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(${punchLogs.clockOut}, ${nowLiteral}::timestamp) - COALESCE(${punchLogs.roundedClockIn}, ${punchLogs.clockIn}))) / 3600.0 - COALESCE(${punchLogs.breakMinutes}, 0) / 60.0)
             ELSE 0 END

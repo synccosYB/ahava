@@ -13,13 +13,47 @@
  * or still in-progress with no clock-out) — callers should leave such punches
  * untouched rather than zeroing them.
  */
+/**
+ * Status marking a shift whose clock-out is MISSING because it ran past the
+ * max-shift limit with no punch-out (a forgotten punch-out). It is NOT a worked
+ * shift: its hours are unverified (treated as 0 / null) until a manager enters
+ * the real clock-out. Kept here, dependency-free, so every hours surface
+ * (timesheet, ledger, the SQL aggregates, reconciliation) keys off one constant.
+ */
+export const MISSING_CLOCKOUT_STATUS = "missing_clockout";
+
+/**
+ * True when an OPEN punch (no clock-out) has already run past the employee's
+ * max-shift limit — i.e. the employee forgot to punch out. Such a punch is a
+ * missing punch: its hours must NOT accrue (and must not be "capped" at the
+ * limit either — that would record hours the employee may not have worked).
+ * The live hours surfaces use this to contribute 0 for such a punch instead of
+ * a runaway clock-in→now total.
+ */
+export function openPunchExceedsMaxShift(
+  punch: { clockIn: Date | string | null; clockOut: Date | string | null; roundedClockIn?: Date | string | null },
+  now: Date,
+  maxShiftHours: number,
+): boolean {
+  if (punch.clockOut) return false;
+  const startRaw = punch.roundedClockIn ?? punch.clockIn;
+  if (!startRaw) return false;
+  const start = new Date(startRaw).getTime();
+  if (!Number.isFinite(start)) return false;
+  return now.getTime() - start > maxShiftHours * 60 * 60 * 1000;
+}
+
 export function computePunchHoursWorked(punch: {
   clockIn: Date | string | null;
   clockOut: Date | string | null;
   roundedClockIn?: Date | string | null;
   roundedClockOut?: Date | string | null;
   breakMinutes?: number | null;
+  status?: string | null;
 }): number | null {
+  // A missing-clock-out punch yields no verified hours, regardless of any
+  // placeholder clock-out stored to free the one-open-punch slot.
+  if (punch.status === MISSING_CLOCKOUT_STATUS) return null;
   const startRaw = punch.roundedClockIn ?? punch.clockIn;
   const endRaw = punch.roundedClockOut ?? punch.clockOut;
   if (!startRaw || !endRaw) return null;
