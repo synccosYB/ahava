@@ -1,0 +1,21 @@
+ .../components/overlong-shift-reconcile-card.tsx   | 171 +++++++++++++++++++++
+ client/src/pages/employees.tsx                     |  44 ++++++
+ client/src/pages/timesheet-review.tsx              |   2 +
+ server/__tests__/employeeNumberAutoAssign.test.ts  |  93 +++++++++++
+ server/__tests__/overlongShiftReconcile.test.ts    |  68 ++++++++
+ server/adms/__tests__/staleShiftGuard.test.ts      | 128 +++++++++++++++
+ server/adms/ingest.ts                              |  13 +-
+ server/routes.ts                                   |  68 +++++++-
+ server/services/overlongShiftReconcile.ts          | 143 +++++++++++++++++
+ server/services/policyEnforcement.ts               |  68 ++++++++
+ server/storage.ts                                  |  39 ++++-
+ 11 files changed, 834 insertions(+), 3 deletions(-)
+ create mode 100644 client/src/components/overlong-shift-reconcile-card.tsx
+ create mode 100644 server/__tests__/employeeNumberAutoAssign.test.ts
+ create mode 100644 server/__tests__/overlongShiftReconcile.test.ts
+ create mode 100644 server/adms/__tests__/staleShiftGuard.test.ts
+ create mode 100644 server/services/overlongShiftReconcile.ts
+Synced HEAD: 9a13a5e94c69d62cefdaf6e431ed58c8fcdd10b4 Merge remote-tracking branch 'origin/main'
+
+> rest-express@1.0.0 check
+> tsc
