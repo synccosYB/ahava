@@ -25,6 +25,8 @@ import {
   type InsertEmploymentProfile,
   userReportDefaults,
   type UserReportDefaults,
+  biometricDeviceUsers,
+  biometricDeviceEvents,
   punchLogs,
   type PunchLog,
   type InsertPunchLog,
@@ -362,6 +364,10 @@ export interface IStorage {
   getEmploymentProfilesByUserIds(userIds: string[]): Promise<Map<string, EmploymentProfile>>;
   createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile>;
   updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined>;
+  // Next free clock number (= employee number) across every place one can live:
+  // employee profiles + the user-numbers enrolled/seen on any clock.
+  getNextEmployeeNumber(): Promise<string>;
+  getUserIdByEmployeeNumber(employeeNumber: string): Promise<string | undefined>;
   getUserReportDefaults(userId: string): Promise<UserReportDefaults | undefined>;
   setUserReportDefaults(userId: string, prefs: { locationIds: string[]; departmentIds: string[] }): Promise<UserReportDefaults>;
 
@@ -939,7 +945,7 @@ export class DatabaseStorage implements IStorage {
       const like = `%${search}%`;
       const nameExpr = sql`lower(coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, ''))`;
       conditions.push(
-        sql`(${nameExpr} like lower(${like}) or lower(coalesce(${users.email}, '')) like lower(${like}))` as SQL,
+        sql`(${nameExpr} like lower(${like}) or lower(coalesce(${users.email}, '')) like lower(${like}) or coalesce(${userEmploymentProfiles.employeeNumber}, '') like ${like})` as SQL,
       );
     }
     // Membership semantics: match an employee assigned via the many-to-many join
@@ -1326,6 +1332,37 @@ export class DatabaseStorage implements IStorage {
   async updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined> {
     const [updated] = await db.update(userEmploymentProfiles).set({ ...profile, updatedAt: new Date() }).where(eq(userEmploymentProfiles.userId, userId)).returning();
     return updated;
+  }
+
+  // The clock number (employee number) a person is enrolled under is the SAME
+  // value on every clock, so "next available" means one past the highest number
+  // used ANYWHERE it can live: an employee's profile, a user enrolled on a clock,
+  // or a user-number seen in a punch event. Using max+1 (never gap-fill) avoids
+  // ever reusing a number a deactivated employee's fingerprint still carries on a
+  // physical clock. Non-numeric values are ignored.
+  async getNextEmployeeNumber(): Promise<string> {
+    const maxNumeric = (col: any) =>
+      sql<string | null>`max(case when ${col} ~ '^[0-9]+$' then ${col}::bigint else null end)`;
+    const [prof, devUsers, devEvents] = await Promise.all([
+      db.select({ m: maxNumeric(userEmploymentProfiles.employeeNumber) }).from(userEmploymentProfiles),
+      db.select({ m: maxNumeric(biometricDeviceUsers.deviceUserId) }).from(biometricDeviceUsers),
+      db.select({ m: maxNumeric(biometricDeviceEvents.deviceUserId) }).from(biometricDeviceEvents),
+    ]);
+    const toNum = (v: unknown) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const max = Math.max(toNum(prof[0]?.m), toNum(devUsers[0]?.m), toNum(devEvents[0]?.m));
+    return String(max + 1);
+  }
+
+  async getUserIdByEmployeeNumber(employeeNumber: string): Promise<string | undefined> {
+    const [row] = await db
+      .select({ userId: userEmploymentProfiles.userId })
+      .from(userEmploymentProfiles)
+      .where(eq(userEmploymentProfiles.employeeNumber, employeeNumber))
+      .limit(1);
+    return row?.userId;
   }
 
   // F7: per-user Reports defaults (preferred locations + departments).

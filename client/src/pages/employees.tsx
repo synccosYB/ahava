@@ -172,6 +172,9 @@ export default function EmployeesPage() {
   const taxClassByUser = new Map<string, string>(
     (allProfiles || []).map((p) => [p.userId, p.taxClassification || "W-2"]),
   );
+  const clockNumberByUser = new Map<string, string>(
+    (allProfiles || []).filter((p) => p.employeeNumber).map((p) => [p.userId, p.employeeNumber as string]),
+  );
 
   if (selectedEmployee) {
     return <EmployeeProfile userId={selectedEmployee} onBack={() => setSelectedEmployee(null)} />;
@@ -421,6 +424,7 @@ export default function EmployeesPage() {
                     />
                   </TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Name</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Clock #</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Email</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Role</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Company</TableHead>
@@ -457,6 +461,9 @@ export default function EmployeesPage() {
                       </TableCell>
                       <TableCell className="font-medium" data-testid={`text-employee-name-${emp.id}`}>
                         {emp.firstName} {emp.lastName}
+                      </TableCell>
+                      <TableCell className="font-mono text-sm" data-testid={`text-employee-clock-number-${emp.id}`}>
+                        {clockNumberByUser.get(emp.id) || "—"}
                       </TableCell>
                       <TableCell data-testid={`text-employee-email-${emp.id}`}>{emp.email}</TableCell>
                       <TableCell>
@@ -1258,7 +1265,15 @@ function AddEmployeeDialog({
   const { toast } = useToast();
   const [step, setStep] = useState(1);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const [assignedNumber, setAssignedNumber] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
+
+  // Preview the next free clock number while the dialog is open. The server
+  // re-derives the real number at create time; this just shows what they'll get.
+  const { data: nextNumberData } = useQuery<{ nextNumber: string }>({
+    queryKey: ["/api/users/next-employee-number"],
+    enabled: open,
+  });
 
   const [formData, setFormData] = useState({
     firstName: "",
@@ -1384,7 +1399,10 @@ function AddEmployeeDialog({
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users/next-employee-number"] });
       setTempPassword(data.temporaryPassword);
+      setAssignedNumber(data.employeeNumber ?? null);
       setStep(4);
       setEmailError(null);
       toast({ title: "Employee created successfully" });
@@ -1421,6 +1439,7 @@ function AddEmployeeDialog({
   const handleClose = () => {
     setStep(1);
     setTempPassword(null);
+    setAssignedNumber(null);
     setEmailError(null);
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
@@ -1485,6 +1504,12 @@ function AddEmployeeDialog({
 
         {step === 1 && (
           <div className="space-y-4">
+            {nextNumberData?.nextNumber && (
+              <div className="rounded-md border bg-muted/40 px-3 py-2 flex items-center justify-between" data-testid="info-next-clock-number">
+                <span className="text-sm text-muted-foreground">Clock # (auto-assigned)</span>
+                <span className="font-mono text-base font-semibold" data-testid="text-next-clock-number">{nextNumberData.nextNumber}</span>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>First Name</Label>
@@ -1865,6 +1890,25 @@ function AddEmployeeDialog({
 
         {step === 4 && tempPassword && (
           <div className="space-y-4">
+            {assignedNumber && (
+              <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="box-assigned-clock-number">
+                <p className="text-sm text-blue-800 dark:text-blue-300 mb-2">
+                  <strong>Clock #{assignedNumber}</strong> — enroll this employee's fingerprint on the time clock
+                  under <strong>User ID {assignedNumber}</strong>, then Push fingerprints so their punches link automatically.
+                </p>
+                <div className="flex items-center gap-2 bg-white dark:bg-gray-900 rounded border p-3">
+                  <code className="flex-1 text-lg font-mono" data-testid="text-assigned-clock-number">{assignedNumber}</code>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => { navigator.clipboard.writeText(assignedNumber); toast({ title: "Clock # copied" }); }}
+                    data-testid="button-copy-clock-number"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
             <div className="bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg p-4">
               <p className="text-sm text-green-700 dark:text-green-300 mb-2">
                 The employee has been created with a temporary password. Share this password securely — they will be required to change it on first login.
