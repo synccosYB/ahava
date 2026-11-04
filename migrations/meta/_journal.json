@@ -540,6 +540,13 @@
       "when": 1780302400000,
       "tag": "0076_user_report_defaults",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1780302500000,
+      "tag": "0077_clock_confirmation_only",
+      "breakpoints": true
     }
   ]
 }

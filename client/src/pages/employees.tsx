@@ -1294,6 +1294,7 @@ function AddEmployeeDialog({
     payeeTaxId: "",
     payeeMemo: "",
     clockInRequired: true,
+    clockConfirmationOnly: false,
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
     hourlyRate: "",
@@ -1370,6 +1371,7 @@ function AddEmployeeDialog({
         taxClassification: formData.taxClassification,
         payrollCompanyId: isVolunteer ? null : formData.payrollCompanyId || null,
         clockInRequired: formData.clockInRequired,
+        clockConfirmationOnly: formData.clockConfirmationOnly,
         hireDate: formData.hireDate,
         payType: effectivePayType,
       };
@@ -1444,7 +1446,7 @@ function AddEmployeeDialog({
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
-      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true,
+      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true, clockConfirmationOnly: false,
       payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "", payeeMemo: "",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
@@ -1668,6 +1670,19 @@ function AddEmployeeDialog({
                 checked={formData.clockInRequired}
                 onCheckedChange={(v) => setFormData({ ...formData, clockInRequired: v })}
                 data-testid="switch-add-clock-in-required"
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label>Clock is attendance confirmation only</Label>
+                <p className="text-xs text-muted-foreground">
+                  For fixed-salary staff (daily/weekly) whose clock just confirms they worked the day. One clock per day marks the day present; hours are not counted and a single punch is never flagged as a missing punch.
+                </p>
+              </div>
+              <Switch
+                checked={formData.clockConfirmationOnly}
+                onCheckedChange={(v) => setFormData({ ...formData, clockConfirmationOnly: v })}
+                data-testid="switch-add-clock-confirmation-only"
               />
             </div>
             <div className="space-y-2">
@@ -2268,6 +2283,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
     overtimeEligible: false,
     taxClassification: "W-2",
     clockInRequired: true,
+    clockConfirmationOnly: false,
   });
 
   useEffect(() => {
@@ -2279,6 +2295,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         overtimeEligible: !!profile.overtimeEligible,
         taxClassification: profile.taxClassification || "W-2",
         clockInRequired: profile.clockInRequired ?? true,
+        clockConfirmationOnly: profile.clockConfirmationOnly ?? false,
       });
     }
   }, [profile, editEmployment]);
@@ -2291,6 +2308,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
       overtimeEligible: boolean;
       taxClassification: string;
       clockInRequired: boolean;
+      clockConfirmationOnly: boolean;
     }) => {
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
     },
@@ -2826,6 +2844,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                           overtimeEligible: !!profile.overtimeEligible,
                           taxClassification: profile.taxClassification || "W-2",
                           clockInRequired: profile.clockInRequired ?? true,
+                          clockConfirmationOnly: profile.clockConfirmationOnly ?? false,
                         });
                       }
                     }}
@@ -2843,6 +2862,7 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                         overtimeEligible: employmentForm.overtimeEligible,
                         taxClassification: employmentForm.taxClassification,
                         clockInRequired: employmentForm.clockInRequired,
+                        clockConfirmationOnly: employmentForm.clockConfirmationOnly,
                       })
                     }
                     disabled={employmentMutation.isPending || !profile}
@@ -2930,6 +2950,22 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
                     {(editEmployment ? employmentForm.clockInRequired : (profile?.clockInRequired ?? true))
                       ? "Missing-punch & no-show alerts on"
                       : "Alerts suppressed (not required)"}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Clock is attendance confirmation only</Label>
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={editEmployment ? employmentForm.clockConfirmationOnly : (profile?.clockConfirmationOnly ?? false)}
+                    onCheckedChange={(v) => setEmploymentForm((f) => ({ ...f, clockConfirmationOnly: v }))}
+                    disabled={!editEmployment || profileLoading || !profile}
+                    data-testid="switch-profile-clock-confirmation-only"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {(editEmployment ? employmentForm.clockConfirmationOnly : (profile?.clockConfirmationOnly ?? false))
+                      ? "One clock/day = present; hours not counted"
+                      : "Normal (clock in and out, hours counted)"}
                   </span>
                 </div>
               </div>
