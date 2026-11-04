@@ -15,7 +15,7 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Pencil, Trash2, Plus, AlertCircle } from "lucide-react";
+import { Pencil, Trash2, Plus, AlertCircle, Scissors } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -94,6 +94,15 @@ export function TimesheetEditor({
 
   const [deleteTarget, setDeleteTarget] = useState<Punch | null>(null);
   const [deleteReason, setDeleteReason] = useState("");
+
+  // Split an overnight / over-long shift: the clock-out is really the start of a
+  // new shift (missed punch-out + next clock-in absorbed). We close the first day
+  // at the real time and move the second punch to its own shift.
+  const [splitPunch, setSplitPunch] = useState<Punch | null>(null);
+  const [splitDay1Out, setSplitDay1Out] = useState("");
+  const [splitNewIn, setSplitNewIn] = useState("");
+  const [splitNewOut, setSplitNewOut] = useState("");
+  const [splitReason, setSplitReason] = useState("");
 
   const queryParams = useMemo(() => {
     const p = new URLSearchParams();
@@ -176,6 +185,56 @@ export function TimesheetEditor({
     },
   });
 
+  // Split = close the first day's shift at its real clock-out, then create the
+  // second shift from the punch that was wrongly absorbed as the clock-out. Uses
+  // the same audited endpoints; respects the one-open-punch rule because the
+  // first shift ends up closed and only the new shift can be left open.
+  const splitMutation = useMutation({
+    mutationFn: async (vars: { id: string; day1Out: string | null; newIn: string | null; newOut: string | null; reason: string }) => {
+      await apiRequest("PATCH", `/api/attendance/punches/${vars.id}`, {
+        clockOut: vars.day1Out,
+        reason: vars.reason || "Split overnight shift: set the real clock-out for day 1",
+      });
+      await apiRequest("POST", `/api/attendance/punches`, {
+        employeeId,
+        clockIn: vars.newIn,
+        clockOut: vars.newOut,
+        reason: vars.reason || "Split overnight shift: moved the absorbed punch to its own shift",
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "Shift split", description: "Day 1 was closed at its real time and the second punch moved to its own shift." });
+      invalidate();
+      setSplitPunch(null);
+    },
+    onError: (err: any) => {
+      toast({ title: "Could not split shift", description: err?.message ?? "If the new shift is left open, make sure the employee has no other open shift first.", variant: "destructive" });
+    },
+  });
+
+  const openSplit = (p: Punch) => {
+    setSplitPunch(p);
+    // Day-1 real clock-out: default to the clock-in's date at 5:00 PM (manager edits it).
+    const inLocal = toLocalInput(p.clockIn);
+    const inDate = inLocal.split("T")[0];
+    setSplitDay1Out(inDate ? `${inDate}T17:00` : "");
+    // New shift's clock-in = the punch currently (wrongly) recorded as the clock-out.
+    setSplitNewIn(toLocalInput(p.clockOut));
+    setSplitNewOut("");
+    setSplitReason("");
+  };
+
+  const submitSplit = () => {
+    if (!splitPunch) return;
+    splitMutation.mutate({
+      id: splitPunch.id,
+      day1Out: fromLocalInput(splitDay1Out),
+      newIn: fromLocalInput(splitNewIn),
+      newOut: fromLocalInput(splitNewOut),
+      reason: splitReason.trim(),
+    });
+  };
+
   const openEdit = (p: Punch) => {
     setEditPunch(p);
     setEditClockIn(toLocalInput(p.clockIn));
@@ -184,13 +243,47 @@ export function TimesheetEditor({
     setEditReason("");
   };
 
+  // YYYY-MM-DD for "yesterday" (the day before today) — managers are almost
+  // always entering a missing punch for the prior day.
+  const yesterdayStr = () => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
   const openAdd = () => {
-    // Prefill to the first day of the viewed week, a normal 9–5, for the admin
-    // to adjust to the actual missing punch.
-    setAddClockIn(`${startDate}T09:00`);
-    setAddClockOut(`${startDate}T17:00`);
+    // Default the clock-IN to yesterday 9:00 (the usual missing-punch day), and
+    // leave the clock-OUT EMPTY so an open/in-only punch is one step (no need to
+    // clear a prefilled time). The clock-out date follows the clock-in date below.
+    setAddClockIn(`${yesterdayStr()}T09:00`);
+    setAddClockOut("");
     setAddReason("");
     setAddOpen(true);
+  };
+
+  // Keep the clock-out on the SAME day as the clock-in. When the clock-in date
+  // changes and a clock-out is set, move the clock-out onto the clock-in's date
+  // (keeping its time). Leaves an empty clock-out empty.
+  const onAddClockInChange = (val: string) => {
+    setAddClockIn(val);
+    if (addClockOut) {
+      const inDate = val.split("T")[0];
+      const outTime = addClockOut.split("T")[1] || "17:00";
+      if (inDate) setAddClockOut(`${inDate}T${outTime}`);
+    }
+  };
+
+  // When the admin first enters a clock-out (field is empty), seed it to the
+  // clock-in's date at 5:00 PM so the date matches by default — they only tweak
+  // the time. If the clock-in was cleared (recording a clock-out-only "missing
+  // clock-in" punch), fall back to yesterday. Leaving it untouched keeps the
+  // shift open / in-only.
+  const onAddClockOutFocus = () => {
+    if (!addClockOut) {
+      const inDate = addClockIn ? addClockIn.split("T")[0] : yesterdayStr();
+      if (inDate) setAddClockOut(`${inDate}T17:00`);
+    }
   };
 
   const submitEdit = () => {
@@ -275,6 +368,11 @@ export function TimesheetEditor({
                             <Pencil className="h-4 w-4" />
                           </Button>
                         )}
+                        {canEdit && p.clockIn && p.clockOut && (
+                          <Button size="icon" variant="ghost" onClick={() => openSplit(p)} aria-label="Split shift (clock-out is a new clock-in)" title="Split: the clock-out is really a new clock-in" data-testid={`button-editor-split-${p.id}`}>
+                            <Scissors className="h-4 w-4" />
+                          </Button>
+                        )}
                         {canDelete && (
                           <Button size="icon" variant="ghost" onClick={() => { setDeleteTarget(p); setDeleteReason(""); }} aria-label="Delete punch" data-testid={`button-editor-delete-${p.id}`}>
                             <Trash2 className="h-4 w-4 text-destructive" />
@@ -311,6 +409,7 @@ export function TimesheetEditor({
             <div className="space-y-1">
               <Label htmlFor="editor-edit-in">Clock In</Label>
               <Input id="editor-edit-in" type="datetime-local" value={editClockIn} onChange={(e) => setEditClockIn(e.target.value)} data-testid="input-editor-edit-in" />
+              <p className="text-xs text-muted-foreground">Leave clock-in empty to keep it a missing punch (clock-out only).</p>
             </div>
             <div className="space-y-1">
               <Label htmlFor="editor-edit-out">Clock Out</Label>
@@ -336,17 +435,18 @@ export function TimesheetEditor({
         <DialogContent data-testid="dialog-editor-add-punch">
           <DialogHeader>
             <DialogTitle>Add Punch</DialogTitle>
-            <DialogDescription>Enter a missing clock-in (and clock-out, if known).</DialogDescription>
+            <DialogDescription>Enter a clock-in, a clock-out, or both. Leave one empty to record a missing punch on that side.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-1">
               <Label htmlFor="editor-add-in">Clock In</Label>
-              <Input id="editor-add-in" type="datetime-local" value={addClockIn} onChange={(e) => setAddClockIn(e.target.value)} data-testid="input-editor-add-in" />
+              <Input id="editor-add-in" type="datetime-local" value={addClockIn} onChange={(e) => onAddClockInChange(e.target.value)} data-testid="input-editor-add-in" />
+              <p className="text-xs text-muted-foreground">Clear this to record a clock-out only (the clock-in stays a missing punch).</p>
             </div>
             <div className="space-y-1">
               <Label htmlFor="editor-add-out">Clock Out</Label>
-              <Input id="editor-add-out" type="datetime-local" value={addClockOut} onChange={(e) => setAddClockOut(e.target.value)} data-testid="input-editor-add-out" />
-              <p className="text-xs text-muted-foreground">Leave clock-out empty to leave the shift open (still clocked in).</p>
+              <Input id="editor-add-out" type="datetime-local" value={addClockOut} onFocus={onAddClockOutFocus} onChange={(e) => setAddClockOut(e.target.value)} data-testid="input-editor-add-out" />
+              <p className="text-xs text-muted-foreground">Empty by default — leave it empty to add an open clock-in. If you set it, it starts on the clock-in's date.</p>
             </div>
             <div className="space-y-1">
               <Label htmlFor="editor-add-reason">Reason (optional)</Label>
@@ -355,8 +455,49 @@ export function TimesheetEditor({
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)} data-testid="button-editor-cancel-add">Cancel</Button>
-            <Button onClick={submitAdd} disabled={addMutation.isPending || !addClockIn} data-testid="button-editor-save-add">
+            <Button onClick={submitAdd} disabled={addMutation.isPending || (!addClockIn && !addClockOut)} data-testid="button-editor-save-add">
               {addMutation.isPending ? "Adding…" : "Add punch"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Split overnight / over-long shift */}
+      <Dialog open={!!splitPunch} onOpenChange={(open) => { if (!open) setSplitPunch(null); }}>
+        <DialogContent data-testid="dialog-editor-split-punch">
+          <DialogHeader>
+            <DialogTitle>Split shift</DialogTitle>
+            <DialogDescription>
+              Use this when a punch-out was missed and the next clock-in got absorbed into the same shift (an
+              overnight / 24-hour shift). Set the real clock-out for the first day; the second punch becomes its
+              own shift.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label htmlFor="editor-split-day1out">Real clock-out for the first day</Label>
+              <Input id="editor-split-day1out" type="datetime-local" value={splitDay1Out} onChange={(e) => setSplitDay1Out(e.target.value)} data-testid="input-editor-split-day1out" />
+              <p className="text-xs text-muted-foreground">Closes the first shift at the time the employee actually left.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="editor-split-newin">New shift — clock-in</Label>
+              <Input id="editor-split-newin" type="datetime-local" value={splitNewIn} onChange={(e) => setSplitNewIn(e.target.value)} data-testid="input-editor-split-newin" />
+              <p className="text-xs text-muted-foreground">Prefilled from the punch that was wrongly recorded as the clock-out. Change the date/time if needed — it moves to the day it belongs.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="editor-split-newout">New shift — clock-out (optional)</Label>
+              <Input id="editor-split-newout" type="datetime-local" value={splitNewOut} onChange={(e) => setSplitNewOut(e.target.value)} data-testid="input-editor-split-newout" />
+              <p className="text-xs text-muted-foreground">Leave empty if the new shift is still open (e.g. it's today and they're still working).</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="editor-split-reason">Reason (optional)</Label>
+              <Textarea id="editor-split-reason" value={splitReason} onChange={(e) => setSplitReason(e.target.value)} placeholder="Why is this shift being split?" data-testid="input-editor-split-reason" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSplitPunch(null)} data-testid="button-editor-cancel-split">Cancel</Button>
+            <Button onClick={submitSplit} disabled={splitMutation.isPending || !splitDay1Out || !splitNewIn} data-testid="button-editor-save-split">
+              {splitMutation.isPending ? "Splitting…" : "Split shift"}
             </Button>
           </DialogFooter>
         </DialogContent>
