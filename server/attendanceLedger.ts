@@ -42,6 +42,8 @@ import {
   round2,
   type PayCalcPolicy,
 } from "./payrollEngine";
+import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "./policyEngine";
+import { MISSING_CLOCKOUT_STATUS, openPunchExceedsMaxShift } from "./punchHours";
 
 /**
  * The in-memory shape of a computed ledger day (before persistence). Mirrors the
@@ -81,9 +83,13 @@ export interface LedgerTotals {
  * break-deducted compute from the rounded clock-in. Keeping this rule in one
  * shape across every surface is what stops break/rounding drift.
  */
-function punchWorkedHours(p: PunchLog, now: Date): number {
+function punchWorkedHours(p: PunchLog, now: Date, maxShiftHours: number): number {
+  // Forgotten punch-out (marked, or still open past the max shift): unverified,
+  // contributes no hours until a manager sets the real clock-out.
+  if (p.status === MISSING_CLOCKOUT_STATUS) return 0;
   if (p.hoursWorked != null) return p.hoursWorked;
   if (!p.clockIn) return 0;
+  if (openPunchExceedsMaxShift(p, now, maxShiftHours)) return 0;
   const start = new Date(p.roundedClockIn ?? p.clockIn).getTime();
   const end = p.clockOut ? new Date(p.roundedClockOut ?? p.clockOut).getTime() : now.getTime();
   if (!(end > start)) return 0;
@@ -112,16 +118,20 @@ function eachDate(startDate: string, endDate: string): string[] {
 interface EmployeeContext {
   payCalc: PayCalcPolicy;
   scheduledDays: number[];
+  maxShiftHours: number;
 }
 
 async function resolveEmployeeContext(employee: User): Promise<EmployeeContext> {
-  const [payCalc, schedules] = await Promise.all([
+  const [payCalc, schedules, attendancePolicy] = await Promise.all([
     resolvePayCalcPolicy(employee),
     storage.getEmployeeSchedules(employee.id),
+    getEffectivePolicy(employee.companyId, employee.id, "attendance", employee),
   ]);
+  const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
   return {
     payCalc,
     scheduledDays: schedules.filter((s) => s.isActive).map((s) => s.dayOfWeek),
+    maxShiftHours: rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours,
   };
 }
 
@@ -169,8 +179,13 @@ function computeRawDay(
   for (const p of dayPunches) {
     if (!p.clockIn) continue;
     workedPunchCount++;
-    dayHours += punchWorkedHours(p, now);
-    if (p.status === "in-progress" || (!p.clockOut && p.hoursWorked == null)) {
+    dayHours += punchWorkedHours(p, now, ctx.maxShiftHours);
+    // A marked missing-clock-out punch is NOT "open" (it has been set aside for
+    // manager review) — only a genuinely in-progress punch counts as open.
+    if (
+      p.status !== MISSING_CLOCKOUT_STATUS &&
+      (p.status === "in-progress" || (!p.clockOut && p.hoursWorked == null))
+    ) {
       hasOpenPunch = true;
     }
   }
