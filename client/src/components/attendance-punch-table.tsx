@@ -44,6 +44,15 @@ type Punch = {
   timezone?: string | null;
 };
 
+// A punch was entered by hand (by an admin/manager, or loaded from the punch
+// importer) rather than coming from the time clock. Clock sources are
+// "biometric"/"kiosk"; employee web self-punches are "web". Hand entries and
+// imports are recorded as "manager". Admins/managers see a "Manual" tag so a
+// typed-in punch is never mistaken for a real clock punch.
+function isManualEntry(source: string | null | undefined): boolean {
+  return !!source && (source.startsWith("manager") || source === "import");
+}
+
 type Option = { id: string; name: string };
 
 type PunchesResponse = {
@@ -283,7 +292,19 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
               {punches.map((p) => (
                 <TableRow key={p.id} data-testid={`row-punch-${p.id}`}>
                   <TableCell className="font-medium" data-testid={`text-punch-employee-${p.id}`}>
-                    {p.employeeName}
+                    <div className="flex items-center gap-1.5">
+                      <span>{p.employeeName}</span>
+                      {isManualEntry(p.source) && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] px-1 py-0 font-normal text-amber-700 border-amber-300 dark:text-amber-400 dark:border-amber-700"
+                          title="Entered manually — not from the time clock"
+                          data-testid={`badge-manual-${p.id}`}
+                        >
+                          Manual
+                        </Badge>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell data-testid={`text-punch-date-${p.id}`}>{formatDate(p.workDate) || "—"}</TableCell>
                   <TableCell data-testid={`text-punch-in-${p.id}`}>{formatTime12InTz(p.clockIn, p.timezone) || "—"}</TableCell>

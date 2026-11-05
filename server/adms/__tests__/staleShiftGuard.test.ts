@@ -23,7 +23,8 @@ import {
   biometricDeviceEvents,
 } from "@shared/schema";
 import { ingestPunches } from "../ingest";
-import { parseAttlog } from "../protocol";
+import { parseAttlog, parseDevicePunchTime } from "../protocol";
+import { resolveEmployeeTimezone } from "../../services/punchOverlap";
 import * as adms from "../store";
 
 const stamp = `stale-${Date.now().toString(36)}`;
@@ -54,9 +55,14 @@ async function cleanup() {
 
 test("a next-day punch marks the stale shift a MISSING PUNCH (no hours) and opens a new shift (no 24h shift)", async (t) => {
   await setup();
+  const tz = await resolveEmployeeTimezone(employeeId);
 
-  // Employee clocked in ~24h ago and never clocked out (forgot).
-  const staleIn = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  // The next-day clock-in, as the device reports it (local wall-clock). Punches
+  // now carry the DEVICE's own time, so the stale shift's span is measured
+  // against this instant, not server "now".
+  const newIn = parseDevicePunchTime("2026-10-21 08:00:00", tz)!;
+  // Employee clocked in ~24h earlier (the day before) and never clocked out.
+  const staleIn = new Date(newIn.getTime() - 24 * 60 * 60 * 1000);
   const stale = await storage.createPunchLog({
     employeeId,
     workDate: staleIn.toISOString().slice(0, 10),
@@ -68,8 +74,8 @@ test("a next-day punch marks the stale shift a MISSING PUNCH (no hours) and open
     approved: true,
   });
 
-  // New punch comes in now (the "next day" clock-in).
-  const r = await ingestPunches(device(), parseAttlog(`${DEVICE_USER}\t2026-10-20 08:00:00\t0\t1`));
+  // The next-day punch comes in.
+  const r = await ingestPunches(device(), parseAttlog(`${DEVICE_USER}\t2026-10-21 08:00:00\t0\t1`));
   assert.equal(r.processed, 1, "the new punch is processed");
 
   // The stale shift is STOPPED and marked a missing punch: NO worked hours
@@ -83,12 +89,16 @@ test("a next-day punch marks the stale shift a MISSING PUNCH (no hours) and open
   const hrs = (new Date(closed!.clockOut as any).getTime() - staleIn.getTime()) / 3600000;
   assert.ok(hrs > 12 && hrs < 13.5, `placeholder sits near the 13h mark, got ${hrs.toFixed(2)}h`);
 
-  // A fresh OPEN shift exists for the new punch (started ~now, not 24h long).
+  // A fresh OPEN shift exists for the new punch, started at the DEVICE time of
+  // the new punch (not ~24h long, and not server-arrival time).
   const latest = await storage.getLatestAttendanceForUser(employeeId);
   assert.ok(latest && latest.clockIn && !latest.clockOut, "a new open shift exists");
   assert.notEqual(latest!.id, stale.id, "the new shift is a different punch, not the stale one");
-  const newAgeH = (Date.now() - new Date(latest!.clockIn as any).getTime()) / 3600000;
-  assert.ok(newAgeH < 1, `the new shift started ~now, got ${newAgeH.toFixed(2)}h ago`);
+  assert.equal(
+    new Date(latest!.clockIn as any).getTime(),
+    newIn.getTime(),
+    "the new shift started at the device punch time",
+  );
 
   // The missing punch is flagged for manager review.
   const flags = await db.select().from(attendanceExceptions)
@@ -102,8 +112,11 @@ test("a normal same-day punch-out still closes the shift at the punch (no spurio
   // punch_logs, so clear them first).
   await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, employeeId)).catch(() => {});
   await db.delete(punchLogs).where(eq(punchLogs.employeeId, employeeId)).catch(() => {});
+  const tz = await resolveEmployeeTimezone(employeeId);
 
-  const recentIn = new Date(Date.now() - 8 * 60 * 60 * 1000); // 8h ago (within limit)
+  // The device clock-out time, and a clock-in 8h earlier (within the limit).
+  const out = parseDevicePunchTime("2026-10-21 17:00:00", tz)!;
+  const recentIn = new Date(out.getTime() - 8 * 60 * 60 * 1000);
   const open = await storage.createPunchLog({
     employeeId,
     workDate: recentIn.toISOString().slice(0, 10),
@@ -120,6 +133,12 @@ test("a normal same-day punch-out still closes the shift at the punch (no spurio
 
   const closed = await storage.getPunchLog(open.id);
   assert.ok(closed?.clockOut, "the shift was closed normally");
+  // Closed at the DEVICE's reported out-time (not server-arrival time).
+  assert.equal(
+    new Date(closed!.clockOut as any).getTime(),
+    out.getTime(),
+    "closed at the device punch-out time",
+  );
   const hrs = (new Date(closed!.clockOut as any).getTime() - recentIn.getTime()) / 3600000;
   assert.ok(hrs > 7.5 && hrs < 8.5, `closed at ~8h (the real punch), got ${hrs.toFixed(2)}h`);
 

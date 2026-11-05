@@ -234,6 +234,15 @@ export interface ClockInOptions {
    * Falls back to the UTC date only when omitted.
    */
   workDate?: string;
+  /**
+   * The real instant the punch happened. Omitted for live web/kiosk clocks
+   * (which punch in realtime, so server "now" is correct). The biometric clock
+   * supplies the device's own reported time here so the recorded punch reflects
+   * when the person physically punched, not when the push reached the server
+   * (a sync delay would otherwise skew the time). Used for clock_in and its
+   * rounded time; defaults to new Date() when omitted.
+   */
+  at?: Date;
 }
 
 // Result of a start/end break action. `ok: false` carries a machine-readable
@@ -385,7 +394,7 @@ export interface IStorage {
   updateAttendanceRecord(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
 
   clockIn(userId: string, source?: string, roundedTime?: Date, opts?: ClockInOptions): Promise<PunchLog>;
-  clockOut(userId: string): Promise<PunchLog | undefined>;
+  clockOut(userId: string, at?: Date): Promise<PunchLog | undefined>;
   startBreak(userId: string): Promise<BreakActionResult>;
   endBreak(userId: string): Promise<BreakActionResult>;
   closeOpenPunch(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
@@ -1469,7 +1478,10 @@ export class DatabaseStorage implements IStorage {
     roundedTime?: Date,
     opts?: ClockInOptions,
   ): Promise<PunchLog> {
-    const actualNow = new Date();
+    // Honor a caller-supplied punch instant (the biometric clock passes the
+    // device's own reported time) so the record reflects when the person
+    // punched, not when the push arrived. Live web/kiosk clocks omit it.
+    const actualNow = opts?.at ?? new Date();
     const rounded = roundedTime || actualNow;
     // Local (location-tz) work date when the caller resolved it; UTC date only
     // as a fallback. Dating in UTC rolls an evening Eastern shift onto the next
@@ -1538,6 +1550,18 @@ export class DatabaseStorage implements IStorage {
     return !!row?.v;
   }
 
+  // Whether an employee legitimately works overnight (clocks in one evening and
+  // out the next morning). Defaults false — for everyone else a shift that
+  // crosses midnight is treated as a forgotten punch-out.
+  async isOvernightShiftsAllowed(userId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ v: userEmploymentProfiles.overnightShiftsAllowed })
+      .from(userEmploymentProfiles)
+      .where(eq(userEmploymentProfiles.userId, userId))
+      .limit(1);
+    return !!row?.v;
+  }
+
   // Record (idempotently, per day) a confirmation "present" punch: a closed,
   // 0-hour punch that marks the day worked without tracking hours and without
   // ever being an open/missing punch. Serialized per employee so a double-tap
@@ -1589,7 +1613,7 @@ export class DatabaseStorage implements IStorage {
     return updated ? punchLogToLegacy(updated) : undefined;
   }
 
-  async clockOut(userId: string): Promise<PunchLog | undefined> {
+  async clockOut(userId: string, at?: Date): Promise<PunchLog | undefined> {
     // The day's overtime/complete status is derived through THE single pay engine
     // (resolvePayCalcPolicy + splitDailyHours) so this path never disagrees with
     // enforceClockOut, the timesheet, reports or payroll. There is NO hard-coded
@@ -1616,11 +1640,17 @@ export class DatabaseStorage implements IStorage {
         .limit(1);
       if (!current || !current.clockIn) return undefined;
 
-      const now = new Date();
+      // Honor a caller-supplied punch instant (the biometric clock passes the
+      // device's own reported time) so the close reflects when the person
+      // punched out, not when the push arrived. Live web/kiosk clocks omit it.
+      const now = at ?? new Date();
       const roundedInMs = new Date(current.roundedClockIn ?? current.clockIn).getTime();
       const totalMs = now.getTime() - roundedInMs;
       const breakMs = (current.breakMinutes || 0) * 60 * 1000;
-      const hoursWorked = Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100;
+      // Never record negative hours: a device whose clock-out time is (wrongly)
+      // before the clock-in would otherwise compute < 0. Clamp to 0; server-now
+      // is always after clock-in, so this is a no-op for live clocks.
+      const hoursWorked = Math.max(0, Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100);
       const { status } = splitDailyHours(hoursWorked, policy);
 
       const [updated] = await tx

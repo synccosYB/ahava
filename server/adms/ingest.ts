@@ -2,20 +2,22 @@
 //
 // Scope note (MVP for the Williamsburg bring-up): this mirrors the kiosk's
 // in/out model — direction is derived from the employee's current open-punch
-// state, not from the device's "status" key — and the punch is recorded at
-// server "now" (the clock pushes in realtime), exactly like a kiosk punch. Full
-// policy enforcement (allowed-source checks, geofence, enforceClockIn/Out
-// rounding, honoring the device-supplied timestamp with the location timezone)
-// is deliberately deferred to a later phase so day-one punches are never
-// rejected by a half-configured policy. Every raw punch is persisted in
+// state, not from the device's "status" key. The punch is recorded at the
+// DEVICE's own reported time (converted from the clock's local wall-clock
+// string to UTC in the employee's location timezone), falling back to server
+// "now" only if that string is unparseable — so a push that arrives late no
+// longer skews the recorded time. The rest of policy enforcement (allowed-
+// source checks, geofence, enforceClockIn/Out rounding) is deliberately
+// deferred to a later phase so day-one punches are never rejected by a
+// half-configured policy. Every raw punch is persisted in
 // biometric_device_events regardless, so nothing is lost.
 import { storage, DuplicateOpenPunchError } from "../storage";
-import { workDateForEmployee } from "../services/punchOverlap";
+import { localWorkDate, resolveEmployeeTimezone } from "../services/punchOverlap";
 import { capStaleOpenShiftAtMaxShift } from "../services/policyEnforcement";
 import { writeLedgerEntry } from "../services/ledger";
 import { logger } from "../lib/logger";
 import type { BiometricDevice } from "@shared/schema";
-import type { AttendancePunch } from "./protocol";
+import { parseDevicePunchTime, type AttendancePunch } from "./protocol";
 import * as adms from "./store";
 
 export interface IngestResult {
@@ -65,7 +67,16 @@ export async function ingestPunches(
         continue;
       }
 
-      // 3) Derive in/out from current open-punch state and write it.
+      // 3) Resolve the punch instant from the DEVICE's own reported time. The
+      //    clock reports local wall-clock time (what its screen shows — Eastern
+      //    for every Ahava site), so we convert it to UTC in the employee's
+      //    location timezone. This is what the person physically punched; we
+      //    fall back to server "now" only if the string is unparseable, so a
+      //    sync delay no longer skews the recorded time.
+      const tz = await resolveEmployeeTimezone(userId);
+      const punchAt = parseDevicePunchTime(punch.timeRaw, tz) ?? new Date();
+
+      // 4) Derive in/out from current open-punch state and write it.
       const last = await storage.getLatestAttendanceForUser(userId);
       let isOpen = !!(last && last.clockIn && !last.clockOut);
 
@@ -75,12 +86,12 @@ export async function ingestPunches(
       // 24h+ shift. Cap the stale shift at the max and flag it; this punch then
       // starts a fresh clock-in. Overnight shifts under the limit are untouched.
       if (isOpen) {
-        const capped = await capStaleOpenShiftAtMaxShift(userId);
+        const capped = await capStaleOpenShiftAtMaxShift(userId, punchAt);
         if (capped) isOpen = false;
       }
 
       if (isOpen) {
-        const updated = await storage.clockOut(userId);
+        const updated = await storage.clockOut(userId, punchAt);
         if (!updated) {
           // Raced to closed by another path — treat as handled.
           await adms.updateEvent(event.id, { userId, status: "duplicate", direction: "clock_out" });
@@ -101,10 +112,13 @@ export async function ingestPunches(
           // Biometric clocks have their own table and must not be written to
           // punch_logs.kiosk_device_id (FK references kiosk_devices only).
           // Device provenance is stored in biometric_device_events.punch_log_id.
-          // File under the location-local day (not UTC) so an evening Eastern
-          // punch isn't rolled onto the next calendar day.
+          // File under the location-local day of the DEVICE punch time (not UTC,
+          // and not server-arrival time) so an evening Eastern punch isn't
+          // rolled onto the next calendar day, and record the punch at the
+          // device's own reported instant.
           record = await storage.clockIn(userId, "biometric", undefined, {
-            workDate: await workDateForEmployee(userId, new Date()),
+            workDate: localWorkDate(punchAt, tz),
+            at: punchAt,
           });
         } catch (err) {
           if (err instanceof DuplicateOpenPunchError) {
