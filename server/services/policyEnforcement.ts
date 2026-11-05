@@ -3,6 +3,7 @@ import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAUL
 import { buildPayCalcPolicy, splitDailyHours } from "../payrollEngine";
 import { recomputeLedger } from "../attendanceLedger";
 import { MISSING_CLOCKOUT_STATUS } from "../punchHours";
+import { resolveEmployeeTimezone, localWorkDate } from "./punchOverlap";
 import type { User, PunchLog } from "@shared/schema";
 
 export interface DayOfWeekBonusRule {
@@ -418,10 +419,13 @@ async function markShiftMissingClockout(
   punch: PunchLog,
   maxShiftHours: number,
   policyName?: string,
+  capAt?: Date,
 ): Promise<PolicyAlert> {
   const actualClockInTime = new Date(punch.clockIn as any);
-  // Placeholder clock-out at the max-shift mark — a marker, NOT a real punch-out.
-  const cap = new Date(actualClockInTime.getTime() + maxShiftHours * 60 * 60 * 1000);
+  // Placeholder clock-out: the max-shift mark by default, or an explicit earlier
+  // cap (e.g. just before the next day's clock-in, when the split is triggered by
+  // a day boundary rather than the 13h limit). A marker, NOT a real punch-out.
+  const cap = capAt ?? new Date(actualClockInTime.getTime() + maxShiftHours * 60 * 60 * 1000);
 
   await storage.updatePunchLog(punch.id, {
     clockOut: cap,
@@ -499,7 +503,10 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
  * Returns false (leaving the open punch untouched) when there is no open shift or
  * it is still within the limit — in which case the punch closes it normally.
  */
-export async function capStaleOpenShiftAtMaxShift(userId: string): Promise<boolean> {
+export async function capStaleOpenShiftAtMaxShift(
+  userId: string,
+  asOf: Date = new Date(),
+): Promise<boolean> {
   const punch = await storage.getLatestAttendanceForUser(userId);
   if (!punch || !punch.clockIn || punch.clockOut) return false;
 
@@ -510,20 +517,49 @@ export async function capStaleOpenShiftAtMaxShift(userId: string): Promise<boole
   const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
   const maxShiftHours = rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
 
+  // Measure the open span against the INCOMING punch's time (asOf), not server
+  // "now". When punches carry the device's own timestamp (biometric clock), a
+  // batch can be processed after a delay — "now" could be hours/days later and
+  // would wrongly flag a shift that the very next punch in the batch closes
+  // within the limit. The reference that matters is: was the shift already too
+  // long at the moment this punch happened? Live callers pass now by default.
   const actualClockInTime = new Date(punch.clockIn);
-  const hoursOpen = (Date.now() - actualClockInTime.getTime()) / (1000 * 60 * 60);
-  // Within the limit (incl. legit overnight shifts under maxShiftHours): let the
-  // punch close it as a normal clock-out.
-  if (hoursOpen < maxShiftHours) return false;
+  const hoursOpen = (asOf.getTime() - actualClockInTime.getTime()) / (1000 * 60 * 60);
 
-  // Over the limit with no punch-out: the employee forgot to clock out and is
+  // Reason 1 — over the max-shift limit: the employee forgot to clock out and is
   // punching again later. Don't let this punch close the stale shift (that would
   // record a bogus long shift) and don't auto-record hours. Stop the clock, mark
   // the stale shift a MISSING PUNCH (no hours), alert the manager, and return true
   // so the caller treats the incoming punch as a fresh clock-in.
-  const alert = await markShiftMissingClockout(punch, maxShiftHours, attendancePolicy?.policyName);
-  await createPolicyAlert(alert);
-  return true;
+  if (hoursOpen >= maxShiftHours) {
+    const alert = await markShiftMissingClockout(punch, maxShiftHours, attendancePolicy?.policyName);
+    await createPolicyAlert(alert);
+    return true;
+  }
+
+  // Reason 2 — the open shift crosses into a LATER local day and this employee
+  // doesn't work overnight: almost always a forgotten punch-out (an evening
+  // punch mistaken for a new clock-in, about to be "closed" by the next
+  // morning's clock-in into a bogus overnight shift). Split it the same way:
+  // mark the evening shift a MISSING PUNCH and let this punch start fresh. The
+  // placeholder clock-out is capped just before this punch so they don't
+  // overlap. Genuine overnight workers (overnightShiftsAllowed) are exempt — for
+  // them a sub-max cross-midnight shift closes normally.
+  if (!(await storage.isOvernightShiftsAllowed(userId))) {
+    const tz = await resolveEmployeeTimezone(userId);
+    if (localWorkDate(actualClockInTime, tz) < localWorkDate(asOf, tz)) {
+      const capAt = new Date(
+        Math.min(actualClockInTime.getTime() + maxShiftHours * 60 * 60 * 1000, asOf.getTime() - 60_000),
+      );
+      const alert = await markShiftMissingClockout(punch, maxShiftHours, attendancePolicy?.policyName, capAt);
+      await createPolicyAlert(alert);
+      return true;
+    }
+  }
+
+  // Within the limit and not a cross-day forgotten punch-out (incl. legit
+  // overnight shifts under maxShiftHours): let the punch close it normally.
+  return false;
 }
 
 export async function createPolicyAlert(alert: PolicyAlert): Promise<void> {

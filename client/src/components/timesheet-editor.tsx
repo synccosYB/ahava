@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -35,6 +36,13 @@ type Punch = {
   locationNames: string[];
   timezone?: string | null;
 };
+
+// A punch entered by hand (admin/manager, or loaded by the punch importer)
+// rather than coming from the time clock ("biometric"/"kiosk"). Shown with a
+// "Manual" tag so a typed-in punch isn't mistaken for a real clock punch.
+function isManualEntry(source: string | null | undefined): boolean {
+  return !!source && (source.startsWith("manager") || source === "import");
+}
 
 type PunchesResponse = {
   punches: Punch[];
@@ -359,7 +367,21 @@ export function TimesheetEditor({
             <TableBody>
               {punches.map((p) => (
                 <TableRow key={p.id} data-testid={`row-editor-punch-${p.id}`}>
-                  <TableCell className="text-sm font-medium">{formatDate(p.workDate) || "—"}</TableCell>
+                  <TableCell className="text-sm font-medium">
+                    <div className="flex items-center gap-1.5">
+                      <span>{formatDate(p.workDate) || "—"}</span>
+                      {isManualEntry(p.source) && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] px-1 py-0 font-normal text-amber-700 border-amber-300 dark:text-amber-400 dark:border-amber-700"
+                          title="Entered manually — not from the time clock"
+                          data-testid={`badge-editor-manual-${p.id}`}
+                        >
+                          Manual
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell className="text-sm tabular-nums">{formatTime12InTz(p.clockIn, p.timezone) || "—"}</TableCell>
                   <TableCell className="text-sm tabular-nums">
                     {p.status === "missing_clockout" ? (

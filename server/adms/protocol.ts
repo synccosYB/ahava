@@ -200,8 +200,10 @@ export function serialFromQuery(query: Record<string, unknown>): string | null {
 // All Ahava locations are US Eastern. The clock's displayed time comes from the
 // `TimeZone` we send here (minutes offset from GMT, negative west). Hard-coding
 // 0 pinned every clock to UTC — ~4–5 hours ahead — and the device re-synced to
-// it every poll, so a manual time never held. (Recorded punch times are
-// unaffected: the server timestamps each punch on arrival, not from the clock.)
+// it every poll, so a manual time never held. Getting this right also matters
+// for recorded punch times now: ingest parses the device's reported local time
+// (parseDevicePunchTime) in this zone, so the clock's displayed time must match
+// the location's wall clock.
 const CLOCK_DISPLAY_TZ = "America/New_York";
 
 /**
@@ -225,6 +227,32 @@ export function tzOffsetMinutes(tz: string, at: Date = new Date()): number {
   const asUTC = Date.UTC(+m.year, +m.month - 1, +m.day, +m.hour, +m.minute, +m.second);
   // `|| 0` normalizes a -0 (GMT itself) to 0.
   return Math.round((asUTC - at.getTime()) / 60000) || 0;
+}
+
+/**
+ * Convert a device-reported local time string ("YYYY-MM-DD HH:MM[:SS]", the
+ * ATTLOG format) into the correct UTC instant, interpreting the wall-clock
+ * parts in the clock's location timezone `tz`. The clock reports LOCAL time
+ * (what its screen shows — Eastern for every Ahava site), so a naive parse
+ * would be hours off. The offset is applied twice so a DST boundary settles
+ * (mirrors the punch importer's wallToUtc). Returns null for an unparseable
+ * string so the caller can fall back to server time rather than drop the punch.
+ */
+export function parseDevicePunchTime(raw: string, tz: string): Date | null {
+  const m = String(raw)
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  const Y = +y, Mo = +mo, D = +d, H = +h, Mi = +mi, S = s ? +s : 0;
+  if (Mo < 1 || Mo > 12 || D < 1 || D > 31 || H > 23 || Mi > 59 || S > 59) return null;
+  // naiveUTC treats the wall-clock parts as if they were UTC; subtracting the
+  // zone's offset (negative west of GMT) shifts to the true UTC instant:
+  // utc = wall − offset.
+  const naiveUTC = Date.UTC(Y, Mo - 1, D, H, Mi, S);
+  let ts = naiveUTC - tzOffsetMinutes(tz, new Date(naiveUTC)) * 60000;
+  ts = naiveUTC - tzOffsetMinutes(tz, new Date(ts)) * 60000;
+  return new Date(ts);
 }
 
 /**
