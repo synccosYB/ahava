@@ -661,6 +661,33 @@ test("punch-change-marks: a non-admin/manager is forbidden", async (t) => {
   assert.equal(res.status, 403, "employees can't see who changed times");
 });
 
+test("punch-change-marks respects a manager's attendance scope", async (t) => {
+  const fx = await setupFixture("changemarksscope");
+  t.after(fx.cleanup);
+
+  const employee = await storage.getUser(fx.employeeId);
+  assert.ok(employee);
+  const [manager] = await db.insert(users).values({
+    email: `${EMAIL_PREFIX}changemarksscope-manager@example.invalid`,
+    firstName: "Punch",
+    lastName: "Manager",
+    role: "manager",
+    companyId: employee.companyId,
+  }).returning();
+  t.after(() => removeFixtureUser(manager.id));
+
+  const managerToken = generateToken({
+    id: manager.id,
+    email: manager.email,
+    role: manager.role,
+    companyId: manager.companyId,
+  });
+  const own = await getChangeMarks(fx, manager.id, managerToken);
+  assert.equal(own.status, 200, "the manager can view punch changes within their scope");
+  const outside = await getChangeMarks(fx, employee.id, managerToken);
+  assert.equal(outside.status, 403, "the manager cannot view punch changes for an unassigned employee");
+});
+
 test("edit can move a punch to a different work date (fix a UTC-rolled day)", async (t) => {
   const fx = await setupFixture("moveday");
   t.after(fx.cleanup);
