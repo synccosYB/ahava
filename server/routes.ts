@@ -3146,7 +3146,7 @@ export async function registerRoutes(
   // admin/manager sees changed clock-in/out times in blue with who/when/from.
   // Keyed by punch id; only the LATEST edit of each field is reported. Admins and
   // managers only (it exposes who changed a time).
-  app.get("/api/attendance/punch-change-marks", requireAuth, async (req: any, res) => {
+  app.get("/api/attendance/punch-change-marks", requireAuth, requirePermission("attendance.edit"), async (req: any, res) => {
     try {
       const actor = req.authUser as User;
       if (actor.role !== "admin" && actor.role !== "manager") {
@@ -3154,6 +3154,11 @@ export async function registerRoutes(
       }
       const employeeId = typeof req.query.employeeId === "string" && req.query.employeeId ? req.query.employeeId : undefined;
       if (!employeeId) return res.status(400).json({ message: "employeeId is required." });
+
+      const scope = await resolvePunchScope(req);
+      if (!scope || !scope.users.some((user) => user.id === employeeId)) {
+        return res.status(403).json({ message: "Not authorized to view this employee's punch changes" });
+      }
 
       // Newest-first punch_log audit rows (getAuditLogsFiltered orders by
       // createdAt desc), so the first edit we see for a field is the latest.
