@@ -5918,7 +5918,8 @@ export async function registerRoutes(
       return {
         id: p.id,
         clockIn: p.clockIn ? new Date(p.clockIn).toISOString() : null,
-        clockOut: p.clockOut ? new Date(p.clockOut).toISOString() : null,
+        // Missing-clock-out punches carry only a placeholder clock-out — blank it.
+        clockOut: p.status === MISSING_CLOCKOUT_STATUS ? null : (p.clockOut ? new Date(p.clockOut).toISOString() : null),
       };
     };
     return rows.map(r => {
@@ -8289,7 +8290,9 @@ export async function registerRoutes(
           department: deptOf(u),
           workDate: p.workDate,
           clockIn: p.clockIn ? new Date(p.clockIn).toISOString() : null,
-          clockOut: p.clockOut ? new Date(p.clockOut).toISOString() : null,
+          // A marked missing-clock-out punch carries only a placeholder clock-out;
+          // show it blank so the report doesn't display a time for a missing punch.
+          clockOut: p.status === MISSING_CLOCKOUT_STATUS ? null : (p.clockOut ? new Date(p.clockOut).toISOString() : null),
           issue: p.status === "in-progress" ? "Still clocked in" : "Missing clock-out",
           timezone: tzByEmployee.get(p.employeeId) || null,
         };

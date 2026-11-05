@@ -216,7 +216,10 @@ export async function buildEmployeeTimesheet(
           const t = new Date(p.clockIn);
           if (!firstIn || t < firstIn) firstIn = t;
         }
-        if (p.clockOut) {
+        // A marked missing-clock-out punch carries only a PLACEHOLDER clock-out
+        // (set to free the one-open-punch slot); it is not a real punch-out, so
+        // it must never show as the day's clock-out time — the day reads blank.
+        if (p.clockOut && p.status !== MISSING_CLOCKOUT_STATUS) {
           const t = new Date(p.clockOut);
           if (!lastOut || t > lastOut) lastOut = t;
         }
