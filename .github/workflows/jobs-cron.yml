@@ -1,0 +1,62 @@
+name: Prod background-jobs sweep
+
+# Drives the app's recurring background jobs (the 13-hour max-shift / missing-punch
+# safeguard "auto-clock-out", overtime warnings, etc.) from GitHub's scheduler, so
+# they run reliably even when the deployment doesn't keep a long-lived process
+# alive for the in-process timer (e.g. a Replit autoscale deployment that spins
+# down when idle). It simply POSTs the existing, secret-protected
+# /internal/jobs/run endpoint, which enqueues any due recurring jobs and drains
+# the queue.
+#
+# ── To enable (one-time, by a repo admin) ───────────────────────────────────
+#   1. Make sure the production app has a CRON_SECRET env var set (a long random
+#      string). The endpoint rejects requests whose x-cron-secret doesn't match.
+#   2. In GitHub → Settings → Secrets and variables → Actions:
+#        • add a REPOSITORY SECRET   PROD_CRON_SECRET  = that same CRON_SECRET
+#        • add a REPOSITORY VARIABLE PROD_BASE_URL     = the prod base URL
+#                                                        (e.g. https://synccos.space)
+# Until both are set, the job no-ops (it logs and exits 0), so it never fails loudly.
+# Scheduled workflows run from the default branch (main) only.
+
+on:
+  schedule:
+    # Every 10 minutes. GitHub may delay or batch scheduled runs under load; the
+    # 13h cutoff tolerates a late sweep, so this is a safety net, not a hard clock.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prod-jobs-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the in-app job runner
+        env:
+          BASE_URL: ${{ vars.PROD_BASE_URL }}
+          CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "PROD_BASE_URL (repo variable) and/or PROD_CRON_SECRET (repo secret) are not set."
+            echo "Skipping — see this workflow's header comment to enable."
+            exit 0
+          fi
+          url="${BASE_URL%/}/internal/jobs/run"
+          echo "POST ${url}"
+          code=$(curl -sS -o /tmp/jobs_resp.json -w "%{http_code}" -X POST "${url}" \
+            -H "x-cron-secret: ${CRON_SECRET}" \
+            -H "content-type: application/json" \
+            --retry 3 --retry-delay 5 --max-time 120 || echo "000")
+          echo "HTTP ${code}"
+          cat /tmp/jobs_resp.json 2>/dev/null || true
+          echo
+          if [ "${code}" != "200" ]; then
+            echo "::error::job runner returned HTTP ${code} (expected 200)"
+            exit 1
+          fi
