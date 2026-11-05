@@ -19,6 +19,7 @@ import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
 import { TimesheetEditor } from "@/components/timesheet-editor";
 import { WorkDateBackfillCard } from "@/components/workdate-backfill-card";
 import { OverlongShiftReconcileCard } from "@/components/overlong-shift-reconcile-card";
+import { TodaysClockOutsCard } from "@/components/todays-clockouts-card";
 import { usePermissions } from "@/hooks/use-permissions";
 import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange } from "lucide-react";
 import { formatHoursMinutes } from "@/lib/utils";
@@ -194,6 +195,7 @@ export default function TimeSheetReviewPage() {
 
       {user?.role === "admin" && <WorkDateBackfillCard />}
       {user?.role === "admin" && <OverlongShiftReconcileCard />}
+      {user?.role === "admin" && <TodaysClockOutsCard />}
 
       <Card>
         <CardContent className="pt-6 space-y-4">

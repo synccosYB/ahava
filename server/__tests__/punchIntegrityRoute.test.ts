@@ -566,6 +566,63 @@ test("add a LATER clock-in when an EARLIER shift is still open: the stale shift 
   );
 });
 
+async function makeClockIn(fx: Fixture, punchId: string) {
+  const res = await fetch(`${fx.baseUrl}/api/attendance/punches/${punchId}/make-clockin`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fx.reviewerToken}`, "Content-Type": "application/json" },
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+test("make-clockin (split): a punch recorded as a clock-out becomes a new clock-in; the prior part is a missing punch", async (t) => {
+  const fx = await setupFixture("mkclockin");
+  t.after(fx.cleanup);
+
+  // A shift whose clock-out is really the next morning's arrival (a mis-toggle).
+  const priorId = await makePunch(fx.employeeId, "2026-11-04", "2026-11-04T14:00:00Z", "2026-11-05T13:41:00Z", 23.6);
+
+  const { status, body } = await makeClockIn(fx, priorId);
+  assert.equal(status, 200, `expected 200, got ${status}: ${JSON.stringify(body)}`);
+  assert.equal(body.mode, "split");
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 2, "prior shift + a new open shift");
+
+  const prior = rows.find((r) => r.id === priorId)!;
+  assert.equal(prior.status, "missing_clockout", "prior shift is now a missing punch");
+  assert.equal(Number(prior.hoursWorked), 0, "no hours on the prior missing punch");
+  const tap = new Date("2026-11-05T13:41:00Z").getTime();
+  assert.ok(new Date(prior.clockOut as any).getTime() < tap, "prior placeholder ends before the new clock-in");
+
+  const fresh = rows.find((r) => r.id !== priorId)!;
+  assert.equal(new Date(fresh.clockIn as any).getTime(), tap, "new shift opens at the former clock-out tap");
+  assert.equal(fresh.clockOut, null, "new shift is open");
+  assert.equal(fresh.status, "in-progress");
+});
+
+test("make-clockin (flip): a clock-out-only punch (missing clock-in) flips to an open clock-in", async (t) => {
+  const fx = await setupFixture("mkflip");
+  t.after(fx.cleanup);
+
+  // A clock-out-only punch (no clock-in recorded).
+  const [p] = await db.insert(punchLogs).values({
+    employeeId: fx.employeeId, workDate: "2026-11-05",
+    clockIn: null, clockOut: new Date("2026-11-05T13:41:00Z"),
+    roundedClockOut: new Date("2026-11-05T13:41:00Z"),
+    hoursWorked: null, status: "in-progress", source: "manager", approved: true,
+  }).returning();
+
+  const { status, body } = await makeClockIn(fx, p.id);
+  assert.equal(status, 200, `expected 200, got ${status}: ${JSON.stringify(body)}`);
+  assert.equal(body.mode, "flipped");
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "still one punch (flipped in place)");
+  assert.equal(new Date(rows[0].clockIn as any).getTime(), new Date("2026-11-05T13:41:00Z").getTime(), "clock-in set to the tap");
+  assert.equal(rows[0].clockOut, null, "clock-out cleared (now an open shift)");
+  assert.equal(rows[0].status, "in-progress");
+});
+
 test("edit can move a punch to a different work date (fix a UTC-rolled day)", async (t) => {
   const fx = await setupFixture("moveday");
   t.after(fx.cleanup);

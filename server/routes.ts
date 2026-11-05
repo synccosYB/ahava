@@ -10,8 +10,8 @@ import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType, TERMINATION_REASONS } from "@shared/schema";
 import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport, OverlapPunchPair, OverlapPunchSummary, EmployeeSchedule } from "@shared/schema";
-import { userDepartmentIds, userLocationIds } from "@shared/schema";
-import { eq, desc, and, isNull, isNotNull, inArray, gte, lte } from "drizzle-orm";
+import { userDepartmentIds, userLocationIds, users } from "@shared/schema";
+import { eq, desc, and, isNull, isNotNull, inArray, notInArray, gte, lte, sql } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { writeLedgerEntry, getLedgerContext, hoursDelta } from "./services/ledger";
 import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
@@ -5402,6 +5402,186 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error reconciling over-long shifts:", error);
       handleRouteError(res, error, "Failed to reconcile over-long shifts");
+    }
+  });
+
+  // Admin triage (live-rollout cleanup): every punch recorded as a CLOCK-OUT so
+  // far today (Eastern, from 6am). After a missing punch upstream, a morning
+  // arrival can get recorded as the clock-OUT of a stale/overnight shift instead
+  // of a new clock-in; this lists them so an admin can flip the wrong ones with
+  // the convert endpoint below. `spansFromPriorDay` marks the most likely ones
+  // (the shift's clock-in was a previous day). All Ahava locations are Eastern,
+  // so the day window + local display are computed in that zone.
+  app.get("/api/attendance/clockouts-today", requireAuth, async (req: any, res) => {
+    try {
+      const actor = req.authUser as User;
+      if (actor.role !== "admin") {
+        return res.status(403).json({ message: "Admin only." });
+      }
+      const rows = await db
+        .select({
+          punchId: punchLogs.id,
+          employeeId: punchLogs.employeeId,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          status: punchLogs.status,
+          source: punchLogs.source,
+          workDate: punchLogs.workDate,
+          clockIn: punchLogs.clockIn,
+          clockOut: punchLogs.clockOut,
+          clockInLocal: sql<string | null>`to_char(${punchLogs.clockIn} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York', 'Mon DD, HH12:MI AM')`,
+          clockOutLocal: sql<string>`to_char(${punchLogs.clockOut} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York', 'Mon DD, HH12:MI AM')`,
+          spansFromPriorDay: sql<boolean>`COALESCE((${punchLogs.clockIn} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date < (${punchLogs.clockOut} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date, false)`,
+        })
+        .from(punchLogs)
+        .innerJoin(users, eq(users.id, punchLogs.employeeId))
+        .where(
+          and(
+            isNotNull(punchLogs.clockOut),
+            // Exclude placeholder/confirmation "clock-outs" — not real taps.
+            notInArray(punchLogs.status, [MISSING_CLOCKOUT_STATUS, "confirmation"]),
+            sql`(${punchLogs.clockOut} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date = (now() AT TIME ZONE 'America/New_York')::date`,
+            sql`(${punchLogs.clockOut} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::time >= TIME '06:00'`,
+          ),
+        );
+      const punches = rows
+        .map((r) => ({
+          ...r,
+          employeeName: `${r.firstName ?? ""} ${r.lastName ?? ""}`.trim() || r.employeeId,
+        }))
+        .sort((a, b) =>
+          (a.spansFromPriorDay === b.spansFromPriorDay ? 0 : a.spansFromPriorDay ? -1 : 1) ||
+          String(a.clockOut).localeCompare(String(b.clockOut)),
+        );
+      return res.json({ punches, count: punches.length });
+    } catch (error) {
+      console.error("Error listing today's clock-outs:", error);
+      handleRouteError(res, error, "Failed to list today's clock-outs");
+    }
+  });
+
+  // Convert a punch recorded as a clock-OUT into a clock-IN (admin triage). The
+  // tap shown as this punch's clock-out is really a new clock-in: it opens a
+  // fresh shift, and the prior part (if any) is left as a MISSING PUNCH so its
+  // real clock-out can be entered. Mirrors the overnight/stale-shift split.
+  app.post("/api/attendance/punches/:id/make-clockin", requireAuth, async (req: any, res) => {
+    try {
+      const actor = req.authUser as User;
+      if (actor.role !== "admin") {
+        return res.status(403).json({ message: "Admin only." });
+      }
+      const punch = await storage.getPunchLog(String(req.params.id));
+      if (!punch) return res.status(404).json({ message: "Punch not found." });
+      if (!punch.clockOut) {
+        return res.status(400).json({ message: "This punch has no clock-out to convert." });
+      }
+      const tapTime = new Date(punch.clockOut as any); // the tap to become a clock-in
+      const tz = await resolveEmployeeTimezone(punch.employeeId);
+      const newWorkDate = localWorkDate(tapTime, tz);
+
+      // Block adding a punch inside a finalized payroll period.
+      const finalized = await findFinalizedPayrollExportsForEmployeeDate(punch.employeeId, newWorkDate);
+      if (finalized.length > 0) {
+        return res.status(409).json({
+          message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalized)}). Reopen the batch first.`,
+          code: "PAYROLL_FINALIZED",
+        });
+      }
+
+      const employeeUser = await storage.getUser(punch.employeeId);
+      const attendancePolicy = employeeUser
+        ? await getEffectivePolicy(employeeUser.companyId, employeeUser.id, "attendance", employeeUser)
+        : null;
+      const maxShiftHours =
+        (attendancePolicy?.rules?.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours);
+
+      const affectedDates = new Set<string>([newWorkDate, punch.workDate]);
+
+      if (!punch.clockIn) {
+        // Clock-out-only (missing clock-in): just flip it to an open clock-in.
+        const updated = await storage.updatePunchLog(punch.id, {
+          clockIn: tapTime,
+          roundedClockIn: tapTime,
+          clockOut: null,
+          roundedClockOut: null,
+          hoursWorked: null,
+          status: "in-progress",
+          workDate: newWorkDate,
+        });
+        await writeAuditLog({
+          actorUserId: actor.id, targetType: "punch_log", targetId: punch.id,
+          action: "punch_log.clockout_to_clockin",
+          oldValue: { clockIn: null, clockOut: punch.clockOut, status: punch.status },
+          newValue: { clockIn: updated?.clockIn, clockOut: null, status: updated?.status },
+          context: { direct: true, employeeId: punch.employeeId }, ...getAuditContext(req),
+        });
+        await recomputeLedger(punch.employeeId, [...affectedDates]);
+        return res.json({ converted: true, mode: "flipped", punch: punchLogToApiResponse(updated) });
+      }
+
+      // Has a clock-in: the tap can't both close the prior shift and open a new
+      // one. The employee may not already have another open shift.
+      const [openOther] = await db
+        .select({ id: punchLogs.id })
+        .from(punchLogs)
+        .where(and(eq(punchLogs.employeeId, punch.employeeId), isNotNull(punchLogs.clockIn), isNull(punchLogs.clockOut)))
+        .limit(1);
+      if (openOther) {
+        return res.status(409).json({
+          message: "This employee already has an open shift. Resolve that first, then convert this punch.",
+        });
+      }
+
+      // Cap the prior shift as a MISSING PUNCH (placeholder before the new tap).
+      const clockInTime = new Date(punch.clockIn as any);
+      const placeholder = new Date(
+        Math.min(clockInTime.getTime() + maxShiftHours * 60 * 60 * 1000, tapTime.getTime() - 60_000),
+      );
+      await storage.updatePunchLog(punch.id, {
+        clockOut: placeholder,
+        roundedClockOut: placeholder,
+        hoursWorked: 0,
+        status: MISSING_CLOCKOUT_STATUS,
+        breakStartedAt: null,
+      });
+      const ex = await storage.createAttendanceException({
+        employeeId: punch.employeeId,
+        exceptionDate: punch.workDate,
+        exceptionTime: placeholder,
+        type: "missing_clockout",
+        reason:
+          "A punch recorded as this shift's clock-out was reclassified as a new clock-in, so this shift's " +
+          "real clock-out is unknown. Recorded as a MISSING PUNCH (no hours) — enter the real clock-out.",
+        status: "pending",
+      });
+      if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: punch.id });
+
+      // Open a fresh shift at the tap time (keep the tap's original source).
+      const created = await storage.createPunchLog({
+        employeeId: punch.employeeId,
+        workDate: newWorkDate,
+        clockIn: tapTime,
+        roundedClockIn: tapTime,
+        clockOut: null,
+        roundedClockOut: null,
+        hoursWorked: null,
+        status: "in-progress",
+        source: punch.source ?? "manager",
+        approved: true,
+      });
+
+      await writeAuditLog({
+        actorUserId: actor.id, targetType: "punch_log", targetId: punch.id,
+        action: "punch_log.clockout_to_clockin",
+        oldValue: { clockIn: punch.clockIn, clockOut: punch.clockOut, status: punch.status },
+        newValue: { priorShift: { status: MISSING_CLOCKOUT_STATUS }, newClockInPunchId: created.id, clockIn: created.clockIn },
+        context: { direct: true, employeeId: punch.employeeId }, ...getAuditContext(req),
+      });
+      await recomputeLedger(punch.employeeId, [...affectedDates]);
+      return res.json({ converted: true, mode: "split", priorPunchId: punch.id, newPunch: punchLogToApiResponse(created) });
+    } catch (error) {
+      console.error("Error converting clock-out to clock-in:", error);
+      handleRouteError(res, error, "Failed to convert punch");
     }
   });
 
