@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -42,6 +43,46 @@ type Punch = {
 // "Manual" tag so a typed-in punch isn't mistaken for a real clock punch.
 function isManualEntry(source: string | null | undefined): boolean {
   return !!source && (source.startsWith("manager") || source === "import");
+}
+
+// A recorded edit to one clock time: what it was changed from, by whom, when.
+type ChangeMark = { from: string | null; to: string | null; by: string; at: string };
+type ChangeMarks = Record<string, { clockIn?: ChangeMark; clockOut?: ChangeMark }>;
+
+// Renders a clock time; if it was edited (admin/manager view), show it in BLUE
+// with a hover tooltip of what it was changed from, by who, and when.
+function ClockTimeCell({
+  iso, timezone, mark,
+}: { iso: string | null; timezone?: string | null; mark?: ChangeMark }) {
+  const display = formatTime12InTz(iso, timezone) || "—";
+  if (!mark) return <>{display}</>;
+  const fromDisplay = mark.from ? (formatTime12InTz(mark.from, timezone) || "—") : "(blank)";
+  const when = mark.at
+    ? new Date(mark.at).toLocaleString("en-US", {
+        timeZone: timezone || "America/New_York",
+        month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+      })
+    : "";
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            className="text-blue-600 dark:text-blue-400 font-medium underline decoration-dotted underline-offset-2 cursor-help"
+            data-testid="changed-clock-time"
+          >
+            {display}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="text-xs">
+          <div className="font-medium">This clock time was changed</div>
+          <div>Changed from <strong>{fromDisplay}</strong></div>
+          <div>By {mark.by}</div>
+          {when && <div>{when}</div>}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
 }
 
 type PunchesResponse = {
@@ -135,7 +176,22 @@ export function TimesheetEditor({
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/attendance/punches"] });
     queryClient.invalidateQueries({ queryKey: ["/api/attendance/timesheet"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/attendance/punch-change-marks", employeeId] });
   };
+
+  // Which clock times were edited (shown in blue with who/when/from). Admin/
+  // manager only — the endpoint is gated and this is enabled only when the
+  // viewer can edit attendance.
+  const { data: marksData } = useQuery<{ marks: ChangeMarks }>({
+    queryKey: ["/api/attendance/punch-change-marks", employeeId],
+    queryFn: async () => {
+      const res = await fetch(`/api/attendance/punch-change-marks?employeeId=${encodeURIComponent(employeeId)}`, { credentials: "include" });
+      if (!res.ok) return { marks: {} };
+      return res.json();
+    },
+    enabled: !!employeeId && canEdit,
+  });
+  const marks: ChangeMarks = marksData?.marks ?? {};
 
   const editMutation = useMutation({
     mutationFn: async (vars: { id: string; clockIn: string | null; clockOut: string | null; workDate: string; reason: string }) => {
@@ -382,14 +438,16 @@ export function TimesheetEditor({
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="text-sm tabular-nums">{formatTime12InTz(p.clockIn, p.timezone) || "—"}</TableCell>
+                  <TableCell className="text-sm tabular-nums">
+                    <ClockTimeCell iso={p.clockIn} timezone={p.timezone} mark={marks[p.id]?.clockIn} />
+                  </TableCell>
                   <TableCell className="text-sm tabular-nums">
                     {p.status === "missing_clockout" ? (
                       <span className="text-destructive font-medium">Missing</span>
                     ) : p.status === "confirmation" ? (
                       <span className="text-muted-foreground">Present ✓</span>
                     ) : (
-                      formatTime12InTz(p.clockOut, p.timezone) || "—"
+                      <ClockTimeCell iso={p.clockOut} timezone={p.timezone} mark={marks[p.id]?.clockOut} />
                     )}
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">{(p.status === "missing_clockout" || p.status === "confirmation") ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}</TableCell>
