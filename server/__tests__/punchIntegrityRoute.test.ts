@@ -688,6 +688,45 @@ test("punch-change-marks respects a manager's attendance scope", async (t) => {
   assert.equal(outside.status, 403, "the manager cannot view punch changes for an unassigned employee");
 });
 
+test("edit: removing the clock-out while another shift is open records a MISSING PUNCH (not a duplicate-open error)", async (t) => {
+  const fx = await setupFixture("editremoveout");
+  t.after(fx.cleanup);
+
+  // A live open shift (today).
+  const openIn = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const openId = await makePunch(fx.employeeId, openIn.toISOString().slice(0, 10), openIn.toISOString(), null, null);
+
+  // An earlier CLOSED shift; clearing its clock-out would otherwise be blocked
+  // as a second open shift.
+  const closedId = await makePunch(fx.employeeId, "2026-02-10", "2026-02-10T09:00:00Z", "2026-02-10T17:00:00Z", 8);
+
+  const { status, body } = await editPunch(fx, closedId, { clockOut: null, reason: "forgot to clock out" });
+  assert.equal(status, 200, `expected 200, got ${status}: ${JSON.stringify(body)}`);
+
+  const closed = await storage.getPunchLog(closedId);
+  assert.equal(closed?.status, "missing_clockout", "cleared-out punch becomes a missing punch");
+  assert.equal(Number(closed?.hoursWorked), 0, "no hours on the missing punch");
+  assert.ok(closed?.clockOut, "has a placeholder clock-out so the one-open slot stays free");
+  assert.ok(closed?.clockIn, "clock-in preserved");
+
+  // The live open shift is untouched.
+  const open = await storage.getPunchLog(openId);
+  assert.equal(open?.clockOut, null, "the live open shift is still open");
+});
+
+test("edit: removing the clock-out with no other open shift re-opens the punch (in-progress)", async (t) => {
+  const fx = await setupFixture("editreopen");
+  t.after(fx.cleanup);
+
+  const closedId = await makePunch(fx.employeeId, "2026-02-11", "2026-02-11T09:00:00Z", "2026-02-11T17:00:00Z", 8);
+  const { status } = await editPunch(fx, closedId, { clockOut: null, reason: "reopen" });
+  assert.equal(status, 200);
+
+  const p = await storage.getPunchLog(closedId);
+  assert.equal(p?.clockOut, null, "re-opened (no placeholder) when nothing collides");
+  assert.equal(p?.status, "in-progress");
+});
+
 test("edit can move a punch to a different work date (fix a UTC-rolled day)", async (t) => {
   const fx = await setupFixture("moveday");
   t.after(fx.cleanup);

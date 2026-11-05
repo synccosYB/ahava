@@ -4805,14 +4805,47 @@ export async function registerRoutes(
         const roundingRule = attRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
         const roundingInterval =
           attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+        const maxShiftHours = attRules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
+
+        // Removing the clock-out (leaving it blank) can't turn this into a second
+        // LIVE open shift. When the employee already has another open shift, or
+        // later activity this punch would overlap once it runs to "now", record
+        // it as a flagged MISSING PUNCH (placeholder clock-out) instead of
+        // rejecting it — the manager is marking a forgotten punch-out, not
+        // starting a second live shift. (Mirror of the add-punch back-fill.)
+        let editBackfillMissing = false;
+        let editPlaceholderOut: Date | null = null;
+        if (newClockIn && !newClockOut) {
+          const others = await db
+            .select({ id: punchLogs.id, clockIn: punchLogs.clockIn, clockOut: punchLogs.clockOut })
+            .from(punchLogs)
+            .where(and(eq(punchLogs.employeeId, existing.employeeId), isNotNull(punchLogs.clockIn)));
+          const inMs = newClockIn.getTime();
+          let hasOtherOpen = false;
+          let nextStart: number | null = null;
+          for (const p of others) {
+            if (p.id === punchId || !p.clockIn) continue;
+            if (!p.clockOut) hasOtherOpen = true;
+            const s = new Date(p.clockIn as any).getTime();
+            if (Number.isFinite(s) && s > inMs) nextStart = nextStart === null ? s : Math.min(nextStart, s);
+          }
+          if (hasOtherOpen || nextStart !== null) {
+            editBackfillMissing = true;
+            const caps = [inMs + maxShiftHours * 60 * 60 * 1000, Date.now()];
+            if (nextStart !== null) caps.push(nextStart - 60_000);
+            editPlaceholderOut = new Date(Math.max(Math.min(...caps), inMs + 60_000));
+          }
+        }
 
         // Shared punch-integrity validation: reject impossible/unparseable times,
         // zero/negative duration, future-dating, duplicate open shift, or an
-        // overlap with another of this employee's punches.
+        // overlap with another of this employee's punches. For the missing-punch
+        // case we validate the placeholder interval so the duplicate-open rule
+        // doesn't fire (it's recorded closed + flagged, not a second live shift).
         const integrity = await validateProposedPunch({
           employeeId: existing.employeeId,
           clockIn: newClockIn,
-          clockOut: newClockOut,
+          clockOut: editBackfillMissing ? editPlaceholderOut : newClockOut,
           punchId,
           candidateDates: [
             existing.workDate,
@@ -4860,6 +4893,14 @@ export async function registerRoutes(
           update.roundedClockOut = newClockOut;
           update.hoursWorked = null;
           update.status = "in-progress";
+        } else if (editBackfillMissing && editPlaceholderOut) {
+          // Clock-out removed while another open shift / later activity exists:
+          // record a flagged MISSING PUNCH (placeholder clock-out, no hours), not
+          // a second live shift, so the one-open-punch rule isn't violated.
+          update.clockOut = editPlaceholderOut;
+          update.roundedClockOut = editPlaceholderOut;
+          update.hoursWorked = 0;
+          update.status = MISSING_CLOCKOUT_STATUS;
         } else {
           // Re-opened punch: clear the clock-out side (matches a fresh clock-in).
           update.clockOut = null;
@@ -4893,6 +4934,22 @@ export async function registerRoutes(
           context: { reason: reason || null, direct: true, employeeId: existing.employeeId },
           ...getAuditContext(req),
         });
+
+        // Flag the removed-clock-out as a missing punch for manager review (same
+        // surfacing as an auto-detected / back-filled missing punch).
+        if (editBackfillMissing && updated) {
+          const ex = await storage.createAttendanceException({
+            employeeId: existing.employeeId,
+            exceptionDate: updated.workDate,
+            exceptionTime: (updated.clockIn as Date) ?? new Date(),
+            type: "missing_clockout",
+            reason:
+              "The clock-out was removed while the employee had another open shift or later activity, so it was " +
+              "recorded as a MISSING PUNCH (no hours). Enter the real clock-out to record the hours.",
+            status: "pending",
+          });
+          if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: punchId });
+        }
 
         // Keep the canonical attendance ledger warm for the affected day(s).
         await recomputeLedger(

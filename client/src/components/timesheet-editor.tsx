@@ -505,7 +505,7 @@ export function TimesheetEditor({
             <div className="space-y-1">
               <Label htmlFor="editor-edit-out">Clock Out</Label>
               <Input id="editor-edit-out" type="datetime-local" value={editClockOut} onChange={(e) => setEditClockOut(e.target.value)} data-testid="input-editor-edit-out" />
-              <p className="text-xs text-muted-foreground">Leave clock-out empty to mark the punch as still in progress.</p>
+              <p className="text-xs text-muted-foreground">Leave clock-out empty to mark the punch as still in progress — or, if the employee already has another open shift, it's recorded as a missing punch.</p>
             </div>
             <div className="space-y-1">
               <Label htmlFor="editor-edit-reason">Reason (optional)</Label>
