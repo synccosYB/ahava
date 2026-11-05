@@ -1000,6 +1000,10 @@ export async function registerRoutes(
     // Fixed-salary employee whose clock is only an attendance confirmation: one
     // clock per day, hours not counted, never a missing punch. Defaults false.
     clockConfirmationOnly: z.boolean().optional(),
+    // Genuine overnight worker (clocks in one evening, out the next morning).
+    // Defaults false — for everyone else a cross-midnight shift is treated as a
+    // forgotten punch-out.
+    overnightShiftsAllowed: z.boolean().optional(),
     hireDate: z.string().optional(),
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
@@ -1116,6 +1120,7 @@ export async function registerRoutes(
       payeeMemo: parsed.data.taxClassification === "1099" ? parsed.data.payeeMemo || null : null,
       clockInRequired: parsed.data.clockInRequired ?? true,
       clockConfirmationOnly: parsed.data.clockConfirmationOnly ?? false,
+      overnightShiftsAllowed: parsed.data.overnightShiftsAllowed ?? false,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
       weeklySalary: parsed.data.weeklySalary || null,
@@ -3435,6 +3440,7 @@ export async function registerRoutes(
         "payeeMemo",
         "clockInRequired",
         "clockConfirmationOnly",
+        "overnightShiftsAllowed",
         "hireDate",
         "terminationDate",
       ] as const;
@@ -4957,28 +4963,80 @@ export async function registerRoutes(
         // latest activity stays a normal open/in-progress shift.)
         let backfillMissing = false;
         let placeholderOut: Date | null = null;
+        // An earlier OPEN shift (a forgotten punch-out from a prior day) that
+        // must be capped as a missing punch so this new, later clock-in is a
+        // separate shift and isn't rejected as overlapping it.
+        let staleEarlierOpen: { id: string; startMs: number } | null = null;
+        // The prior day a capped stale shift falls on, so its ledger is
+        // recomputed alongside the new punch's day.
+        let staleCappedWorkDate: string | null = null;
         if (newClockIn && !newClockOut) {
           const existing = await db
-            .select({ clockIn: punchLogs.clockIn, clockOut: punchLogs.clockOut })
+            .select({ id: punchLogs.id, clockIn: punchLogs.clockIn, clockOut: punchLogs.clockOut })
             .from(punchLogs)
             .where(and(eq(punchLogs.employeeId, employeeId), isNotNull(punchLogs.clockIn)));
           const inMs = newClockIn.getTime();
-          let hasOpen = false;
           let nextStart: number | null = null;
           for (const p of existing) {
             if (!p.clockIn) continue;
-            if (!p.clockOut) hasOpen = true;
             const s = new Date(p.clockIn as any).getTime();
-            if (Number.isFinite(s) && s > inMs) nextStart = nextStart === null ? s : Math.min(nextStart, s);
+            if (!Number.isFinite(s)) continue;
+            if (s > inMs) {
+              // Later activity (an open shift they're on now, or any later
+              // shift already recorded): the new clock-in is a back-fill.
+              nextStart = nextStart === null ? s : Math.min(nextStart, s);
+            } else if (!p.clockOut && s < inMs - 60_000) {
+              // An OPEN shift that started before this clock-in = a forgotten
+              // punch-out from an earlier shift. The new clock-in is a later,
+              // separate shift (often the next day), so cap the stale one as a
+              // missing punch rather than block the new punch as an overlap.
+              if (!staleEarlierOpen || s < staleEarlierOpen.startMs) {
+                staleEarlierOpen = { id: p.id, startMs: s };
+              }
+            }
           }
-          if (hasOpen || nextStart !== null) {
+          if (nextStart !== null) {
             backfillMissing = true;
             // Placeholder clock-out at the max-shift mark, but never in the
             // future and never into the next shift (so it can't overlap). Hours
             // stay 0 via the missing status; the time is just a slot-freeing marker.
-            const caps = [inMs + maxShiftHours * 60 * 60 * 1000, Date.now()];
-            if (nextStart !== null) caps.push(nextStart - 60_000);
+            const caps = [inMs + maxShiftHours * 60 * 60 * 1000, Date.now(), nextStart - 60_000];
             placeholderOut = new Date(Math.max(Math.min(...caps), inMs + 60_000));
+          }
+        }
+
+        // Cap a forgotten EARLIER open shift BEFORE validating, so the new later
+        // clock-in reads as a separate shift (not an overlap) and the one-open-
+        // punch slot is freed. The stale shift becomes a flagged missing punch
+        // (0 hours, placeholder clock-out at its 13h mark but before the new
+        // clock-in) until the manager enters its real clock-out.
+        if (staleEarlierOpen) {
+          const capMs = Math.min(
+            staleEarlierOpen.startMs + maxShiftHours * 60 * 60 * 1000,
+            newClockIn!.getTime() - 60_000,
+          );
+          const placeholder = new Date(capMs);
+          const capped = await storage.closeOpenPunch(staleEarlierOpen.id, {
+            clockOut: placeholder,
+            roundedClockOut: placeholder,
+            hoursWorked: 0,
+            status: MISSING_CLOCKOUT_STATUS,
+          });
+          if (capped) {
+            const staleWorkDate = localWorkDate(new Date(staleEarlierOpen.startMs), tzForWorkDate);
+            staleCappedWorkDate = staleWorkDate;
+            const ex = await storage.createAttendanceException({
+              employeeId,
+              exceptionDate: staleWorkDate,
+              exceptionTime: new Date(staleEarlierOpen.startMs),
+              type: "missing_clockout",
+              reason:
+                "A later clock-in was added for a separate shift, so this earlier open shift was " +
+                "closed as a MISSING PUNCH (no hours) — the employee forgot to clock out. Enter the " +
+                "real clock-out to record the hours.",
+              status: "pending",
+            });
+            if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: staleEarlierOpen.id });
           }
         }
 
@@ -5077,7 +5135,12 @@ export async function registerRoutes(
           ...getAuditContext(req),
         });
 
-        await recomputeLedger(employeeId, [workDate]);
+        await recomputeLedger(
+          employeeId,
+          staleCappedWorkDate && staleCappedWorkDate !== workDate
+            ? [workDate, staleCappedWorkDate]
+            : [workDate],
+        );
 
         await writeLedgerEntry({
           category: "attendance",

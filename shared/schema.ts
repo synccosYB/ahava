@@ -320,6 +320,13 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // punch (each clock is recorded as a self-contained 0-hour "confirmation"
   // punch). Defaults false — normal employees still clock in AND out.
   clockConfirmationOnly: boolean("clock_confirmation_only").default(false).notNull(),
+  // Whether this employee legitimately works OVERNIGHT (clocks in one evening and
+  // out the next morning). Defaults false: for most (on-site) staff a shift that
+  // crosses midnight is a forgotten punch-out, so the system caps the evening
+  // punch as a missing punch and starts the next day's punch as a fresh shift.
+  // Turn this ON only for genuine overnight workers (e.g. off-site odd-hours
+  // staff) so their real cross-midnight shifts aren't flagged or split.
+  overnightShiftsAllowed: boolean("overnight_shifts_allowed").default(false).notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
   // Payroll-only company (Task #475): which company this employee belongs to for
   // payroll identification. Deliberately INDEPENDENT of the assignment-derived

@@ -17,7 +17,8 @@ import {
   biometricDeviceEvents,
 } from "@shared/schema";
 import { ingestPunches } from "../ingest";
-import { parseAttlog } from "../protocol";
+import { parseAttlog, parseDevicePunchTime } from "../protocol";
+import { resolveEmployeeTimezone } from "../../services/punchOverlap";
 import * as adms from "../store";
 
 // This suite deletes/recreates test attendance records. Permit it only in
@@ -66,6 +67,8 @@ integrationTest("ADMS ingest: mapped user → clock-in, then clock-out, idempote
   const device = await adms.createDevice({ serialNumber: DEVICE_SERIAL, name: "Test Clock" } as any);
   await adms.mapDeviceUser(device.id, DEVICE_USER, TEST_USER_ID);
 
+  const tz = await resolveEmployeeTimezone(TEST_USER_ID);
+
   // 1) First punch → clock-in.
   const r1 = await ingestPunches(device, parseAttlog(`${DEVICE_USER}\t2026-10-20 08:00:00\t0\t1`));
   assert.equal(r1.processed, 1, "first punch should be processed");
@@ -73,6 +76,27 @@ integrationTest("ADMS ingest: mapped user → clock-in, then clock-out, idempote
   assert.ok(open && open.clockIn && !open.clockOut, "employee should now be clocked in");
   assert.equal(open!.source, "biometric", "punch should be tagged as a biometric-device punch");
   assert.equal(open!.kioskDeviceId, null, "fingerprint clock is not a kiosk_devices FK");
+
+  // The punch must be recorded at the DEVICE's reported time (converted from
+  // the clock's local wall-clock to UTC in the location tz), NOT server "now".
+  const expectedIn = parseDevicePunchTime("2026-10-20 08:00:00", tz)!;
+  assert.equal(
+    new Date(open!.clockIn!).getTime(),
+    expectedIn.getTime(),
+    "clock-in stored at the device's reported time, not arrival time",
+  );
+  assert.equal(
+    new Date(open!.roundedClockIn!).getTime(),
+    expectedIn.getTime(),
+    "rounded clock-in matches the device time too",
+  );
+  // And it's clearly not server-now (the device date is weeks in the past).
+  assert.ok(
+    Math.abs(Date.now() - expectedIn.getTime()) > 24 * 3600 * 1000,
+    "sanity: the device time is far from now, proving it isn't server-stamped",
+  );
+  // Filed under the device day in the location tz.
+  assert.equal(open!.workDate, "2026-10-20", "work date is the device's local day");
   const linked = (await adms.listEvents(device.id, 10)).find((e) => e.punchLogId === open!.id);
   assert.ok(linked, "fingerprint event should link device to its punch");
   assert.equal(linked!.deviceId, device.id);
@@ -82,6 +106,16 @@ integrationTest("ADMS ingest: mapped user → clock-in, then clock-out, idempote
   assert.equal(r2.processed, 1, "second punch should be processed");
   const closed = await storage.getLatestAttendanceForUser(TEST_USER_ID);
   assert.ok(closed && closed.clockOut, "employee should now be clocked out");
+
+  // Clock-out is recorded at the device's reported out-time, and hours are
+  // computed from the device in/out span (08:00→17:00 = 9h), not arrival time.
+  const expectedOut = parseDevicePunchTime("2026-10-20 17:00:00", tz)!;
+  assert.equal(
+    new Date(closed!.clockOut!).getTime(),
+    expectedOut.getTime(),
+    "clock-out stored at the device's reported time",
+  );
+  assert.equal(Number(closed!.hoursWorked), 9, "hours computed from the device in/out span");
 
   // 3) Idempotency: re-sending the FIRST punch (same device time) is a no-op.
   const r3 = await ingestPunches(device, parseAttlog(`${DEVICE_USER}\t2026-10-20 08:00:00\t0\t1`));
