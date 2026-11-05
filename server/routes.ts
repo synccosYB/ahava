@@ -3142,6 +3142,62 @@ export async function registerRoutes(
     }
   });
 
+  // Per-punch "this clock time was edited" marks for the Review Time Sheet, so an
+  // admin/manager sees changed clock-in/out times in blue with who/when/from.
+  // Keyed by punch id; only the LATEST edit of each field is reported. Admins and
+  // managers only (it exposes who changed a time).
+  app.get("/api/attendance/punch-change-marks", requireAuth, async (req: any, res) => {
+    try {
+      const actor = req.authUser as User;
+      if (actor.role !== "admin" && actor.role !== "manager") {
+        return res.status(403).json({ message: "Admins and managers only." });
+      }
+      const employeeId = typeof req.query.employeeId === "string" && req.query.employeeId ? req.query.employeeId : undefined;
+      if (!employeeId) return res.status(400).json({ message: "employeeId is required." });
+
+      // Newest-first punch_log audit rows (getAuditLogsFiltered orders by
+      // createdAt desc), so the first edit we see for a field is the latest.
+      const { logs } = await storage.getAuditLogsFiltered({
+        targetType: "punch_log",
+        limit: 2000,
+        offset: 0,
+      });
+
+      type Mark = { from: string | null; to: string | null; by: string; at: string | Date | null };
+      const marks: Record<string, { clockIn?: Mark; clockOut?: Mark }> = {};
+      const actorNameCache = new Map<string, string>();
+      const resolveActor = async (id: string | null | undefined): Promise<string> => {
+        if (!id) return "System";
+        if (actorNameCache.has(id)) return actorNameCache.get(id)!;
+        const u = await storage.getUser(id);
+        const name = u ? (`${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || "Unknown") : "Unknown";
+        actorNameCache.set(id, name);
+        return name;
+      };
+
+      for (const l of logs) {
+        if (l.action !== "punch_log.edited") continue;
+        if (((l.context as any)?.employeeId) !== employeeId) continue;
+        const punchId = l.targetId;
+        if (!punchId) continue;
+        const o = (l.oldValue as any) || {};
+        const n = (l.newValue as any) || {};
+        const entry = marks[punchId] ?? (marks[punchId] = {});
+        if (!entry.clockIn && String(o.clockIn ?? "") !== String(n.clockIn ?? "")) {
+          entry.clockIn = { from: o.clockIn ?? null, to: n.clockIn ?? null, by: await resolveActor(l.actorUserId), at: l.createdAt };
+        }
+        if (!entry.clockOut && String(o.clockOut ?? "") !== String(n.clockOut ?? "")) {
+          entry.clockOut = { from: o.clockOut ?? null, to: n.clockOut ?? null, by: await resolveActor(l.actorUserId), at: l.createdAt };
+        }
+      }
+
+      res.json({ marks });
+    } catch (error) {
+      console.error("Error loading punch change marks:", error);
+      handleRouteError(res, error, "Failed to load punch change marks");
+    }
+  });
+
   // Task #418: pull optional device coordinates off a clock-in payload. Returns
   // nulls for anything missing or non-finite — geofencing treats "no coords" as
   // a required-but-missing signal rather than throwing.

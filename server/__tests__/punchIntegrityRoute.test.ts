@@ -623,6 +623,44 @@ test("make-clockin (flip): a clock-out-only punch (missing clock-in) flips to an
   assert.equal(rows[0].status, "in-progress");
 });
 
+async function getChangeMarks(fx: Fixture, employeeId: string, token?: string) {
+  const res = await fetch(`${fx.baseUrl}/api/attendance/punch-change-marks?employeeId=${employeeId}`, {
+    headers: { Authorization: `Bearer ${token ?? fx.reviewerToken}` },
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+test("punch-change-marks: an edited clock time is reported with its previous value, who, and when", async (t) => {
+  const fx = await setupFixture("changemarks");
+  t.after(fx.cleanup);
+
+  const wd = "2026-01-20";
+  const punchId = await makePunch(fx.employeeId, wd, `${wd}T09:00:00Z`, `${wd}T17:00:00Z`, 8);
+
+  // Edit the clock-out from 17:00 to 17:30 (clock-in unchanged).
+  const { status: es } = await editPunch(fx, punchId, { clockIn: `${wd}T09:00:00Z`, clockOut: `${wd}T17:30:00Z`, reason: "fix out" });
+  assert.equal(es, 200);
+
+  const { status, body } = await getChangeMarks(fx, fx.employeeId);
+  assert.equal(status, 200, JSON.stringify(body));
+  const mark = body.marks?.[punchId];
+  assert.ok(mark, "a change mark exists for the edited punch");
+  assert.ok(mark.clockOut, "the clock-out change is recorded");
+  assert.equal(new Date(mark.clockOut.from).getTime(), new Date(`${wd}T17:00:00Z`).getTime(), "'from' is the original clock-out");
+  assert.ok(mark.clockOut.by && mark.clockOut.by !== "System", "records who changed it");
+  assert.ok(mark.clockOut.at, "records when it was changed");
+  assert.ok(!mark.clockIn, "clock-in was not changed → no clock-in mark");
+});
+
+test("punch-change-marks: a non-admin/manager is forbidden", async (t) => {
+  const fx = await setupFixture("changemarksauth");
+  t.after(fx.cleanup);
+  const res = await fetch(`${fx.baseUrl}/api/attendance/punch-change-marks?employeeId=${fx.employeeId}`, {
+    headers: { Authorization: `Bearer ${fx.employeeToken}` },
+  });
+  assert.equal(res.status, 403, "employees can't see who changed times");
+});
+
 test("edit can move a punch to a different work date (fix a UTC-rolled day)", async (t) => {
   const fx = await setupFixture("moveday");
   t.after(fx.cleanup);

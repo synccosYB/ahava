@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X, Lock, LockOpen } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X, Lock, LockOpen } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -176,8 +176,38 @@ export default function EmployeesPage() {
     (allProfiles || []).filter((p) => p.employeeNumber).map((p) => [p.userId, p.employeeNumber as string]),
   );
 
+  // When a profile is open, fetch the FULL filtered list (same filters + order
+  // as the table, just un-paginated up to the 1000 cap) so Prev/Next can step
+  // through every match, not only the current page.
+  const navParams = new URLSearchParams();
+  if (debouncedSearch) navParams.set("search", debouncedSearch);
+  if (appliedDeptIds.length) navParams.set("departmentIds", appliedDeptKey);
+  if (appliedLocIds.length) navParams.set("locationIds", appliedLocKey);
+  if (appliedCompanyIds.length) navParams.set("companyIds", appliedCompanyKey);
+  if (appliedTaxClasses.length) navParams.set("taxClasses", appliedTaxKey);
+  if (appliedCertStatuses.length) navParams.set("certStatuses", appliedCertKey);
+  navParams.set("limit", "1000");
+  navParams.set("offset", "0");
+  const { data: navPage } = useQuery<{ data: User[] }>({
+    queryKey: ["/api/users", "nav", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey],
+    queryFn: async () => {
+      const res = await cachedFetch(`/api/users?${navParams}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch employee navigation list");
+      return res.json();
+    },
+    enabled: !!selectedEmployee,
+  });
+  const navIds = (navPage?.data ?? []).map((u) => u.id);
+
   if (selectedEmployee) {
-    return <EmployeeProfile userId={selectedEmployee} onBack={() => setSelectedEmployee(null)} />;
+    return (
+      <EmployeeProfile
+        userId={selectedEmployee}
+        onBack={() => setSelectedEmployee(null)}
+        navIds={navIds}
+        onNavigate={setSelectedEmployee}
+      />
+    );
   }
 
   const toggleSelect = (user: User) => {
@@ -2029,7 +2059,23 @@ function AddEmployeeDialog({
   );
 }
 
-function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => void }) {
+function EmployeeProfile({
+  userId,
+  onBack,
+  navIds = [],
+  onNavigate,
+}: {
+  userId: string;
+  onBack: () => void;
+  navIds?: string[];
+  onNavigate?: (id: string) => void;
+}) {
+  // Position of this employee in the (filtered, same-order) list the admin was
+  // viewing, so they can step through one-by-one without going back to the list.
+  const navIndex = navIds.indexOf(userId);
+  const prevId = navIndex > 0 ? navIds[navIndex - 1] : null;
+  const nextId = navIndex >= 0 && navIndex < navIds.length - 1 ? navIds[navIndex + 1] : null;
+  const canNavigate = !!onNavigate && navIndex >= 0 && navIds.length > 1;
   const { toast } = useToast();
   const initialUrlParams = (() => {
     if (typeof window === "undefined") return new URLSearchParams();
@@ -2445,6 +2491,35 @@ function EmployeeProfile({ userId, onBack }: { userId: string; onBack: () => voi
         subtitle={user?.email || ""}
         actions={
           <div className="flex items-center gap-2">
+            {canNavigate && (
+              <div className="flex items-center gap-1 mr-1" data-testid="employee-nav">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => prevId && onNavigate!(prevId)}
+                  disabled={!prevId}
+                  data-testid="button-prev-employee"
+                  aria-label="Previous employee"
+                >
+                  <ChevronLeft className="h-4 w-4 mr-1" />
+                  Prev
+                </Button>
+                <span className="text-xs text-muted-foreground tabular-nums px-1" data-testid="text-employee-position">
+                  {navIndex + 1} / {navIds.length}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => nextId && onNavigate!(nextId)}
+                  disabled={!nextId}
+                  data-testid="button-next-employee"
+                  aria-label="Next employee"
+                >
+                  Next
+                  <ChevronRight className="h-4 w-4 ml-1" />
+                </Button>
+              </div>
+            )}
             <Button variant="ghost" size="icon" onClick={onBack} data-testid="button-back">
               <ArrowLeft className="h-5 w-5" />
             </Button>
