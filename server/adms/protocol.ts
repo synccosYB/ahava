@@ -230,6 +230,26 @@ export function tzOffsetMinutes(tz: string, at: Date = new Date()): number {
 }
 
 /**
+ * Map a device attendance-state code to a punch direction, or null when the
+ * code doesn't clearly indicate in/out. ZKTeco/Compumatic ATTLOG status codes:
+ * 0 = check-in, 1 = check-out, 4 = overtime-in, 5 = overtime-out (2/3 are
+ * break-out/in — not a shift in/out, so null). Only used when an employee is set
+ * to trust the clock's In/Out key; otherwise the code is ignored.
+ */
+export function deviceDirection(status: string | null | undefined): "in" | "out" | null {
+  switch ((status ?? "").trim()) {
+    case "0":
+    case "4":
+      return "in";
+    case "1":
+    case "5":
+      return "out";
+    default:
+      return null;
+  }
+}
+
+/**
  * Convert a device-reported local time string ("YYYY-MM-DD HH:MM[:SS]", the
  * ATTLOG format) into the correct UTC instant, interpreting the wall-clock
  * parts in the clock's location timezone `tz`. The clock reports LOCAL time

@@ -307,18 +307,24 @@ export function AttendancePunchTable({ title = "Punch Records" }: { title?: stri
                     </div>
                   </TableCell>
                   <TableCell data-testid={`text-punch-date-${p.id}`}>{formatDate(p.workDate) || "—"}</TableCell>
-                  <TableCell data-testid={`text-punch-in-${p.id}`}>{formatTime12InTz(p.clockIn, p.timezone) || "—"}</TableCell>
+                  <TableCell data-testid={`text-punch-in-${p.id}`}>
+                    {(p.status === "missing_clockin" || (!!p.clockOut && !p.clockIn)) ? (
+                      <span className="text-destructive font-medium">Missing</span>
+                    ) : (
+                      formatTime12InTz(p.clockIn, p.timezone) || "—"
+                    )}
+                  </TableCell>
                   <TableCell data-testid={`text-punch-out-${p.id}`}>
                     {p.status === "missing_clockout" ? (
                       <span className="text-destructive font-medium">Missing</span>
                     ) : p.status === "confirmation" ? (
-                      <span className="text-muted-foreground">Present ✓</span>
+                      <span className="text-emerald-600 dark:text-emerald-400 font-medium">Attendance captured</span>
                     ) : (
                       formatTime12InTz(p.clockOut, p.timezone) || "—"
                     )}
                   </TableCell>
                   <TableCell className="tabular-nums" data-testid={`text-punch-hours-${p.id}`}>
-                    {(p.status === "missing_clockout" || p.status === "confirmation") ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}
+                    {(p.status === "missing_clockout" || p.status === "missing_clockin" || p.status === "confirmation") ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}
                   </TableCell>
                   <TableCell data-testid={`text-punch-location-${p.id}`}>
                     {p.locationNames.length > 0 ? p.locationNames.join(", ") : "—"}

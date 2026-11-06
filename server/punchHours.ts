@@ -23,6 +23,23 @@
 export const MISSING_CLOCKOUT_STATUS = "missing_clockout";
 
 /**
+ * A punch that has a clock-OUT but no clock-IN (the employee forgot to clock in
+ * and only clocked out). Like a missing clock-out it is a MISSING PUNCH, not an
+ * in-progress shift: hours are unverified (null) until a manager enters the real
+ * clock-in. Mirrors MISSING_CLOCKOUT_STATUS for the clock-in side.
+ */
+export const MISSING_CLOCKIN_STATUS = "missing_clockin";
+
+/**
+ * A shift that closed with a span in the "approval band" (>= maxShiftHours and
+ * < maxShiftApprovalHours, e.g. 13–16h). It is NOT auto-marked a missing punch:
+ * it's closed provisionally with its real hours and held for an admin/manager to
+ * decide — keep the long shift, or treat it as a forgotten punch-out (missing
+ * punch + a fresh shift). Hours count provisionally until resolved.
+ */
+export const PENDING_APPROVAL_STATUS = "pending_approval";
+
+/**
  * True when an OPEN punch (no clock-out) has already run past the employee's
  * max-shift limit — i.e. the employee forgot to punch out. Such a punch is a
  * missing punch: its hours must NOT accrue (and must not be "capped" at the
@@ -51,9 +68,9 @@ export function computePunchHoursWorked(punch: {
   breakMinutes?: number | null;
   status?: string | null;
 }): number | null {
-  // A missing-clock-out punch yields no verified hours, regardless of any
-  // placeholder clock-out stored to free the one-open-punch slot.
-  if (punch.status === MISSING_CLOCKOUT_STATUS) return null;
+  // A missing-clock-out (placeholder out) or missing-clock-in punch yields no
+  // verified hours until the real time is entered.
+  if (punch.status === MISSING_CLOCKOUT_STATUS || punch.status === MISSING_CLOCKIN_STATUS) return null;
   const startRaw = punch.roundedClockIn ?? punch.clockIn;
   const endRaw = punch.roundedClockOut ?? punch.clockOut;
   if (!startRaw || !endRaw) return null;

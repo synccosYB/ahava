@@ -1326,6 +1326,7 @@ function AddEmployeeDialog({
     clockInRequired: true,
     clockConfirmationOnly: false,
     overnightShiftsAllowed: false,
+    useDevicePunchDirection: false,
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
     hourlyRate: "",
@@ -1404,6 +1405,7 @@ function AddEmployeeDialog({
         clockInRequired: formData.clockInRequired,
         clockConfirmationOnly: formData.clockConfirmationOnly,
         overnightShiftsAllowed: formData.overnightShiftsAllowed,
+        useDevicePunchDirection: formData.useDevicePunchDirection,
         hireDate: formData.hireDate,
         payType: effectivePayType,
       };
@@ -1478,7 +1480,7 @@ function AddEmployeeDialog({
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
-      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true, clockConfirmationOnly: false, overnightShiftsAllowed: false,
+      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true, clockConfirmationOnly: false, overnightShiftsAllowed: false, useDevicePunchDirection: false,
       payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "", payeeMemo: "",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
@@ -1728,6 +1730,19 @@ function AddEmployeeDialog({
                 checked={formData.overnightShiftsAllowed}
                 onCheckedChange={(v) => setFormData({ ...formData, overnightShiftsAllowed: v })}
                 data-testid="switch-add-overnight-allowed"
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label>Use clock's In/Out button</Label>
+                <p className="text-xs text-muted-foreground">
+                  Record this employee's fingerprint punches by the In/Out key they press on the clock, instead of auto-guessing from the shift state. Turn on only for people who reliably press In/Out — it prevents a single forgotten punch from flipping all their later punches.
+                </p>
+              </div>
+              <Switch
+                checked={formData.useDevicePunchDirection}
+                onCheckedChange={(v) => setFormData({ ...formData, useDevicePunchDirection: v })}
+                data-testid="switch-add-device-direction"
               />
             </div>
             <div className="space-y-2">
@@ -2346,6 +2361,7 @@ function EmployeeProfile({
     clockInRequired: true,
     clockConfirmationOnly: false,
     overnightShiftsAllowed: false,
+    useDevicePunchDirection: false,
   });
 
   useEffect(() => {
@@ -2359,6 +2375,7 @@ function EmployeeProfile({
         clockInRequired: profile.clockInRequired ?? true,
         clockConfirmationOnly: profile.clockConfirmationOnly ?? false,
         overnightShiftsAllowed: profile.overnightShiftsAllowed ?? false,
+        useDevicePunchDirection: profile.useDevicePunchDirection ?? false,
       });
     }
   }, [profile, editEmployment]);
@@ -2373,6 +2390,7 @@ function EmployeeProfile({
       clockInRequired: boolean;
       clockConfirmationOnly: boolean;
       overnightShiftsAllowed: boolean;
+      useDevicePunchDirection: boolean;
     }) => {
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
     },
@@ -2939,6 +2957,7 @@ function EmployeeProfile({
                           clockInRequired: profile.clockInRequired ?? true,
                           clockConfirmationOnly: profile.clockConfirmationOnly ?? false,
                           overnightShiftsAllowed: profile.overnightShiftsAllowed ?? false,
+                          useDevicePunchDirection: profile.useDevicePunchDirection ?? false,
                         });
                       }
                     }}
@@ -2958,6 +2977,7 @@ function EmployeeProfile({
                         clockInRequired: employmentForm.clockInRequired,
                         clockConfirmationOnly: employmentForm.clockConfirmationOnly,
                         overnightShiftsAllowed: employmentForm.overnightShiftsAllowed,
+                        useDevicePunchDirection: employmentForm.useDevicePunchDirection,
                       })
                     }
                     disabled={employmentMutation.isPending || !profile}
@@ -3077,6 +3097,22 @@ function EmployeeProfile({
                     {(editEmployment ? employmentForm.overnightShiftsAllowed : (profile?.overnightShiftsAllowed ?? false))
                       ? "Overnight OK (cross-midnight shifts allowed)"
                       : "Cross-midnight shift = forgotten punch-out (flagged)"}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Use clock's In/Out button</Label>
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={editEmployment ? employmentForm.useDevicePunchDirection : (profile?.useDevicePunchDirection ?? false)}
+                    onCheckedChange={(v) => setEmploymentForm((f) => ({ ...f, useDevicePunchDirection: v }))}
+                    disabled={!editEmployment || profileLoading || !profile}
+                    data-testid="switch-profile-device-direction"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {(editEmployment ? employmentForm.useDevicePunchDirection : (profile?.useDevicePunchDirection ?? false))
+                      ? "Direction from the clock's In/Out key"
+                      : "Direction auto-guessed from shift state"}
                   </span>
                 </div>
               </div>
