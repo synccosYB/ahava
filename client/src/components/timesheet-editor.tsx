@@ -449,7 +449,7 @@ export function TimesheetEditor({
                     {p.status === "missing_clockout" ? (
                       <span className="text-destructive font-medium">Missing</span>
                     ) : p.status === "confirmation" ? (
-                      <span className="text-muted-foreground">Present ✓</span>
+                      <span className="text-emerald-600 dark:text-emerald-400 font-medium">Attendance captured</span>
                     ) : (
                       <ClockTimeCell iso={p.clockOut} timezone={p.timezone} mark={marks[p.id]?.clockOut} />
                     )}
