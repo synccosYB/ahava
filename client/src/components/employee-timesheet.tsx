@@ -14,7 +14,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { EmptyState } from "@/components/empty-state";
 import { formatHoursMinutes, formatDate, formatTime12InTz } from "@/lib/utils";
 
-export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "none";
+export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "confirmation" | "none";
 
 export type TimesheetEntry = {
   date: string;
@@ -288,6 +288,7 @@ function timesheetStatusLabel(e: TimesheetEntry): string {
     case "overtime": return "Overtime";
     case "in_progress": return "In Progress";
     case "missing_punch": return "Missing Punch";
+    case "confirmation": return "Attendance captured";
     case "pto": return e.ptoType ? `PTO (${e.ptoType.replace(/_/g, " ")})` : "PTO";
     default: return "—";
   }
@@ -304,6 +305,8 @@ function TimesheetStatusBadge({ entry }: { entry: TimesheetEntry }) {
       return <Badge variant="outline">{label}</Badge>;
     case "missing_punch":
       return <Badge variant="destructive">{label}</Badge>;
+    case "confirmation":
+      return <Badge variant="outline" className="border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{label}</Badge>;
     case "pto":
       return <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-950/40 dark:text-blue-300">{label}</Badge>;
     default:

@@ -14,6 +14,7 @@ import { db } from "../db";
 import { storage } from "../storage";
 import { users, punchLogs, userEmploymentProfiles } from "@shared/schema";
 import { runAutoClockOut } from "../services/policyEnforcement";
+import { buildEmployeeTimesheet } from "../timesheetService";
 
 const stamp = `confonly-${Date.now().toString(36)}`;
 
@@ -56,6 +57,51 @@ test("confirmation-only: one clock records a closed 0-hour 'present' punch, idem
   const after = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, id));
   assert.equal(after.length, 1, "still one punch");
   assert.equal(after[0].status, "confirmation", "still a confirmation punch, not missing_clockout");
+});
+
+test("confirmation-only: the Review Time Sheet shows 'Attendance captured', never missing/in-progress", async (t) => {
+  const id = await makeEmployee("ts", true);
+  t.after(() => cleanup(id));
+  const emp = await storage.getUser(id);
+  assert.ok(emp, "employee loaded");
+
+  // Day 1: a proper confirmation marker (closed 0-hour punch).
+  await storage.clockIn(id, "biometric", undefined, { at: new Date("2026-11-02T14:00:00Z"), workDate: "2026-11-02" });
+  // Day 2: a LEGACY open clock-in (recorded before the toggle, or via a path
+  // that left it open) — must still read as "Attendance captured", not missing.
+  await db.insert(punchLogs).values({
+    employeeId: id, workDate: "2026-11-03",
+    clockIn: new Date("2026-11-03T14:00:00Z"), clockOut: null,
+    roundedClockIn: new Date("2026-11-03T14:00:00Z"),
+    hoursWorked: null, status: "in-progress", source: "web", approved: true,
+  });
+
+  const sheet = await buildEmployeeTimesheet(emp!, "2026-11-02", "2026-11-03", new Date("2026-11-06T18:00:00Z"));
+  const byDate = new Map(sheet.entries.map((e) => [e.date, e]));
+  for (const d of ["2026-11-02", "2026-11-03"]) {
+    const row = byDate.get(d);
+    assert.ok(row, `row for ${d}`);
+    assert.equal(row!.status, "confirmation", `${d} is Attendance captured`);
+    assert.equal(row!.totalHours, null, `${d} counts no hours`);
+  }
+});
+
+test("normal employee's timesheet still flags an open/forgotten punch", async (t) => {
+  const id = await makeEmployee("tsn", false);
+  t.after(() => cleanup(id));
+  const emp = await storage.getUser(id);
+  // An open clock-in from days ago (past the max shift) is a missing punch.
+  await db.insert(punchLogs).values({
+    employeeId: id, workDate: "2026-11-02",
+    clockIn: new Date("2026-11-02T14:00:00Z"), clockOut: null,
+    roundedClockIn: new Date("2026-11-02T14:00:00Z"),
+    hoursWorked: null, status: "in-progress", source: "web", approved: true,
+  });
+  const sheet = await buildEmployeeTimesheet(emp!, "2026-11-02", "2026-11-02", new Date("2026-11-06T18:00:00Z"));
+  const row = sheet.entries.find((e) => e.date === "2026-11-02");
+  assert.ok(row, "row present");
+  assert.notEqual(row!.status, "confirmation", "normal employee is never 'confirmation'");
+  assert.equal(row!.status, "missing_punch", "a days-old open punch is a missing punch");
 });
 
 test("normal employee is unaffected: clock-in opens an in-progress shift", async (t) => {

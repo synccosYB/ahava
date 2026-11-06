@@ -11,6 +11,10 @@ export type TimesheetStatus =
   | "missing_punch"
   | "overtime"
   | "pto"
+  // Confirmation-only (fixed-salary / daily-rate) employees: the clock is a
+  // daily "present" marker, hours are not counted, and a day with any punch is
+  // never a missing/open punch. Rendered as "Attendance captured".
+  | "confirmation"
   | "none";
 
 export interface TimesheetEntry {
@@ -148,6 +152,12 @@ export async function buildEmployeeTimesheet(
   // payroll or the dashboards (which read the same ledger).
   const payCalc = await resolvePayCalcPolicy(employee);
   const otThreshold = payCalc.otThresholdDaily ?? DEFAULT_ATTENDANCE_RULES.otThresholdDaily;
+  // Confirmation-only (attendance-only) employees: any day with a punch is
+  // "Attendance captured" — hours aren't counted and it is NEVER a missing or
+  // in-progress punch, whatever shape the underlying punches take (a proper
+  // 0-hour confirmation marker, or legacy open clock-ins recorded before the
+  // toggle was set).
+  const confirmationOnly = await storage.isClockConfirmationOnly(employee.id);
   const attendancePolicy = await getEffectivePolicy(employee.companyId, employee.id, "attendance", employee);
   const maxShiftHours = attendancePolicy?.rules?.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
   const ledgerDays = await getLedgerForEmployee(employee, startDate, endDate, now);
@@ -252,7 +262,8 @@ export async function buildEmployeeTimesheet(
         : 0;
 
       let status: TimesheetStatus;
-      if (inProgress) status = "in_progress";
+      if (confirmationOnly) status = "confirmation";
+      else if (inProgress) status = "in_progress";
       else if (missingPunch) status = "missing_punch";
       else if (ledgerDay?.status === "overtime") status = "overtime";
       else status = "complete";
@@ -261,10 +272,13 @@ export async function buildEmployeeTimesheet(
         date: dateStr,
         dayOfWeek,
         clockIn: firstIn ? firstIn.toISOString() : null,
-        clockOut: lastOut ? lastOut.toISOString() : null,
-        breakMinutes: breakMin,
-        totalHours: roundedHours,
-        overtimeHours: inProgress ? 0 : dayOvertime,
+        // A confirmation marker is a single daily tap; the placeholder clock-out
+        // isn't a real punch-out, so leave the clock-out column blank.
+        clockOut: confirmationOnly ? null : (lastOut ? lastOut.toISOString() : null),
+        breakMinutes: confirmationOnly ? 0 : breakMin,
+        // Hours are not counted for attendance-only employees — show "—".
+        totalHours: confirmationOnly ? null : roundedHours,
+        overtimeHours: confirmationOnly || inProgress ? 0 : dayOvertime,
         status,
         ptoType: null,
         sources: sourcesForDay,
