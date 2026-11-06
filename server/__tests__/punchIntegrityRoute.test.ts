@@ -390,13 +390,12 @@ test("add punch accepted: creates the row and computes hours", async (t) => {
   assert.equal(rows[0].workDate, workDate);
 });
 
-test("add punch accepted: clock-out only (missing clock-in) is in-progress with no hours", async (t) => {
+test("add punch accepted: clock-out only (missing clock-in) is a MISSING PUNCH, not in-progress", async (t) => {
   const fx = await setupFixture("addnocin");
   t.after(fx.cleanup);
 
   // A manager recording the time an employee left when the clock-in is unknown.
-  // The mirror of an open punch: the clock-out is kept, the clock-in stays a
-  // missing punch, and hours are left unresolved until it's filled in.
+  // The clock-out is kept, the clock-in is a missing punch, hours unresolved.
   const { status, body } = await createPunch(fx, { employeeId: fx.employeeId, clockOut: "2026-01-09T17:00:00Z" });
   assert.equal(status, 201, `expected 201, got ${status}: ${JSON.stringify(body)}`);
 
@@ -405,6 +404,11 @@ test("add punch accepted: clock-out only (missing clock-in) is in-progress with 
   assert.equal(rows[0].clockIn, null, "clock-in left missing");
   assert.ok(rows[0].clockOut, "clock-out persisted");
   assert.equal(rows[0].hoursWorked, null, "hours unresolved without a clock-in");
+  assert.equal(rows[0].status, "missing_clockin", "flagged as a missing punch (missing clock-in), not in-progress");
+
+  // It's surfaced as a missing-punch review exception.
+  const flags = await db.select().from(attendanceExceptions).where(eq(attendanceExceptions.employeeId, fx.employeeId));
+  assert.ok(flags.some((f) => f.type === "missing_clockin"), "a missing_clockin exception was raised");
 });
 
 test("add punch rejected: neither clock-in nor clock-out (400)", async (t) => {
@@ -725,6 +729,78 @@ test("edit: removing the clock-out with no other open shift re-opens the punch (
   const p = await storage.getPunchLog(closedId);
   assert.equal(p?.clockOut, null, "re-opened (no placeholder) when nothing collides");
   assert.equal(p?.status, "in-progress");
+});
+
+async function resolveLongShift(fx: Fixture, punchId: string, action: "approve" | "reject") {
+  const res = await fetch(`${fx.baseUrl}/api/attendance/punches/${punchId}/resolve-long-shift`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${fx.reviewerToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+test("B3: clocking out a 14h shift is held PENDING APPROVAL (not auto-counted)", async (t) => {
+  const fx = await setupFixture("b3pending");
+  t.after(fx.cleanup);
+
+  // Open shift that started 14h ago (in the 13–16h approval band).
+  const inIso = new Date(Date.now() - 14 * 60 * 60 * 1000).toISOString();
+  await makePunch(fx.employeeId, inIso.slice(0, 10), inIso, null, null);
+
+  const closed = await storage.clockOut(fx.employeeId);
+  assert.ok(closed, "clock-out recorded");
+  assert.equal(closed!.status, "pending_approval", "held for approval");
+  assert.ok(Number(closed!.hoursWorked) > 13 && Number(closed!.hoursWorked) < 16, "hours in the 13–16h band");
+
+  const flags = await db.select().from(attendanceExceptions).where(eq(attendanceExceptions.employeeId, fx.employeeId));
+  assert.ok(flags.some((f) => f.type === "long_shift_approval"), "a long_shift_approval review item was raised");
+});
+
+test("B3: approving a pending long shift keeps it as a real clock-out (hours count)", async (t) => {
+  const fx = await setupFixture("b3approve");
+  t.after(fx.cleanup);
+
+  const cin = new Date("2026-03-02T09:00:00Z");
+  const cout = new Date(cin.getTime() + 14 * 3600 * 1000);
+  const [p] = await db.insert(punchLogs).values({
+    employeeId: fx.employeeId, workDate: "2026-03-02", clockIn: cin, clockOut: cout,
+    roundedClockIn: cin, roundedClockOut: cout, hoursWorked: 14, status: "pending_approval",
+    source: "biometric", approved: true,
+  }).returning();
+
+  const { status, body } = await resolveLongShift(fx, p.id, "approve");
+  assert.equal(status, 200, JSON.stringify(body));
+  const after = await storage.getPunchLog(p.id);
+  assert.notEqual(after!.status, "pending_approval", "no longer pending");
+  assert.notEqual(after!.status, "missing_clockout", "kept, not zeroed");
+  assert.equal(Number(after!.hoursWorked), 14, "hours kept");
+});
+
+test("B3: rejecting a pending long shift makes it a missing punch and opens a fresh shift at the clock-out", async (t) => {
+  const fx = await setupFixture("b3reject");
+  t.after(fx.cleanup);
+
+  const cin = new Date("2026-03-03T09:00:00Z");
+  const cout = new Date(cin.getTime() + 14 * 3600 * 1000);
+  const [p] = await db.insert(punchLogs).values({
+    employeeId: fx.employeeId, workDate: "2026-03-03", clockIn: cin, clockOut: cout,
+    roundedClockIn: cin, roundedClockOut: cout, hoursWorked: 14, status: "pending_approval",
+    source: "biometric", approved: true,
+  }).returning();
+
+  const { status, body } = await resolveLongShift(fx, p.id, "reject");
+  assert.equal(status, 200, JSON.stringify(body));
+
+  const prior = await storage.getPunchLog(p.id);
+  assert.equal(prior!.status, "missing_clockout", "original shift is now a missing punch");
+  assert.equal(Number(prior!.hoursWorked), 0, "no hours");
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 2, "a fresh shift was opened");
+  const fresh = rows.find((r) => r.id !== p.id)!;
+  assert.equal(new Date(fresh.clockIn as any).getTime(), cout.getTime(), "new shift opens at the clock-out time");
+  assert.equal(fresh.clockOut, null, "new shift is open");
 });
 
 test("edit can move a punch to a different work date (fix a UTC-rolled day)", async (t) => {

@@ -327,6 +327,13 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // Turn this ON only for genuine overnight workers (e.g. off-site odd-hours
   // staff) so their real cross-midnight shifts aren't flagged or split.
   overnightShiftsAllowed: boolean("overnight_shifts_allowed").default(false).notNull(),
+  // Whether to trust the time clock's In/Out key for THIS employee. Default
+  // false: direction is derived from the open-shift state (the clock's status
+  // code is ignored). When true, a biometric punch is recorded as a clock-in or
+  // clock-out according to what the employee pressed on the device — so a single
+  // forgotten punch no longer flips the direction of every punch after it. Turn
+  // on only for people who reliably press In/Out at the clock.
+  useDevicePunchDirection: boolean("use_device_punch_direction").default(false).notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
   // Payroll-only company (Task #475): which company this employee belongs to for
   // payroll identification. Deliberately INDEPENDENT of the assignment-derived

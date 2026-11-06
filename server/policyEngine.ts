@@ -430,6 +430,13 @@ export const DEFAULT_ATTENDANCE_RULES = {
   // manager reconciles the "worked too long / forgot to punch out" case. Always
   // on. Thirteen hours per Ahava policy.
   maxShiftHours: 13,
+  // B3: the upper bound of the "approval band". A shift that closes between
+  // maxShiftHours (13) and this many hours is NOT auto-marked a missing punch —
+  // it is closed provisionally (status pending_approval) and sent up for an
+  // admin/manager to decide: keep the long shift, or treat it as a forgotten
+  // punch-out (missing punch + a fresh shift). A shift over this bound is still
+  // auto-marked a missing punch. Thirteen-to-sixteen hours per Ahava policy.
+  maxShiftApprovalHours: 16,
   requireBreakAfterHours: 6,
   breakDurationMinutes: 30,
   // Punch-integrity (task #450): when false (default), the shared validator
