@@ -217,7 +217,7 @@ import {
 } from "@shared/correctionCounts";
 import { getEffectivePolicy, buildPtoPolicyFromRules, DEFAULT_ATTENDANCE_RULES } from "./policyEngine";
 import { resolvePayCalcPolicy, splitDailyHours, DEFAULT_PAY_CALC_POLICY } from "./payrollEngine";
-import { computeBreakElapsedMinutes, MISSING_CLOCKOUT_STATUS } from "./punchHours";
+import { computeBreakElapsedMinutes, MISSING_CLOCKOUT_STATUS, PENDING_APPROVAL_STATUS } from "./punchHours";
 
 export type AttendanceRecord = PunchLog;
 export type InsertAttendanceRecord = InsertPunchLog;
@@ -1633,10 +1633,18 @@ export class DatabaseStorage implements IStorage {
     // record exists, e.g. in isolated tests).
     const employee = await this.getUser(userId);
     const policy = employee ? await resolvePayCalcPolicy(employee) : DEFAULT_PAY_CALC_POLICY;
+    // Attendance rules for the approval band (B3): a close whose span lands in
+    // [maxShiftHours, maxShiftApprovalHours) is held for approval, not counted
+    // outright.
+    const attRules =
+      (employee ? (await getEffectivePolicy(employee.companyId, userId, "attendance", employee))?.rules : null) ||
+      DEFAULT_ATTENDANCE_RULES;
+    const maxShiftHours = attRules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
+    const approvalHours = (attRules as any).maxShiftApprovalHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftApprovalHours;
     // Serialize against concurrent clock-outs for the same employee so the
     // "find open punch -> close it" pair is atomic; a second concurrent (or
     // double-tapped) clock-out finds no open punch and no-ops.
-    return await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId}))`);
 
       const [current] = await tx
@@ -1662,15 +1670,38 @@ export class DatabaseStorage implements IStorage {
       // before the clock-in would otherwise compute < 0. Clamp to 0; server-now
       // is always after clock-in, so this is a no-op for live clocks.
       const hoursWorked = Math.max(0, Math.round(((totalMs - breakMs) / (1000 * 60 * 60)) * 100) / 100);
-      const { status } = splitDailyHours(hoursWorked, policy);
+      // B3 approval band: a 13–16h close is provisional (pending_approval) — its
+      // hours count until an admin keeps it or converts it to a missing punch.
+      const inApprovalBand = hoursWorked >= maxShiftHours && hoursWorked < approvalHours;
+      const status = inApprovalBand ? PENDING_APPROVAL_STATUS : splitDailyHours(hoursWorked, policy).status;
 
       const [updated] = await tx
         .update(punchLogs)
         .set({ clockOut: now, roundedClockOut: now, hoursWorked, status })
         .where(eq(punchLogs.id, current.id))
         .returning();
-      return updated ? punchLogToLegacy(updated) : undefined;
+      return updated ? { punch: punchLogToLegacy(updated), inApprovalBand } : undefined;
     });
+
+    if (!result) return undefined;
+    if (result.inApprovalBand) {
+      // Raise a review item so an admin/manager decides: keep the long shift, or
+      // treat it as a forgotten punch-out (missing punch + a fresh shift).
+      try {
+        const ex = await this.createAttendanceException({
+          employeeId: userId,
+          exceptionDate: result.punch.workDate,
+          exceptionTime: (result.punch.clockOut as Date) ?? new Date(),
+          type: "long_shift_approval",
+          reason:
+            `This shift ran ${Number(result.punch.hoursWorked).toFixed(2)}h — over the ${maxShiftHours}h limit but ` +
+            `under ${approvalHours}h. Approve it as a real clock-out, or mark it a missing punch and start a new shift.`,
+          status: "pending",
+        });
+        if (ex?.id) await this.updateAttendanceException(ex.id, { punchLogId: result.punch.id });
+      } catch { /* flagging must never fail the clock-out */ }
+    }
+    return result.punch;
   }
 
   // Start a break on the employee's current open shift. Atomic per-employee

@@ -451,7 +451,12 @@ export function TimesheetEditor({
                     ) : p.status === "confirmation" ? (
                       <span className="text-emerald-600 dark:text-emerald-400 font-medium">Attendance captured</span>
                     ) : (
-                      <ClockTimeCell iso={p.clockOut} timezone={p.timezone} mark={marks[p.id]?.clockOut} />
+                      <span className="inline-flex items-center gap-1">
+                        <ClockTimeCell iso={p.clockOut} timezone={p.timezone} mark={marks[p.id]?.clockOut} />
+                        {p.status === "pending_approval" && (
+                          <span className="text-[10px] text-amber-600 dark:text-amber-400" title="Long shift (13–16h) awaiting approval">⏳ pending</span>
+                        )}
+                      </span>
                     )}
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">{(p.status === "missing_clockout" || p.status === "missing_clockin" || p.status === "confirmation") ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}</TableCell>

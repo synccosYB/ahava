@@ -476,15 +476,17 @@ export async function runAutoClockOut(): Promise<PolicyAlert[]> {
     const attendancePolicy = await getEffectivePolicy(user.companyId, punch.employeeId, "attendance", user);
     const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
     const maxShiftHours = rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
+    const approvalHours = (rules as any).maxShiftApprovalHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftApprovalHours;
 
     const actualClockInTime = new Date(punch.clockIn);
     const hoursOpen = (Date.now() - actualClockInTime.getTime()) / (1000 * 60 * 60);
 
-    // A shift may not exceed maxShiftHours (13) without a punch-out. We do NOT
-    // auto-clock-out (that would record hours the employee may not have worked)
-    // and we do NOT open a placeholder next shift. We STOP the clock and mark it
-    // a missing punch; the employee's next real punch starts a fresh shift.
-    if (hoursOpen >= maxShiftHours) {
+    // An OPEN shift (no clock-out) is auto-marked a missing punch once it passes
+    // the approval upper bound (16h). Between maxShiftHours (13h) and that bound
+    // the shift is left open so that, if the employee DOES clock out, the close
+    // goes to approval (B3) rather than being auto-zeroed first. We never record
+    // the hours ourselves — a missing punch carries 0 until a real time is set.
+    if (hoursOpen >= approvalHours) {
       alerts.push(await markShiftMissingClockout(punch, maxShiftHours, attendancePolicy?.policyName));
     }
   }
@@ -516,6 +518,7 @@ export async function capStaleOpenShiftAtMaxShift(
   const attendancePolicy = await getEffectivePolicy(user.companyId, userId, "attendance", user);
   const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
   const maxShiftHours = rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
+  const approvalHours = (rules as any).maxShiftApprovalHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftApprovalHours;
 
   // Measure the open span against the INCOMING punch's time (asOf), not server
   // "now". When punches carry the device's own timestamp (biometric clock), a
@@ -526,12 +529,13 @@ export async function capStaleOpenShiftAtMaxShift(
   const actualClockInTime = new Date(punch.clockIn);
   const hoursOpen = (asOf.getTime() - actualClockInTime.getTime()) / (1000 * 60 * 60);
 
-  // Reason 1 — over the max-shift limit: the employee forgot to clock out and is
-  // punching again later. Don't let this punch close the stale shift (that would
-  // record a bogus long shift) and don't auto-record hours. Stop the clock, mark
-  // the stale shift a MISSING PUNCH (no hours), alert the manager, and return true
-  // so the caller treats the incoming punch as a fresh clock-in.
-  if (hoursOpen >= maxShiftHours) {
+  // Reason 1 — past the APPROVAL upper bound (16h): too long to be a real shift,
+  // a forgotten punch-out. Don't let this punch close the stale shift (that would
+  // record a bogus long shift). Mark it a MISSING PUNCH and return true so the
+  // caller treats the incoming punch as a fresh clock-in. A span in the 13–16h
+  // approval band is left to close normally — the close then goes to approval
+  // (handled in storage.clockOut), not auto-zeroed here.
+  if (hoursOpen >= approvalHours) {
     const alert = await markShiftMissingClockout(punch, maxShiftHours, attendancePolicy?.policyName);
     await createPolicyAlert(alert);
     return true;

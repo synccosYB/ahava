@@ -35,7 +35,7 @@ import {
 import { runAlertDetection } from "./services/alerts";
 import { auditUnrecoverableTimezones } from "./services/timezoneHeal";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
-import { MISSING_CLOCKOUT_STATUS, MISSING_CLOCKIN_STATUS } from "./punchHours";
+import { MISSING_CLOCKOUT_STATUS, MISSING_CLOCKIN_STATUS, PENDING_APPROVAL_STATUS } from "./punchHours";
 import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./services/onboarding";
 import { materializeOffboardingChecklist, evaluateDeactivationGate } from "./services/offboarding";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
@@ -5720,6 +5720,141 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error converting clock-out to clock-in:", error);
       handleRouteError(res, error, "Failed to convert punch");
+    }
+  });
+
+  // B3: long shifts (closed in the 13–16h approval band) awaiting a decision.
+  app.get("/api/attendance/long-shift-approvals", requireAuth, async (req: any, res) => {
+    try {
+      const actor = req.authUser as User;
+      if (actor.role !== "admin" && actor.role !== "manager") {
+        return res.status(403).json({ message: "Admins and managers only." });
+      }
+      const rows = await db
+        .select({
+          punchId: punchLogs.id,
+          employeeId: punchLogs.employeeId,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          workDate: punchLogs.workDate,
+          hoursWorked: punchLogs.hoursWorked,
+          clockInLocal: sql<string>`to_char(${punchLogs.clockIn} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York', 'Mon DD, HH12:MI AM')`,
+          clockOutLocal: sql<string>`to_char(${punchLogs.clockOut} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York', 'Mon DD, HH12:MI AM')`,
+        })
+        .from(punchLogs)
+        .innerJoin(users, eq(users.id, punchLogs.employeeId))
+        .where(eq(punchLogs.status, PENDING_APPROVAL_STATUS));
+      const punches = rows.map((r) => ({
+        ...r,
+        employeeName: `${r.firstName ?? ""} ${r.lastName ?? ""}`.trim() || r.employeeId,
+      }));
+      return res.json({ punches, count: punches.length });
+    } catch (error) {
+      console.error("Error listing long-shift approvals:", error);
+      handleRouteError(res, error, "Failed to list long-shift approvals");
+    }
+  });
+
+  // Resolve a pending-approval long shift: "approve" keeps it as a real
+  // clock-out (its hours count); "reject" treats it as a forgotten punch-out —
+  // the shift becomes a MISSING PUNCH and a fresh shift opens at the clock-out.
+  app.post("/api/attendance/punches/:id/resolve-long-shift", requireAuth, async (req: any, res) => {
+    try {
+      const actor = req.authUser as User;
+      if (actor.role !== "admin" && actor.role !== "manager") {
+        return res.status(403).json({ message: "Admins and managers only." });
+      }
+      const action = req.body?.action;
+      if (action !== "approve" && action !== "reject") {
+        return res.status(400).json({ message: "action must be 'approve' or 'reject'." });
+      }
+      const punch = await storage.getPunchLog(String(req.params.id));
+      if (!punch) return res.status(404).json({ message: "Punch not found." });
+      if (punch.status !== PENDING_APPROVAL_STATUS) {
+        return res.status(400).json({ message: "This punch is not awaiting approval." });
+      }
+      const employeeUser = await storage.getUser(punch.employeeId);
+      const affected = new Set<string>([punch.workDate]);
+
+      // Resolve the review item for this punch either way.
+      const resolveException = async () => {
+        const exs = await db
+          .select({ id: attendanceExceptions.id })
+          .from(attendanceExceptions)
+          .where(and(eq(attendanceExceptions.punchLogId, punch.id), eq(attendanceExceptions.type, "long_shift_approval")));
+        for (const e of exs) await storage.updateAttendanceException(e.id, { status: "resolved" });
+      };
+
+      if (action === "approve") {
+        // Keep the long shift: recompute its complete/overtime status, keep hours.
+        const payCalc = employeeUser ? await resolvePayCalcPolicy(employeeUser) : undefined;
+        const { status } = payCalc
+          ? splitDailyHours(Number(punch.hoursWorked) || 0, payCalc)
+          : { status: "complete" as const };
+        const updated = await storage.updatePunchLog(punch.id, { status });
+        await resolveException();
+        await writeAuditLog({
+          actorUserId: actor.id, targetType: "punch_log", targetId: punch.id,
+          action: "punch_log.long_shift_approved",
+          oldValue: { status: PENDING_APPROVAL_STATUS, hoursWorked: punch.hoursWorked },
+          newValue: { status, hoursWorked: updated?.hoursWorked },
+          context: { direct: true, employeeId: punch.employeeId }, ...getAuditContext(req),
+        });
+        await recomputeLedger(punch.employeeId, [...affected]);
+        return res.json({ resolved: true, action, punch: punchLogToApiResponse(updated) });
+      }
+
+      // reject: forgotten punch-out → missing punch + a fresh shift at the tap.
+      const tapTime = new Date(punch.clockOut as any);
+      const [openOther] = await db
+        .select({ id: punchLogs.id })
+        .from(punchLogs)
+        .where(and(eq(punchLogs.employeeId, punch.employeeId), isNotNull(punchLogs.clockIn), isNull(punchLogs.clockOut)))
+        .limit(1);
+      if (openOther) {
+        return res.status(409).json({ message: "This employee already has an open shift. Resolve it first." });
+      }
+      const attRules =
+        (employeeUser ? (await getEffectivePolicy(employeeUser.companyId, employeeUser.id, "attendance", employeeUser))?.rules : null) ||
+        DEFAULT_ATTENDANCE_RULES;
+      const maxShiftHours = attRules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
+      const clockInMs = new Date(punch.clockIn as any).getTime();
+      const placeholder = new Date(Math.min(clockInMs + maxShiftHours * 60 * 60 * 1000, tapTime.getTime() - 60_000));
+      await storage.updatePunchLog(punch.id, {
+        clockOut: placeholder, roundedClockOut: placeholder, hoursWorked: 0, status: MISSING_CLOCKOUT_STATUS,
+      });
+      // Repurpose the approval exception into a missing-clockout review item.
+      const exs = await db
+        .select({ id: attendanceExceptions.id })
+        .from(attendanceExceptions)
+        .where(and(eq(attendanceExceptions.punchLogId, punch.id), eq(attendanceExceptions.type, "long_shift_approval")));
+      if (exs[0]) {
+        await storage.updateAttendanceException(exs[0].id, {
+          type: "missing_clockout",
+          reason: "Long shift was not approved — treated as a forgotten punch-out (missing punch). Enter the real clock-out.",
+          status: "pending",
+        });
+      }
+      const tz = await resolveEmployeeTimezone(punch.employeeId);
+      const newWorkDate = localWorkDate(tapTime, tz);
+      affected.add(newWorkDate);
+      const created = await storage.createPunchLog({
+        employeeId: punch.employeeId, workDate: newWorkDate,
+        clockIn: tapTime, roundedClockIn: tapTime, clockOut: null, roundedClockOut: null,
+        hoursWorked: null, status: "in-progress", source: punch.source ?? "manager", approved: true,
+      });
+      await writeAuditLog({
+        actorUserId: actor.id, targetType: "punch_log", targetId: punch.id,
+        action: "punch_log.long_shift_rejected",
+        oldValue: { status: PENDING_APPROVAL_STATUS, clockOut: punch.clockOut, hoursWorked: punch.hoursWorked },
+        newValue: { status: MISSING_CLOCKOUT_STATUS, newClockInPunchId: created.id, clockIn: created.clockIn },
+        context: { direct: true, employeeId: punch.employeeId }, ...getAuditContext(req),
+      });
+      await recomputeLedger(punch.employeeId, [...affected]);
+      return res.json({ resolved: true, action, priorPunchId: punch.id, newPunch: punchLogToApiResponse(created) });
+    } catch (error) {
+      console.error("Error resolving long shift:", error);
+      handleRouteError(res, error, "Failed to resolve long shift");
     }
   });
 
