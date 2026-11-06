@@ -562,6 +562,29 @@ export async function capStaleOpenShiftAtMaxShift(
   return false;
 }
 
+/**
+ * Force the employee's CURRENT open shift to be marked a MISSING PUNCH, with a
+ * placeholder clock-out just before `capBefore` (and never past the max-shift
+ * mark). Unlike capStaleOpenShiftAtMaxShift this does not check staleness — it's
+ * for when we KNOW the open shift is a forgotten punch-out (e.g. the device says
+ * the employee is clocking IN while a shift is still open). No-op (returns false)
+ * when there is no open shift.
+ */
+export async function markOpenShiftMissing(userId: string, capBefore: Date): Promise<boolean> {
+  const punch = await storage.getLatestAttendanceForUser(userId);
+  if (!punch || !punch.clockIn || punch.clockOut) return false;
+  const user = await storage.getUser(userId);
+  const attendancePolicy = user
+    ? await getEffectivePolicy(user.companyId, userId, "attendance", user)
+    : null;
+  const maxShiftHours = attendancePolicy?.rules?.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
+  const clockInMs = new Date(punch.clockIn).getTime();
+  const capAt = new Date(Math.min(clockInMs + maxShiftHours * 60 * 60 * 1000, capBefore.getTime() - 60_000));
+  const alert = await markShiftMissingClockout(punch, maxShiftHours, attendancePolicy?.policyName, capAt);
+  await createPolicyAlert(alert);
+  return true;
+}
+
 export async function createPolicyAlert(alert: PolicyAlert): Promise<void> {
   try {
     const existing = await storage.getAllSystemAlerts({ type: alert.type, status: "open" });

@@ -1004,6 +1004,9 @@ export async function registerRoutes(
     // Defaults false — for everyone else a cross-midnight shift is treated as a
     // forgotten punch-out.
     overnightShiftsAllowed: z.boolean().optional(),
+    // Trust the clock's In/Out key for this employee (record direction from the
+    // device instead of deriving it from state). Defaults false.
+    useDevicePunchDirection: z.boolean().optional(),
     hireDate: z.string().optional(),
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
@@ -1121,6 +1124,7 @@ export async function registerRoutes(
       clockInRequired: parsed.data.clockInRequired ?? true,
       clockConfirmationOnly: parsed.data.clockConfirmationOnly ?? false,
       overnightShiftsAllowed: parsed.data.overnightShiftsAllowed ?? false,
+      useDevicePunchDirection: parsed.data.useDevicePunchDirection ?? false,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
       weeklySalary: parsed.data.weeklySalary || null,
@@ -3502,6 +3506,7 @@ export async function registerRoutes(
         "clockInRequired",
         "clockConfirmationOnly",
         "overnightShiftsAllowed",
+        "useDevicePunchDirection",
         "hireDate",
         "terminationDate",
       ] as const;

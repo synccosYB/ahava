@@ -1562,6 +1562,17 @@ export class DatabaseStorage implements IStorage {
     return !!row?.v;
   }
 
+  // Whether to record this employee's biometric punches by the device's In/Out
+  // key (true) rather than deriving direction from open-shift state (false).
+  async usesDevicePunchDirection(userId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ v: userEmploymentProfiles.useDevicePunchDirection })
+      .from(userEmploymentProfiles)
+      .where(eq(userEmploymentProfiles.userId, userId))
+      .limit(1);
+    return !!row?.v;
+  }
+
   // Record (idempotently, per day) a confirmation "present" punch: a closed,
   // 0-hour punch that marks the day worked without tracking hours and without
   // ever being an open/missing punch. Serialized per employee so a double-tap
