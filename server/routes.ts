@@ -23,7 +23,8 @@ import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchVali
 import { importEmployeesFromBuffer } from "./services/employeeImport";
 import { importPunchesFromBuffer } from "./services/punchImport";
 import { reconcileOverlongShifts } from "./services/overlongShiftReconcile";
-import { autoPushEmployeeSafe } from "./adms/routes";
+import { autoPushEmployeeSafe, autoPushEmployeeToLocations } from "./adms/routes";
+import { storeFingerprintTemplate, listFingerprintsForUser, deleteStationFinger, ENROLL_STATION_SOURCE } from "./adms/store";
 import {
   computeAttendanceReconciliation,
   applyAttendanceReconciliation,
@@ -13843,6 +13844,137 @@ export async function registerRoutes(
         context: getAuditContext(req),
       });
       res.json({ ok: true, template: { id: template.id, sampleCount: template.sampleCount } });
+    },
+  );
+
+  // ---- Fingerprint enrollment station (ZK9500 desk reader) ----
+  // The desk reader captures a template through its local driver on the admin's
+  // PC (the browser can't read USB directly); the page posts the vendor template
+  // blob here. We store it encrypted, attributed to the employee, then auto-push
+  // it to the wall clocks at the employee's location(s) — the F4 plumbing — so
+  // the finger works at the Compumatic without re-enrolling there.
+  //
+  // CAPTURE/FORMAT are device-dependent and finalized once the reader is on hand:
+  // `template` is whatever the local reader service returns (opaque to us), and
+  // `format` is the vendor's template-format tag; we persist both verbatim.
+
+  // List an employee's enrolled fingers (station- and clock-sourced).
+  app.get(
+    "/api/biometrics/users/:id/fingerprints",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const targetUserId = String(req.params.id);
+      const targetUser = await storage.getUser(targetUserId);
+      if (!targetUser) return res.status(404).json({ error: "Employee not found" });
+      const fingers = await listFingerprintsForUser(targetUserId);
+      res.json({
+        fingers: fingers.map((f) => ({
+          fingerIndex: f.fingerIndex,
+          format: f.format,
+          valid: f.valid,
+          enrolledAt: f.enrolledAt,
+          source: f.source === ENROLL_STATION_SOURCE ? "station" : "clock",
+        })),
+      });
+    },
+  );
+
+  app.post(
+    "/api/biometrics/users/:id/enroll-fingerprint",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const targetUserId = String(req.params.id);
+      const settings = await storage.getBiometricSettings();
+      if (!isFeatureEnabled(settings)) {
+        return res.status(403).json({ error: "Biometric feature is not enabled" });
+      }
+      const targetUser = await storage.getUser(targetUserId);
+      if (!targetUser) {
+        return res.status(404).json({ error: "Employee not found" });
+      }
+      // Same BIPA gate as the face admin-enroll: no consent on file, no enroll.
+      const consent = await storage.getActiveBiometricConsent(targetUserId);
+      if (!consent) {
+        return res
+          .status(412)
+          .json({ error: "Employee must have an active consent on file before enrollment" });
+      }
+      const fingerIndex = Number(req.body?.fingerIndex);
+      const template = req.body?.template;
+      const format = typeof req.body?.format === "string" ? req.body.format.slice(0, 16) : "FP";
+      const size = req.body?.size != null ? Number(req.body.size) : null;
+      if (!Number.isInteger(fingerIndex) || fingerIndex < 0 || fingerIndex > 9) {
+        return res.status(400).json({ error: "fingerIndex must be an integer 0–9" });
+      }
+      if (typeof template !== "string" || template.length < 8) {
+        return res.status(400).json({ error: "A captured fingerprint template is required" });
+      }
+      if (size != null && (!Number.isFinite(size) || size < 0)) {
+        return res.status(400).json({ error: "size must be a non-negative number" });
+      }
+      // The enrollment PIN the clocks will know this employee by: their Employee
+      // Number when set (so punches auto-attribute), else the user id.
+      const prof = await storage.getEmploymentProfile(targetUserId).catch(() => undefined);
+      const devicePin = (prof?.employeeNumber && prof.employeeNumber.trim()) || targetUserId;
+
+      await storeFingerprintTemplate({
+        sourceDeviceId: ENROLL_STATION_SOURCE,
+        devicePin,
+        fingerIndex,
+        template,
+        size,
+        valid: true,
+        format,
+        userId: targetUserId,
+        companyId: targetUser.companyId ?? null,
+      });
+
+      // Push to the employee's wall clock(s). A push problem must never fail the
+      // enrollment (the template is already stored), so swallow errors and still
+      // report how many clocks we reached.
+      let pushedClocks = 0;
+      try {
+        const push = await autoPushEmployeeToLocations(targetUserId);
+        pushedClocks = push.clocks;
+      } catch { /* enrollment already persisted; push is best-effort */ }
+
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "fingerprint_template",
+        targetId: `${targetUserId}:${fingerIndex}`,
+        action: "biometric.fingerprint.enrolled",
+        newValue: { fingerIndex, format, source: "station", pushedClocks },
+        context: getAuditContext(req),
+      });
+      res.json({ ok: true, fingerIndex, pushedToClocks: pushedClocks });
+    },
+  );
+
+  // Remove a station-enrolled finger (clock-harvested templates are managed from
+  // the device screens and are left untouched).
+  app.delete(
+    "/api/biometrics/users/:id/fingerprints/:fingerIndex",
+    requireAuth,
+    requirePermission("biometrics.manage"),
+    async (req: any, res) => {
+      const targetUserId = String(req.params.id);
+      const fingerIndex = Number(req.params.fingerIndex);
+      if (!Number.isInteger(fingerIndex) || fingerIndex < 0 || fingerIndex > 9) {
+        return res.status(400).json({ error: "fingerIndex must be an integer 0–9" });
+      }
+      const removed = await deleteStationFinger(targetUserId, fingerIndex);
+      if (!removed) return res.status(404).json({ error: "No station-enrolled finger to remove" });
+      await writeAuditLog({
+        actorUserId: (req as any).authUser.id,
+        targetType: "fingerprint_template",
+        targetId: `${targetUserId}:${fingerIndex}`,
+        action: "biometric.fingerprint.removed",
+        newValue: { fingerIndex, source: "station" },
+        context: getAuditContext(req),
+      });
+      res.json({ ok: true });
     },
   );
 
