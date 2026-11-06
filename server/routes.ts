@@ -35,7 +35,7 @@ import {
 import { runAlertDetection } from "./services/alerts";
 import { auditUnrecoverableTimezones } from "./services/timezoneHeal";
 import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
-import { MISSING_CLOCKOUT_STATUS } from "./punchHours";
+import { MISSING_CLOCKOUT_STATUS, MISSING_CLOCKIN_STATUS } from "./punchHours";
 import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./services/onboarding";
 import { materializeOffboardingChecklist, evaluateDeactivationGate } from "./services/offboarding";
 import { attachPolicyContext, getPolicyRules, getResolvedPolicy } from "./middleware/policyContext";
@@ -4886,13 +4886,13 @@ export async function registerRoutes(
           update.hoursWorked = enforcement.hoursWorked;
           update.status = enforcement.status;
         } else if (newClockOut) {
-          // Clock-out-only (missing clock-in): keep the clock-out, leave hours
-          // unresolved until a real clock-in is entered. The mirror of the
-          // re-opened case below.
+          // Clock-out-only (missing clock-in): a MISSING PUNCH, not in-progress.
+          // Keep the clock-out; hours stay unresolved until a real clock-in is
+          // entered. The mirror of the re-opened case below.
           update.clockOut = newClockOut;
           update.roundedClockOut = newClockOut;
           update.hoursWorked = null;
-          update.status = "in-progress";
+          update.status = MISSING_CLOCKIN_STATUS;
         } else if (editBackfillMissing && editPlaceholderOut) {
           // Clock-out removed while another open shift / later activity exists:
           // record a flagged MISSING PUNCH (placeholder clock-out, no hours), not
@@ -5209,16 +5209,31 @@ export async function registerRoutes(
           values.hoursWorked = 0;
           values.status = MISSING_CLOCKOUT_STATUS;
         } else if (newClockOut) {
-          // Clock-out-only (missing clock-in): record the clock-out but leave
-          // hours unresolved until a manager fills in the real clock-in. Rounding
-          // of the clock-out needs the clock-in, so keep the raw time only.
+          // Clock-out-only (missing clock-in): a MISSING PUNCH, not an in-progress
+          // shift. Keep the real clock-out; hours stay unresolved until the real
+          // clock-in is entered. Rounding needs the clock-in, so keep raw time.
           values.clockOut = newClockOut;
           values.roundedClockOut = newClockOut;
           values.hoursWorked = null;
-          values.status = "in-progress";
+          values.status = MISSING_CLOCKIN_STATUS;
         }
 
         const created = await storage.createPunchLog(values);
+
+        // Flag a clock-out-only add as a missing punch (missing clock-in) for review.
+        if (!backfillMissing && created.clockOut && !created.clockIn) {
+          const ex = await storage.createAttendanceException({
+            employeeId,
+            exceptionDate: workDate,
+            exceptionTime: created.clockOut as Date,
+            type: "missing_clockin",
+            reason:
+              "A clock-out was recorded with no clock-in — the employee forgot to clock in. " +
+              "Recorded as a MISSING PUNCH — enter the real clock-in to record the hours.",
+            status: "pending",
+          });
+          if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: created.id });
+        }
 
         // Flag the back-filled missing punch for manager review (surfaces in the
         // Review Time Sheet / exceptions, same as an auto-detected missing punch).
@@ -5556,8 +5571,8 @@ export async function registerRoutes(
         .where(
           and(
             isNotNull(punchLogs.clockOut),
-            // Exclude placeholder/confirmation "clock-outs" — not real taps.
-            notInArray(punchLogs.status, [MISSING_CLOCKOUT_STATUS, "confirmation"]),
+            // Exclude placeholder/confirmation/already-flagged "clock-outs".
+            notInArray(punchLogs.status, [MISSING_CLOCKOUT_STATUS, MISSING_CLOCKIN_STATUS, "confirmation"]),
             sql`(${punchLogs.clockOut} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date = (now() AT TIME ZONE 'America/New_York')::date`,
             sql`(${punchLogs.clockOut} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::time >= TIME '06:00'`,
           ),

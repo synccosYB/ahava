@@ -439,7 +439,11 @@ export function TimesheetEditor({
                     </div>
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">
-                    <ClockTimeCell iso={p.clockIn} timezone={p.timezone} mark={marks[p.id]?.clockIn} />
+                    {(p.status === "missing_clockin" || (!!p.clockOut && !p.clockIn)) ? (
+                      <span className="text-destructive font-medium">Missing</span>
+                    ) : (
+                      <ClockTimeCell iso={p.clockIn} timezone={p.timezone} mark={marks[p.id]?.clockIn} />
+                    )}
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">
                     {p.status === "missing_clockout" ? (
@@ -450,7 +454,7 @@ export function TimesheetEditor({
                       <ClockTimeCell iso={p.clockOut} timezone={p.timezone} mark={marks[p.id]?.clockOut} />
                     )}
                   </TableCell>
-                  <TableCell className="text-sm tabular-nums">{(p.status === "missing_clockout" || p.status === "confirmation") ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}</TableCell>
+                  <TableCell className="text-sm tabular-nums">{(p.status === "missing_clockout" || p.status === "missing_clockin" || p.status === "confirmation") ? "—" : (p.hoursWorked != null ? formatHoursMinutes(p.hoursWorked) : "—")}</TableCell>
                   {showActions && (
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">

@@ -3,7 +3,7 @@ import { storage } from "./storage";
 import { DEFAULT_ATTENDANCE_RULES, getEffectivePolicy } from "./policyEngine";
 import { resolvePayCalcPolicy } from "./payrollEngine";
 import { getLedgerForEmployee, summarizeLedger, type LedgerDay } from "./attendanceLedger";
-import { MISSING_CLOCKOUT_STATUS, openPunchExceedsMaxShift } from "./punchHours";
+import { MISSING_CLOCKOUT_STATUS, MISSING_CLOCKIN_STATUS, openPunchExceedsMaxShift } from "./punchHours";
 
 export type TimesheetStatus =
   | "complete"
@@ -227,6 +227,9 @@ export async function buildEmployeeTimesheet(
         if (p.status === MISSING_CLOCKOUT_STATUS || openPunchExceedsMaxShift(p, now, maxShiftHours)) {
           // Forgotten punch-out (marked, or open past the max shift): a missing
           // punch, NOT an in-progress shift — it no longer accrues hours.
+          missingPunch = true;
+        } else if (p.status === MISSING_CLOCKIN_STATUS || (p.clockOut && !p.clockIn)) {
+          // Clock-out only (forgot to clock in): a missing punch, not in-progress.
           missingPunch = true;
         } else if (p.status === "in-progress") {
           inProgress = true;
