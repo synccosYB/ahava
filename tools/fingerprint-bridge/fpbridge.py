@@ -8,33 +8,81 @@ http://localhost:8899/capture; this reads one fingerprint and returns the vendor
 template (base64) as JSON. Nothing leaves the PC except that response to the
 browser on the same machine.
 
+Runs headless (no console) when launched with pythonw.exe — see
+install-bridge-task.ps1, which registers it to auto-start hidden at login. It
+logs to %LOCALAPPDATA%\\ahava-fp\\bridge.log and waits for / reconnects to the
+reader, so it survives a boot before the reader is plugged in or a cable bump.
+
 Setup (Windows, the manager's enrollment PC):
   1. Install the ZK9500 driver (device shows up cleanly in Device Manager).
   2. Install Python 3 from python.org  (check "Add python.exe to PATH").
   3. py -m pip install pyzkfp
-  4. py tools\\fingerprint-bridge\\fpbridge.py     (leave the window open)
-
-The ZKFinger SDK DLLs that pyzkfp needs ship with the ZK9500 driver/SDK package.
-Keep this window open while enrolling; close it when done.
+  4. Run once in the foreground to confirm:  py fpbridge.py
+  5. Auto-start it hidden:  see install-bridge-task.ps1
 """
 import json
 import base64
 import time
 import threading
+import os
+import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from pyzkfp import ZKFP2
 
 PORT = 8899
 CAPTURE_TIMEOUT_SEC = 20
-lock = threading.Lock()
 
-z = ZKFP2()
-z.Init()
-if z.GetDeviceCount() < 1:
-    raise SystemExit("No reader found. Plug in the ZK9500 and retry.")
-z.OpenDevice(0)
-print(f"Reader ready. Bridge on http://localhost:{PORT}  (leave this window open)")
+# Log to a file so the service is diagnosable when run headless (no console).
+LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ahava-fp")
+os.makedirs(LOG_DIR, exist_ok=True)
+logging.basicConfig(
+    filename=os.path.join(LOG_DIR, "bridge.log"),
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
+lock = threading.Lock()
+_zk = None
+
+
+def open_device():
+    """Open the reader, retrying until it's available (survives boot-before-plug
+    and cable bumps). Stores the handle in the module-global _zk."""
+    global _zk
+    while True:
+        try:
+            z = ZKFP2()
+            z.Init()
+            if z.GetDeviceCount() >= 1:
+                z.OpenDevice(0)
+                _zk = z
+                logging.info("Reader ready on http://localhost:%d", PORT)
+                return
+            try:
+                z.Terminate()
+            except Exception:
+                pass
+        except Exception as e:
+            logging.warning("waiting for reader: %s", e)
+        time.sleep(3)
+
+
+def capture_once():
+    """Capture one fingerprint within the timeout; re-open the device if it has
+    dropped. Returns the template bytes, or None on timeout."""
+    deadline = time.time() + CAPTURE_TIMEOUT_SEC
+    while time.time() < deadline:
+        try:
+            cap = _zk.AcquireFingerprint()
+        except Exception as e:
+            logging.warning("capture error, reopening reader: %s", e)
+            open_device()
+            continue
+        if cap:
+            return bytes(cap[0])
+        time.sleep(0.2)
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -62,18 +110,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def capture(self):
         with lock:
-            deadline = time.time() + CAPTURE_TIMEOUT_SEC
-            while time.time() < deadline:
-                cap = z.AcquireFingerprint()
-                if cap:
-                    blob = bytes(cap[0])
-                    return self.reply(200, {
-                        "template": base64.b64encode(blob).decode(),
-                        "format": "ZKFinger10",
-                        "size": len(blob),
-                    })
-                time.sleep(0.2)
-            self.reply(408, {"error": "No finger detected, try again."})
+            blob = capture_once()
+        if blob is None:
+            return self.reply(408, {"error": "No finger detected, try again."})
+        self.reply(200, {
+            "template": base64.b64encode(blob).decode(),
+            "format": "ZKFinger10",
+            "size": len(blob),
+        })
 
     def reply(self, code, obj):
         body = json.dumps(obj).encode()
@@ -84,9 +128,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *args):  # keep the console quiet
+    def log_message(self, *args):  # keep the console quiet; we log to a file
         pass
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    open_device()
+    logging.info("Bridge listening on http://localhost:%d", PORT)
+    try:
+        ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    except Exception as e:
+        logging.error("bridge stopped: %s", e)
+        raise
