@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Download, FileText, Loader2, Clock, CalendarDays, AlertTriangle, FileSearch, Users, CalendarRange } from "lucide-react";
+import { Download, FileText, Loader2, Clock, CalendarDays, AlertTriangle, FileSearch, Users, CalendarRange, Fingerprint } from "lucide-react";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
 import { PageHeader } from "@/components/page-header";
 import {
@@ -17,6 +17,9 @@ import {
 import { MultiSelect } from "@/components/ui/multi-select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -72,6 +75,7 @@ const reportTypes = [
   { key: "exceptions", label: "Exceptions", icon: FileSearch },
   { key: "audit", label: "Audit", icon: Users },
   { key: "employee-timesheet", label: "Employee Timesheet", icon: CalendarRange },
+  { key: "fingerprint", label: "Fingerprint Enrollment", icon: Fingerprint },
 ];
 
 export default function ReportsPage() {
@@ -91,13 +95,14 @@ export default function ReportsPage() {
           ))}
         </TabsList>
 
-        <TabsContent value="attendance"><StandardReport category="attendance" reportType="company" title="Attendance Report" /></TabsContent>
-        <TabsContent value="time"><StandardReport category="time" reportType="employee" title="Time Report" /></TabsContent>
+        <TabsContent value="attendance"><StandardReport category="attendance" reportType="company" title="Attendance Report" allowWorkedFilter /></TabsContent>
+        <TabsContent value="time"><StandardReport category="time" reportType="employee" title="Time Report" allowWorkedFilter /></TabsContent>
         <TabsContent value="pto"><StandardReport category="pto" reportType="team" title="PTO Report" statusFilter="timeOff" /></TabsContent>
         <TabsContent value="missing-punches"><StandardReport category="missing-punches" reportType="company" title="Missing Punches Report" /></TabsContent>
         <TabsContent value="exceptions"><StandardReport category="exceptions" reportType="company" title="Exceptions Report" statusFilter="exception" /></TabsContent>
         <TabsContent value="audit"><AuditReport /></TabsContent>
         <TabsContent value="employee-timesheet"><EmployeeTimesheetReport /></TabsContent>
+        <TabsContent value="fingerprint"><FingerprintEnrollmentReport /></TabsContent>
       </Tabs>
     </div>
   );
@@ -148,19 +153,70 @@ function formatCell(
   return String(value);
 }
 
+// Parse/format a date-only YYYY-MM-DD string <-> a local Date (no tz shift).
+function ymdToDate(s: string): Date | undefined {
+  if (!s) return undefined;
+  const [y, m, d] = s.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  return new Date(y, m - 1, d);
+}
+function dateToYmd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// A date field that opens a pop-up calendar to pick a specific day.
+function DateField({ label, value, onChange, testId }: {
+  label: string;
+  value: string;
+  onChange: (ymd: string) => void;
+  testId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = ymdToDate(value);
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" className="w-full justify-start font-normal" data-testid={testId}>
+            <CalendarDays className="h-4 w-4 mr-2 opacity-70" />
+            {selected ? formatDate(value) : <span className="text-muted-foreground">Pick a date</span>}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-auto p-0" align="start">
+          <Calendar
+            mode="single"
+            selected={selected}
+            onSelect={(d) => {
+              if (d) {
+                onChange(dateToYmd(d));
+                setOpen(false);
+              }
+            }}
+            initialFocus
+          />
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
 function StandardReport({
   category,
   reportType,
   title,
   statusFilter,
+  allowWorkedFilter,
 }: {
   category: string;
   reportType: string;
   title: string;
   statusFilter?: "timeOff" | "exception";
+  allowWorkedFilter?: boolean;
 }) {
   const { toast } = useToast();
   const showStatusFilter = !!statusFilter;
+  const [workedOnly, setWorkedOnly] = useState(false);
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
     d.setDate(1);
@@ -276,6 +332,7 @@ function StandardReport({
         companyIds: companyIds.length > 0 ? companyIds : undefined,
         taxClassifications: taxClassifications.length > 0 ? taxClassifications : undefined,
         status: showStatusFilter && status !== "all" ? status : undefined,
+        workedOnly: allowWorkedFilter && workedOnly ? true : undefined,
       });
       return res.json();
     },
@@ -392,14 +449,8 @@ function StandardReport({
               </>
             ) : (
               <>
-                <div className="space-y-2">
-                  <Label>Start Date</Label>
-                  <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} data-testid="input-start-date" />
-                </div>
-                <div className="space-y-2">
-                  <Label>End Date</Label>
-                  <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} data-testid="input-end-date" />
-                </div>
+                <DateField label="Start Date" value={startDate} onChange={setStartDate} testId="input-start-date" />
+                <DateField label="End Date" value={endDate} onChange={setEndDate} testId="input-end-date" />
               </>
             )}
             <div className="space-y-2">
@@ -462,6 +513,18 @@ function StandardReport({
                 data-testid="multiselect-tax-classification"
               />
             </div>
+            {allowWorkedFilter && (
+              <div className="space-y-2">
+                <Label>Employees</Label>
+                <label
+                  className="flex items-center gap-2 h-9 text-sm cursor-pointer select-none"
+                  data-testid="toggle-worked-only"
+                >
+                  <Checkbox checked={workedOnly} onCheckedChange={(v) => setWorkedOnly(!!v)} />
+                  Only those who worked this period
+                </label>
+              </div>
+            )}
             {showStatusFilter && (
               <div className="space-y-2">
                 <Label>Status</Label>
@@ -768,5 +831,123 @@ function EmployeeTimesheetReport() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+type EnrollmentStatus = {
+  employees: Array<{
+    userId: string;
+    name: string;
+    employeeNumber: string | null;
+    role: string;
+    fingerCount: number;
+    enrolled: boolean;
+  }>;
+  total: number;
+  enrolled: number;
+  notEnrolled: number;
+};
+
+// Fingerprint enrollment report: who has a fingerprint enrolled and who doesn't,
+// on-screen plus a CSV download. No date range — it's a roster snapshot.
+function FingerprintEnrollmentReport() {
+  const { toast } = useToast();
+  const [notEnrolledOnly, setNotEnrolledOnly] = useState(true);
+  const [downloading, setDownloading] = useState(false);
+
+  const query = useQuery<EnrollmentStatus>({
+    queryKey: ["/api/fingerprint-enrollment-status"],
+    queryFn: () => apiRequest("GET", "/api/fingerprint-enrollment-status").then((r) => r.json()),
+  });
+
+  const rows = (query.data?.employees ?? []).filter((e) => (notEnrolledOnly ? !e.enrolled : true));
+
+  const downloadCSV = async () => {
+    setDownloading(true);
+    try {
+      const url = `/api/fingerprint-enrollment-status?format=csv${notEnrolledOnly ? "&filter=not-enrolled" : ""}`;
+      const res = await apiRequest("GET", url);
+      const blob = await res.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = notEnrolledOnly ? "fingerprints-not-enrolled.csv" : "fingerprint-enrollment.csv";
+      a.click();
+      URL.revokeObjectURL(href);
+    } catch (e: any) {
+      toast({ title: "Couldn't download", description: e?.message, variant: "destructive" });
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4 mt-4">
+      <Card data-testid="card-fingerprint-report-filters">
+        <CardHeader>
+          <CardTitle className="text-base">Fingerprint Enrollment</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none" data-testid="toggle-not-enrolled-only">
+              <Checkbox checked={notEnrolledOnly} onCheckedChange={(v) => setNotEnrolledOnly(!!v)} />
+              Show only employees NOT enrolled
+            </label>
+            {query.data && (
+              <span className="text-xs text-muted-foreground" data-testid="text-enrollment-summary">
+                {query.data.enrolled} enrolled · {query.data.notEnrolled} not enrolled · {query.data.total} total
+              </span>
+            )}
+            <Button variant="outline" size="sm" onClick={downloadCSV} disabled={downloading || !query.data} data-testid="button-download-fingerprint-csv">
+              {downloading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
+              Download CSV
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card data-testid="card-fingerprint-report-results">
+        <CardContent className="pt-6">
+          {query.isLoading ? (
+            <Skeleton className="h-40 w-full" />
+          ) : rows.length === 0 ? (
+            <EmptyState
+              icon={Fingerprint}
+              title={notEnrolledOnly ? "Everyone is enrolled" : "No employees"}
+              description={notEnrolledOnly ? "Every active employee has at least one fingerprint enrolled." : "No active employees found."}
+            />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Employee #</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Fingerprints</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((e) => (
+                  <TableRow key={e.userId} data-testid={`row-fp-${e.userId}`}>
+                    <TableCell className="tabular-nums">{e.employeeNumber || "—"}</TableCell>
+                    <TableCell className="font-medium">{e.name}</TableCell>
+                    <TableCell className="capitalize">{e.role}</TableCell>
+                    <TableCell className="tabular-nums">{e.fingerCount}</TableCell>
+                    <TableCell>
+                      {e.enrolled ? (
+                        <span className="text-emerald-600 dark:text-emerald-400 font-medium">Enrolled</span>
+                      ) : (
+                        <span className="text-destructive font-medium">Not enrolled</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
