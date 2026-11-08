@@ -1008,6 +1008,7 @@ export async function registerRoutes(
     // Trust the clock's In/Out key for this employee (record direction from the
     // device instead of deriving it from state). Defaults false.
     useDevicePunchDirection: z.boolean().optional(),
+    requireLunchBreak: z.boolean().optional(),
     hireDate: z.string().optional(),
     payType: z.string().optional(),
     hourlyRate: z.number().optional(),
@@ -1126,6 +1127,7 @@ export async function registerRoutes(
       clockConfirmationOnly: parsed.data.clockConfirmationOnly ?? false,
       overnightShiftsAllowed: parsed.data.overnightShiftsAllowed ?? false,
       useDevicePunchDirection: parsed.data.useDevicePunchDirection ?? false,
+      requireLunchBreak: parsed.data.requireLunchBreak ?? false,
       payType: profilePayType,
       hourlyRate: parsed.data.hourlyRate || null,
       weeklySalary: parsed.data.weeklySalary || null,
@@ -3508,6 +3510,7 @@ export async function registerRoutes(
         "clockConfirmationOnly",
         "overnightShiftsAllowed",
         "useDevicePunchDirection",
+        "requireLunchBreak",
         "hireDate",
         "terminationDate",
       ] as const;
