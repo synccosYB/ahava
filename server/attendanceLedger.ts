@@ -44,6 +44,7 @@ import {
 } from "./payrollEngine";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "./policyEngine";
 import { MISSING_CLOCKOUT_STATUS, openPunchExceedsMaxShift } from "./punchHours";
+import { computeLunchAdjustedHours, type LunchDayPunch } from "./services/lunchBreak";
 
 /**
  * The in-memory shape of a computed ledger day (before persistence). Mirrors the
@@ -119,19 +120,26 @@ interface EmployeeContext {
   payCalc: PayCalcPolicy;
   scheduledDays: number[];
   maxShiftHours: number;
+  /** Lunch rules apply to this employee's days (per-employee toggle). */
+  requireLunchBreak: boolean;
+  /** A shift must be at least this long to owe a lunch (for the fine guard). */
+  breakThresholdHours: number;
 }
 
 async function resolveEmployeeContext(employee: User): Promise<EmployeeContext> {
-  const [payCalc, schedules, attendancePolicy] = await Promise.all([
+  const [payCalc, schedules, attendancePolicy, profile] = await Promise.all([
     resolvePayCalcPolicy(employee),
     storage.getEmployeeSchedules(employee.id),
     getEffectivePolicy(employee.companyId, employee.id, "attendance", employee),
+    storage.getEmploymentProfile(employee.id).catch(() => undefined),
   ]);
   const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
   return {
     payCalc,
     scheduledDays: schedules.filter((s) => s.isActive).map((s) => s.dayOfWeek),
     maxShiftHours: rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours,
+    requireLunchBreak: !!profile?.requireLunchBreak,
+    breakThresholdHours: rules.requireBreakAfterHours ?? DEFAULT_ATTENDANCE_RULES.requireBreakAfterHours,
   };
 }
 
@@ -189,6 +197,30 @@ function computeRawDay(
       hasOpenPunch = true;
     }
   }
+
+  // Lunch-required employees: apply the lunch rules (paid lunch within the hour,
+  // or a 45-min fine when no proper lunch was taken) on top of the base worked
+  // hours. See services/lunchBreak.computeLunchAdjustedHours.
+  if (ctx.requireLunchBreak && workedPunchCount > 0) {
+    const lunchPunches: LunchDayPunch[] = dayPunches
+      .filter((p) => p.clockIn)
+      .map((p) => ({
+        clockIn: new Date(p.roundedClockIn ?? (p.clockIn as Date)),
+        // A missing-clock-out punch's clock-out is only a placeholder — treat it
+        // as having no real clock-out (its clock-in still bounds the day's span).
+        clockOut:
+          p.clockOut && p.status !== MISSING_CLOCKOUT_STATUS
+            ? new Date(p.roundedClockOut ?? p.clockOut)
+            : null,
+        openInProgress:
+          p.status !== MISSING_CLOCKOUT_STATUS &&
+          (p.status === "in-progress" || (!p.clockOut && p.hoursWorked == null)),
+      }));
+    dayHours = computeLunchAdjustedHours(lunchPunches, dayHours, {
+      breakThresholdHours: ctx.breakThresholdHours,
+    });
+  }
+
   return {
     workDate,
     dayHours: round2(dayHours),
