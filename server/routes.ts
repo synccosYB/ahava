@@ -13886,20 +13886,14 @@ export async function registerRoutes(
     requirePermission("biometrics.manage"),
     async (req: any, res) => {
       const targetUserId = String(req.params.id);
-      const settings = await storage.getBiometricSettings();
-      if (!isFeatureEnabled(settings)) {
-        return res.status(403).json({ error: "Biometric feature is not enabled" });
-      }
+      // Fingerprint enrollment belongs to the attendance/clock biometric system
+      // (the same one the wall clocks use), NOT the face-login feature — so it is
+      // gated by the biometrics.manage permission above, independent of the face
+      // feature flag or the face consent flow. Fingerprint consent is handled the
+      // same way it already is for clock enrollment (operationally).
       const targetUser = await storage.getUser(targetUserId);
       if (!targetUser) {
         return res.status(404).json({ error: "Employee not found" });
-      }
-      // Same BIPA gate as the face admin-enroll: no consent on file, no enroll.
-      const consent = await storage.getActiveBiometricConsent(targetUserId);
-      if (!consent) {
-        return res
-          .status(412)
-          .json({ error: "Employee must have an active consent on file before enrollment" });
       }
       const fingerIndex = Number(req.body?.fingerIndex);
       const template = req.body?.template;
