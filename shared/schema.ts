@@ -334,6 +334,13 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // forgotten punch no longer flips the direction of every punch after it. Turn
   // on only for people who reliably press In/Out at the clock.
   useDevicePunchDirection: boolean("use_device_punch_direction").default(false).notNull(),
+  // Whether this employee is REQUIRED to clock out and back in for lunch.
+  // Default false. When true, the payroll ledger applies the lunch rules: a lunch
+  // taken by clocking out and back within the hour is paid (up to 45 min); an
+  // employee who does NOT take a proper lunch (worked straight through, or clocked
+  // out and forgot to clock back in) is docked a flat 45-minute lunch on a shift
+  // long enough to owe one.
+  requireLunchBreak: boolean("require_lunch_break").default(false).notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
   // Payroll-only company (Task #475): which company this employee belongs to for
   // payroll identification. Deliberately INDEPENDENT of the assignment-derived

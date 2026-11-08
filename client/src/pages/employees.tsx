@@ -1328,6 +1328,7 @@ function AddEmployeeDialog({
     clockConfirmationOnly: false,
     overnightShiftsAllowed: false,
     useDevicePunchDirection: false,
+    requireLunchBreak: false,
     hireDate: new Date().toISOString().split("T")[0],
     payType: "hourly",
     hourlyRate: "",
@@ -1407,6 +1408,7 @@ function AddEmployeeDialog({
         clockConfirmationOnly: formData.clockConfirmationOnly,
         overnightShiftsAllowed: formData.overnightShiftsAllowed,
         useDevicePunchDirection: formData.useDevicePunchDirection,
+        requireLunchBreak: formData.requireLunchBreak,
         hireDate: formData.hireDate,
         payType: effectivePayType,
       };
@@ -1481,7 +1483,7 @@ function AddEmployeeDialog({
     setFormData({
       firstName: "", lastName: "", email: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
-      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true, clockConfirmationOnly: false, overnightShiftsAllowed: false, useDevicePunchDirection: false,
+      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true, clockConfirmationOnly: false, overnightShiftsAllowed: false, useDevicePunchDirection: false, requireLunchBreak: false,
       payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "", payeeMemo: "",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
@@ -1744,6 +1746,19 @@ function AddEmployeeDialog({
                 checked={formData.useDevicePunchDirection}
                 onCheckedChange={(v) => setFormData({ ...formData, useDevicePunchDirection: v })}
                 data-testid="switch-add-device-direction"
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label>Require lunch clock-out</Label>
+                <p className="text-xs text-muted-foreground">
+                  This employee must clock out and back in for lunch. A lunch taken within the hour is paid (up to 45 min); working straight through or forgetting to clock back in docks a flat 45-minute lunch.
+                </p>
+              </div>
+              <Switch
+                checked={formData.requireLunchBreak}
+                onCheckedChange={(v) => setFormData({ ...formData, requireLunchBreak: v })}
+                data-testid="switch-add-require-lunch"
               />
             </div>
             <div className="space-y-2">
@@ -2363,6 +2378,7 @@ function EmployeeProfile({
     clockConfirmationOnly: false,
     overnightShiftsAllowed: false,
     useDevicePunchDirection: false,
+    requireLunchBreak: false,
   });
 
   useEffect(() => {
@@ -2377,6 +2393,7 @@ function EmployeeProfile({
         clockConfirmationOnly: profile.clockConfirmationOnly ?? false,
         overnightShiftsAllowed: profile.overnightShiftsAllowed ?? false,
         useDevicePunchDirection: profile.useDevicePunchDirection ?? false,
+        requireLunchBreak: profile.requireLunchBreak ?? false,
       });
     }
   }, [profile, editEmployment]);
@@ -2392,6 +2409,7 @@ function EmployeeProfile({
       clockConfirmationOnly: boolean;
       overnightShiftsAllowed: boolean;
       useDevicePunchDirection: boolean;
+      requireLunchBreak: boolean;
     }) => {
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
     },
@@ -2959,6 +2977,7 @@ function EmployeeProfile({
                           clockConfirmationOnly: profile.clockConfirmationOnly ?? false,
                           overnightShiftsAllowed: profile.overnightShiftsAllowed ?? false,
                           useDevicePunchDirection: profile.useDevicePunchDirection ?? false,
+                          requireLunchBreak: profile.requireLunchBreak ?? false,
                         });
                       }
                     }}
@@ -2979,6 +2998,7 @@ function EmployeeProfile({
                         clockConfirmationOnly: employmentForm.clockConfirmationOnly,
                         overnightShiftsAllowed: employmentForm.overnightShiftsAllowed,
                         useDevicePunchDirection: employmentForm.useDevicePunchDirection,
+                        requireLunchBreak: employmentForm.requireLunchBreak,
                       })
                     }
                     disabled={employmentMutation.isPending || !profile}
@@ -3114,6 +3134,22 @@ function EmployeeProfile({
                     {(editEmployment ? employmentForm.useDevicePunchDirection : (profile?.useDevicePunchDirection ?? false))
                       ? "Direction from the clock's In/Out key"
                       : "Direction auto-guessed from shift state"}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Require lunch clock-out</Label>
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={editEmployment ? employmentForm.requireLunchBreak : (profile?.requireLunchBreak ?? false)}
+                    onCheckedChange={(v) => setEmploymentForm((f) => ({ ...f, requireLunchBreak: v }))}
+                    disabled={!editEmployment || profileLoading || !profile}
+                    data-testid="switch-profile-require-lunch"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {(editEmployment ? employmentForm.requireLunchBreak : (profile?.requireLunchBreak ?? false))
+                      ? "Lunch paid within the hour; 45-min fine if no proper lunch"
+                      : "No lunch rule applied"}
                   </span>
                 </div>
               </div>
