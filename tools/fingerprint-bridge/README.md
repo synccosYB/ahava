@@ -32,9 +32,26 @@ directly, so this runs on the enrollment PC and exposes the reader over
 Open `http://localhost:8899/capture` in a browser on that PC, touch the reader,
 and you should get JSON: `{"template":"...","format":"ZKFinger10","size":2048}`.
 
+## Run it automatically (no terminal window)
+
+Instead of keeping a terminal open, register it as a hidden background task that
+starts at login and restarts itself if it stops:
+
+```
+powershell -ExecutionPolicy Bypass -File install-bridge-task.ps1
+```
+
+This runs `fpbridge.py` with `pythonw.exe` (no console) via a Scheduled Task
+named `AhavaFingerprintBridge`. The bridge logs to
+`%LOCALAPPDATA%\ahava-fp\bridge.log` and waits for / reconnects to the reader,
+so it survives a reboot or a cable bump. Remove it with:
+
+```
+Unregister-ScheduledTask -TaskName "AhavaFingerprintBridge" -Confirm:$false
+```
+
 ## Notes
 
 - The service binds to `127.0.0.1` only — it is not reachable from the network.
-- Keep the window open while enrolling; close it when finished.
-- To run it unattended, register it as a Windows startup task (Task Scheduler,
-  "At log on"). Optional — not required for occasional enrollment.
+- Only one copy can use the reader at a time; stop any foreground `py fpbridge.py`
+  before starting the background task.
