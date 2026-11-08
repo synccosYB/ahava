@@ -321,13 +321,20 @@ export async function buildEmployeeTimesheet(
   // needed here, and per-day rows + totals stay in lockstep with reports/payroll.
   const ledgerTotals = summarizeLedger(ledgerDays);
 
+  // For an attendance-only employee hours aren't counted, so the ledger's
+  // hours-based "days worked" is 0. Count days PRESENT instead (every
+  // "Attendance captured" day) so the summary reflects attendance, not hours.
+  const daysWorked = confirmationOnly
+    ? entries.filter((e) => e.status === "confirmation").length
+    : ledgerTotals.daysWorked;
+
   return {
     otThresholdDaily: otThreshold,
     entries,
     totals: {
       totalHours: Math.round(ledgerTotals.totalHours * 10) / 10,
       overtimeHours: Math.round(ledgerTotals.overtimeCombined * 10) / 10,
-      daysWorked: ledgerTotals.daysWorked,
+      daysWorked,
     },
   };
 }

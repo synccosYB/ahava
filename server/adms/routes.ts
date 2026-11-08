@@ -434,6 +434,45 @@ function registerAdminRoutes(app: Express): void {
     const { people, queued } = await queueDistribute(device);
     res.json({ ok: true, people, queued });
   });
+
+  // Fingerprint enrollment status across active employees — who still needs a
+  // finger enrolled. JSON by default; `?format=csv` downloads a spreadsheet, and
+  // `?filter=not-enrolled` limits it to employees with zero fingerprints.
+  app.get("/api/fingerprint-enrollment-status", requireAuth, requirePermission("kiosk.manage"), async (req: any, res) => {
+    const actor = req.authUser as { companyId?: string | null };
+    const rows = await adms.getFingerprintEnrollmentStatus(actor?.companyId ?? null);
+    const notEnrolledOnly = String(req.query?.filter ?? "") === "not-enrolled";
+    const list = notEnrolledOnly ? rows.filter((r) => r.fingerCount === 0) : rows;
+    const fullName = (r: (typeof rows)[number]) => `${r.firstName ?? ""} ${r.lastName ?? ""}`.trim();
+
+    if (String(req.query?.format ?? "") === "csv") {
+      const esc = (v: unknown) => {
+        const s = v == null ? "" : String(v);
+        return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const header = ["Employee Number", "Name", "Role", "Fingerprints enrolled"];
+      const body = list.map((r) => [r.employeeNumber ?? "", fullName(r), r.role, r.fingerCount].map(esc).join(","));
+      const csv = [header.join(","), ...body].join("\r\n");
+      const fname = notEnrolledOnly ? "fingerprints-not-enrolled" : "fingerprint-enrollment";
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${fname}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json({
+      employees: list.map((r) => ({
+        userId: r.userId,
+        name: fullName(r),
+        employeeNumber: r.employeeNumber,
+        role: r.role,
+        fingerCount: r.fingerCount,
+        enrolled: r.fingerCount > 0,
+      })),
+      total: rows.length,
+      enrolled: rows.filter((r) => r.fingerCount > 0).length,
+      notEnrolled: rows.filter((r) => r.fingerCount === 0).length,
+    });
+  });
 }
 
 /**

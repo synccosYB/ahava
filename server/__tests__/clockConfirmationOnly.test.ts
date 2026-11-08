@@ -84,6 +84,8 @@ test("confirmation-only: the Review Time Sheet shows 'Attendance captured', neve
     assert.equal(row!.status, "confirmation", `${d} is Attendance captured`);
     assert.equal(row!.totalHours, null, `${d} counts no hours`);
   }
+  // Days-worked counts days PRESENT (attendance), not hours, for daily-rate.
+  assert.equal(sheet.totals.daysWorked, 2, "both present days count as days worked");
 });
 
 test("normal employee's timesheet still flags an open/forgotten punch", async (t) => {
