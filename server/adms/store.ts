@@ -339,3 +339,62 @@ export async function getDistributableTemplates(
   }
   return out;
 }
+
+// --- Enrollment station (ZK9500 desk reader) --------------------------------
+
+// Fingerprints enrolled at a desk reader (not harvested off a wall clock) are
+// stored under this stable, non-device source key. Distribution to the wall
+// clocks keys on userId (getDistributableTemplates), not the source, so a
+// station-enrolled finger pushes to the clocks exactly like a harvested one —
+// and a non-null sentinel keeps the (source, pin, finger) unique-upsert working
+// without a fake biometric_devices row.
+export const ENROLL_STATION_SOURCE = "enroll-station";
+
+export interface EnrolledFinger {
+  fingerIndex: number;
+  format: string | null;
+  size: number | null;
+  valid: boolean;
+  source: string | null; // ENROLL_STATION_SOURCE, or a device id when harvested
+  enrolledAt: Date;
+}
+
+// Every stored fingerprint for an employee (station-enrolled and clock-harvested
+// alike), newest finger first — for the enrollment screen's "enrolled fingers"
+// list.
+export async function listFingerprintsForUser(userId: string): Promise<EnrolledFinger[]> {
+  const rows = await db
+    .select({
+      fingerIndex: fingerprintTemplates.fingerIndex,
+      format: fingerprintTemplates.templateFormat,
+      size: fingerprintTemplates.size,
+      valid: fingerprintTemplates.valid,
+      source: fingerprintTemplates.sourceDeviceId,
+      updatedAt: fingerprintTemplates.updatedAt,
+    })
+    .from(fingerprintTemplates)
+    .where(eq(fingerprintTemplates.userId, userId))
+    .orderBy(fingerprintTemplates.fingerIndex);
+  return rows.map((r) => ({
+    fingerIndex: r.fingerIndex,
+    format: r.format,
+    size: r.size,
+    valid: r.valid,
+    source: r.source,
+    enrolledAt: r.updatedAt,
+  }));
+}
+
+// Remove a STATION-enrolled finger (leaves clock-harvested templates alone —
+// those are managed from the device screens). Returns whether a row was deleted.
+export async function deleteStationFinger(userId: string, fingerIndex: number): Promise<boolean> {
+  const rows = await db
+    .delete(fingerprintTemplates)
+    .where(and(
+      eq(fingerprintTemplates.userId, userId),
+      eq(fingerprintTemplates.fingerIndex, fingerIndex),
+      eq(fingerprintTemplates.sourceDeviceId, ENROLL_STATION_SOURCE),
+    ))
+    .returning({ id: fingerprintTemplates.id });
+  return rows.length > 0;
+}

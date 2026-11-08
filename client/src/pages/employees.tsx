@@ -34,6 +34,7 @@ import type { User, Department, Location, EmploymentProfile, EmployeeSchedule, D
 import { userDepartmentIds, userLocationIds, TERMINATION_REASONS } from "@shared/schema";
 import { CertificationsCard } from "@/components/certifications-card";
 import { ReviewTimeSheetTab } from "@/components/review-timesheet-tab";
+import { FingerprintEnrollmentCard } from "@/components/fingerprint-enrollment-card";
 import { EmployeeTimesheetCard } from "@/components/employee-timesheet";
 import {
   INLINE_ADD_NEW_VALUE,
@@ -3390,7 +3391,7 @@ function EmployeeProfile({
           </Dialog>
         </TabsContent>
 
-        <TabsContent value="timeclock">
+        <TabsContent value="timeclock" className="space-y-6">
           <Card data-testid="card-time-clock-settings">
             <CardHeader><CardTitle>Time Clock Settings</CardTitle></CardHeader>
             <CardContent>
@@ -3399,6 +3400,7 @@ function EmployeeProfile({
               </p>
             </CardContent>
           </Card>
+          <FingerprintEnrollmentCard employeeId={userId} />
         </TabsContent>
 
         <TabsContent value="pto">
