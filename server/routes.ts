@@ -8641,6 +8641,12 @@ export async function registerRoutes(
       (v) => (typeof v === "string" ? [v] : v),
       z.array(z.enum(["W-2", "1099"])).optional(),
     ),
+    // When true, drop employees with no punch at all in [startDate, endDate] —
+    // i.e. only people who actually worked the period show on the report.
+    workedOnly: z.preprocess(
+      (v) => (v === "true" ? true : v === "false" ? false : v),
+      z.boolean().optional(),
+    ),
   });
 
   app.post("/api/reports/generate", requireAuth, requirePermission("reports.view"), async (req, res) => {
@@ -8659,7 +8665,7 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid report parameters", errors: parsed.error.flatten() });
     }
 
-    const { category, reportType, startDate, endDate, department, employeeId, status, departmentIds, employeeIds, locationIds, companyIds, taxClassifications } = parsed.data;
+    const { category, reportType, startDate, endDate, department, employeeId, status, departmentIds, employeeIds, locationIds, companyIds, taxClassifications, workedOnly } = parsed.data;
     const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
     const depts = await storage.getAllDepartments();
     const deptMap = new Map(depts.map(d => [d.id, d.name]));
@@ -8726,6 +8732,26 @@ export async function registerRoutes(
     if (taxClassifications && taxClassifications.length > 0) {
       const set = new Set(taxClassifications);
       filteredUsers = filteredUsers.filter(u => set.has(taxByUser.get(u.id) as any || "W-2"));
+    }
+
+    // "Worked in this period only": drop anyone with no punch in the range, so
+    // employees who didn't work don't appear. A punch of any kind counts as
+    // worked (including a daily "attendance captured" marker). Applied before the
+    // final set so every category honors it uniformly.
+    if (workedOnly) {
+      const candidateIds = filteredUsers.map((u) => u.id);
+      if (candidateIds.length > 0) {
+        const workedRows = await db
+          .selectDistinct({ id: punchLogs.employeeId })
+          .from(punchLogs)
+          .where(and(
+            inArray(punchLogs.employeeId, candidateIds),
+            gte(punchLogs.workDate, startDate),
+            lte(punchLogs.workDate, endDate),
+          ));
+        const workedSet = new Set(workedRows.map((r) => r.id));
+        filteredUsers = filteredUsers.filter((u) => workedSet.has(u.id));
+      }
     }
 
     // Final scoped users (after permission + all filters). Every category below
