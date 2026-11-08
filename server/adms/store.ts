@@ -1,7 +1,7 @@
 // Data access for biometric wall clocks. Kept in its own module (reading `db`
 // directly, the same way server/storage.ts does) so the large IStorage surface
 // doesn't have to grow for this feature.
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   biometricDevices,
@@ -397,4 +397,37 @@ export async function deleteStationFinger(userId: string, fingerIndex: number): 
     ))
     .returning({ id: fingerprintTemplates.id });
   return rows.length > 0;
+}
+
+export interface EnrollmentStatusRow {
+  userId: string;
+  firstName: string | null;
+  lastName: string | null;
+  employeeNumber: string | null;
+  role: string;
+  fingerCount: number;
+}
+
+// Fingerprint-enrollment status for every ACTIVE account (deactivatedAt null),
+// with how many fingerprints each has stored (station- or clock-sourced). Drives
+// the "who still needs enrolling" list. Scoped to a company when given.
+export async function getFingerprintEnrollmentStatus(
+  companyId: string | null,
+): Promise<EnrollmentStatusRow[]> {
+  const rows = await db
+    .select({
+      userId: users.id,
+      firstName: users.firstName,
+      lastName: users.lastName,
+      employeeNumber: userEmploymentProfiles.employeeNumber,
+      role: users.role,
+      fingerCount: sql<number>`count(${fingerprintTemplates.id})`,
+    })
+    .from(users)
+    .leftJoin(userEmploymentProfiles, eq(userEmploymentProfiles.userId, users.id))
+    .leftJoin(fingerprintTemplates, eq(fingerprintTemplates.userId, users.id))
+    .where(and(isNull(users.deactivatedAt), companyId ? eq(users.companyId, companyId) : undefined))
+    .groupBy(users.id, users.firstName, users.lastName, userEmploymentProfiles.employeeNumber, users.role)
+    .orderBy(users.lastName, users.firstName);
+  return rows.map((r) => ({ ...r, fingerCount: Number(r.fingerCount) }));
 }

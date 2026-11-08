@@ -88,6 +88,28 @@ function timeAgo(iso: string | null): string {
 
 export default function FingerprintClocksPage() {
   const { toast } = useToast();
+  const [downloadingList, setDownloadingList] = useState(false);
+  // Download a CSV of active employees who still have no fingerprint enrolled —
+  // the "who's left to enroll" worklist for a rollout.
+  const downloadNotEnrolled = async () => {
+    setDownloadingList(true);
+    try {
+      const res = await apiRequest("GET", "/api/fingerprint-enrollment-status?format=csv&filter=not-enrolled");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "fingerprints-not-enrolled.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      toast({ title: "Couldn't download the list", description: e?.message, variant: "destructive" });
+    } finally {
+      setDownloadingList(false);
+    }
+  };
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
@@ -293,9 +315,21 @@ export default function FingerprintClocksPage() {
         title="Fingerprint Clocks"
         subtitle="Connect wall-mounted fingerprint clocks that push punches straight to Ahava"
         actions={
-          <Button onClick={openCreate} data-testid="button-add-clock">
-            <Plus className="h-4 w-4 mr-2" /> Add Clock
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={downloadNotEnrolled}
+              disabled={downloadingList}
+              data-testid="button-download-not-enrolled"
+              title="Download a CSV of employees who still have no fingerprint enrolled"
+            >
+              {downloadingList ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <DownloadCloud className="h-4 w-4 mr-2" />}
+              Not-enrolled list
+            </Button>
+            <Button onClick={openCreate} data-testid="button-add-clock">
+              <Plus className="h-4 w-4 mr-2" /> Add Clock
+            </Button>
+          </div>
         }
       />
 
