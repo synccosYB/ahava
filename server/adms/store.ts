@@ -12,6 +12,7 @@ import {
   userEmploymentProfiles,
   users,
   employeeLocations,
+  locations,
   type BiometricDevice,
   type BiometricDeviceEvent,
   type BiometricDeviceCommand,
@@ -406,11 +407,17 @@ export interface EnrollmentStatusRow {
   employeeNumber: string | null;
   role: string;
   fingerCount: number;
+  /** Primary (home) location — shown in the Location column. */
+  locationId: string | null;
+  locationName: string | null;
+  /** Every location the employee belongs to (primary + extra assignments), for filtering. */
+  locationIds: string[];
 }
 
 // Fingerprint-enrollment status for every ACTIVE account (deactivatedAt null),
-// with how many fingerprints each has stored (station- or clock-sourced). Drives
-// the "who still needs enrolling" list. Scoped to a company when given.
+// with how many fingerprints each has stored (station- or clock-sourced) and the
+// location(s) they belong to. Drives the "who still needs enrolling" list and its
+// search-by-location filter. Scoped to a company when given.
 export async function getFingerprintEnrollmentStatus(
   companyId: string | null,
 ): Promise<EnrollmentStatusRow[]> {
@@ -421,13 +428,38 @@ export async function getFingerprintEnrollmentStatus(
       lastName: users.lastName,
       employeeNumber: userEmploymentProfiles.employeeNumber,
       role: users.role,
-      fingerCount: sql<number>`count(${fingerprintTemplates.id})`,
+      // count DISTINCT so the location join below can't inflate it.
+      fingerCount: sql<number>`count(distinct ${fingerprintTemplates.id})`,
+      locationId: users.locationId,
+      locationName: locations.name,
     })
     .from(users)
     .leftJoin(userEmploymentProfiles, eq(userEmploymentProfiles.userId, users.id))
     .leftJoin(fingerprintTemplates, eq(fingerprintTemplates.userId, users.id))
+    .leftJoin(locations, eq(locations.id, users.locationId))
     .where(and(isNull(users.deactivatedAt), companyId ? eq(users.companyId, companyId) : undefined))
-    .groupBy(users.id, users.firstName, users.lastName, userEmploymentProfiles.employeeNumber, users.role)
+    .groupBy(users.id, users.firstName, users.lastName, userEmploymentProfiles.employeeNumber, users.role, users.locationId, locations.name)
     .orderBy(users.lastName, users.firstName);
-  return rows.map((r) => ({ ...r, fingerCount: Number(r.fingerCount) }));
+
+  // Extra location assignments (a multi-hat employee can work at several
+  // locations); union these with the primary location for the filter.
+  const userIds = rows.map((r) => r.userId);
+  const assignments = userIds.length
+    ? await db
+        .select({ userId: employeeLocations.userId, locationId: employeeLocations.locationId })
+        .from(employeeLocations)
+        .where(inArray(employeeLocations.userId, userIds))
+    : [];
+  const byUser = new Map<string, Set<string>>();
+  for (const a of assignments) {
+    const set = byUser.get(a.userId) ?? new Set<string>();
+    set.add(a.locationId);
+    byUser.set(a.userId, set);
+  }
+
+  return rows.map((r) => {
+    const set = byUser.get(r.userId) ?? new Set<string>();
+    if (r.locationId) set.add(r.locationId);
+    return { ...r, fingerCount: Number(r.fingerCount), locationIds: Array.from(set) };
+  });
 }
