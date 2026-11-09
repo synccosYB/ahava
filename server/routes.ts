@@ -7,7 +7,7 @@ import { db } from "./db";
 import { employeeLocations as employeeLocationsTable } from "@shared/schema";
 import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
-import { requirePermission, resolveUserPermissions } from "./middleware/rbac";
+import { requirePermission, requireAnyPermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType, TERMINATION_REASONS } from "@shared/schema";
 import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport, OverlapPunchPair, OverlapPunchSummary, EmployeeSchedule } from "@shared/schema";
 import { userDepartmentIds, userLocationIds, users } from "@shared/schema";
@@ -8561,7 +8561,9 @@ export async function registerRoutes(
   app.get(
     "/api/reports/filter-options",
     requireAuth,
-    requirePermission("reports.view"),
+    // Report viewers OR bookkeepers (attendance.view_all) — the Time Sheet
+    // Review page uses this to populate its employee/location filters.
+    requireAnyPermission("reports.view", "attendance.view_all"),
     async (req, res) => {
       const user = (req as any).authUser as User;
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
@@ -8677,7 +8679,10 @@ export async function registerRoutes(
     ),
   });
 
-  app.post("/api/reports/generate", requireAuth, requirePermission("reports.view"), async (req, res) => {
+  // Report viewers OR bookkeepers (attendance.view_all): these report categories
+  // are attendance/time/pto only (no pay), and the handler already scopes a
+  // bookkeeper to "sees every employee". The Time Sheet Review page posts here.
+  app.post("/api/reports/generate", requireAuth, requireAnyPermission("reports.view", "attendance.view_all"), async (req, res) => {
     const cdUser = (req as any).authUser as User;
     const cdKey = `reports:generate:${cdUser?.id ?? "anon"}:${JSON.stringify(req.body ?? {})}`;
     const gate = shouldRun(cdKey);
