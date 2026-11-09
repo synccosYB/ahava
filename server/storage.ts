@@ -324,22 +324,6 @@ export interface UsersPageOptions {
   offset: number;
 }
 
-/**
- * Counts of the records that still reference a company and would block its
- * deletion (a raw delete would throw a Postgres FK violation). Surfaced so the
- * delete endpoint can explain *why* it refused instead of returning a 500.
- */
-export interface CompanyDeletionBlockers {
-  /** Employees whose home company is this one (users.companyId). */
-  employees: number;
-  /** Employees paid by this company (employment profile payrollCompanyId). */
-  payrollPayeeFor: number;
-  /** Locations belonging to this company. */
-  locations: number;
-  /** Departments belonging to this company. */
-  departments: number;
-}
-
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -358,7 +342,6 @@ export interface IStorage {
   getOperationalCompany(): Promise<Company | undefined>;
   createCompany(company: InsertCompany): Promise<Company>;
   updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
-  getCompanyDeletionBlockers(id: string): Promise<CompanyDeletionBlockers>;
   deleteCompany(id: string): Promise<void>;
 
   getLocation(id: string): Promise<Location | undefined>;
@@ -2674,26 +2657,49 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async getCompanyDeletionBlockers(id: string): Promise<CompanyDeletionBlockers> {
-    const [emp, payee, loc, dept] = await Promise.all([
-      db.select({ value: count() }).from(users).where(eq(users.companyId, id)),
-      db
-        .select({ value: count() })
-        .from(userEmploymentProfiles)
-        .where(eq(userEmploymentProfiles.payrollCompanyId, id)),
-      db.select({ value: count() }).from(locations).where(eq(locations.companyId, id)),
-      db.select({ value: count() }).from(departments).where(eq(departments.companyId, id)),
-    ]);
-    return {
-      employees: emp[0]?.value ?? 0,
-      payrollPayeeFor: payee[0]?.value ?? 0,
-      locations: loc[0]?.value ?? 0,
-      departments: dept[0]?.value ?? 0,
-    };
-  }
-
+  /**
+   * Delete a company, unassigning everything that points at it first so the
+   * delete always succeeds (per the owner's spec: deleting a company unassigns
+   * its employees and leaves them unassigned — it never blocks on "in use").
+   *
+   * Every NULLABLE column that references companies(id) is set to NULL in one
+   * transaction (employees' home company + payroll company, and all the
+   * optional company-scoping columns), discovered from the DB catalog so a
+   * table added later is handled automatically. Join rows that cascade on
+   * delete (location_companies) clear themselves. The one hard FK that can't be
+   * nulled is locations.company_id (NOT NULL, no cascade); in this data model
+   * only the operational company owns locations and the route guards that, so
+   * if it ever trips, the FK error surfaces to the caller rather than silently
+   * destroying a location.
+   */
   async deleteCompany(id: string): Promise<void> {
-    await db.delete(companies).where(eq(companies.id, id));
+    await db.transaction(async (tx) => {
+      const refs = await tx.execute(sql`
+        SELECT (con.conrelid::regclass)::text AS tbl,
+               att.attname                     AS col,
+               att.attnotnull                  AS notnull
+        FROM pg_constraint con
+        JOIN pg_attribute att
+          ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
+        WHERE con.contype = 'f'
+          AND con.confrelid = 'companies'::regclass
+          AND cardinality(con.conkey) = 1
+      `);
+      const rows = ((refs as any).rows ?? refs) as Array<{
+        tbl: string; col: string; notnull: boolean;
+      }>;
+      for (const r of rows) {
+        // Can't NULL a NOT NULL column; those are either cascade join rows
+        // (handled by the delete) or the guarded locations FK.
+        if (r.notnull) continue;
+        const colIdent = sql.raw(`"${r.col.replace(/"/g, '""')}"`);
+        // r.tbl comes from regclass — already a safe, quoted identifier.
+        await tx.execute(
+          sql`UPDATE ${sql.raw(r.tbl)} SET ${colIdent} = NULL WHERE ${colIdent} = ${id}`,
+        );
+      }
+      await tx.delete(companies).where(eq(companies.id, id));
+    });
   }
 
   async getRole(id: string): Promise<Role | undefined> {

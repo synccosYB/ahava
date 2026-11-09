@@ -2555,8 +2555,9 @@ export async function registerRoutes(
     const company = await storage.getCompany(id);
     if (!company) return res.status(404).json({ message: "Company not found" });
 
-    // Guard the single operational company (every employee belongs to it); it can
-    // never be deleted, however the data is shaped.
+    // Guard the single operational company (every employee belongs to it, and it
+    // drives clock-in scoping + payroll resolution); deleting it would orphan the
+    // whole workforce, so it's the one company that can't be removed.
     const operational = await storage.getOperationalCompany();
     if (operational && operational.id === id) {
       return res.status(409).json({
@@ -2564,28 +2565,16 @@ export async function registerRoutes(
       });
     }
 
-    // Explain FK blockers instead of returning a raw Postgres error (500).
-    const b = await storage.getCompanyDeletionBlockers(id);
-    const parts: string[] = [];
-    const plural = (n: number, s: string) => `${n} ${s}${n === 1 ? "" : "s"}`;
-    if (b.employees) parts.push(`${plural(b.employees, "employee")} assigned to it`);
-    if (b.payrollPayeeFor) parts.push(`${plural(b.payrollPayeeFor, "employee")} paid by it`);
-    if (b.locations) parts.push(plural(b.locations, "location"));
-    if (b.departments) parts.push(plural(b.departments, "department"));
-    if (parts.length) {
-      return res.status(409).json({
-        message: `Can't delete "${company.name}" — it's still in use by ${parts.join(", ")}. Reassign or remove those first.`,
-      });
-    }
-
+    // Always delete: storage unassigns every employee (home + payroll company)
+    // and clears all other optional references first, so this doesn't block.
     try {
       await storage.deleteCompany(id);
     } catch (err: any) {
-      // Any reference we didn't explicitly count still trips an FK constraint;
-      // return a clear 409 rather than letting it surface as a 500.
+      // The only reference that can't be auto-unassigned is a location owned by
+      // this company (NOT NULL). Surface a clear 409 rather than a raw 500.
       if (err?.code === "23503") {
         return res.status(409).json({
-          message: `Can't delete "${company.name}" — other records still reference it. Remove those first.`,
+          message: `Can't delete "${company.name}" — it still owns one or more locations. Move or remove those locations first.`,
         });
       }
       throw err;

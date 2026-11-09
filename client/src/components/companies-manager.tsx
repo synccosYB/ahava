@@ -340,9 +340,9 @@ export function CompaniesManager() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete company?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently removes <strong>{deleteTarget?.name}</strong>. You can only
-              delete a company that has no employees, locations, or departments still assigned
-              to it — otherwise the delete is blocked and nothing changes.
+              This permanently removes <strong>{deleteTarget?.name}</strong>. Any employees
+              assigned to it (or paid by it) will be unassigned and left unassigned — their
+              records are kept, just no longer tied to this company.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
