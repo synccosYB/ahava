@@ -4844,7 +4844,9 @@ interface OffboardingChecklistDetail {
 function OffboardingTab({ userId }: { userId: string }) {
   const { toast } = useToast();
   const { has } = usePermissions();
-  const canReinstate = has("system.super_admin");
+  // Mirror deactivation (which requires users.edit) so whoever can offboard an
+  // employee can also reinstate them.
+  const canReinstate = has("users.edit");
   const { data: user } = useQuery<User>({ queryKey: ["/api/users", userId] });
   const { data: checklist, isLoading } = useQuery<OffboardingChecklistDetail | null>({
     queryKey: ["/api/offboarding-checklists/by-employee", userId],
@@ -4910,8 +4912,8 @@ function OffboardingTab({ userId }: { userId: string }) {
   });
 
   // When an employee is deactivated, offer a one-click reinstate (clears the
-  // termination so they're active again). Super-admin only, matching the
-  // reactivate endpoint.
+  // termination so they're active again). Available to anyone who can edit
+  // users, matching who can deactivate.
   const reinstateButton = canReinstate && user?.deactivatedAt ? (
     <Button
       variant="default"

@@ -13377,8 +13377,14 @@ export async function registerRoutes(
     res.json(updated);
   });
 
-  app.post("/api/users/:id/reactivate", requireAuth, async (req, res) => {
-    if (!isSuperAdmin(req)) return res.status(403).json({ message: "Only super admin can reactivate users" });
+  // Reinstate (reverse a termination). Gated on users.edit to mirror deactivation
+  // (POST /api/offboarding-checklists/:id/deactivate), so whoever can deactivate
+  // an employee can bring them back. The super-admin account itself may only be
+  // reactivated by a super admin.
+  app.post("/api/users/:id/reactivate", requireAuth, requirePermission("users.edit"), async (req, res) => {
+    if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+      return res.status(403).json({ message: "Only a super admin can reactivate the super-admin account" });
+    }
     const u = await storage.getUser(String(req.params.id));
     if (!u) return res.status(404).json({ message: "User not found" });
     const updated = await storage.clearUserDeactivated(String(req.params.id));
