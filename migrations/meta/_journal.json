@@ -568,6 +568,13 @@
       "when": 1780500100000,
       "tag": "0080_require_lunch_break",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1780500200000,
+      "tag": "0081_exact_time_no_rounding",
+      "breakpoints": true
     }
   ]
 }
