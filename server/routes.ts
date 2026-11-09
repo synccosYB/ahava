@@ -2551,9 +2551,34 @@ export async function registerRoutes(
   });
 
   app.delete("/api/companies/:id", requireAuth, requirePermission("company.delete"), async (req, res) => {
-    const company = await storage.getCompany(String(req.params.id));
+    const id = String(req.params.id);
+    const company = await storage.getCompany(id);
     if (!company) return res.status(404).json({ message: "Company not found" });
-    await storage.deleteCompany(String(req.params.id));
+
+    // Guard the single operational company (every employee belongs to it, and it
+    // drives clock-in scoping + payroll resolution); deleting it would orphan the
+    // whole workforce, so it's the one company that can't be removed.
+    const operational = await storage.getOperationalCompany();
+    if (operational && operational.id === id) {
+      return res.status(409).json({
+        message: `"${company.name}" is your operational company — every employee belongs to it, so it can't be deleted.`,
+      });
+    }
+
+    // Always delete: storage unassigns every employee (home + payroll company)
+    // and clears all other optional references first, so this doesn't block.
+    try {
+      await storage.deleteCompany(id);
+    } catch (err: any) {
+      // The only reference that can't be auto-unassigned is a location owned by
+      // this company (NOT NULL). Surface a clear 409 rather than a raw 500.
+      if (err?.code === "23503") {
+        return res.status(409).json({
+          message: `Can't delete "${company.name}" — it still owns one or more locations. Move or remove those locations first.`,
+        });
+      }
+      throw err;
+    }
     res.status(204).send();
   });
 

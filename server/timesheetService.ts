@@ -248,6 +248,26 @@ export async function buildEmployeeTimesheet(
         }
       }
 
+      // At Ahava a lunch/break is taken by clocking OUT and back IN, so the real
+      // break for the day is the time spent clocked out BETWEEN punches (the gap
+      // from one punch-out to the next punch-in) — not the per-punch breakMinutes
+      // field (which stays 0 for ordinary punch pairs). Add that gap time so a
+      // normal out-for-lunch / back-in day shows its break length (e.g. 30 min),
+      // on top of any explicit within-punch break already summed above.
+      const completedForGaps = datePunches
+        .filter((p) => p.clockIn && p.clockOut && p.status !== MISSING_CLOCKOUT_STATUS)
+        .map((p) => ({
+          inMs: new Date(p.clockIn as unknown as string).getTime(),
+          outMs: new Date(p.clockOut as unknown as string).getTime(),
+        }))
+        .sort((a, b) => a.inMs - b.inMs);
+      let gapMinutes = 0;
+      for (let i = 0; i < completedForGaps.length - 1; i++) {
+        const gapMs = completedForGaps[i + 1].inMs - completedForGaps[i].outMs;
+        if (gapMs > 0) gapMinutes += gapMs / 60000;
+      }
+      breakMin += Math.round(gapMinutes);
+
       // Hours + combined overtime come straight from the ledger row for this
       // day (the materialized engine split). Fall back to the raw worked-hours
       // sum only for a zero/edge day the ledger doesn't persist a row for.

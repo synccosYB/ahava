@@ -440,7 +440,16 @@ function registerAdminRoutes(app: Express): void {
   // `?filter=not-enrolled` limits it to employees with zero fingerprints.
   app.get("/api/fingerprint-enrollment-status", requireAuth, requirePermission("kiosk.manage"), async (req: any, res) => {
     const actor = req.authUser as { companyId?: string | null };
-    const rows = await adms.getFingerprintEnrollmentStatus(actor?.companyId ?? null);
+    const allRows = await adms.getFingerprintEnrollmentStatus(actor?.companyId ?? null);
+    // Search by location: accept comma-separated location ids (locationId or
+    // locationIds). An employee matches if ANY of their locations is selected.
+    const selectedLocations = String(req.query?.locationId ?? req.query?.locationIds ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const rows = selectedLocations.length
+      ? allRows.filter((r) => r.locationIds.some((id) => selectedLocations.includes(id)))
+      : allRows;
     const notEnrolledOnly = String(req.query?.filter ?? "") === "not-enrolled";
     const list = notEnrolledOnly ? rows.filter((r) => r.fingerCount === 0) : rows;
     const fullName = (r: (typeof rows)[number]) => `${r.firstName ?? ""} ${r.lastName ?? ""}`.trim();
@@ -450,8 +459,8 @@ function registerAdminRoutes(app: Express): void {
         const s = v == null ? "" : String(v);
         return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
       };
-      const header = ["Employee Number", "Name", "Role", "Fingerprints enrolled"];
-      const body = list.map((r) => [r.employeeNumber ?? "", fullName(r), r.role, r.fingerCount].map(esc).join(","));
+      const header = ["Employee Number", "Name", "Role", "Location", "Fingerprints enrolled"];
+      const body = list.map((r) => [r.employeeNumber ?? "", fullName(r), r.role, r.locationName ?? "", r.fingerCount].map(esc).join(","));
       const csv = [header.join(","), ...body].join("\r\n");
       const fname = notEnrolledOnly ? "fingerprints-not-enrolled" : "fingerprint-enrollment";
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
@@ -467,7 +476,11 @@ function registerAdminRoutes(app: Express): void {
         role: r.role,
         fingerCount: r.fingerCount,
         enrolled: r.fingerCount > 0,
+        locationId: r.locationId,
+        locationName: r.locationName,
+        locationIds: r.locationIds,
       })),
+      // Totals reflect the current location scope so the summary matches the list.
       total: rows.length,
       enrolled: rows.filter((r) => r.fingerCount > 0).length,
       notEnrolled: rows.filter((r) => r.fingerCount === 0).length,

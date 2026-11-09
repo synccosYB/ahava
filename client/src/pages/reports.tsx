@@ -842,6 +842,9 @@ type EnrollmentStatus = {
     role: string;
     fingerCount: number;
     enrolled: boolean;
+    locationId: string | null;
+    locationName: string | null;
+    locationIds: string[];
   }>;
   total: number;
   enrolled: number;
@@ -853,11 +856,24 @@ type EnrollmentStatus = {
 function FingerprintEnrollmentReport() {
   const { toast } = useToast();
   const [notEnrolledOnly, setNotEnrolledOnly] = useState(true);
+  const [locationIds, setLocationIds] = useState<string[]>([]);
   const [downloading, setDownloading] = useState(false);
 
+  // Reuse the shared reports filter options for the location list.
+  const { data: filterOptions } = useQuery<FilterOptions>({
+    queryKey: ["/api/reports/filter-options"],
+  });
+  const locationOptions = useMemo(
+    () => (filterOptions?.locations ?? []).map((l) => ({ label: l.name, value: l.id })),
+    [filterOptions],
+  );
+
+  // Search by location is applied server-side so the totals + CSV match the list.
+  const locationParam = locationIds.length ? `?locationId=${encodeURIComponent(locationIds.join(","))}` : "";
   const query = useQuery<EnrollmentStatus>({
-    queryKey: ["/api/fingerprint-enrollment-status"],
-    queryFn: () => apiRequest("GET", "/api/fingerprint-enrollment-status").then((r) => r.json()),
+    queryKey: ["/api/fingerprint-enrollment-status", locationIds],
+    queryFn: () =>
+      apiRequest("GET", `/api/fingerprint-enrollment-status${locationParam}`).then((r) => r.json()),
   });
 
   const rows = (query.data?.employees ?? []).filter((e) => (notEnrolledOnly ? !e.enrolled : true));
@@ -865,7 +881,10 @@ function FingerprintEnrollmentReport() {
   const downloadCSV = async () => {
     setDownloading(true);
     try {
-      const url = `/api/fingerprint-enrollment-status?format=csv${notEnrolledOnly ? "&filter=not-enrolled" : ""}`;
+      const params = new URLSearchParams({ format: "csv" });
+      if (notEnrolledOnly) params.set("filter", "not-enrolled");
+      if (locationIds.length) params.set("locationId", locationIds.join(","));
+      const url = `/api/fingerprint-enrollment-status?${params.toString()}`;
       const res = await apiRequest("GET", url);
       const blob = await res.blob();
       const href = URL.createObjectURL(blob);
@@ -888,6 +907,18 @@ function FingerprintEnrollmentReport() {
           <CardTitle className="text-base">Fingerprint Enrollment</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="w-full max-w-sm space-y-2">
+            <Label>Location</Label>
+            <MultiSelect
+              options={locationOptions}
+              selected={locationIds}
+              onChange={setLocationIds}
+              placeholder="All locations"
+              allLabel="All locations"
+              searchPlaceholder="Search locations..."
+              data-testid="multiselect-fingerprint-location"
+            />
+          </div>
           <div className="flex flex-wrap items-center gap-4">
             <label className="flex items-center gap-2 text-sm cursor-pointer select-none" data-testid="toggle-not-enrolled-only">
               <Checkbox checked={notEnrolledOnly} onCheckedChange={(v) => setNotEnrolledOnly(!!v)} />
@@ -923,6 +954,7 @@ function FingerprintEnrollmentReport() {
                   <TableHead>Employee #</TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>Role</TableHead>
+                  <TableHead>Location</TableHead>
                   <TableHead>Fingerprints</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow>
@@ -933,6 +965,7 @@ function FingerprintEnrollmentReport() {
                     <TableCell className="tabular-nums">{e.employeeNumber || "—"}</TableCell>
                     <TableCell className="font-medium">{e.name}</TableCell>
                     <TableCell className="capitalize">{e.role}</TableCell>
+                    <TableCell>{e.locationName || "—"}</TableCell>
                     <TableCell className="tabular-nums">{e.fingerCount}</TableCell>
                     <TableCell>
                       {e.enrolled ? (
