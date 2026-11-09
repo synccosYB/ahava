@@ -412,8 +412,11 @@ export async function getApplicablePolicies(user: User): Promise<ApplicablePolic
 
 export const DEFAULT_ATTENDANCE_RULES = {
   gracePeriodMinutes: 5,
-  roundingRule: "nearest_15",
-  roundingIntervalMinutes: 15,
+  // Exact time: punches are NOT rounded. Worked hours equal the actual clocked
+  // span (clock-out − clock-in − breaks) to the minute, so a 9:11→1:23 day is
+  // 4h12m, not a rounded 4h15m. (Per the owner — no quarter-hour rounding.)
+  roundingRule: "none",
+  roundingIntervalMinutes: 0,
   otThresholdDaily: 8,
   otThresholdWeekly: 40,
   weeklyOvertimeEnabled: true,
