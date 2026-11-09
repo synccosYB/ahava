@@ -80,7 +80,7 @@ const ADMIN_TIER_PERMISSIONS = new Set<string>([
   "company.create", "company.edit", "company.delete",
   "users.create", "users.edit", "users.deactivate", "users.delete",
   "departments.create", "departments.edit", "departments.delete",
-  "attendance.view_all", "attendance.manage_rules",
+  "attendance.manage_rules",
   "pto.view_all", "pto.manage_policies",
   "payroll.view_all", "payroll.manage", "payroll.export",
   "policies.manage",
@@ -95,6 +95,13 @@ const ADMIN_TIER_PERMISSIONS = new Set<string>([
 
 const MANAGER_TIER_PERMISSIONS = new Set<string>([
   "attendance.view_team",
+  // Viewing all attendance is a timesheet-reviewer ("bookkeeper") capability, not
+  // full admin. Keeping it out of the admin tier lets a reviewer hold it without
+  // being promoted to admin (which would expose the Employees/Payroll pages and
+  // pay rates). This is what makes the sidebar's non-admin bookkeeper view
+  // reachable. A real admin still resolves to admin via their other permissions
+  // (users.*, payroll.*, roles.manage, …).
+  "attendance.view_all",
   "attendance.edit",
   "attendance.approve_corrections",
   "pto.view_team",

@@ -85,6 +85,28 @@ export const requirePermission = (key: string): RequestHandler => {
   };
 };
 
+// Allow the request when the user holds ANY of the listed permissions (or is a
+// super admin). Used where one page is reachable by more than one role — e.g.
+// the Time Sheet Review (reports) endpoints, open to both report viewers
+// (reports.view) and bookkeepers (attendance.view_all).
+export const requireAnyPermission = (...keys: string[]): RequestHandler => {
+  return async (req, res, next) => {
+    const user = (req as any).authUser;
+    if (!user) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const effectivePerms = await resolveUserPermissions(user.id);
+    const allowed = effectivePerms.has("system.super_admin") || keys.some((k) => effectivePerms.has(k));
+    if (!allowed) {
+      return res.status(403).json({ message: "Forbidden: missing permission " + keys.join(" or ") });
+    }
+
+    (req as any).userPermissions = effectivePerms;
+    next();
+  };
+};
+
 export type ScopeType = "division" | "company" | "location" | "department";
 
 export async function resolveUserScopes(

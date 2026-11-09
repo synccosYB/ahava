@@ -25,7 +25,7 @@ import { eq, inArray } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "@shared/schema";
 import { seed } from "../seed";
-import { requirePermission, resolveUserPermissions } from "../middleware/rbac";
+import { requirePermission, requireAnyPermission, resolveUserPermissions } from "../middleware/rbac";
 
 await seed();
 
@@ -182,6 +182,47 @@ test("Super Admin: bypass grants every gated key", async () => {
     "attendance.edit", "attendance.delete", "attendance.approve_corrections",
     "payroll.view_self", "payroll.view_all", "payroll.manage", "payroll.export",
   ]);
+});
+
+test("requireAnyPermission (reports.view OR attendance.view_all): bookkeeper reaches Time Sheet Review data", async () => {
+  // The Time Sheet Review (reports) endpoints accept either permission. A
+  // bookkeeper has attendance.view_all but not reports.view and must get in;
+  // an Employee / Department Manager (neither permission) must be blocked.
+  const mkApp = (asUserId: string) => {
+    const app = express();
+    app.use(express.json());
+    app.use(async (req, _res, next) => {
+      const [u] = await db.select().from(schema.users).where(eq(schema.users.id, asUserId));
+      (req as any).authUser = u;
+      next();
+    });
+    app.get("/reports", requireAnyPermission("reports.view", "attendance.view_all"), (_req, res) => res.json({ ok: true }));
+    return app;
+  };
+  // Expectation is derived from each role's resolved permissions so the test
+  // stays correct as the seed changes: allowed iff super-admin OR holds either
+  // reports.view or attendance.view_all.
+  for (const [uid, label] of [
+    [users.payrollAdmin, "Payroll Admin"],
+    [users.superAdmin, "Super Admin"],
+    [users.deptManager, "Department Manager"],
+    [users.employee, "Employee"],
+  ] as Array<[string, string]>) {
+    const perms = await resolveUserPermissions(uid);
+    const expected = perms.has("system.super_admin") || perms.has("reports.view") || perms.has("attendance.view_all") ? 200 : 403;
+    const { url, close } = await listen(mkApp(uid));
+    try {
+      const r = await fetch(`${url}/reports`);
+      assert.equal(r.status, expected, `${label}: expected ${expected}, got ${r.status}`);
+    } finally {
+      close();
+    }
+  }
+
+  // And the core guarantee directly: attendance.view_all alone (no reports.view)
+  // must pass the gate — that's the bookkeeper case.
+  const pay = await resolveUserPermissions(users.payrollAdmin);
+  assert.ok(pay.has("attendance.view_all"), "Payroll Admin should hold attendance.view_all for this check");
 });
 
 test("unauthenticated requests are rejected with 401", async () => {

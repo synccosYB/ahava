@@ -2174,6 +2174,26 @@ function EmployeeProfile({
     },
   });
 
+  // Account access level (admin / manager / employee). This is the flat
+  // users.role that gates the admin sidebar (Employees, Payroll, Reports — where
+  // pay lives), separate from the assigned RBAC roles below. Lets you downgrade
+  // an employee who was created as Admin without touching their roles.
+  const setAccessLevelMutation = useMutation({
+    mutationFn: async (role: string) => {
+      await apiRequest("PATCH", `/api/users/${userId}/role`, { role });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/permissions"] });
+      toast({ title: "Access level updated", description: "Have them log out and back in to apply it." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const { data: assignableRoles = [] } = useQuery<{ id: string; name: string }[]>({
     queryKey: ["/api/users", userId, "assignable-roles"],
     queryFn: async () => {
@@ -2700,6 +2720,29 @@ function EmployeeProfile({
                   <p className="font-medium" data-testid="text-profile-email">{user?.email || "—"}</p>
                 )}
               </div>
+              {hasPermission("users.edit") && (
+                <div>
+                  <Label className="text-muted-foreground text-xs">Access level</Label>
+                  <Select
+                    value={user?.role ?? "employee"}
+                    onValueChange={(v) => setAccessLevelMutation.mutate(v)}
+                    disabled={setAccessLevelMutation.isPending}
+                  >
+                    <SelectTrigger className="mt-1" data-testid="select-profile-access-level">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="employee">Employee</SelectItem>
+                      <SelectItem value="manager">Manager</SelectItem>
+                      <SelectItem value="admin">Admin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Controls what they can see. Only Admin sees the Employees, Payroll and Reports
+                    pages (and pay rates). A timesheet reviewer should be Employee or Manager.
+                  </p>
+                </div>
+              )}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <Label className="text-muted-foreground text-xs">Role</Label>
@@ -4844,7 +4887,9 @@ interface OffboardingChecklistDetail {
 function OffboardingTab({ userId }: { userId: string }) {
   const { toast } = useToast();
   const { has } = usePermissions();
-  const canReinstate = has("system.super_admin");
+  // Mirror deactivation (which requires users.edit) so whoever can offboard an
+  // employee can also reinstate them.
+  const canReinstate = has("users.edit");
   const { data: user } = useQuery<User>({ queryKey: ["/api/users", userId] });
   const { data: checklist, isLoading } = useQuery<OffboardingChecklistDetail | null>({
     queryKey: ["/api/offboarding-checklists/by-employee", userId],
@@ -4910,8 +4955,8 @@ function OffboardingTab({ userId }: { userId: string }) {
   });
 
   // When an employee is deactivated, offer a one-click reinstate (clears the
-  // termination so they're active again). Super-admin only, matching the
-  // reactivate endpoint.
+  // termination so they're active again). Available to anyone who can edit
+  // users, matching who can deactivate.
   const reinstateButton = canReinstate && user?.deactivatedAt ? (
     <Button
       variant="default"
