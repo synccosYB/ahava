@@ -2551,9 +2551,45 @@ export async function registerRoutes(
   });
 
   app.delete("/api/companies/:id", requireAuth, requirePermission("company.delete"), async (req, res) => {
-    const company = await storage.getCompany(String(req.params.id));
+    const id = String(req.params.id);
+    const company = await storage.getCompany(id);
     if (!company) return res.status(404).json({ message: "Company not found" });
-    await storage.deleteCompany(String(req.params.id));
+
+    // Guard the single operational company (every employee belongs to it); it can
+    // never be deleted, however the data is shaped.
+    const operational = await storage.getOperationalCompany();
+    if (operational && operational.id === id) {
+      return res.status(409).json({
+        message: `"${company.name}" is your operational company — every employee belongs to it, so it can't be deleted.`,
+      });
+    }
+
+    // Explain FK blockers instead of returning a raw Postgres error (500).
+    const b = await storage.getCompanyDeletionBlockers(id);
+    const parts: string[] = [];
+    const plural = (n: number, s: string) => `${n} ${s}${n === 1 ? "" : "s"}`;
+    if (b.employees) parts.push(`${plural(b.employees, "employee")} assigned to it`);
+    if (b.payrollPayeeFor) parts.push(`${plural(b.payrollPayeeFor, "employee")} paid by it`);
+    if (b.locations) parts.push(plural(b.locations, "location"));
+    if (b.departments) parts.push(plural(b.departments, "department"));
+    if (parts.length) {
+      return res.status(409).json({
+        message: `Can't delete "${company.name}" — it's still in use by ${parts.join(", ")}. Reassign or remove those first.`,
+      });
+    }
+
+    try {
+      await storage.deleteCompany(id);
+    } catch (err: any) {
+      // Any reference we didn't explicitly count still trips an FK constraint;
+      // return a clear 409 rather than letting it surface as a 500.
+      if (err?.code === "23503") {
+        return res.status(409).json({
+          message: `Can't delete "${company.name}" — other records still reference it. Remove those first.`,
+        });
+      }
+      throw err;
+    }
     res.status(204).send();
   });
 

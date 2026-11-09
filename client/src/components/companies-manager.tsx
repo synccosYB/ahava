@@ -14,7 +14,11 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
-import { Building2, Plus, Pencil, CheckCircle2 } from "lucide-react";
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
+} from "@/components/ui/alert-dialog";
+import { Building2, Plus, Pencil, Trash2, CheckCircle2 } from "lucide-react";
 import { GoogleMapsIconLink, AddressAutocompleteInput } from "@/lib/googleMaps";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useActiveCompany } from "@/hooks/use-active-company";
@@ -48,10 +52,12 @@ export function CompaniesManager() {
   const { companies, isLoading, activeCompanyId, setActiveCompanyId } = useActiveCompany();
   const canCreate = has("company.create");
   const canEdit = has("company.edit");
+  const canDelete = has("company.delete");
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<CompanyForm>(emptyForm());
+  const [deleteTarget, setDeleteTarget] = useState<Company | null>(null);
 
   const openCreate = () => {
     setEditingId(null);
@@ -104,6 +110,25 @@ export function CompaniesManager() {
         return;
       }
       toast({ title: "Error", description: msg, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/companies/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+      setDeleteTarget(null);
+      toast({ title: "Company deleted" });
+    },
+    onError: (err: Error) => {
+      // The server explains FK blockers (employees/locations/etc.) and refusal to
+      // delete the operational company as readable messages — surface them as-is.
+      const raw = err.message || "Could not delete the company.";
+      // apiRequest prefixes "<status>: <body>" — strip a leading status code.
+      const msg = raw.replace(/^\d+:\s*/, "");
+      toast({ title: "Can't delete company", description: msg, variant: "destructive" });
     },
   });
 
@@ -189,16 +214,29 @@ export function CompaniesManager() {
                       {company.email || "—"}
                     </TableCell>
                     <TableCell className="text-right">
-                      {canEdit && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openEdit(company)}
-                          data-testid={`button-edit-company-${company.id}`}
-                        >
-                          <Pencil className="h-4 w-4 mr-1" /> Edit
-                        </Button>
-                      )}
+                      <div className="flex items-center justify-end gap-2">
+                        {canEdit && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openEdit(company)}
+                            data-testid={`button-edit-company-${company.id}`}
+                          >
+                            <Pencil className="h-4 w-4 mr-1" /> Edit
+                          </Button>
+                        )}
+                        {canDelete && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => setDeleteTarget(company)}
+                            data-testid={`button-delete-company-${company.id}`}
+                          >
+                            <Trash2 className="h-4 w-4 mr-1" /> Delete
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
@@ -296,6 +334,33 @@ export function CompaniesManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent data-testid="dialog-delete-company">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete company?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes <strong>{deleteTarget?.name}</strong>. You can only
+              delete a company that has no employees, locations, or departments still assigned
+              to it — otherwise the delete is blocked and nothing changes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete-company">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (deleteTarget) deleteMutation.mutate(deleteTarget.id);
+              }}
+              data-testid="button-confirm-delete-company"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete company"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

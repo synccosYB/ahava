@@ -324,6 +324,22 @@ export interface UsersPageOptions {
   offset: number;
 }
 
+/**
+ * Counts of the records that still reference a company and would block its
+ * deletion (a raw delete would throw a Postgres FK violation). Surfaced so the
+ * delete endpoint can explain *why* it refused instead of returning a 500.
+ */
+export interface CompanyDeletionBlockers {
+  /** Employees whose home company is this one (users.companyId). */
+  employees: number;
+  /** Employees paid by this company (employment profile payrollCompanyId). */
+  payrollPayeeFor: number;
+  /** Locations belonging to this company. */
+  locations: number;
+  /** Departments belonging to this company. */
+  departments: number;
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -342,6 +358,7 @@ export interface IStorage {
   getOperationalCompany(): Promise<Company | undefined>;
   createCompany(company: InsertCompany): Promise<Company>;
   updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined>;
+  getCompanyDeletionBlockers(id: string): Promise<CompanyDeletionBlockers>;
   deleteCompany(id: string): Promise<void>;
 
   getLocation(id: string): Promise<Location | undefined>;
@@ -2655,6 +2672,24 @@ export class DatabaseStorage implements IStorage {
   async updateCompany(id: string, company: Partial<InsertCompany>): Promise<Company | undefined> {
     const [updated] = await db.update(companies).set(company).where(eq(companies.id, id)).returning();
     return updated;
+  }
+
+  async getCompanyDeletionBlockers(id: string): Promise<CompanyDeletionBlockers> {
+    const [emp, payee, loc, dept] = await Promise.all([
+      db.select({ value: count() }).from(users).where(eq(users.companyId, id)),
+      db
+        .select({ value: count() })
+        .from(userEmploymentProfiles)
+        .where(eq(userEmploymentProfiles.payrollCompanyId, id)),
+      db.select({ value: count() }).from(locations).where(eq(locations.companyId, id)),
+      db.select({ value: count() }).from(departments).where(eq(departments.companyId, id)),
+    ]);
+    return {
+      employees: emp[0]?.value ?? 0,
+      payrollPayeeFor: payee[0]?.value ?? 0,
+      locations: loc[0]?.value ?? 0,
+      departments: dept[0]?.value ?? 0,
+    };
   }
 
   async deleteCompany(id: string): Promise<void> {
