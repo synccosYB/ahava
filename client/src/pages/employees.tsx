@@ -4843,6 +4843,8 @@ interface OffboardingChecklistDetail {
 
 function OffboardingTab({ userId }: { userId: string }) {
   const { toast } = useToast();
+  const { has } = usePermissions();
+  const canReinstate = has("system.super_admin");
   const { data: user } = useQuery<User>({ queryKey: ["/api/users", userId] });
   const { data: checklist, isLoading } = useQuery<OffboardingChecklistDetail | null>({
     queryKey: ["/api/offboarding-checklists/by-employee", userId],
@@ -4896,6 +4898,32 @@ function OffboardingTab({ userId }: { userId: string }) {
     },
   });
 
+  const reactivateMut = useMutation({
+    mutationFn: async () => apiRequest("POST", `/api/users/${userId}/reactivate`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] });
+      toast({ title: "Employee reinstated", description: "The account is active again." });
+    },
+    onError: (e: unknown) => toast({ title: "Failed to reinstate", description: getErrorMessage(e), variant: "destructive" }),
+  });
+
+  // When an employee is deactivated, offer a one-click reinstate (clears the
+  // termination so they're active again). Super-admin only, matching the
+  // reactivate endpoint.
+  const reinstateButton = canReinstate && user?.deactivatedAt ? (
+    <Button
+      variant="default"
+      size="sm"
+      onClick={() => reactivateMut.mutate()}
+      disabled={reactivateMut.isPending}
+      data-testid="button-reinstate-employee"
+    >
+      {reactivateMut.isPending ? "Reinstating..." : "Reinstate employee"}
+    </Button>
+  ) : null;
+
   if (isLoading) return <Skeleton className="h-32 w-full" />;
 
   if (!checklist) {
@@ -4904,7 +4932,12 @@ function OffboardingTab({ userId }: { userId: string }) {
       <Card data-testid="card-offboarding-tab">
         <CardHeader><CardTitle>Offboarding</CardTitle></CardHeader>
         <CardContent className="space-y-3">
-          {isDeactivated && <p className="text-sm text-destructive">This account is deactivated.</p>}
+          {isDeactivated && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-sm text-destructive">This account is deactivated.</p>
+              {reinstateButton}
+            </div>
+          )}
           <p className="text-sm text-muted-foreground">No offboarding in progress.</p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-2xl">
             <div>
@@ -4940,6 +4973,7 @@ function OffboardingTab({ userId }: { userId: string }) {
           <div className="flex items-center gap-2">
             <Badge variant="secondary" data-testid="text-offboarding-progress">{checklist.progress.progressPct}% — {checklist.progress.completedRequired}/{checklist.progress.totalRequired} required</Badge>
             {checklist.terminationDate && <Badge variant="outline">Termination: {formatDate(checklist.terminationDate)}</Badge>}
+            {reinstateButton}
             {!isCompleted && (
               <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
                 <DialogTrigger asChild>
