@@ -539,9 +539,15 @@ export default function EmployeesPage() {
                         <Badge variant="outline">{taxClassByUser.get(emp.id) || "W-2"}</Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="default" className="bg-green-600" data-testid={`badge-employee-status-${emp.id}`}>
-                          Active
-                        </Badge>
+                        {emp.deactivatedAt ? (
+                          <Badge variant="outline" className="text-muted-foreground border-muted-foreground/40" data-testid={`badge-employee-status-${emp.id}`}>
+                            Inactive
+                          </Badge>
+                        ) : (
+                          <Badge variant="default" className="bg-green-600" data-testid={`badge-employee-status-${emp.id}`}>
+                            Active
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell>
                         <ChevronRight className="h-4 w-4 text-muted-foreground" />
