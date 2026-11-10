@@ -11,6 +11,8 @@ import { MultiSelect } from "@/components/ui/multi-select";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -22,14 +24,12 @@ import { OverlongShiftReconcileCard } from "@/components/overlong-shift-reconcil
 import { TodaysClockOutsCard } from "@/components/todays-clockouts-card";
 import { LongShiftApprovalsCard } from "@/components/long-shift-approvals-card";
 import { usePermissions } from "@/hooks/use-permissions";
-import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange, RefreshCw } from "lucide-react";
-import { formatHoursMinutes } from "@/lib/utils";
+import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange, RefreshCw, Save, CalendarDays } from "lucide-react";
+import { formatHoursMinutes, formatDate } from "@/lib/utils";
+import { formatRangeLabel } from "@/lib/payroll-week";
 import {
-  currentWeek, currentBiWeek, shiftWeeks, formatRangeLabel, type DateRange,
-} from "@/lib/payroll-week";
-
-type ViewMode = "weekly" | "biweekly";
-type PeriodScope = "current" | "current_plus_last";
+  type Period, PERIOD_LABELS, PERIOD_KEYS, rangeForPeriod, ymdLocal, ymdToDate,
+} from "@/lib/timesheet-period";
 
 type FilterOptions = {
   employees: { id: string; name: string }[];
@@ -54,42 +54,71 @@ function isTimeResult(data: unknown): data is TimeResult {
   );
 }
 
-// Per-account defaults for this page, remembered in the browser (guarded).
-type Prefs = { viewMode: ViewMode; scope: PeriodScope; locationIds: string[]; departmentIds: string[]; employeeIds: string[] };
+// Per-account saved default for this page, remembered in the browser (guarded).
+// `savedDefault` is set only when the user presses "Save as default" — then the
+// page auto-runs that search next time it opens (without it, the page waits for
+// an explicit Apply so it doesn't load everyone).
+type Prefs = { period: Period; customStart: string; customEnd: string; locationIds: string[]; departmentIds: string[]; employeeIds: string[]; savedDefault: boolean };
 function prefKey(userId: string | undefined) {
   return `ahava.timesheetReview.prefs.${userId ?? "anon"}`;
 }
 function loadPrefs(userId: string | undefined): Prefs {
-  const fallback: Prefs = { viewMode: "weekly", scope: "current", locationIds: [], departmentIds: [], employeeIds: [] };
+  const fallback: Prefs = { period: "this_week", customStart: "", customEnd: "", locationIds: [], departmentIds: [], employeeIds: [], savedDefault: false };
   try {
     const raw = localStorage.getItem(prefKey(userId));
     if (!raw) return fallback;
     const p = JSON.parse(raw);
+    const period: Period = (PERIOD_LABELS as Record<string, string>)[p.period] ? p.period : "this_week";
     return {
-      viewMode: p.viewMode === "biweekly" ? "biweekly" : "weekly",
-      scope: p.scope === "current_plus_last" ? "current_plus_last" : "current",
+      period,
+      customStart: typeof p.customStart === "string" ? p.customStart : "",
+      customEnd: typeof p.customEnd === "string" ? p.customEnd : "",
       locationIds: Array.isArray(p.locationIds) ? p.locationIds : [],
       departmentIds: Array.isArray(p.departmentIds) ? p.departmentIds : [],
       employeeIds: Array.isArray(p.employeeIds) ? p.employeeIds : [],
+      savedDefault: p.savedDefault === true,
     };
   } catch {
     return fallback;
   }
 }
 
-// Map the view mode + scope to an actual Thu–Wed date range.
-function rangeFor(viewMode: ViewMode, scope: PeriodScope): DateRange {
-  const thisWeek = currentWeek();
-  if (viewMode === "weekly") {
-    return scope === "current"
-      ? thisWeek
-      : { start: shiftWeeks(thisWeek, -1).start, end: thisWeek.end }; // current + last week
-  }
-  // bi-weekly
-  const biWeek = currentBiWeek(); // this week + last week
-  return scope === "current"
-    ? biWeek
-    : { start: shiftWeeks(thisWeek, -3).start, end: thisWeek.end }; // current + last bi-weekly payroll (4 weeks)
+
+// A date field that opens a pop-up calendar to pick a specific day.
+function DateField({ label, value, onChange, testId }: {
+  label: string;
+  value: string;
+  onChange: (ymd: string) => void;
+  testId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = ymdToDate(value);
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" className="w-full justify-start font-normal" data-testid={testId}>
+            <CalendarDays className="h-4 w-4 mr-2 opacity-70" />
+            {selected ? formatDate(value) : <span className="text-muted-foreground">Pick a date</span>}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-auto p-0" align="start">
+          <Calendar
+            mode="single"
+            selected={selected}
+            onSelect={(d) => {
+              if (d) {
+                onChange(ymdLocal(d));
+                setOpen(false);
+              }
+            }}
+            initialFocus
+          />
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
 }
 
 export default function TimeSheetReviewPage() {
@@ -99,36 +128,30 @@ export default function TimeSheetReviewPage() {
   const canEdit = has("attendance.edit");
 
   const initial = useMemo(() => loadPrefs(user?.id), [user?.id]);
-  const [viewMode, setViewMode] = useState<ViewMode>(initial.viewMode);
-  const [scope, setScope] = useState<PeriodScope>(initial.scope);
+  const [period, setPeriod] = useState<Period>(initial.period);
+  const [customStart, setCustomStart] = useState<string>(initial.customStart);
+  const [customEnd, setCustomEnd] = useState<string>(initial.customEnd);
   const [locationIds, setLocationIds] = useState<string[]>(initial.locationIds);
   const [departmentIds, setDepartmentIds] = useState<string[]>(initial.departmentIds);
   const [employeeIds, setEmployeeIds] = useState<string[]>(initial.employeeIds);
   const [result, setResult] = useState<TimeResult | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  // Re-apply saved prefs once the user resolves (first load).
-  useEffect(() => {
-    const p = loadPrefs(user?.id);
-    setViewMode(p.viewMode);
-    setScope(p.scope);
-    setLocationIds(p.locationIds);
-    setDepartmentIds(p.departmentIds);
-    setEmployeeIds(p.employeeIds);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  const range = useMemo(() => rangeForPeriod(period, customStart, customEnd), [period, customStart, customEnd]);
 
-  // Persist the current selections as this account's default.
-  useEffect(() => {
+  // "Save as default": persist the current period + filters so next time the
+  // page opens it auto-runs this exact search.
+  const saveAsDefault = () => {
     try {
       localStorage.setItem(
         prefKey(user?.id),
-        JSON.stringify({ viewMode, scope, locationIds, departmentIds, employeeIds }),
+        JSON.stringify({ period, customStart, customEnd, locationIds, departmentIds, employeeIds, savedDefault: true }),
       );
-    } catch { /* ignore */ }
-  }, [user?.id, viewMode, scope, locationIds, departmentIds, employeeIds]);
-
-  const range = useMemo(() => rangeFor(viewMode, scope), [viewMode, scope]);
+      toast({ title: "Saved as your default", description: "This search will run automatically when you open the page." });
+    } catch {
+      toast({ title: "Couldn't save default", variant: "destructive" });
+    }
+  };
 
   const { data: filterOptions } = useQuery<FilterOptions>({
     queryKey: ["/api/reports/filter-options"],
@@ -177,15 +200,22 @@ export default function TimeSheetReviewPage() {
     },
   });
 
-  // No auto-load: the page opens on the filter bar so you choose a location /
-  // department (or employee) and press Apply. This keeps it fast — it no longer
-  // pulls every employee the moment the page opens — and makes the search
-  // explicit. `hasApplied` tracks whether a search has been run yet.
+  // No auto-load by default: the page opens on the filter bar so you choose a
+  // location / department (or employee) and press Apply. This keeps it fast and
+  // makes the search explicit. The ONE exception: if the user pressed "Save as
+  // default", that saved search auto-runs once on open. `hasApplied` tracks
+  // whether a search has been run yet.
   const [hasApplied, setHasApplied] = useState(false);
   const applyFilters = () => {
     setHasApplied(true);
     loadMutation.mutate();
   };
+  useEffect(() => {
+    if (initial.savedDefault && !hasApplied) {
+      applyFilters();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial.savedDefault]);
 
   const rows = result?.rows ?? [];
   const totalHours = rows.reduce((s, r) => s + (r.totalHours || 0), 0);
@@ -204,29 +234,24 @@ export default function TimeSheetReviewPage() {
         <CardContent className="pt-6 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="space-y-2">
-              <Label>View</Label>
-              <Select value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
-                <SelectTrigger data-testid="select-review-view"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="weekly">Weekly</SelectItem>
-                  <SelectItem value="biweekly">Bi-weekly</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
               <Label>Period</Label>
-              <Select value={scope} onValueChange={(v) => setScope(v as PeriodScope)}>
-                <SelectTrigger data-testid="select-review-scope"><SelectValue /></SelectTrigger>
+              <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
+                <SelectTrigger data-testid="select-review-period"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="current">
-                    {viewMode === "biweekly" ? "Current (this + last week)" : "Current week"}
-                  </SelectItem>
-                  <SelectItem value="current_plus_last">
-                    {viewMode === "biweekly" ? "Current + last bi-weekly payroll" : "Current + last week"}
-                  </SelectItem>
+                  {PERIOD_KEYS.map((p) => (
+                    <SelectItem key={p} value={p}>{PERIOD_LABELS[p]}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
+            {period === "custom" ? (
+              <>
+                <DateField label="From" value={customStart} onChange={setCustomStart} testId="date-review-from" />
+                <DateField label="To" value={customEnd} onChange={setCustomEnd} testId="date-review-to" />
+              </>
+            ) : (
+              <div className="hidden lg:block" />
+            )}
             <div className="space-y-2">
               <Label>Location</Label>
               <MultiSelect
@@ -274,10 +299,13 @@ export default function TimeSheetReviewPage() {
                 <RefreshCw className={`h-4 w-4 mr-2 ${loadMutation.isPending ? "animate-spin" : ""}`} /> Refresh
               </Button>
             )}
+            <Button variant="outline" onClick={saveAsDefault} data-testid="button-review-save-default">
+              <Save className="h-4 w-4 mr-2" /> Save as default
+            </Button>
             <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="text-review-range">
               <CalendarRange className="h-4 w-4" /> {formatRangeLabel(range)}
             </span>
-            <span className="text-xs text-muted-foreground">Your view and filters are saved as your default.</span>
+            <span className="text-xs text-muted-foreground">Save as default to auto-run this search next time.</span>
           </div>
         </CardContent>
       </Card>
