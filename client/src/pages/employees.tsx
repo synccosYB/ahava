@@ -135,6 +135,8 @@ export default function EmployeesPage() {
   const [importPunchesOpen, setImportPunchesOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
+  // A→Z (default) or Z→A by name. Server-side so it holds across all pages.
+  const [sortOrder, setSortOrder] = useState<"name_asc" | "name_desc">("name_asc");
   const { user: currentUser } = useAuth();
   const { has: hasPermission } = usePermissions();
   const canDelete = hasPermission("users.delete");
@@ -158,11 +160,12 @@ export default function EmployeesPage() {
   if (appliedCompanyIds.length) usersParams.set("companyIds", appliedCompanyKey);
   if (appliedTaxClasses.length) usersParams.set("taxClasses", appliedTaxKey);
   if (appliedCertStatuses.length) usersParams.set("certStatuses", appliedCertKey);
+  usersParams.set("sort", sortOrder);
   usersParams.set("limit", String(pageSize));
   usersParams.set("offset", String(page * pageSize));
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
-    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, page, pageSize],
+    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, sortOrder, page, pageSize],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employees");
@@ -270,6 +273,17 @@ export default function EmployeesPage() {
             className="pl-9"
             data-testid="input-search-employees"
           />
+        </div>
+        <div className="w-[150px]" data-testid="sort-employees">
+          <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as "name_asc" | "name_desc"); setPage(0); }}>
+            <SelectTrigger data-testid="select-sort-order">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="name_asc">Name A–Z</SelectItem>
+              <SelectItem value="name_desc">Name Z–A</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className="w-[180px]" data-testid="filter-company-multi">
           <MultiSelect
@@ -1328,6 +1342,7 @@ function AddEmployeeDialog({
     firstName: "",
     lastName: "",
     email: "",
+    phone: "",
     role: "employee",
     companyId: "",
     departmentIds: [] as string[],
@@ -1412,7 +1427,8 @@ function AddEmployeeDialog({
       const body: Record<string, string | number | boolean | null | string[]> = {
         firstName: formData.firstName,
         lastName: formData.lastName,
-        email: formData.email.trim().toLowerCase(),
+        email: formData.email.trim().toLowerCase() || null,
+        phone: formData.phone.trim() || null,
         role: formData.role,
         companyId: formData.companyId || null,
         departmentIds: formData.departmentIds,
@@ -1499,7 +1515,7 @@ function AddEmployeeDialog({
     setAssignedNumber(null);
     setEmailError(null);
     setFormData({
-      firstName: "", lastName: "", email: "", role: "employee",
+      firstName: "", lastName: "", email: "", phone: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
       taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true, clockConfirmationOnly: false, overnightShiftsAllowed: false, useDevicePunchDirection: false, requireLunchBreak: false,
       payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "", payeeMemo: "",
@@ -1518,7 +1534,8 @@ function AddEmployeeDialog({
 
   // Note #1/#4: company is no longer asked for here (auto-assigned). Page 1 is
   // identity + assignment; the money questions live on the Pay step.
-  const canProceedStep1 = !!(formData.firstName && formData.lastName && formData.email);
+  // Email is optional now — only a first and last name are required to proceed.
+  const canProceedStep1 = !!(formData.firstName && formData.lastName);
   const canProceedStep2 = !!(formData.hireDate && formData.employmentType);
   const ratePositive = (v: string) => {
     const n = parseFloat(v);
@@ -1587,28 +1604,40 @@ function AddEmployeeDialog({
                 />
               </div>
             </div>
-            <div className="space-y-2">
-              <Label>Email</Label>
-              <Input
-                type="email"
-                value={formData.email}
-                onChange={(e) => {
-                  setFormData({ ...formData, email: e.target.value.toLowerCase() });
-                  if (emailError) setEmailError(null);
-                }}
-                placeholder="employee@company.com"
-                data-testid="input-add-email"
-                aria-invalid={emailError ? true : undefined}
-                className={emailError ? "border-destructive focus-visible:ring-destructive" : undefined}
-              />
-              {emailError && (
-                <p
-                  className="text-sm text-destructive"
-                  data-testid="text-add-email-error"
-                >
-                  {emailError}
-                </p>
-              )}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Email <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input
+                  type="email"
+                  value={formData.email}
+                  onChange={(e) => {
+                    setFormData({ ...formData, email: e.target.value.toLowerCase() });
+                    if (emailError) setEmailError(null);
+                  }}
+                  placeholder="employee@company.com"
+                  data-testid="input-add-email"
+                  aria-invalid={emailError ? true : undefined}
+                  className={emailError ? "border-destructive focus-visible:ring-destructive" : undefined}
+                />
+                {emailError && (
+                  <p
+                    className="text-sm text-destructive"
+                    data-testid="text-add-email-error"
+                  >
+                    {emailError}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label>Phone <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input
+                  type="tel"
+                  value={formData.phone}
+                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  placeholder="(555) 123-4567"
+                  data-testid="input-add-phone"
+                />
+              </div>
             </div>
             <div className="space-y-2">
               <Label>Role</Label>
@@ -2349,7 +2378,7 @@ function EmployeeProfile({
   });
 
   const [editBasic, setEditBasic] = useState(false);
-  const [basicForm, setBasicForm] = useState({ firstName: "", lastName: "", email: "" });
+  const [basicForm, setBasicForm] = useState({ firstName: "", lastName: "", email: "", phone: "" });
   const [basicEmailError, setBasicEmailError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2358,12 +2387,13 @@ function EmployeeProfile({
         firstName: user.firstName || "",
         lastName: user.lastName || "",
         email: user.email || "",
+        phone: (user as { phone?: string | null }).phone || "",
       });
     }
   }, [user, editBasic]);
 
   const basicInfoMutation = useMutation({
-    mutationFn: async (data: { firstName: string; lastName: string; email: string }) => {
+    mutationFn: async (data: { firstName: string; lastName: string; email: string; phone: string }) => {
       await apiRequest("PATCH", `/api/users/${userId}`, data);
     },
     onSuccess: () => {
@@ -2684,6 +2714,7 @@ function EmployeeProfile({
                         firstName: user?.firstName || "",
                         lastName: user?.lastName || "",
                         email: user?.email || "",
+                        phone: (user as { phone?: string | null })?.phone || "",
                       });
                     }}
                     data-testid="button-cancel-basic-info"
@@ -2698,6 +2729,7 @@ function EmployeeProfile({
                         firstName: basicForm.firstName.trim(),
                         lastName: basicForm.lastName.trim(),
                         email: basicForm.email.trim().toLowerCase(),
+                        phone: basicForm.phone.trim(),
                       });
                     }}
                     disabled={basicInfoMutation.isPending}
@@ -2764,6 +2796,20 @@ function EmployeeProfile({
                   </>
                 ) : (
                   <p className="font-medium" data-testid="text-profile-email">{user?.email || "—"}</p>
+                )}
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Phone</Label>
+                {editBasic ? (
+                  <Input
+                    type="tel"
+                    value={basicForm.phone}
+                    onChange={(e) => setBasicForm((f) => ({ ...f, phone: e.target.value }))}
+                    placeholder="(555) 123-4567"
+                    data-testid="input-profile-phone"
+                  />
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-phone">{(user as { phone?: string | null })?.phone || "—"}</p>
                 )}
               </div>
               {hasPermission("users.edit") && (

@@ -702,6 +702,7 @@ export async function registerRoutes(
         companyIds: csvIds(req.query.companyIds),
         taxClasses: csvIds(req.query.taxClasses),
         certStatuses: csvIds(req.query.certStatuses),
+        sort: req.query.sort === "name_desc" ? "name_desc" : "name_asc",
         excludeUserIds,
         limit: pagination.limit,
         offset: pagination.offset,
@@ -984,11 +985,17 @@ export async function registerRoutes(
   });
 
   const createUserSchema = z.object({
-    email: z
-      .string()
-      .trim()
-      .toLowerCase()
-      .pipe(z.string().email()),
+    // Email is OPTIONAL. An empty string is treated as "no email" (stored null);
+    // when present it must be a valid address and is unique across users.
+    email: z.preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+      z.string().trim().toLowerCase().pipe(z.string().email()).optional(),
+    ),
+    // Optional contact phone. Empty string → no phone.
+    phone: z.preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+      z.string().trim().max(30).optional(),
+    ),
     firstName: z.string().min(1),
     lastName: z.string().min(1),
     role: z.enum(["employee", "manager", "admin"]).default("employee"),
@@ -1047,13 +1054,16 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid user data", errors: parsed.error.flatten() });
     }
 
-    const existing = await storage.getUserByEmail(parsed.data.email);
-    if (existing) {
-      return res.status(409).json({
-        message: "A user with this email already exists",
-        code: "EMAIL_ALREADY_EXISTS",
-        field: "email",
-      });
+    // Only enforce uniqueness when an email was actually supplied (it's optional).
+    if (parsed.data.email) {
+      const existing = await storage.getUserByEmail(parsed.data.email);
+      if (existing) {
+        return res.status(409).json({
+          message: "A user with this email already exists",
+          code: "EMAIL_ALREADY_EXISTS",
+          field: "email",
+        });
+      }
     }
 
     // Note #1: operationally there is a single company (Ahava Medical). The
@@ -1107,7 +1117,8 @@ export async function registerRoutes(
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
     const newUser = await storage.createUser({
-      email: parsed.data.email,
+      email: parsed.data.email ?? null,
+      phone: parsed.data.phone ?? null,
       firstName: parsed.data.firstName,
       lastName: parsed.data.lastName,
       role: parsed.data.role,
@@ -1215,12 +1226,16 @@ export async function registerRoutes(
     locationIds: z.array(z.string()).optional(),
     firstName: z.string().trim().min(1).optional(),
     lastName: z.string().trim().min(1).optional(),
-    email: z
-      .string()
-      .trim()
-      .toLowerCase()
-      .pipe(z.string().email())
-      .optional(),
+    // Email is optional and clearable: an empty string clears it to null.
+    email: z.preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+      z.string().trim().toLowerCase().pipe(z.string().email()).nullable().optional(),
+    ),
+    // Optional contact phone; empty string clears it to null.
+    phone: z.preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+      z.string().trim().max(30).nullable().optional(),
+    ),
   });
 
   const bulkAssignDivisionSchema = z.object({
@@ -1485,7 +1500,7 @@ export async function registerRoutes(
     const existing = await storage.getUser(String(req.params.id));
     if (!existing) return res.status(404).json({ message: "User not found" });
 
-    if (parsed.data.email !== undefined && parsed.data.email !== existing.email) {
+    if (parsed.data.email && parsed.data.email !== existing.email) {
       const dup = await storage.getUserByEmail(parsed.data.email);
       if (dup && dup.id !== existing.id) {
         return res.status(409).json({
@@ -1548,6 +1563,7 @@ export async function registerRoutes(
     if (parsed.data.firstName !== undefined) identityPatch.firstName = parsed.data.firstName;
     if (parsed.data.lastName !== undefined) identityPatch.lastName = parsed.data.lastName;
     if (parsed.data.email !== undefined) identityPatch.email = parsed.data.email;
+    if (parsed.data.phone !== undefined) identityPatch.phone = parsed.data.phone;
 
     const updated = await storage.updateUser(String(req.params.id), {
       companyId: next.companyId,
