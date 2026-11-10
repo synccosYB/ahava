@@ -1,30 +1,60 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, Pencil, Check, CalendarClock } from "lucide-react";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ChevronLeft, ChevronRight, Pencil, Check, CalendarClock, CalendarDays } from "lucide-react";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
 import { TimesheetEditor } from "@/components/timesheet-editor";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useAuth } from "@/hooks/use-auth";
 import { currentWeek, shiftWeeks, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
+import { formatDate } from "@/lib/utils";
+import { type Period, PERIOD_LABELS, PERIOD_KEYS, rangeForPeriod, ymdLocal, ymdToDate } from "@/lib/timesheet-period";
 
-type ViewMode = "weekly" | "biweekly";
+// "this_week" and "pay_period" keep the ◀ / ▶ week-stepping; the rest are fixed
+// or custom ranges with no stepping.
+const NAVIGABLE: Period[] = ["this_week", "pay_period"];
 
-// Per-user view preference (1 week vs 2 weeks at a time). Stored in the
-// browser, keyed by user, so each admin/manager keeps their own default. It is
-// only a view convenience, so localStorage is fine — every access is guarded.
+// Per-user period preference. Stored in the browser, keyed by user, so each
+// admin/manager keeps their own default. View convenience only — guarded.
 function prefKey(userId: string | undefined) {
-  return `ahava.reviewTimesheet.viewMode.${userId ?? "anon"}`;
+  return `ahava.reviewTimesheet.period.${userId ?? "anon"}`;
 }
-function loadViewMode(userId: string | undefined): ViewMode {
+function loadPeriod(userId: string | undefined): Period {
   try {
-    return localStorage.getItem(prefKey(userId)) === "biweekly" ? "biweekly" : "weekly";
+    const v = localStorage.getItem(prefKey(userId));
+    return v && (PERIOD_LABELS as Record<string, string>)[v] ? (v as Period) : "this_week";
   } catch {
-    return "weekly";
+    return "this_week";
   }
+}
+
+function DateField({ label, value, onChange, testId }: {
+  label: string; value: string; onChange: (ymd: string) => void; testId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = ymdToDate(value);
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm" className="justify-start font-normal" data-testid={testId}>
+            <CalendarDays className="h-4 w-4 mr-2 opacity-70" />
+            {selected ? formatDate(value) : <span className="text-muted-foreground">Pick a date</span>}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-auto p-0" align="start">
+          <Calendar mode="single" selected={selected} onSelect={(d) => { if (d) { onChange(ymdLocal(d)); setOpen(false); } }} initialFocus />
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
 }
 
 /**
@@ -39,34 +69,39 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
   const { user: currentUser } = useAuth();
   const canEdit = has("attendance.edit");
 
-  const [mode, setMode] = useState<ViewMode>(() => loadViewMode(currentUser?.id));
-  // `anchor` is the LATEST payroll week in view (always a single Thu–Wed week).
-  // Weekly shows just this week; Bi-weekly shows this week plus the one before.
+  const [period, setPeriod] = useState<Period>(() => loadPeriod(currentUser?.id));
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  // `anchor` is the LATEST payroll week in view for the navigable (◀/▶) modes.
   const [anchor, setAnchor] = useState<DateRange>(() => currentWeek());
   const [editing, setEditing] = useState(false);
 
-  // Persist the view choice for this user, and re-read it if the user changes.
   useEffect(() => {
-    setMode(loadViewMode(currentUser?.id));
+    setPeriod(loadPeriod(currentUser?.id));
   }, [currentUser?.id]);
-  const changeMode = (m: ViewMode) => {
-    setMode(m);
-    try { localStorage.setItem(prefKey(currentUser?.id), m); } catch { /* ignore */ }
+  const changePeriod = (p: Period) => {
+    setPeriod(p);
+    if (NAVIGABLE.includes(p)) setAnchor(currentWeek()); // reset stepping to current
+    try { localStorage.setItem(prefKey(currentUser?.id), p); } catch { /* ignore */ }
   };
 
   const thisWeek = currentWeek();
+  const navigable = NAVIGABLE.includes(period);
   const isCurrent = anchor.end === thisWeek.end;
-  const step = mode === "biweekly" ? 2 : 1;
+  const step = period === "pay_period" ? 2 : 1;
 
-  // Displayed range: bi-weekly extends back one week from the anchor.
-  const displayed: DateRange =
-    mode === "biweekly" ? { start: shiftWeeks(anchor, -1).start, end: anchor.end } : anchor;
+  // Displayed range: navigable modes step through weeks from the anchor; every
+  // other preset (and custom dates) resolves to a fixed range.
+  const displayed: DateRange = !navigable
+    ? rangeForPeriod(period, customStart, customEnd)
+    : period === "pay_period"
+      ? { start: shiftWeeks(anchor, -1).start, end: anchor.end }
+      : anchor;
 
   const goPrev = () => setAnchor((a) => shiftWeeks(a, -step));
   const goNext = () =>
     setAnchor((a) => {
       const candidate = shiftWeeks(a, step);
-      // Never move past the in-progress week.
       return candidate.start >= thisWeek.start ? thisWeek : candidate;
     });
   const goCurrent = () => setAnchor(thisWeek);
@@ -88,29 +123,42 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
               </Button>
             )}
           </div>
-          <Select value={mode} onValueChange={(v) => changeMode(v as ViewMode)}>
-            <SelectTrigger className="w-[150px]" data-testid="select-timesheet-view-mode">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="weekly">Weekly</SelectItem>
-              <SelectItem value="biweekly">Bi-weekly</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex items-end gap-2 flex-wrap">
+            <Select value={period} onValueChange={(v) => changePeriod(v as Period)}>
+              <SelectTrigger className="w-[220px]" data-testid="select-timesheet-period">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PERIOD_KEYS.map((p) => (
+                  <SelectItem key={p} value={p}>{PERIOD_LABELS[p]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {period === "custom" && (
+              <>
+                <DateField label="From" value={customStart} onChange={setCustomStart} testId="date-timesheet-from" />
+                <DateField label="To" value={customEnd} onChange={setCustomEnd} testId="date-timesheet-to" />
+              </>
+            )}
+          </div>
         </div>
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={goPrev} data-testid="button-timesheet-prev">
-              <ChevronLeft className="h-4 w-4 mr-1" /> Previous
-            </Button>
+            {navigable && (
+              <Button variant="outline" size="sm" onClick={goPrev} data-testid="button-timesheet-prev">
+                <ChevronLeft className="h-4 w-4 mr-1" /> Previous
+              </Button>
+            )}
             <span className="text-sm font-medium min-w-[200px] text-center" data-testid="text-timesheet-week">
-              {formatRangeLabel(displayed)}{isCurrent ? " · current" : ""}
+              {formatRangeLabel(displayed)}{navigable && isCurrent ? " · current" : ""}
             </span>
-            <Button variant="outline" size="sm" onClick={goNext} disabled={isCurrent} data-testid="button-timesheet-next">
-              Next <ChevronRight className="h-4 w-4 ml-1" />
-            </Button>
+            {navigable && (
+              <Button variant="outline" size="sm" onClick={goNext} disabled={isCurrent} data-testid="button-timesheet-next">
+                Next <ChevronRight className="h-4 w-4 ml-1" />
+              </Button>
+            )}
           </div>
-          {!isCurrent && (
+          {navigable && !isCurrent && (
             <Button variant="secondary" size="sm" onClick={goCurrent} data-testid="button-timesheet-current">
               <CalendarClock className="h-4 w-4 mr-1" /> Jump to current
             </Button>

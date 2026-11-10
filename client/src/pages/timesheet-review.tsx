@@ -26,33 +26,10 @@ import { LongShiftApprovalsCard } from "@/components/long-shift-approvals-card";
 import { usePermissions } from "@/hooks/use-permissions";
 import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange, RefreshCw, Save, CalendarDays } from "lucide-react";
 import { formatHoursMinutes, formatDate } from "@/lib/utils";
+import { formatRangeLabel } from "@/lib/payroll-week";
 import {
-  currentWeek, currentBiWeek, shiftWeeks, formatRangeLabel, type DateRange,
-} from "@/lib/payroll-week";
-
-// Period presets for the search. "custom" uses the two calendar date pickers.
-type Period =
-  | "this_week"
-  | "this_plus_last_week"
-  | "pay_period"
-  | "past_week"
-  | "past_month"
-  | "past_3_months"
-  | "this_year"
-  | "last_12_months"
-  | "custom";
-
-const PERIOD_LABELS: Record<Period, string> = {
-  this_week: "This week",
-  this_plus_last_week: "This + last week",
-  pay_period: "Current pay period (bi-weekly)",
-  past_week: "Past week",
-  past_month: "Past month",
-  past_3_months: "Past 3 months",
-  this_year: "This year (since Jan 1)",
-  last_12_months: "Last 12 months",
-  custom: "Custom dates…",
-};
+  type Period, PERIOD_LABELS, PERIOD_KEYS, rangeForPeriod, ymdLocal, ymdToDate,
+} from "@/lib/timesheet-period";
 
 type FilterOptions = {
   employees: { id: string; name: string }[];
@@ -106,49 +83,6 @@ function loadPrefs(userId: string | undefined): Prefs {
   }
 }
 
-function ymdLocal(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-// Resolve the selected period to an actual date range.
-function rangeFor(period: Period, customStart: string, customEnd: string): DateRange {
-  const now = new Date();
-  const end = ymdLocal(now);
-  const back = (fn: (d: Date) => void): DateRange => {
-    const d = new Date(now);
-    fn(d);
-    return { start: ymdLocal(d), end };
-  };
-  switch (period) {
-    case "this_week":
-      return currentWeek();
-    case "this_plus_last_week": {
-      const w = currentWeek();
-      return { start: shiftWeeks(w, -1).start, end: w.end };
-    }
-    case "pay_period":
-      return currentBiWeek();
-    case "past_week":
-      return back((d) => d.setDate(d.getDate() - 7));
-    case "past_month":
-      return back((d) => d.setMonth(d.getMonth() - 1));
-    case "past_3_months":
-      return back((d) => d.setMonth(d.getMonth() - 3));
-    case "this_year":
-      return { start: `${now.getFullYear()}-01-01`, end };
-    case "last_12_months":
-      return back((d) => d.setFullYear(d.getFullYear() - 1));
-    case "custom":
-      return { start: customStart || end, end: customEnd || customStart || end };
-  }
-}
-
-function ymdToDate(s: string): Date | undefined {
-  if (!s) return undefined;
-  const [y, m, d] = s.split("-").map(Number);
-  if (!y || !m || !d) return undefined;
-  return new Date(y, m - 1, d);
-}
 
 // A date field that opens a pop-up calendar to pick a specific day.
 function DateField({ label, value, onChange, testId }: {
@@ -203,7 +137,7 @@ export default function TimeSheetReviewPage() {
   const [result, setResult] = useState<TimeResult | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const range = useMemo(() => rangeFor(period, customStart, customEnd), [period, customStart, customEnd]);
+  const range = useMemo(() => rangeForPeriod(period, customStart, customEnd), [period, customStart, customEnd]);
 
   // "Save as default": persist the current period + filters so next time the
   // page opens it auto-runs this exact search.
@@ -304,7 +238,7 @@ export default function TimeSheetReviewPage() {
               <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
                 <SelectTrigger data-testid="select-review-period"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
+                  {PERIOD_KEYS.map((p) => (
                     <SelectItem key={p} value={p}>{PERIOD_LABELS[p]}</SelectItem>
                   ))}
                 </SelectContent>
