@@ -2114,6 +2114,7 @@ function EmployeeProfile({
   const nextId = navIndex >= 0 && navIndex < navIds.length - 1 ? navIds[navIndex + 1] : null;
   const canNavigate = !!onNavigate && navIndex >= 0 && navIds.length > 1;
   const { toast } = useToast();
+  const { has: hasPermission } = usePermissions();
   const initialUrlParams = (() => {
     if (typeof window === "undefined") return new URLSearchParams();
     return new URLSearchParams(window.location.search);
@@ -2192,6 +2193,26 @@ function EmployeeProfile({
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
+  });
+
+  // Per-user pay visibility: let this one person see pay rates (or not),
+  // independent of their role. Only shown to permission managers.
+  const canManagePermissions = hasPermission("roles.manage");
+  const { data: payVisibility } = useQuery<{ allowed: boolean }>({
+    queryKey: ["/api/users", userId, "pay-visibility"],
+    queryFn: () => apiRequest("GET", `/api/users/${userId}/pay-visibility`).then((r) => r.json()),
+    enabled: canManagePermissions,
+  });
+  const setPayVisibilityMutation = useMutation({
+    mutationFn: async (allowed: boolean) => {
+      await apiRequest("PUT", `/api/users/${userId}/pay-visibility`, { allowed });
+    },
+    onSuccess: (_d, allowed) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "pay-visibility"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/permissions"] });
+      toast({ title: allowed ? "Pay visibility granted" : "Pay visibility removed", description: "They may need to refresh to see the change." });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
   const { data: assignableRoles = [] } = useQuery<{ id: string; name: string }[]>({
@@ -2451,7 +2472,6 @@ function EmployeeProfile({
     },
   });
 
-  const { has: hasPermission } = usePermissions();
   const { user: currentAuthUser } = useAuth();
   const canEditPay = hasPermission("users.edit");
   // Pay rates + rate type are hidden unless the viewer has the "View Pay Rates"
@@ -2755,6 +2775,23 @@ function EmployeeProfile({
                     Controls what they can see. Only Admin sees the Employees, Payroll and Reports
                     pages (and pay rates). A timesheet reviewer should be Employee or Manager.
                   </p>
+                </div>
+              )}
+              {canManagePermissions && (
+                <div className="flex items-start justify-between gap-3 rounded-md border p-3">
+                  <div>
+                    <Label className="text-xs font-medium">Can view pay rates</Label>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Let this person see employees' pay rates and rate type. Set per person — on just
+                      for the admins/managers you choose, independent of their role.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={!!payVisibility?.allowed}
+                    onCheckedChange={(v) => setPayVisibilityMutation.mutate(v)}
+                    disabled={setPayVisibilityMutation.isPending}
+                    data-testid="switch-pay-visibility"
+                  />
                 </div>
               )}
               <div>
