@@ -801,6 +801,25 @@ export async function registerRoutes(
     res.json({ user, result });
   });
 
+  // Per-user pay-visibility: grant/revoke "View Pay Rates" (compensation.view)
+  // for ONE person, independent of their role — so you can let a specific admin
+  // or manager see pay without turning it on for their whole role. Backed by the
+  // per-user permission override, so it wins over the role.
+  app.get("/api/users/:id/pay-visibility", requireAuth, requirePermission("roles.manage"), async (req, res) => {
+    const perms = await resolveUserPermissions(String(req.params.id));
+    res.json({ allowed: perms.has("system.super_admin") || perms.has("compensation.view") });
+  });
+
+  app.put("/api/users/:id/pay-visibility", requireAuth, requirePermission("roles.manage"), async (req, res) => {
+    const perm = await storage.getPermissionByKey("compensation.view");
+    if (!perm) return res.status(500).json({ message: "compensation.view permission is not seeded" });
+    const allowed = req.body?.allowed === true;
+    const actor = (req as any).authUser as User;
+    await storage.setUserPermissionOverride(String(req.params.id), perm.id, allowed, "pay visibility (per-user toggle)", actor.id);
+    invalidateUserCache();
+    res.json({ allowed });
+  });
+
   // --- RBAC multi-role assignment for an employee (Employee profile Basic Info) ---
   // Roles the acting user is allowed to assign to a target employee. Gated by the
   // SAME `users.edit` permission used to change a user's role. Excludes the Super

@@ -119,7 +119,7 @@ export default function PermissionsPage() {
   const hasPending = pendingChanges.size > 0;
 
   return (
-    <div className="max-w-6xl space-y-6" data-testid="permissions-page">
+    <div className="space-y-6" data-testid="permissions-page">
       <PageHeader
         title="Permission Matrix"
         subtitle="Configure role-based access controls"
@@ -134,18 +134,21 @@ export default function PermissionsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          {/* Fit to screen: vertical scroll only (no horizontal scroll), with the
+              role-name header row frozen so you always see which column you're
+              clicking. table-fixed makes the columns share the width. */}
+          <div className="overflow-y-auto max-h-[72vh]">
+            <table className="w-full text-sm table-fixed">
               <thead>
                 <tr className="border-b">
-                  <th className="text-left py-3 px-2 text-xs font-medium uppercase tracking-wider sticky left-0 bg-background min-w-[200px]">Permission</th>
+                  <th className="text-left py-3 px-2 text-xs font-medium uppercase tracking-wider sticky left-0 top-0 z-20 bg-background w-[30%] md:w-[220px]">Permission</th>
                   {(roles || []).map(role => {
                     const isFocused = focusRoleId === role.id;
                     return (
                     <th
                       key={role.id}
                       ref={isFocused ? focusedHeaderRef : undefined}
-                      className={`text-center py-3 px-4 text-xs font-medium uppercase tracking-wider min-w-[120px] ${
+                      className={`text-center py-3 px-1 text-[11px] font-medium uppercase tracking-wide align-bottom sticky top-0 z-10 bg-background ${
                         isFocused ? "bg-primary/10 ring-2 ring-primary rounded-t-md" : ""
                       }`}
                       data-testid={isFocused ? `header-focused-role-${role.id}` : undefined}
@@ -182,16 +185,16 @@ export default function PermissionsPage() {
                     </tr>
                     {perms.map(perm => (
                       <tr key={perm.id} className="border-b hover:bg-muted/30">
-                        <td className="py-2 px-2 sticky left-0 bg-background">
-                          <div>
+                        <td className="py-2 px-2 sticky left-0 bg-background align-top">
+                          <div className="break-words">
                             <code className="text-xs bg-muted px-1 py-0.5 rounded" data-testid={`text-perm-key-${perm.id}`}>{perm.key}</code>
                             {perm.description && (
-                              <p className="text-xs text-muted-foreground mt-0.5">{perm.description}</p>
+                              <p className="text-[11px] leading-snug text-muted-foreground mt-0.5">{perm.description}</p>
                             )}
                           </div>
                         </td>
                         {(roles || []).map(role => (
-                          <td key={`${role.id}-${perm.id}`} className="text-center py-2 px-4">
+                          <td key={`${role.id}-${perm.id}`} className="text-center py-2 px-1">
                             <Checkbox
                               checked={hasPermission(role, perm.id)}
                               onCheckedChange={() => togglePermission(role, perm.id)}
