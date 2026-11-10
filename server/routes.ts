@@ -1328,6 +1328,90 @@ export async function registerRoutes(
     res.json({ updatedCount: updated.length, updatedIds: updated, skipped });
   });
 
+  const bulkAssignLocationSchema = z.object({
+    userIds: z.array(z.string().min(1)).min(1).max(500),
+    toLocationId: z.string().min(1),
+    // When set, ONLY this location is swapped out of each employee's set (their
+    // other locations stay). When omitted, the employee's whole location set is
+    // replaced with the single target location.
+    fromLocationId: z.string().min(1).optional(),
+  });
+
+  // Bulk-move employees to a location (e.g. consolidate everyone at "Nostrand"
+  // into "Ahava Nostrand"). Swaps a specific source location when given, else
+  // replaces the set. Keeps the legacy single column in sync and re-pushes
+  // fingerprints to the new location's clocks.
+  app.post("/api/users/bulk-assign-location", requireAuth, requirePermission("users.edit"), async (req, res) => {
+    const parsed = bulkAssignLocationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return badRequestFromZod(res, parsed, "Invalid bulk-assign request");
+    }
+    const { toLocationId, fromLocationId } = parsed.data;
+    const userIds = Array.from(new Set(parsed.data.userIds));
+    const requesterIsSuper = isSuperAdmin(req);
+    const actor = (req as any).authUser as User;
+    const auditCtx = getAuditContext(req);
+
+    const toLoc = await storage.getLocation(toLocationId);
+    if (!toLoc) return res.status(400).json({ message: "Target location not found" });
+
+    const updated: string[] = [];
+    const skipped: { id: string; reason: string }[] = [];
+
+    for (const uid of userIds) {
+      if (uid === SUPER_ADMIN_USER_ID && !requesterIsSuper) {
+        skipped.push({ id: uid, reason: "not_found" });
+        continue;
+      }
+      const existing = await storage.getUser(uid);
+      if (!existing) {
+        skipped.push({ id: uid, reason: "not_found" });
+        continue;
+      }
+
+      // The target location must belong to the employee's company (mirrors the
+      // single-profile update); skip anyone it doesn't fit rather than fail all.
+      if (existing.companyId) {
+        const locCompanies = new Set([
+          ...(toLoc.companyId ? [toLoc.companyId] : []),
+          ...(await storage.getLocationCompanyIds(toLoc.id)),
+        ]);
+        if (!locCompanies.has(existing.companyId)) {
+          skipped.push({ id: uid, reason: "location_company_mismatch" });
+          continue;
+        }
+      }
+
+      const current = userLocationIds(existing);
+      const nextSet = fromLocationId
+        ? Array.from(new Set([...current.filter((l) => l !== fromLocationId), toLocationId]))
+        : [toLocationId];
+
+      const result = await storage.updateUser(uid, { locationId: nextSet[0] ?? null });
+      if (!result) {
+        skipped.push({ id: uid, reason: "update_failed" });
+        continue;
+      }
+      await storage.setUserLocationIds(uid, nextSet);
+      autoPushEmployeeSafe(uid);
+
+      await writeAuditLog({
+        actorUserId: actor.id,
+        targetType: "user",
+        targetId: uid,
+        action: "user.bulk_assign_location",
+        oldValue: { locationIds: current },
+        newValue: { locationIds: nextSet },
+        context: { toLocationName: toLoc.name, fromLocationId: fromLocationId ?? null },
+        ...auditCtx,
+      });
+
+      updated.push(uid);
+    }
+
+    res.json({ updatedCount: updated.length, updatedIds: updated, skipped });
+  });
+
   const bulkDeleteUsersSchema = z.object({
     userIds: z.array(z.string().min(1)).min(1).max(200),
   });

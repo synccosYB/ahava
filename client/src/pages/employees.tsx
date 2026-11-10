@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X, Lock, LockOpen, RefreshCw } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, MapPin, Link2, Unlink, Plus, X, Lock, LockOpen, RefreshCw } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -130,6 +130,7 @@ export default function EmployeesPage() {
   // on pages that are no longer loaded.
   const [selected, setSelected] = useState<Map<string, User>>(new Map());
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkLocationDialogOpen, setBulkLocationDialogOpen] = useState(false);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importPunchesOpen, setImportPunchesOpen] = useState(false);
@@ -432,6 +433,15 @@ export default function EmployeesPage() {
               <Building2 className="h-4 w-4 mr-2" />
               Assign Company
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setBulkLocationDialogOpen(true)}
+              data-testid="button-bulk-assign-location"
+            >
+              <MapPin className="h-4 w-4 mr-2" />
+              Move Location
+            </Button>
             {canDelete && (
               <Button
                 size="sm"
@@ -460,6 +470,15 @@ export default function EmployeesPage() {
         onOpenChange={setBulkDialogOpen}
         userIds={Array.from(selected.keys())}
         divisions={divisions || []}
+        onSuccess={clearSelection}
+      />
+
+      <BulkAssignLocationDialog
+        open={bulkLocationDialogOpen}
+        onOpenChange={setBulkLocationDialogOpen}
+        userIds={Array.from(selected.keys())}
+        locations={locations || []}
+        defaultFromLocationId={appliedLocIds.length === 1 ? appliedLocIds[0] : ""}
         onSuccess={clearSelection}
       />
 
@@ -763,6 +782,118 @@ function BulkAssignDivisionDialog({
           setCompanyId(company.id);
         }}
       />
+    </Dialog>
+  );
+}
+
+function BulkAssignLocationDialog({
+  open,
+  onOpenChange,
+  userIds,
+  locations,
+  defaultFromLocationId,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  userIds: string[];
+  locations: Location[];
+  defaultFromLocationId: string;
+  onSuccess: () => void;
+}) {
+  const { toast } = useToast();
+  const [toLocationId, setToLocationId] = useState("");
+  // "" = replace the employee's whole location set with the target. A specific
+  // id = swap only that location out, keep their other locations.
+  const [fromLocationId, setFromLocationId] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      setToLocationId("");
+      setFromLocationId(defaultFromLocationId || "");
+    }
+  }, [open, defaultFromLocationId]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/users/bulk-assign-location", {
+        userIds,
+        toLocationId,
+        fromLocationId: fromLocationId || undefined,
+      });
+      return res.json();
+    },
+    onSuccess: (data: { updatedCount: number; skipped: { id: string; reason: string }[] }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({
+        title: "Location updated",
+        description: `${data.updatedCount} employee${data.updatedCount === 1 ? "" : "s"} moved${
+          data.skipped.length ? `, ${data.skipped.length} skipped` : ""
+        }.`,
+      });
+      onOpenChange(false);
+      onSuccess();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="dialog-bulk-assign-location">
+        <DialogHeader>
+          <DialogTitle>Move to Location</DialogTitle>
+          <DialogDescription>
+            Move {userIds.length} selected employee{userIds.length === 1 ? "" : "s"} to a location.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Move to</Label>
+            <Select value={toLocationId} onValueChange={setToLocationId}>
+              <SelectTrigger data-testid="select-bulk-to-location">
+                <SelectValue placeholder="Select a location" />
+              </SelectTrigger>
+              <SelectContent>
+                {locations.map((l) => (
+                  <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Replace which location?</Label>
+            <Select value={fromLocationId || "__all__"} onValueChange={(v) => setFromLocationId(v === "__all__" ? "" : v)}>
+              <SelectTrigger data-testid="select-bulk-from-location">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All of their locations (replace)</SelectItem>
+                {locations.map((l) => (
+                  <SelectItem key={l.id} value={l.id}>Only {l.name} (keep others)</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Pick the old location (e.g. Nostrand) to swap just that one for the target and keep any other
+              locations. Leave as “All of their locations” to replace each employee’s locations with the target.
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-bulk-location">
+            Cancel
+          </Button>
+          <Button
+            onClick={() => mutation.mutate()}
+            disabled={!toLocationId || mutation.isPending || userIds.length === 0}
+            data-testid="button-confirm-bulk-location"
+          >
+            {mutation.isPending ? "Moving..." : `Move ${userIds.length}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
     </Dialog>
   );
 }
