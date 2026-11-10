@@ -54,6 +54,7 @@ const PERMISSION_KEYS = [
   { key: "payroll.manage", name: "Manage Payroll", description: "Manage payroll runs", module: "payroll" },
   { key: "payroll.mark_sent", name: "Mark Payroll Sent", description: "Mark payroll as sent", module: "payroll" },
   { key: "payroll.export", name: "Export Payroll", description: "Export payroll data", module: "payroll" },
+  { key: "compensation.view", name: "View Pay Rates", description: "See employees' pay rates and rate type (hourly/daily/salary). Off by default — even for admins — so pay is hidden until this is granted; super admins always see it.", module: "payroll" },
   { key: "reports.view", name: "View Reports", description: "View reports", module: "reports" },
   { key: "reports.export", name: "Export Reports", description: "Export reports", module: "reports" },
   { key: "reconciliation.run", name: "Run Reconciliation", description: "Recompute and reconcile attendance hours, PTO balances, and verify payroll exports against the central engine", module: "reports" },

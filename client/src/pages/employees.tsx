@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X, Lock, LockOpen } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, Link2, Unlink, Plus, X, Lock, LockOpen, RefreshCw } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -2454,6 +2454,10 @@ function EmployeeProfile({
   const { has: hasPermission } = usePermissions();
   const { user: currentAuthUser } = useAuth();
   const canEditPay = hasPermission("users.edit");
+  // Pay rates + rate type are hidden unless the viewer has the "View Pay Rates"
+  // permission (super admins always do). The whole Pay Setup tab is hidden
+  // without it, and the server also strips the amounts from the profile data.
+  const canViewPay = hasPermission("compensation.view");
   const canViewPolicies = hasPermission("policies.view");
   const [editPayOpen, setEditPayOpen] = useState(false);
   const [payForm, setPayForm] = useState({
@@ -2583,6 +2587,16 @@ function EmployeeProfile({
                 </Button>
               </div>
             )}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => queryClient.invalidateQueries()}
+              data-testid="button-refresh-profile"
+              aria-label="Refresh"
+              title="Refresh — reload this employee's data to see saved changes"
+            >
+              <RefreshCw className="h-5 w-5" />
+            </Button>
             <Button variant="ghost" size="icon" onClick={onBack} data-testid="button-back">
               <ArrowLeft className="h-5 w-5" />
             </Button>
@@ -2605,7 +2619,7 @@ function EmployeeProfile({
           <TabsTrigger value="basic" data-testid="tab-basic-info">Basic Info</TabsTrigger>
           <TabsTrigger value="timesheet" data-testid="tab-review-timesheet">Review Time Sheet</TabsTrigger>
           <TabsTrigger value="employment" data-testid="tab-employment">Employment</TabsTrigger>
-          <TabsTrigger value="pay" data-testid="tab-pay-setup">Pay Setup</TabsTrigger>
+          {canViewPay && <TabsTrigger value="pay" data-testid="tab-pay-setup">Pay Setup</TabsTrigger>}
           <TabsTrigger value="timeclock" data-testid="tab-time-clock">Time Clock Settings</TabsTrigger>
           <TabsTrigger value="pto" data-testid="tab-pto-leave">PTO/Leave</TabsTrigger>
           <TabsTrigger value="schedule" data-testid="tab-schedule">Schedule</TabsTrigger>
@@ -3253,7 +3267,7 @@ function EmployeeProfile({
           </Card>
         </TabsContent>
 
-        <TabsContent value="pay">
+        {canViewPay && <TabsContent value="pay">
           <Card data-testid="card-pay-setup">
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Pay Setup</CardTitle>
@@ -3474,7 +3488,7 @@ function EmployeeProfile({
               </DialogFooter>
             </DialogContent>
           </Dialog>
-        </TabsContent>
+        </TabsContent>}
 
         <TabsContent value="timeclock" className="space-y-6">
           <Card data-testid="card-time-clock-settings">
