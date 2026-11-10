@@ -66,6 +66,28 @@ const REQUIRED_DOCUMENT_TYPES = [
   { key: "handbook_ack", label: "Employee Handbook Acknowledgment" },
 ];
 
+// Compact list of tags (departments / locations) that keeps the table row at a
+// normal height no matter how many are assigned: shows the first few, then a
+// "+N more" chip (hover it to see the full list). Prevents a person assigned to
+// 40 departments from stretching their row down the whole screen.
+function CompactTags({ names, max = 3, testIdPrefix }: { names: string[]; max?: number; testIdPrefix?: string }) {
+  if (names.length === 0) return <span className="text-muted-foreground">—</span>;
+  const shown = names.slice(0, max);
+  const extra = names.length - shown.length;
+  return (
+    <div className="flex flex-wrap items-center gap-1 max-w-[200px]">
+      {shown.map((name) => (
+        <Badge key={name} variant="outline" className="text-xs whitespace-nowrap">{name}</Badge>
+      ))}
+      {extra > 0 && (
+        <Badge variant="secondary" className="text-xs whitespace-nowrap" title={names.join(", ")} data-testid={testIdPrefix ? `${testIdPrefix}-more` : undefined}>
+          +{extra} more
+        </Badge>
+      )}
+    </div>
+  );
+}
+
 export default function EmployeesPage() {
   const [, navigate] = useLocation();
   const initialEmployeeId = (() => {
@@ -235,7 +257,7 @@ export default function EmployeesPage() {
   const clearSelection = () => setSelected(new Map());
 
   return (
-    <div className="max-w-6xl space-y-6" data-testid="employees-page">
+    <div className="space-y-6" data-testid="employees-page">
       <PageHeader title="Employees" subtitle="Manage employee records and profiles" />
 
       <div className="flex items-center gap-4 flex-wrap">
@@ -428,7 +450,7 @@ export default function EmployeesPage() {
       />
 
       <Card data-testid="card-employees-list">
-        <CardContent className="p-0">
+        <CardContent className="p-0 overflow-x-auto">
           {isError ? (
             <div className="p-6 flex items-center gap-2 text-destructive" data-testid="error-employees">
               <AlertCircle className="h-4 w-4" />
@@ -518,22 +540,10 @@ export default function EmployeesPage() {
                       </TableCell>
                       <TableCell data-testid={`text-employee-company-${emp.id}`}>{div?.name || "—"}</TableCell>
                       <TableCell data-testid={`text-employee-dept-${emp.id}`}>
-                        {empDeptNames.length === 0 ? "—" : (
-                          <div className="flex flex-wrap gap-1">
-                            {empDeptNames.map((name) => (
-                              <Badge key={name} variant="outline" className="text-xs">{name}</Badge>
-                            ))}
-                          </div>
-                        )}
+                        <CompactTags names={empDeptNames} testIdPrefix={`dept-${emp.id}`} />
                       </TableCell>
                       <TableCell data-testid={`text-employee-loc-${emp.id}`}>
-                        {empLocNames.length === 0 ? "—" : (
-                          <div className="flex flex-wrap gap-1">
-                            {empLocNames.map((name) => (
-                              <Badge key={name} variant="outline" className="text-xs">{name}</Badge>
-                            ))}
-                          </div>
-                        )}
+                        <CompactTags names={empLocNames} testIdPrefix={`loc-${emp.id}`} />
                       </TableCell>
                       <TableCell data-testid={`text-employee-tax-class-${emp.id}`}>
                         <Badge variant="outline">{taxClassByUser.get(emp.id) || "W-2"}</Badge>
