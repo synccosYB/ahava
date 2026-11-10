@@ -133,6 +133,31 @@ export function MultiSelect({
             data-testid={testId ? `${testId}-search` : undefined}
           />
         </div>
+        {/* Select all / Clear — lets you grab everything then uncheck the few
+            you don't want, instead of ticking each one. "Select all" respects
+            the current search filter (selects the visible matches). */}
+        <div className="flex items-center justify-between gap-2 border-b px-2 py-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              const merged = new Set(selected);
+              for (const o of filtered) merged.add(o.value);
+              onChange(Array.from(merged));
+            }}
+            className="text-xs font-medium text-primary hover:underline"
+            data-testid={testId ? `${testId}-select-all` : undefined}
+          >
+            Select all{search.trim() ? " matching" : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className="text-xs text-muted-foreground hover:underline"
+            data-testid={testId ? `${testId}-clear-all` : undefined}
+          >
+            Clear
+          </button>
+        </div>
         <div
           className="max-h-60 overflow-y-auto p-1"
           onWheel={(e) => {
