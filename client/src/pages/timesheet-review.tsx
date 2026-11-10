@@ -22,7 +22,7 @@ import { OverlongShiftReconcileCard } from "@/components/overlong-shift-reconcil
 import { TodaysClockOutsCard } from "@/components/todays-clockouts-card";
 import { LongShiftApprovalsCard } from "@/components/long-shift-approvals-card";
 import { usePermissions } from "@/hooks/use-permissions";
-import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange } from "lucide-react";
+import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange, RefreshCw } from "lucide-react";
 import { formatHoursMinutes } from "@/lib/utils";
 import {
   currentWeek, currentBiWeek, shiftWeeks, formatRangeLabel, type DateRange,
@@ -177,14 +177,15 @@ export default function TimeSheetReviewPage() {
     },
   });
 
-  // Load once on first mount so the page opens with the saved default view.
-  const [autoLoaded, setAutoLoaded] = useState(false);
-  useEffect(() => {
-    if (autoLoaded) return;
-    setAutoLoaded(true);
+  // No auto-load: the page opens on the filter bar so you choose a location /
+  // department (or employee) and press Apply. This keeps it fast — it no longer
+  // pulls every employee the moment the page opens — and makes the search
+  // explicit. `hasApplied` tracks whether a search has been run yet.
+  const [hasApplied, setHasApplied] = useState(false);
+  const applyFilters = () => {
+    setHasApplied(true);
     loadMutation.mutate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoLoaded]);
+  };
 
   const rows = result?.rows ?? [];
   const totalHours = rows.reduce((s, r) => s + (r.totalHours || 0), 0);
@@ -264,10 +265,15 @@ export default function TimeSheetReviewPage() {
             </div>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <Button onClick={() => loadMutation.mutate()} disabled={loadMutation.isPending} data-testid="button-review-load">
+            <Button onClick={applyFilters} disabled={loadMutation.isPending} data-testid="button-review-load">
               {loadMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
-              Load
+              Apply
             </Button>
+            {hasApplied && result && (
+              <Button variant="outline" onClick={applyFilters} disabled={loadMutation.isPending} data-testid="button-review-refresh">
+                <RefreshCw className={`h-4 w-4 mr-2 ${loadMutation.isPending ? "animate-spin" : ""}`} /> Refresh
+              </Button>
+            )}
             <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="text-review-range">
               <CalendarRange className="h-4 w-4" /> {formatRangeLabel(range)}
             </span>
@@ -278,7 +284,14 @@ export default function TimeSheetReviewPage() {
 
       <Card>
         <CardContent className="pt-6">
-          {loadMutation.isPending && !result ? (
+          {!hasApplied ? (
+            <EmptyState
+              icon={CalendarRange}
+              title="Choose your filters, then press Apply"
+              description="Pick a location, department or employee (or leave them as All) and the payroll period above, then press Apply to load the time sheets."
+              testId="text-review-prompt"
+            />
+          ) : loadMutation.isPending && !result ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="text-review-loading">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading time sheets…
             </div>
@@ -286,7 +299,7 @@ export default function TimeSheetReviewPage() {
             <EmptyState
               icon={CalendarRange}
               title="No time sheets"
-              description="No employees match these filters for the selected period. Adjust the location/department or period and press Load."
+              description="No employees match these filters for the selected period. Adjust the location/department or period and press Apply."
               testId="text-review-empty"
             />
           ) : (
