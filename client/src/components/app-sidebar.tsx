@@ -321,9 +321,13 @@ export function AppSidebar() {
   const isManager = role === "manager" || role === "admin";
   const isAdmin = role === "admin";
   const { has } = usePermissions();
-  // A bookkeeper (not an admin) who may review/edit all timesheets — gets just
-  // the Time Sheet Review entry, nothing else.
-  const isBookkeeper = !isAdmin && has("attendance.view_all");
+  // A timesheet reviewer (not an admin) — gets just the Time Sheet Review entry,
+  // nothing else. Two flavors, both surfaced here:
+  //  - attendance.view_all → "bookkeeper": reviews EVERYONE's timesheets.
+  //  - reports.view (no view_all) → department-scoped reviewer: the data
+  //    endpoints filter to their management scope (hats), so they see only the
+  //    departments they cover. Pay never appears on this page.
+  const isBookkeeper = !isAdmin && (has("attendance.view_all") || has("reports.view"));
 
   const { data: pendingRequests } = useQuery<TimeOffRequest[]>({
     queryKey: ["/api/time-off/pending"],
