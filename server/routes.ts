@@ -3434,6 +3434,22 @@ export async function registerRoutes(
 
     const profile = await storage.getEmploymentProfile(targetUserId);
     if (!profile) return res.status(404).json({ message: "Employment profile not found" });
+    // Pay visibility: rates and rate type are hidden unless the requester may see
+    // pay (compensation.view / super admin) or it's their own profile — so the
+    // amounts never even reach a client that shouldn't show them.
+    const perms = await resolveUserPermissions(authUser.id);
+    const canSeePay =
+      perms.has("system.super_admin") || perms.has("compensation.view") || authUser.id === targetUserId;
+    if (!canSeePay) {
+      return res.json({
+        ...profile,
+        payType: null,
+        hourlyRate: null,
+        dailySalary: null,
+        weeklySalary: null,
+        payHidden: true,
+      });
+    }
     res.json(profile);
   });
 

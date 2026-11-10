@@ -197,8 +197,15 @@ export function EmployeeTimesheetTable({
 
   return (
     <div className="space-y-3" data-testid="timesheet-table-container">
-      {showExport && (
-        <div className="flex justify-end">
+      <div className="flex items-center justify-between gap-4 flex-wrap rounded-md border bg-muted/30 px-4 py-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Total hours this period</p>
+          <p className="text-3xl font-bold tabular-nums leading-tight" data-testid="text-timesheet-total-hours-big">
+            {formatHoursMinutes(data.totals.totalHours)}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">{data.totals.daysWorked} day{data.totals.daysWorked === 1 ? "" : "s"} worked</p>
+        </div>
+        {showExport && (
           <Button
             variant="outline"
             size="sm"
@@ -208,8 +215,8 @@ export function EmployeeTimesheetTable({
           >
             <Download className="h-4 w-4 mr-2" /> Export CSV
           </Button>
-        </div>
-      )}
+        )}
+      </div>
       <div className="border rounded-md overflow-x-auto">
         <Table>
           <TableHeader>
