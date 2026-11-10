@@ -26,6 +26,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
 import { userEmploymentProfiles, users, type Company } from "../../shared/schema";
+import { parseEmployeeName } from "./employeeNames";
 
 export const COMPANY_NAME = "Ahava Medical Center";
 
@@ -77,20 +78,6 @@ function pick(row: Record<string, unknown>, candidates: string[]): string {
     if (v != null && String(v).trim() !== "") return String(v).trim();
   }
   return "";
-}
-
-/**
- * First word of the cell is the first name, the remaining word(s) are the last
- * name. A handful of rows use a "Last, First" comma form (e.g. "Aricapa,
- * Jorge"); we strip the stray comma so the stored name has no punctuation, but
- * still treat the first token as the first name.
- */
-function parseName(raw: string): { firstName: string; lastName: string } {
-  const cleaned = String(raw).trim().replace(/\s+/g, " ");
-  const tokens = cleaned.split(" ");
-  const firstName = (tokens[0] || "").replace(/,/g, "").trim();
-  const lastName = tokens.slice(1).join(" ").replace(/,/g, "").trim();
-  return { firstName, lastName };
 }
 
 /** Normalize a wage-type cell to a stored taxClassification, or undefined when
@@ -231,6 +218,8 @@ export async function importEmployeesFromBuffer(
     // never the zero-padded "Employee Id" or the "Payroll Id".
     const employeeNumber = pick(row, ["Clock #", "Clock#", "Clock Number", "ID"]);
     const employeeCell = pick(row, ["Employee Name", "Employee", "Name"]);
+    const explicitFirstName = pick(row, ["First Name", "FirstName", "Given Name"]);
+    const explicitLastName = pick(row, ["Last Name", "LastName", "Surname", "Family Name"]);
     const actualLocation = pick(row, ["Actual Location", "Work Location"]);
     const legacyDept = pick(row, ["Location", "Department Name", "Dept", "Department"]);
     const payingCompanyRaw = pick(row, ["Paying Company", "Payroll Company"]);
@@ -246,7 +235,7 @@ export async function importEmployeesFromBuffer(
       skipped.push({ row: rowNum, reason: "missing Clock # / ID" });
       continue;
     }
-    if (!employeeCell) {
+    if (!employeeCell && !explicitFirstName && !explicitLastName) {
       skipped.push({ row: rowNum, reason: `missing name (Clock # ${employeeNumber})` });
       continue;
     }
@@ -266,7 +255,10 @@ export async function importEmployeesFromBuffer(
       locationName = mapped;
     }
     const locationId = await ensureLocation(locationName);
-    const { firstName, lastName } = parseName(employeeCell);
+    // Explicit columns win as a pair, including an intentionally blank surname.
+    const { firstName, lastName } = explicitFirstName || explicitLastName
+      ? { firstName: explicitFirstName, lastName: explicitLastName }
+      : parseEmployeeName(employeeCell);
 
     // Optional pay fields. Only set when the cell is present and recognized;
     // blank or unrecognized values warn and are left at the schema default.

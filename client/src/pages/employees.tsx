@@ -1007,7 +1007,9 @@ function ImportEmployeesDialog({
           <DialogTitle>Import Employees</DialogTitle>
           <DialogDescription>
             Upload an Excel (.xlsx) spreadsheet. Recognized columns:{" "}
-            <span className="font-medium">Employee Name</span>,{" "}
+            <span className="font-medium">First Name</span> and{" "}
+            <span className="font-medium">Last Name</span> (preferred), or{" "}
+            <span className="font-medium">Employee Name</span> in Last First order;{" "}
             <span className="font-medium">Clock #</span>,{" "}
             <span className="font-medium">Actual Location</span>,{" "}
             <span className="font-medium">Paying Company</span>, and{" "}

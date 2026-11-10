@@ -110,8 +110,8 @@ test("enriched import: clock # key, one location, paying company + wage type", a
 
   const w2 = await profileFor(CK.w2);
   assert.ok(w2, "W-2 employee imported");
-  assert.equal(w2!.firstName, "Aboody");
-  assert.equal(w2!.lastName, "Sarah");
+  assert.equal(w2!.firstName, "Sarah");
+  assert.equal(w2!.lastName, "Aboody");
   assert.equal(w2!.taxClassification, "W-2");
 
   const k = await profileFor(CK.k1099);
@@ -143,7 +143,23 @@ test("idempotent: re-running updates in place, never duplicates", async () => {
     .where(eq(schema.userEmploymentProfiles.employeeNumber, CK.w2));
   assert.equal(rows.length, 1, "still exactly one profile for that clock #");
   const w2 = await profileFor(CK.w2);
-  assert.equal(w2!.lastName, "Sarah RENAMED", "name refreshed on re-import");
+  assert.equal(w2!.firstName, "Sarah RENAMED", "given names refreshed on re-import");
+  assert.equal(w2!.lastName, "Aboody", "surname stays in the last-name field");
+});
+
+test("separate name columns preserve compound names and override a combined name", async () => {
+  const summary = await importEmployeesFromBuffer(wbBuffer([
+    { "First Name": "Sarah Jane", "Last Name": "de Aboody", "Employee Name": "Do not parse this", "Clock #": CK.w2, "Actual Location": "Sumner" },
+  ]));
+  assert.ok(summary.updated >= 1);
+  const row = await profileFor(CK.w2);
+  assert.equal(row!.firstName, "Sarah Jane");
+  assert.equal(row!.lastName, "de Aboody");
+  // A combined cell is not required when separate columns are present.
+  await importEmployeesFromBuffer(wbBuffer([
+    { "First Name": "Sarah", "Last Name": "Aboody", "Clock #": CK.w2, "Actual Location": "Sumner" },
+  ]));
+  assert.equal((await profileFor(CK.w2))!.firstName, "Sarah");
 });
 
 test("unrecognized paying company warns but still imports", async () => {
@@ -165,7 +181,8 @@ test("legacy columns still work (Employee / ID / Location)", async () => {
   assert.ok(summary.created + summary.updated >= 1);
   const row = await profileFor(CK.legacy);
   assert.ok(row, "legacy row imported by ID");
-  assert.equal(row!.firstName, "Legacy");
+  assert.equal(row!.firstName, "Person");
+  assert.equal(row!.lastName, "Legacy");
 });
 
 test("Department cell assigns a matching (existing) department", async () => {
