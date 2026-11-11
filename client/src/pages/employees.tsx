@@ -285,10 +285,13 @@ export default function EmployeesPage() {
   if (appliedCompanyIds.length) navParams.set("companyIds", appliedCompanyKey);
   if (appliedTaxClasses.length) navParams.set("taxClasses", appliedTaxKey);
   if (appliedCertStatuses.length) navParams.set("certStatuses", appliedCertKey);
+  // Match the table's sort so Prev/Next step through the list in the SAME order
+  // the user is seeing (e.g. last-name A–Z), not the server's default order.
+  navParams.set("sort", sortOrder);
   navParams.set("limit", "1000");
   navParams.set("offset", "0");
   const { data: navPage } = useQuery<{ data: User[] }>({
-    queryKey: ["/api/users", "nav", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey],
+    queryKey: ["/api/users", "nav", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, sortOrder],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${navParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employee navigation list");
