@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/empty-state";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
+import { EmployeeReviewRules } from "@/components/employee-review-rules";
 import { TimesheetEditor } from "@/components/timesheet-editor";
 import { WorkDateBackfillCard } from "@/components/workdate-backfill-card";
 import { OverlongShiftReconcileCard } from "@/components/overlong-shift-reconcile-card";
@@ -368,6 +369,7 @@ export default function TimeSheetReviewPage() {
                           <TableRow>
                             <TableCell colSpan={6} className="bg-muted/30">
                               <div className="py-2 space-y-3" data-testid={`detail-review-${r.id}`}>
+                                <EmployeeReviewRules employeeId={r.id} />
                                 <EmployeeTimesheetTable
                                   employeeId={r.id}
                                   startDate={range.start}

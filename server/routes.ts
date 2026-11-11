@@ -14,7 +14,7 @@ import { userDepartmentIds, userLocationIds, users } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, notInArray, gte, lte, sql } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { writeLedgerEntry, getLedgerContext, hoursDelta } from "./services/ledger";
-import { getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
+import { loadPolicyResolutionContext, getEffectivePolicy, getApplicablePolicies, getDefaultRulesForType, DEFAULT_ATTENDANCE_RULES, DEFAULT_PTO_RULES, DEFAULT_PAYROLL_RULES } from "./policyEngine";
 import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeWeeklyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
@@ -6050,6 +6050,43 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error resolving long shift:", error);
       handleRouteError(res, error, "Failed to resolve long shift");
+    }
+  });
+
+  // On-demand review context; deliberately excludes salary/rate/profile fields.
+  app.get("/api/attendance/review-rules/:employeeId", requireAuth, async (req: any, res) => {
+    try {
+      const requester = req.authUser as User;
+      const employeeId = String(req.params.employeeId);
+      if (employeeId !== requester.id) {
+        if (requester.role !== "admin" && requester.role !== "manager") {
+          return res.status(403).json({ message: "Not authorized to review this employee." });
+        }
+        const teamIds = await getTeamUserIds(requester);
+        if (!teamIds.has(employeeId)) {
+          return res.status(403).json({ message: "Not authorized to review this employee." });
+        }
+      }
+      const target = await storage.getUser(employeeId);
+      if (!target || (target.id === SUPER_ADMIN_USER_ID && requester.id !== SUPER_ADMIN_USER_ID)) {
+        return res.status(404).json({ message: "Employee not found." });
+      }
+      const permissions = await resolveUserPermissions(requester.id);
+      const canSeePay = requester.id === employeeId || permissions.has("system.super_admin") || permissions.has("compensation.view");
+      const types = canSeePay ? ["attendance", "pto", "payroll"] : ["attendance", "pto"];
+      const context = await loadPolicyResolutionContext([employeeId]);
+      const policies = await Promise.all(types.map(async (policyTypeKey) =>
+          await getEffectivePolicy(target.companyId, employeeId, policyTypeKey, target, context) ?? {
+            policyId: null,
+            policyName: `Default ${policyTypeKey} policy`,
+            policyTypeKey,
+            assignmentLevel: "default",
+            rules: getDefaultRulesForType(policyTypeKey),
+          }));
+      const personalBonuses = canSeePay ? context.profiles.get(employeeId)?.dayOfWeekBonuses ?? [] : [];
+      res.json({ policies, personalBonuses, payHidden: !canSeePay });
+    } catch (error) {
+      handleRouteError(res, error, "Failed to load review rules");
     }
   });
 
