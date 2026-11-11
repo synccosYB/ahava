@@ -9,6 +9,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ChevronLeft, ChevronRight, Pencil, Check, CalendarClock, CalendarDays } from "lucide-react";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
+import { EmployeeReviewRules } from "@/components/employee-review-rules";
 import { TimesheetEditor } from "@/components/timesheet-editor";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useAuth } from "@/hooks/use-auth";
@@ -166,6 +167,7 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
         </div>
       </CardHeader>
       <CardContent>
+        <EmployeeReviewRules employeeId={employeeId} />
         <EmployeeTimesheetTable
           employeeId={employeeId}
           startDate={displayed.start}
