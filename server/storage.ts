@@ -607,7 +607,10 @@ export interface IStorage {
   getPolicyAssignment(id: string): Promise<PolicyAssignment | undefined>;
   getPolicyAssignmentsByPolicy(policyId: string): Promise<PolicyAssignment[]>;
   getAllPolicyAssignments(): Promise<PolicyAssignment[]>;
-  createPolicyAssignment(assignment: InsertPolicyAssignment): Promise<PolicyAssignment>;
+  createPolicyAssignment(
+    assignment: InsertPolicyAssignment,
+    tx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  ): Promise<PolicyAssignment>;
   updatePolicyAssignment(id: string, assignment: Partial<InsertPolicyAssignment>): Promise<PolicyAssignment | undefined>;
   deletePolicyAssignment(id: string): Promise<void>;
 
@@ -3508,8 +3511,11 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(policyAssignments);
   }
 
-  async createPolicyAssignment(assignment: InsertPolicyAssignment): Promise<PolicyAssignment> {
-    const [created] = await db.insert(policyAssignments).values(assignment).returning();
+  async createPolicyAssignment(
+    assignment: InsertPolicyAssignment,
+    tx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  ): Promise<PolicyAssignment> {
+    const [created] = await (tx ?? db).insert(policyAssignments).values(assignment).returning();
     return created;
   }
 

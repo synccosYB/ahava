@@ -12,9 +12,11 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  employeeAssignmentOption, PolicyAssignmentPicker, usePolicyAssignmentTargets,
+  type AssignmentOption, type PolicyAssignmentTargets,
+} from "@/components/policy-assignment-picker";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -25,9 +27,9 @@ import { useActiveCompany } from "@/hooks/use-active-company";
 import { CreateRoleDialog } from "@/components/inline-entity-create";
 import {
   ChevronLeft, ChevronRight, Check, Clock, CalendarDays,
-  DollarSign, GitBranch, AlertCircle, ChevronsUpDown, Sparkles, FileText, Plus
+  DollarSign, GitBranch, AlertCircle, Sparkles, FileText, Plus
 } from "lucide-react";
-import type { Policy, PolicyType, Division, Location, Department, User, PolicyAssignment, Role } from "@shared/schema";
+import type { Policy, PolicyType, PolicyAssignment } from "@shared/schema";
 import { PUNCH_SOURCES, PUNCH_SOURCE_LABELS, DEFAULT_ALLOWED_PUNCH_SOURCES, getAllowedPunchSources } from "@shared/punchSources";
 import {
   findDayOfWeekBonusOverlaps,
@@ -371,13 +373,7 @@ export function PolicyWizard({
   // Single consolidated picker call gated by the same admin check as policy
   // management, so the wizard always receives every assignment target regardless
   // of which granular view permissions the acting role happens to hold.
-  const { data: assignmentTargets } = useQuery<{
-    companies: Division[];
-    locations: Location[];
-    departments: Department[];
-    users: User[];
-    roles: Role[];
-  }>({ queryKey: ["/api/policy-assignment-targets"] });
+  const { data: assignmentTargets } = usePolicyAssignmentTargets();
   const { activeCompanyId } = useActiveCompany();
   const divisions = assignmentTargets?.companies;
   const locations = assignmentTargets?.locations;
@@ -397,16 +393,16 @@ export function PolicyWizard({
 
   function mapAssignmentsToEntries(
     assigns: PolicyAssignment[],
-    divs: Division[],
-    locs: Location[],
-    depts: Department[],
-    usrs: User[],
-    rolesList: Role[],
+    divs: PolicyAssignmentTargets["companies"],
+    locs: PolicyAssignmentTargets["locations"],
+    depts: PolicyAssignmentTargets["departments"],
+    usrs: PolicyAssignmentTargets["users"],
+    rolesList: PolicyAssignmentTargets["roles"],
   ): AssignmentEntry[] {
     return assigns.map((a) => {
       if (a.userId) {
         const user = usrs.find((u) => u.id === a.userId);
-        return { level: "employee", id: a.userId, label: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Employee" : "Employee" };
+        return { level: "employee", id: a.userId, label: user ? employeeAssignmentOption(user).label : "Employee" };
       }
       if (a.roleId) {
         const role = rolesList.find((r) => r.id === a.roleId);
@@ -791,7 +787,8 @@ export function PolicyWizard({
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!saveMutation.isPending) onOpenChange(o); }}>
       <DialogContent
-        className="max-w-2xl max-h-[90vh] overflow-y-auto p-0"
+        className="max-w-2xl max-h-[90dvh] overflow-y-auto scroll-pb-24 p-0"
+        aria-describedby={undefined}
         data-testid="dialog-policy-wizard"
       >
         <div className="p-6 pb-0">
@@ -900,9 +897,7 @@ export function PolicyWizard({
           )}
         </div>
 
-        <Separator />
-
-        <div className="p-6 pt-4 flex justify-between items-center">
+        <div className="sticky bottom-0 z-10 flex items-center justify-between gap-2 border-t bg-background p-4 sm:px-6">
           <Button
             variant="outline"
             onClick={goBack}
@@ -2339,18 +2334,17 @@ function StepAssignments({
 }: {
   assignments: AssignmentEntry[];
   setAssignments: (v: AssignmentEntry[]) => void;
-  divisions: Division[];
-  locations: Location[];
-  departments: Department[];
-  users: User[];
-  roles: Role[];
+  divisions: PolicyAssignmentTargets["companies"];
+  locations: PolicyAssignmentTargets["locations"];
+  departments: PolicyAssignmentTargets["departments"];
+  users: PolicyAssignmentTargets["users"];
+  roles: PolicyAssignmentTargets["roles"];
   policyTypeId?: string;
   editingPolicyId?: string;
 }) {
   const { has: hasPermission } = usePermissions();
   const [addLevel, setAddLevel] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [popoverOpen, setPopoverOpen] = useState(false);
   const [createRoleOpen, setCreateRoleOpen] = useState(false);
 
   // Same-type direct-employee conflict detection. We reuse the existing policy
@@ -2399,7 +2393,7 @@ function StepAssignments({
     [assignments, employeeConflictPolicies],
   );
 
-  const getOptions = (): { id: string; label: string }[] => {
+  const getOptions = (): AssignmentOption[] => {
     switch (addLevel) {
       case "division":
         return divisions.map((d) => ({ id: d.id, label: d.name }));
@@ -2408,7 +2402,7 @@ function StepAssignments({
       case "department":
         return departments.map((d) => ({ id: d.id, label: d.name }));
       case "employee":
-        return users.map((u) => ({ id: u.id, label: `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || u.id }));
+        return users.map(employeeAssignmentOption).sort((a, b) => a.label.localeCompare(b.label));
       case "role":
         return roles.map((r) => ({ id: r.id, label: r.name }));
       case "employment_type":
@@ -2422,17 +2416,13 @@ function StepAssignments({
 
   const options = getOptions();
 
-  const levelAvailability: Record<string, { count: number; emptyHint: string }> = {
-    division: { count: divisions.length, emptyHint: "No companies exist yet — create one in Locations & Departments first" },
-    location: { count: locations.length, emptyHint: "No locations exist yet — create one in Locations & Departments first" },
-    department: { count: departments.length, emptyHint: "No departments exist yet — create one in Locations & Departments first" },
-    employee: { count: users.length, emptyHint: "No employees exist yet — add one in Employees first" },
-    role: { count: roles.length, emptyHint: "No roles exist yet — create one in Roles & Permissions first" },
-    employment_type: { count: EMPLOYMENT_TYPE_OPTIONS.length, emptyHint: "" },
-    pay_type: { count: PAY_TYPE_OPTIONS.length, emptyHint: "" },
+  const emptyTargetsHint: Record<string, string> = {
+    division: "No companies exist yet. Create one in Locations & Departments.",
+    location: "No locations exist yet. Create one in Locations & Departments.",
+    department: "No departments exist yet. Create one in Locations & Departments.",
+    employee: "No employees exist yet. Add one in Employees.",
+    role: "No roles exist yet. Create one in Roles & Permissions.",
   };
-  const currentLevelEmpty = !!addLevel && levelAvailability[addLevel]?.count === 0;
-  const currentLevelEmptyHint = currentLevelEmpty ? levelAvailability[addLevel]?.emptyHint : "";
 
   // "No targets of any kind" = every real-world assignment target is empty.
   // Employment Type / Pay Type are static option lists, not data the admin can
@@ -2444,48 +2434,23 @@ function StepAssignments({
     users.length === 0 &&
     roles.length === 0;
 
-  const isAlreadyAssigned = (id: string) =>
-    assignments.some((a) => a.level === addLevel && a.id === id);
-
-  // Single source of truth for toggling: cmdk's own `onSelect` fires once per
-  // click (mouse or touch) and on Enter, and reports the correct clicked item.
-  // The previous version also wired onMouseDown/onTouchEnd with
-  // `e.preventDefault()`, which stopped cmdk from updating its highlighted item
-  // to the one clicked — so the follow-up `onSelect` toggled the PREVIOUSLY
-  // highlighted item back off, making it impossible to keep more than one
-  // selected. Relying on `onSelect` alone fixes the multi-select.
-  const toggleSelected = (id: string) => {
-    if (isAlreadyAssigned(id)) return;
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
+  const assignedIds = new Set(assignments.filter((a) => a.level === addLevel).map((a) => a.id));
 
   const addAssignments = () => {
     if (!addLevel || selectedIds.length === 0) return;
     const newEntries: AssignmentEntry[] = [];
     selectedIds.forEach((id) => {
-      if (isAlreadyAssigned(id)) return;
+      if (assignedIds.has(id)) return;
       const match = options.find((o) => o.id === id);
       newEntries.push({ level: addLevel, id, label: match?.label || id });
     });
     if (newEntries.length === 0) return;
     setAssignments([...assignments, ...newEntries]);
     setSelectedIds([]);
-    setPopoverOpen(false);
   };
 
   const removeAssignment = (index: number) => {
     setAssignments(assignments.filter((_, i) => i !== index));
-  };
-
-  const targetButtonLabel = () => {
-    if (!addLevel) return "Select level first";
-    if (selectedIds.length === 0) return `Select ${getAssignmentLevelLabel(addLevel).toLowerCase()}...`;
-    if (selectedIds.length === 1) {
-      return options.find((o) => o.id === selectedIds[0])?.label || "1 selected";
-    }
-    return `${selectedIds.length} selected`;
   };
 
   return (
@@ -2507,14 +2472,14 @@ function StepAssignments({
         </div>
       )}
 
-      <div className="flex gap-2 items-end">
-        <div className="flex-1">
-          <Label>Level</Label>
+      <div className="space-y-3">
+        <div className="space-y-1 sm:max-w-xs">
+          <Label htmlFor="wizard-assignment-level">Level</Label>
           <Select
             value={addLevel}
             onValueChange={(v) => { setAddLevel(v); setSelectedIds([]); }}
           >
-            <SelectTrigger data-testid="select-wizard-assign-level">
+            <SelectTrigger id="wizard-assignment-level" data-testid="select-wizard-assign-level">
               <SelectValue placeholder="Select level..." />
             </SelectTrigger>
             <SelectContent>
@@ -2537,101 +2502,44 @@ function StepAssignments({
               <SelectItem value="pay_type">Pay Type</SelectItem>
             </SelectContent>
           </Select>
-          {currentLevelEmpty && currentLevelEmptyHint && (
-            <p
-              className="text-xs text-muted-foreground mt-1"
-              data-testid="text-wizard-level-empty-hint"
-            >
-              {currentLevelEmptyHint}
-            </p>
-          )}
         </div>
-        <div className="flex-1">
-          <Label>Target</Label>
-          <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-            <PopoverTrigger asChild>
+        {addLevel && (
+          <>
+            <PolicyAssignmentPicker
+              key={addLevel}
+              label={addLevel === "employee" ? "Employees" : "Targets"}
+              options={options}
+              selectedIds={selectedIds}
+              assignedIds={assignedIds}
+              onChange={setSelectedIds}
+              searchPlaceholder={addLevel === "employee" ? "Search by name or email" : "Search targets"}
+              emptyMessage={emptyTargetsHint[addLevel] || "No targets available."}
+              testId="wizard-assignment-target"
+            />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {addLevel === "role" && hasPermission("roles.manage") && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCreateRoleOpen(true)}
+                  data-testid="option-wizard-add-new-role"
+                >
+                  <Plus className="mr-1 h-4 w-4" /> Add new role
+                </Button>
+              )}
               <Button
-                variant="outline"
-                role="combobox"
-                disabled={!addLevel}
-                className="w-full justify-between font-normal"
-                data-testid="select-wizard-assign-target"
+                type="button"
+                onClick={addAssignments}
+                disabled={selectedIds.length === 0}
+                size="sm"
+                data-testid="button-wizard-add-assignment"
               >
-                <span className={selectedIds.length === 0 && addLevel ? "text-muted-foreground" : ""}>
-                  {targetButtonLabel()}
-                </span>
-                <ChevronsUpDown className="h-4 w-4 opacity-50 ml-2" />
+                Add{selectedIds.length > 0 ? ` ${selectedIds.length} selected` : ""}
               </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
-              <Command>
-                <CommandInput placeholder="Search..." />
-                <CommandList>
-                  <CommandEmpty data-testid="text-wizard-target-empty">
-                    {currentLevelEmpty
-                      ? `No ${getAssignmentLevelLabel(addLevel).toLowerCase()} options are available.`
-                      : "No options found."}
-                  </CommandEmpty>
-                  <CommandGroup>
-                    {options.map((opt) => {
-                      const alreadyAssigned = isAlreadyAssigned(opt.id);
-                      const isChecked = alreadyAssigned || selectedIds.includes(opt.id);
-                      return (
-                        <CommandItem
-                          key={opt.id}
-                          value={`${opt.label} ${opt.id}`}
-                          disabled={alreadyAssigned}
-                          onSelect={() => toggleSelected(opt.id)}
-                          data-testid={`option-wizard-target-${opt.id}`}
-                          className={alreadyAssigned ? "opacity-60" : "cursor-pointer"}
-                        >
-                          <Checkbox
-                            checked={isChecked}
-                            disabled={alreadyAssigned}
-                            className="mr-2 pointer-events-none"
-                          />
-                          <span className="flex-1 pointer-events-none">{opt.label}</span>
-                          {alreadyAssigned && (
-                            <span className="text-xs text-muted-foreground ml-2 pointer-events-none">Added</span>
-                          )}
-                        </CommandItem>
-                      );
-                    })}
-                  </CommandGroup>
-                  {addLevel === "role" && hasPermission("roles.manage") && (
-                    <CommandGroup className="border-t">
-                      <CommandItem
-                        value="__add_new_role__"
-                        onSelect={() => {
-                          setPopoverOpen(false);
-                          setCreateRoleOpen(true);
-                        }}
-                        className="cursor-pointer text-primary font-medium"
-                        data-testid="option-wizard-add-new-role"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          setPopoverOpen(false);
-                          setCreateRoleOpen(true);
-                        }}
-                      >
-                        <Plus className="h-4 w-4 mr-2" />
-                        <span>Add new role</span>
-                      </CommandItem>
-                    </CommandGroup>
-                  )}
-                </CommandList>
-              </Command>
-            </PopoverContent>
-          </Popover>
-        </div>
-        <Button
-          onClick={addAssignments}
-          disabled={!addLevel || selectedIds.length === 0}
-          size="sm"
-          data-testid="button-wizard-add-assignment"
-        >
-          Add
-        </Button>
+            </div>
+          </>
+        )}
       </div>
 
       <CreateRoleDialog

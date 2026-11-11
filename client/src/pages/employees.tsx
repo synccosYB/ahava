@@ -4353,6 +4353,7 @@ function EmployeeBonusesCard({ userId, bonuses, canEdit }: { userId: string; bon
       queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
       setEditing(false);
       toast({ title: "Bonuses saved" });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/review-rules", userId] });
     },
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
