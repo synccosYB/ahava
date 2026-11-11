@@ -211,6 +211,36 @@ export function summarizePayrollPolicy(rules: Record<string, any>): string[] {
   return out;
 }
 
+// Compact bonus NAMES only (no amounts/conditions), for the timesheet-review
+// "Assigned rules & bonuses" strip. Pulls the payroll policy's own bonuses and
+// the employee's personal day-of-week bonuses, names each (e.g. "Sunday Bonus",
+// the punctuality bonus's label, "Early Arrival Bonus"), and de-dupes by name so
+// a policy Sunday bonus and a personal one collapse to one chip.
+export function bonusNames(
+  payrollRules: Record<string, any> | null | undefined,
+  personalBonuses?: Array<{ dayOfWeek?: number }> | null,
+): string[] {
+  const names: string[] = [];
+  const r = payrollRules || {};
+  const addDow = (list: unknown) => {
+    if (!Array.isArray(list)) return;
+    for (const b of list) {
+      const day = DAY_FULL[Number((b as { dayOfWeek?: number })?.dayOfWeek)];
+      if (day) names.push(`${day} Bonus`);
+    }
+  };
+  addDow(r.dayOfWeekBonuses);
+  addDow(personalBonuses);
+  if (r.punctualityBonus?.enabled === true) {
+    const label = typeof r.punctualityBonus.label === "string" ? r.punctualityBonus.label.trim() : "";
+    names.push(label || "Punctuality Bonus");
+  }
+  if (Array.isArray(r.earlyArrivalBonuses) && r.earlyArrivalBonuses.length > 0) {
+    names.push("Early Arrival Bonus");
+  }
+  return Array.from(new Set(names));
+}
+
 export function summarizeApprovalsPolicy(rules: Record<string, any>): string[] {
   const out: string[] = [];
   if (!rules || Object.keys(rules).length === 0) return out;
