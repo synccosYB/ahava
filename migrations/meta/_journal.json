@@ -589,6 +589,13 @@
       "when": 1780500400000,
       "tag": "0083_employee_day_of_week_bonuses",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1780500500000,
+      "tag": "0084_employee_payroll_overrides",
+      "breakpoints": true
     }
   ]
 }

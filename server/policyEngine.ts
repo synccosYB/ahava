@@ -87,6 +87,11 @@ export async function getEffectivePolicy(
   policyTypeKey: string,
   user?: User,
   context?: PolicyResolutionContext,
+  // `skipPayrollOverrides` resolves the preset policy ALONE, without the
+  // employee's per-rule overrides layered on — used to show an admin the
+  // baseline they are overriding. Every normal caller leaves it off so payroll
+  // math uses the composed (overridden) rules.
+  opts?: { skipPayrollOverrides?: boolean },
 ): Promise<EffectivePolicy | null> {
   const policyType = context ? context.types.get(policyTypeKey) : (await db
     .select()
@@ -243,7 +248,41 @@ export async function getEffectivePolicy(
     }
   }
 
-  if (!resolvedPolicy) return null;
+  // Composable Payroll Rules: overlay this employee's per-rule overrides on top
+  // of whatever payroll policy resolved (or on the defaults when none did). Each
+  // SET override key replaces that one rule; unset keys fall through. This is a
+  // no-op for every other policy type and for employees with no overrides, so
+  // the resolution hierarchy above is unchanged for them.
+  let payrollOverrides: Record<string, any> | null = null;
+  if (policyTypeKey === "payroll" && !opts?.skipPayrollOverrides) {
+    const prof = context
+      ? context.profiles.get(userId)
+      : (
+          await db
+            .select({ payrollOverrides: userEmploymentProfiles.payrollOverrides })
+            .from(userEmploymentProfiles)
+            .where(eq(userEmploymentProfiles.userId, userId))
+        )[0];
+    const ov = (prof?.payrollOverrides as Record<string, any> | null) ?? null;
+    if (ov && Object.keys(ov).length > 0) payrollOverrides = ov;
+  }
+
+  if (!resolvedPolicy) {
+    // No payroll policy assigned, but this employee has individual rule
+    // overrides — surface them as an employee-level effective policy layered on
+    // the defaults, so the overrides still take effect with no preset.
+    if (payrollOverrides) {
+      return {
+        policyId: "__employee_overrides__",
+        policyName: "Per-employee rules",
+        policyTypeKey,
+        version: 0,
+        assignmentLevel: "employee",
+        rules: composePayrollRules(DEFAULT_PAYROLL_RULES, payrollOverrides),
+      };
+    }
+    return null;
+  }
 
   const rule = context ? context.rules.get(resolvedPolicy.id) : (await db
     .select()
@@ -251,14 +290,30 @@ export async function getEffectivePolicy(
     .where(eq(policyRules.policyId, resolvedPolicy.id))
     .limit(1))[0];
 
+  const baseRules = (rule?.rules as Record<string, any>) || {};
   return {
     policyId: resolvedPolicy.id,
     policyName: resolvedPolicy.name,
     policyTypeKey,
     version: resolvedPolicy.version,
     assignmentLevel,
-    rules: (rule?.rules as Record<string, any>) || {},
+    rules: composePayrollRules(baseRules, payrollOverrides),
   };
+}
+
+// Composes a set of per-employee payroll rule overrides on top of the base
+// payroll rules (the resolved policy's, or the defaults). The overlay is
+// SHALLOW and by-key: each override key replaces that one base rule outright
+// (so a `punctualityBonus` override replaces the whole punctuality object), and
+// any key the overrides omit falls through to the base rule unchanged. Empty or
+// absent overrides return the base object untouched — a guaranteed no-op, which
+// is what keeps employees with no overrides on exactly their policy's rules.
+export function composePayrollRules(
+  baseRules: Record<string, any>,
+  overrides: Record<string, any> | null | undefined,
+): Record<string, any> {
+  if (!overrides || Object.keys(overrides).length === 0) return baseRules;
+  return { ...baseRules, ...overrides };
 }
 
 export type ApplicablePolicyLevel =

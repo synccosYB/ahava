@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { cachedFetch } from "@/lib/cachedFetch";
@@ -3904,6 +3904,7 @@ function EmployeePoliciesTab({ userId, isSelf }: { userId: string; isSelf: boole
   const [, navigate] = useLocation();
   const { has } = usePermissions();
   const canManagePolicies = has("policies.manage");
+  const canSeePay = has("compensation.view") || has("system.super_admin");
   const { data: rows, isLoading, isError, refetch } = useQuery<ApplicablePolicyRow[]>({
     queryKey: ["/api/users", userId, "applicable-policies"],
     queryFn: async () => {
@@ -3939,6 +3940,7 @@ function EmployeePoliciesTab({ userId, isSelf }: { userId: string; isSelf: boole
   return (
     <div className="space-y-6">
     {canManagePolicies && <PolicyAssignmentManager userId={userId} />}
+    {canSeePay && <EmployeePayrollRulesCard userId={userId} canEdit={canManagePolicies} />}
     <Card data-testid="card-employee-policies">
       <CardHeader>
         <CardTitle>Applicable Policies</CardTitle>
@@ -4046,6 +4048,299 @@ function EmployeePoliciesTab({ userId, isSelf }: { userId: string; isSelf: boole
       </CardContent>
     </Card>
     </div>
+  );
+}
+
+// ───────────────────────── Composable Payroll Rules ─────────────────────────
+// Per-employee payroll RULE overrides, edited on the profile Policies tab. Each
+// rule can be left to follow the employee's assigned policy (the "preset") or
+// overridden just for this person. Overrides layer on top of the policy — set
+// only the rules you want to change; everything else follows the policy. Saved
+// to the employment profile's payrollOverrides and composed by the payroll
+// engine (server/policyEngine.ts getEffectivePolicy).
+type PayrollOverrides = {
+  payPeriodType?: "weekly" | "biweekly" | "semimonthly" | "monthly";
+  overtimeEnabled?: boolean;
+  overtimeMultiplier?: number;
+  doubleTimeEnabled?: boolean;
+  doubleTimeMultiplier?: number;
+  doubleTimeThresholdDaily?: number;
+  includeHolidayPay?: boolean;
+  autoCalculateOT?: boolean;
+  punctualityBonus?: { enabled: boolean; bonusPerHour: number; label?: string };
+};
+type EffectivePayroll = {
+  baseline: Record<string, any>;
+  overrides: PayrollOverrides;
+  presetPolicyName: string | null;
+  presetLevel: string | null;
+};
+const PAY_PERIOD_LABELS: Record<string, string> = {
+  weekly: "Weekly",
+  biweekly: "Bi-weekly",
+  semimonthly: "Semi-monthly",
+  monthly: "Monthly",
+};
+const fmtBool = (v: any) => (v ? "On" : "Off");
+const fmtRate = (v: any) => (v == null ? "—" : `${v}×`);
+
+// One rule row in edit mode: a labelled switch that turns the override on/off,
+// with the rule's control shown when on, or the policy's current value when off.
+function PayrollRuleRow({
+  label, hint, testId, active, onToggle, baselineText, canEdit, children,
+}: {
+  label: string; hint?: string; testId: string; active: boolean;
+  onToggle: (on: boolean) => void; baselineText: string; canEdit: boolean; children?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between" data-testid={`rule-row-${testId}`}>
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{label}</span>
+          {active && <Badge variant="secondary" className="text-[10px]">Per-employee</Badge>}
+        </div>
+        {hint && <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>}
+      </div>
+      <div className="flex items-center gap-3 shrink-0">
+        {active ? (
+          <div className="flex items-center gap-2">{children}</div>
+        ) : (
+          <span className="text-xs text-muted-foreground">Policy: {baselineText}</span>
+        )}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-muted-foreground">Override</span>
+          <Switch checked={active} onCheckedChange={onToggle} disabled={!canEdit} data-testid={`switch-override-${testId}`} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmployeePayrollRulesCard({ userId, canEdit }: { userId: string; canEdit: boolean }) {
+  const { toast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<PayrollOverrides>({});
+
+  const { data, isLoading, isError, refetch } = useQuery<EffectivePayroll>({
+    queryKey: ["/api/employment-profiles", userId, "effective-payroll"],
+    queryFn: async () => {
+      const res = await fetch(`/api/employment-profiles/${userId}/effective-payroll`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load payroll rules");
+      return res.json();
+    },
+  });
+
+  useEffect(() => {
+    if (!editing && data) setDraft({ ...(data.overrides ?? {}) });
+  }, [data, editing]);
+
+  const baseline = data?.baseline ?? {};
+  const saved = data?.overrides ?? {};
+
+  const save = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PATCH", `/api/employment-profiles/${userId}`, { payrollOverrides: draft });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId, "effective-payroll"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      setEditing(false);
+      toast({ title: "Payroll rules saved" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const isSet = (key: keyof PayrollOverrides) => Object.prototype.hasOwnProperty.call(draft, key) && draft[key] !== undefined;
+  const setKey = <K extends keyof PayrollOverrides>(key: K, val: PayrollOverrides[K]) =>
+    setDraft((p) => ({ ...p, [key]: val }));
+  const clearKey = (key: keyof PayrollOverrides) =>
+    setDraft((p) => { const n = { ...p }; delete n[key]; return n; });
+  // Turning an override ON seeds it with the current policy value so the admin
+  // starts from the preset and only changes what they mean to.
+  const toggleBool = (key: "overtimeEnabled" | "doubleTimeEnabled" | "includeHolidayPay" | "autoCalculateOT", on: boolean) =>
+    on ? setKey(key, baseline[key] ?? true) : clearKey(key);
+  const toggleNum = (key: "overtimeMultiplier" | "doubleTimeMultiplier" | "doubleTimeThresholdDaily", on: boolean, fallback: number) =>
+    on ? setKey(key, (baseline[key] ?? fallback) as number) : clearKey(key);
+
+  const numInput = (key: "overtimeMultiplier" | "doubleTimeMultiplier" | "doubleTimeThresholdDaily", step: string, max: number, suffix: string) => (
+    <div className="flex items-center gap-1">
+      <Input
+        type="number" min={0} step={step} max={max}
+        className="h-8 w-20"
+        value={(draft[key] as number) ?? ""}
+        onChange={(e) => { const v = e.target.value === "" ? 0 : parseFloat(e.target.value); setKey(key, Number.isNaN(v) ? 0 : Math.max(0, Math.min(max, v))); }}
+        data-testid={`input-override-${key}`}
+      />
+      <span className="text-xs text-muted-foreground">{suffix}</span>
+    </div>
+  );
+
+  // Read-only summary: effective value per rule, flagged when it's a per-employee override.
+  const effVal = (key: keyof PayrollOverrides) => (Object.prototype.hasOwnProperty.call(saved, key) ? (saved as any)[key] : baseline[key]);
+  const isOverridden = (key: keyof PayrollOverrides) => Object.prototype.hasOwnProperty.call(saved, key) && (saved as any)[key] !== undefined;
+  const pb = effVal("punctualityBonus") as PayrollOverrides["punctualityBonus"] | undefined;
+  const summaryRows: { label: string; value: string; key: keyof PayrollOverrides }[] = [
+    { key: "payPeriodType", label: "Pay period", value: PAY_PERIOD_LABELS[effVal("payPeriodType")] ?? String(effVal("payPeriodType") ?? "—") },
+    { key: "overtimeEnabled", label: "Overtime pay", value: fmtBool(effVal("overtimeEnabled")) },
+    { key: "overtimeMultiplier", label: "Overtime rate", value: fmtRate(effVal("overtimeMultiplier")) },
+    { key: "doubleTimeEnabled", label: "Double-time pay", value: fmtBool(effVal("doubleTimeEnabled")) },
+    { key: "doubleTimeMultiplier", label: "Double-time rate", value: fmtRate(effVal("doubleTimeMultiplier")) },
+    { key: "doubleTimeThresholdDaily", label: "Double-time after", value: `${effVal("doubleTimeThresholdDaily") ?? "—"}h/day` },
+    { key: "includeHolidayPay", label: "Holiday pay", value: fmtBool(effVal("includeHolidayPay")) },
+    { key: "autoCalculateOT", label: "Auto-calculate OT", value: fmtBool(effVal("autoCalculateOT")) },
+    { key: "punctualityBonus", label: "Conditional raise (on-time)", value: pb?.enabled ? `+$${pb.bonusPerHour}/hr` : "Off" },
+  ];
+
+  return (
+    <Card data-testid="card-employee-payroll-rules">
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
+        <div>
+          <CardTitle>Payroll Rules</CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">
+            Pick which payroll rules this employee gets. Each rule follows the assigned
+            {data?.presetPolicyName ? <> policy <span className="font-medium">“{data.presetPolicyName}”</span></> : " policy"} unless you
+            override it here — overrides apply to this person only.
+          </p>
+        </div>
+        {canEdit && !editing && (
+          <Button variant="outline" size="sm" onClick={() => setEditing(true)} data-testid="button-edit-payroll-rules">Edit</Button>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isLoading ? (
+          <div className="space-y-2">{[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
+        ) : isError ? (
+          <div className="flex flex-col items-center gap-2 py-6 text-center">
+            <AlertCircle className="h-6 w-6 text-destructive" />
+            <p className="text-sm text-muted-foreground">Could not load payroll rules.</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Try again</Button>
+          </div>
+        ) : !editing ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5" data-testid="summary-payroll-rules">
+            {summaryRows.map((r) => (
+              <div key={String(r.key)} className="flex items-center justify-between gap-2 py-1 border-b border-dashed last:border-0">
+                <span className="text-sm text-muted-foreground">{r.label}</span>
+                <span className="flex items-center gap-1.5 text-sm font-medium">
+                  {r.value}
+                  {isOverridden(r.key) && <Badge variant="secondary" className="text-[10px]">Per-employee</Badge>}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            <PayrollRuleRow
+              label="Pay period" testId="payPeriodType" canEdit={canEdit}
+              active={isSet("payPeriodType")}
+              onToggle={(on) => (on ? setKey("payPeriodType", (baseline.payPeriodType ?? "biweekly")) : clearKey("payPeriodType"))}
+              baselineText={PAY_PERIOD_LABELS[baseline.payPeriodType] ?? "Bi-weekly"}
+            >
+              <Select value={draft.payPeriodType ?? "biweekly"} onValueChange={(v) => setKey("payPeriodType", v as PayrollOverrides["payPeriodType"])}>
+                <SelectTrigger className="h-8 w-36" data-testid="select-override-payPeriodType"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.entries(PAY_PERIOD_LABELS).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </PayrollRuleRow>
+
+            <PayrollRuleRow
+              label="Overtime pay" hint="Whether this employee is paid an overtime rate at all." testId="overtimeEnabled" canEdit={canEdit}
+              active={isSet("overtimeEnabled")} onToggle={(on) => toggleBool("overtimeEnabled", on)}
+              baselineText={fmtBool(baseline.overtimeEnabled)}
+            >
+              <Switch checked={!!draft.overtimeEnabled} onCheckedChange={(v) => setKey("overtimeEnabled", v)} data-testid="value-override-overtimeEnabled" />
+              <span className="text-xs text-muted-foreground w-7">{fmtBool(draft.overtimeEnabled)}</span>
+            </PayrollRuleRow>
+
+            <PayrollRuleRow
+              label="Overtime rate" hint="Multiplier on the hourly rate for overtime hours." testId="overtimeMultiplier" canEdit={canEdit}
+              active={isSet("overtimeMultiplier")} onToggle={(on) => toggleNum("overtimeMultiplier", on, 1.5)}
+              baselineText={fmtRate(baseline.overtimeMultiplier)}
+            >
+              {numInput("overtimeMultiplier", "0.05", 10, "×")}
+            </PayrollRuleRow>
+
+            <PayrollRuleRow
+              label="Double-time pay" testId="doubleTimeEnabled" canEdit={canEdit}
+              active={isSet("doubleTimeEnabled")} onToggle={(on) => toggleBool("doubleTimeEnabled", on)}
+              baselineText={fmtBool(baseline.doubleTimeEnabled)}
+            >
+              <Switch checked={!!draft.doubleTimeEnabled} onCheckedChange={(v) => setKey("doubleTimeEnabled", v)} data-testid="value-override-doubleTimeEnabled" />
+              <span className="text-xs text-muted-foreground w-7">{fmtBool(draft.doubleTimeEnabled)}</span>
+            </PayrollRuleRow>
+
+            <PayrollRuleRow
+              label="Double-time rate" testId="doubleTimeMultiplier" canEdit={canEdit}
+              active={isSet("doubleTimeMultiplier")} onToggle={(on) => toggleNum("doubleTimeMultiplier", on, 2)}
+              baselineText={fmtRate(baseline.doubleTimeMultiplier)}
+            >
+              {numInput("doubleTimeMultiplier", "0.05", 10, "×")}
+            </PayrollRuleRow>
+
+            <PayrollRuleRow
+              label="Double-time after" hint="Hours worked in one day before double-time starts." testId="doubleTimeThresholdDaily" canEdit={canEdit}
+              active={isSet("doubleTimeThresholdDaily")} onToggle={(on) => toggleNum("doubleTimeThresholdDaily", on, 12)}
+              baselineText={`${baseline.doubleTimeThresholdDaily ?? "—"}h/day`}
+            >
+              {numInput("doubleTimeThresholdDaily", "0.5", 24, "h/day")}
+            </PayrollRuleRow>
+
+            <PayrollRuleRow
+              label="Holiday pay" hint="Whether holiday pay applies to this employee." testId="includeHolidayPay" canEdit={canEdit}
+              active={isSet("includeHolidayPay")} onToggle={(on) => toggleBool("includeHolidayPay", on)}
+              baselineText={fmtBool(baseline.includeHolidayPay)}
+            >
+              <Switch checked={!!draft.includeHolidayPay} onCheckedChange={(v) => setKey("includeHolidayPay", v)} data-testid="value-override-includeHolidayPay" />
+              <span className="text-xs text-muted-foreground w-7">{fmtBool(draft.includeHolidayPay)}</span>
+            </PayrollRuleRow>
+
+            <PayrollRuleRow
+              label="Auto-calculate OT" hint="Let the system split overtime automatically." testId="autoCalculateOT" canEdit={canEdit}
+              active={isSet("autoCalculateOT")} onToggle={(on) => toggleBool("autoCalculateOT", on)}
+              baselineText={fmtBool(baseline.autoCalculateOT)}
+            >
+              <Switch checked={!!draft.autoCalculateOT} onCheckedChange={(v) => setKey("autoCalculateOT", v)} data-testid="value-override-autoCalculateOT" />
+              <span className="text-xs text-muted-foreground w-7">{fmtBool(draft.autoCalculateOT)}</span>
+            </PayrollRuleRow>
+
+            <PayrollRuleRow
+              label="Conditional raise (on-time all week)"
+              hint="Extra $/hour for a week where the employee clocks in on time every scheduled day."
+              testId="punctualityBonus" canEdit={canEdit}
+              active={isSet("punctualityBonus")}
+              onToggle={(on) => (on
+                ? setKey("punctualityBonus", { enabled: true, bonusPerHour: baseline.punctualityBonus?.bonusPerHour ?? 2, label: baseline.punctualityBonus?.label ?? "Weekly Punctuality Bonus" })
+                : clearKey("punctualityBonus"))}
+              baselineText={baseline.punctualityBonus?.enabled ? `+$${baseline.punctualityBonus.bonusPerHour}/hr` : "Off"}
+            >
+              <Switch
+                checked={!!draft.punctualityBonus?.enabled}
+                onCheckedChange={(v) => setKey("punctualityBonus", { enabled: v, bonusPerHour: draft.punctualityBonus?.bonusPerHour ?? 2, label: draft.punctualityBonus?.label ?? "Weekly Punctuality Bonus" })}
+                data-testid="value-override-punctualityBonus-enabled"
+              />
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-muted-foreground">+$</span>
+                <Input
+                  type="number" min={0} step="0.25" max={1000} className="h-8 w-20"
+                  value={draft.punctualityBonus?.bonusPerHour ?? ""}
+                  onChange={(e) => { const v = e.target.value === "" ? 0 : parseFloat(e.target.value); setKey("punctualityBonus", { enabled: draft.punctualityBonus?.enabled ?? true, bonusPerHour: Number.isNaN(v) ? 0 : Math.max(0, v), label: draft.punctualityBonus?.label ?? "Weekly Punctuality Bonus" }); }}
+                  data-testid="input-override-punctualityBonus"
+                />
+                <span className="text-xs text-muted-foreground">/hr</span>
+              </div>
+            </PayrollRuleRow>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setDraft({ ...(data?.overrides ?? {}) }); }} data-testid="button-cancel-payroll-rules">Cancel</Button>
+              <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending} data-testid="button-save-payroll-rules">
+                <Save className="h-3.5 w-3.5 mr-1" /> {save.isPending ? "Saving…" : "Save rules"}
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

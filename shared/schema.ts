@@ -297,6 +297,50 @@ export type PolicyAcknowledgment = typeof policyAcknowledgments.$inferSelect;
 export const TERMINATION_REASONS = ["Resigned", "Fired", "Laid off", "Other"] as const;
 export type TerminationReason = (typeof TERMINATION_REASONS)[number];
 
+// Per-employee payroll RULE overrides (Composable Payroll Rules). Each key, when
+// SET, overlays the one matching rule from the employee's effective payroll
+// policy (the "preset"); keys left UNSET fall through to the policy, which falls
+// through to DEFAULT_PAYROLL_RULES. This is how an admin picks which individual
+// rules a specific person gets ("this he gets, this he doesn't") without
+// touching — or needing — a shared policy. The overlay is shallow: a set
+// `punctualityBonus` replaces the policy's whole punctuality object. Bonuses
+// that are ADDITIVE on top of the policy (day-of-week bonuses) stay in their own
+// `dayOfWeekBonuses` column, not here, because they add rather than override.
+export const PAY_PERIOD_TYPES = ["weekly", "biweekly", "semimonthly", "monthly"] as const;
+export type PayPeriodType = (typeof PAY_PERIOD_TYPES)[number];
+export type PayrollRuleOverrides = {
+  payPeriodType?: PayPeriodType;
+  overtimeEnabled?: boolean;
+  overtimeMultiplier?: number;
+  doubleTimeEnabled?: boolean;
+  doubleTimeMultiplier?: number;
+  doubleTimeThresholdDaily?: number;
+  includeHolidayPay?: boolean;
+  autoCalculateOT?: boolean;
+  punctualityBonus?: { enabled: boolean; bonusPerHour: number; label?: string };
+};
+// Validates a payroll-override object. `.strict()` rejects unknown keys so a
+// typo can never silently become a dead override. Every field is optional —
+// an absent key means "use the policy value", which is the whole point.
+export const payrollRuleOverridesSchema = z
+  .object({
+    payPeriodType: z.enum(PAY_PERIOD_TYPES),
+    overtimeEnabled: z.boolean(),
+    overtimeMultiplier: z.number().min(0).max(10),
+    doubleTimeEnabled: z.boolean(),
+    doubleTimeMultiplier: z.number().min(0).max(10),
+    doubleTimeThresholdDaily: z.number().min(0).max(24),
+    includeHolidayPay: z.boolean(),
+    autoCalculateOT: z.boolean(),
+    punctualityBonus: z.object({
+      enabled: z.boolean(),
+      bonusPerHour: z.number().min(0).max(1000),
+      label: z.string().max(100).optional(),
+    }),
+  })
+  .partial()
+  .strict();
+
 export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique().references(() => users.id),
@@ -350,6 +394,14 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
     .$type<Array<{ id: string; dayOfWeek: number; minHoursThreshold: number; bonusType: "money" | "hours"; bonusAmount: number }>>()
     .default(sql`'[]'::jsonb`)
     .notNull(),
+  // Per-employee payroll rule overrides (see PayrollRuleOverrides above). Each
+  // set key overlays that one rule from the effective payroll policy; unset keys
+  // fall through to the policy. Defaults to {} — an empty overlay is a no-op, so
+  // existing employees are unaffected until an admin sets a rule here.
+  payrollOverrides: jsonb("payroll_overrides")
+    .$type<PayrollRuleOverrides>()
+    .default(sql`'{}'::jsonb`)
+    .notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
   // Payroll-only company (Task #475): which company this employee belongs to for
   // payroll identification. Deliberately INDEPENDENT of the assignment-derived
@@ -387,6 +439,7 @@ export const insertEmploymentProfileSchema = createInsertSchema(userEmploymentPr
       bonusAmount: z.number(),
     }),
   ).optional(),
+  payrollOverrides: payrollRuleOverridesSchema.optional(),
 }).omit({
   id: true,
   createdAt: true,
