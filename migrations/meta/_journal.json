@@ -582,6 +582,13 @@
       "when": 1780500300000,
       "tag": "0082_add_user_phone",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1780500400000,
+      "tag": "0083_employee_day_of_week_bonuses",
+      "breakpoints": true
     }
   ]
 }
