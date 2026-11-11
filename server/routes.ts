@@ -8989,15 +8989,25 @@ export async function registerRoutes(
       const set = new Set(locationIds);
       filteredUsers = filteredUsers.filter(u => userLocationIds(u).some(l => set.has(l)));
     }
-    if (companyIds && companyIds.length > 0) {
-      const set = new Set(companyIds);
-      filteredUsers = filteredUsers.filter(u => u.companyId && set.has(u.companyId));
-    }
-
     // Tax classification filter requires employment profiles. Fetch them in ONE
     // batched query (was an N+1 loop). The column is also included in the
     // response payload (and CSV exports) so HR can pull e.g. "Ahava → 1099".
     const profileMap = await storage.getEmploymentProfilesByUserIds(filteredUsers.map(u => u.id));
+
+    // Company filter matches the employee's PAYING company (payroll company),
+    // not the single operational company every employee shares. Since all
+    // employees belong to the one operational company, filtering on that would
+    // never narrow anything — so picking "Ahava Medical Center" here means
+    // "paid by Ahava" and correctly excludes people paid by another entity
+    // (e.g. BCM). Falls back to the operational company when no payroll company
+    // is set, so employees without a paying entity still match their org company.
+    if (companyIds && companyIds.length > 0) {
+      const set = new Set(companyIds);
+      filteredUsers = filteredUsers.filter(u => {
+        const payingCompanyId = profileMap.get(u.id)?.payrollCompanyId ?? u.companyId;
+        return !!payingCompanyId && set.has(payingCompanyId);
+      });
+    }
     const taxByUser = new Map<string, string>();
     for (const u of filteredUsers) {
       taxByUser.set(u.id, profileMap.get(u.id)?.taxClassification || "W-2");
