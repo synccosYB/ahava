@@ -4,6 +4,7 @@ import { DEFAULT_ATTENDANCE_RULES, getEffectivePolicy } from "./policyEngine";
 import { resolvePayCalcPolicy } from "./payrollEngine";
 import { getLedgerForEmployee, summarizeLedger, type LedgerDay } from "./attendanceLedger";
 import { MISSING_CLOCKOUT_STATUS, MISSING_CLOCKIN_STATUS, openPunchExceedsMaxShift } from "./punchHours";
+import { evaluateDayOfWeekBonusesCombined } from "./services/policyEnforcement";
 
 export type TimesheetStatus =
   | "complete"
@@ -27,6 +28,12 @@ export interface TimesheetEntry {
   overtimeHours: number;
   status: TimesheetStatus;
   ptoType: string | null;
+  // Day-of-week bonus MONEY earned on this day (e.g. a $20 Sunday bonus), from
+  // the employee's effective payroll policy plus their personal per-employee
+  // bonuses, combined. 0 when none apply. Same engine the payroll export pays,
+  // so the timesheet's bonus total matches the payroll report. Pay-sensitive —
+  // the route strips it for viewers without pay access.
+  bonusAmount: number;
   // Source attribution: the kiosk the punch came from, when any of the
   // day's punches were captured at a registered kiosk. `null` means a
   // web/manager-entered punch (or no punches at all on that day).
@@ -37,6 +44,9 @@ export interface TimesheetTotals {
   totalHours: number;
   overtimeHours: number;
   daysWorked: number;
+  // Sum of per-day day-of-week bonus money over the range (e.g. two $20 Sundays
+  // → $40). Matches the bonuses the payroll report pays for the same range.
+  totalBonus: number;
 }
 
 export interface TimesheetResult {
@@ -163,6 +173,17 @@ export async function buildEmployeeTimesheet(
   const ledgerDays = await getLedgerForEmployee(employee, startDate, endDate, now);
   const ledgerByDate = new Map<string, LedgerDay>(ledgerDays.map((d) => [d.workDate, d]));
 
+  // Day-of-week bonuses (e.g. a Sunday bonus) earned over the range. Uses the
+  // employee's effective payroll policy rules (which already compose any
+  // per-employee rule overrides) plus their personal per-employee bonuses —
+  // the SAME combined engine the payroll export pays — so the timesheet's bonus
+  // total matches the payroll report.
+  const payrollPolicy = await getEffectivePolicy(employee.companyId, employee.id, "payroll", employee);
+  const payrollRules = (payrollPolicy?.rules as Record<string, any>) ?? {};
+  const employeeProfile = await storage.getEmploymentProfile(employee.id);
+  const employeeBonuses = employeeProfile?.dayOfWeekBonuses ?? [];
+  let totalBonus = 0;
+
   const punchesByDate = new Map<string, PunchLog[]>();
   for (const p of punches) {
     const arr = punchesByDate.get(p.workDate) || [];
@@ -288,6 +309,11 @@ export async function buildEmployeeTimesheet(
       else if (ledgerDay?.status === "overtime") status = "overtime";
       else status = "complete";
 
+      // Day-of-week bonus money for this worked day (policy + personal bonuses),
+      // keyed off the day's worked hours for the min-hours threshold.
+      const dayBonus = evaluateDayOfWeekBonusesCombined(dateStr, roundedHours, payrollRules, employeeBonuses).bonusAmount;
+      totalBonus += dayBonus;
+
       const entry: TimesheetEntry = {
         date: dateStr,
         dayOfWeek,
@@ -301,6 +327,7 @@ export async function buildEmployeeTimesheet(
         overtimeHours: confirmationOnly || inProgress ? 0 : dayOvertime,
         status,
         ptoType: null,
+        bonusAmount: Math.round(dayBonus * 100) / 100,
         sources: sourcesForDay,
       };
       entries.push(entry);
@@ -316,6 +343,7 @@ export async function buildEmployeeTimesheet(
         overtimeHours: 0,
         status: "pto",
         ptoType: primary.type,
+        bonusAmount: 0,
         sources: [],
       });
     } else {
@@ -329,6 +357,7 @@ export async function buildEmployeeTimesheet(
         overtimeHours: 0,
         status: "none",
         ptoType: null,
+        bonusAmount: 0,
         sources: [],
       });
     }
@@ -355,6 +384,7 @@ export async function buildEmployeeTimesheet(
       totalHours: Math.round(ledgerTotals.totalHours * 10) / 10,
       overtimeHours: Math.round(ledgerTotals.overtimeCombined * 10) / 10,
       daysWorked,
+      totalBonus: Math.round(totalBonus * 100) / 100,
     },
   };
 }

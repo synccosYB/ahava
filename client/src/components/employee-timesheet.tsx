@@ -26,12 +26,19 @@ export type TimesheetEntry = {
   overtimeHours: number;
   status: TimesheetStatus;
   ptoType: string | null;
+  // Day-of-week bonus money earned this day (e.g. a $20 Sunday bonus). Absent
+  // for viewers without pay access.
+  bonusAmount?: number;
   sources?: Array<{
     kioskDeviceId: string | null;
     kioskName: string | null;
     kiosk: { id: string; name: string } | null;
   }>;
 };
+
+function formatMoney(n: number): string {
+  return Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`;
+}
 
 function formatSources(sources: TimesheetEntry["sources"]): string {
   if (!sources || sources.length === 0) return "—";
@@ -50,6 +57,9 @@ export type TimesheetResponse = {
     totalHours: number;
     overtimeHours: number;
     daysWorked: number;
+    // Total day-of-week bonus money for the range (e.g. two $20 Sundays → $40).
+    // null when the viewer may not see pay; may be absent on older responses.
+    totalBonus?: number | null;
   };
   // Business/location timezone so clock-in/out render in the medical center's
   // wall-clock time, not the viewer's device timezone.
@@ -198,12 +208,23 @@ export function EmployeeTimesheetTable({
   return (
     <div className="space-y-3" data-testid="timesheet-table-container">
       <div className="flex items-center justify-between gap-4 flex-wrap rounded-md border bg-muted/30 px-4 py-3">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Total hours this period</p>
-          <p className="text-3xl font-bold tabular-nums leading-tight" data-testid="text-timesheet-total-hours-big">
-            {formatHoursMinutes(data.totals.totalHours)}
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5">{data.totals.daysWorked} day{data.totals.daysWorked === 1 ? "" : "s"} worked</p>
+        <div className="flex flex-wrap items-start gap-x-10 gap-y-3">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Total hours this period</p>
+            <p className="text-3xl font-bold tabular-nums leading-tight" data-testid="text-timesheet-total-hours-big">
+              {formatHoursMinutes(data.totals.totalHours)}
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">{data.totals.daysWorked} day{data.totals.daysWorked === 1 ? "" : "s"} worked</p>
+          </div>
+          {data.totals.totalBonus != null && data.totals.totalBonus > 0 && (
+            <div data-testid="stat-timesheet-total-bonus">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Bonuses this period</p>
+              <p className="text-3xl font-bold tabular-nums leading-tight text-green-600 dark:text-green-400" data-testid="text-timesheet-total-bonus-big">
+                {formatMoney(data.totals.totalBonus)}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">Earned day-of-week bonuses</p>
+            </div>
+          )}
         </div>
         {showExport && (
           <Button
