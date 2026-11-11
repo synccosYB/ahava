@@ -702,7 +702,9 @@ export async function registerRoutes(
         companyIds: csvIds(req.query.companyIds),
         taxClasses: csvIds(req.query.taxClasses),
         certStatuses: csvIds(req.query.certStatuses),
-        sort: req.query.sort === "name_desc" ? "name_desc" : "name_asc",
+        sort: req.query.sort === "last_name_asc" || req.query.sort === "last_name_desc" || req.query.sort === "name_desc"
+          ? req.query.sort
+          : "name_asc",
         excludeUserIds,
         limit: pagination.limit,
         offset: pagination.offset,

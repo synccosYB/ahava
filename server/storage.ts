@@ -321,9 +321,10 @@ export interface UsersPageOptions {
   certStatuses?: string[];
   excludeUserIds?: string[];
   // Display order for the Employees list. "name_asc" (default) sorts A→Z by
-  // first then last name; "name_desc" sorts Z→A. Applied in SQL so it holds
+  // first then last name; "last_name_*" sorts by last then first name.
+  // Each supports ascending and descending order. Applied in SQL so it holds
   // across the whole paginated result, not just the current page.
-  sort?: "name_asc" | "name_desc";
+  sort?: "name_asc" | "name_desc" | "last_name_asc" | "last_name_desc";
   limit: number;
   offset: number;
 }
@@ -1038,7 +1039,11 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(userEmploymentProfiles, eq(userEmploymentProfiles.userId, users.id))
       .where(whereClause)
       .orderBy(
-        ...(opts.sort === "name_desc"
+        ...(opts.sort === "last_name_asc"
+          ? [users.lastName, users.firstName, users.id]
+          : opts.sort === "last_name_desc"
+          ? [desc(users.lastName), desc(users.firstName), users.id]
+          : opts.sort === "name_desc"
           ? [desc(users.firstName), desc(users.lastName), users.id]
           : [users.firstName, users.lastName, users.id]),
       )
