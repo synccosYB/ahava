@@ -22,7 +22,7 @@ import { and, eq } from "drizzle-orm";
 import { computePunchHoursWorked } from "../punchHours";
 import { getEffectivePolicy, DEFAULT_PAYROLL_RULES } from "../policyEngine";
 import { buildPayCalcPolicy, splitDailyHours, computeWeeklyHours, resolvePayCalcPolicy, DEFAULT_PAY_CALC_POLICY, type PayCalcPolicy } from "../payrollEngine";
-import { evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses } from "./policyEnforcement";
+import { evaluateDayOfWeekBonuses, evaluateDayOfWeekBonusesCombined, evaluateEarlyArrivalBonuses } from "./policyEnforcement";
 import { resolveEmployeeTimezone } from "./punchOverlap";
 import { writeAuditLog } from "./audit";
 import { writeLedgerEntry } from "./ledger";
@@ -798,7 +798,7 @@ export async function computePayrollDrift(exportId: string): Promise<PayrollDrif
     }
     return scheduleCache.get(employeeId)!;
   };
-  const resolvedCache = new Map<string, { policy: PayCalcPolicy; payrollRules: Record<string, any> }>();
+  const resolvedCache = new Map<string, { policy: PayCalcPolicy; payrollRules: Record<string, any>; employeeBonuses: unknown }>();
   const resolvedFor = async (employeeId: string) => {
     if (!resolvedCache.has(employeeId)) {
       const u = userMap.get(employeeId);
@@ -809,12 +809,15 @@ export async function computePayrollDrift(exportId: string): Promise<PayrollDrif
             getEffectivePolicy(u.companyId, employeeId, "pto", u),
           ])
         : [null, null, null];
+      const profile = await storage.getEmploymentProfile(employeeId);
       resolvedCache.set(employeeId, {
         policy: buildPayCalcPolicy(att?.rules, pay?.rules, pto?.rules, {
           attendance: att?.version ?? null,
           payroll: pay?.version ?? null,
         }),
         payrollRules: (pay?.rules as Record<string, any>) || DEFAULT_PAYROLL_RULES,
+        // Per-employee day-of-week bonuses, additive on top of policy bonuses.
+        employeeBonuses: profile?.dayOfWeekBonuses ?? [],
       });
     }
     return resolvedCache.get(employeeId)!;
@@ -883,9 +886,10 @@ export async function computePayrollDrift(exportId: string): Promise<PayrollDrif
 
           // Bonuses are not snapshotted — recompute from the re-summed day hours
           // using the current payroll rules.
-          const payrollRules = (await resolvedFor(r.employeeId)).payrollRules;
+          const resolvedEmp = await resolvedFor(r.employeeId);
+          const payrollRules = resolvedEmp.payrollRules;
           const earliestRounded = dayEarliestRounded.get(key)?.rounded ?? null;
-          const dow = evaluateDayOfWeekBonuses(r.workDate, hours, payrollRules);
+          const dow = evaluateDayOfWeekBonusesCombined(r.workDate, hours, payrollRules, resolvedEmp.employeeBonuses);
           const early = evaluateEarlyArrivalBonuses(r.workDate, earliestRounded, hours, payrollRules);
 
           current = {

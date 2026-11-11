@@ -174,6 +174,13 @@ export function summarizePayrollPolicy(rules: Record<string, any>): string[] {
     out.push("Auto-calculate overtime: off.");
   }
 
+  if (rules.punctualityBonus?.enabled === true) {
+    const amount = Number(rules.punctualityBonus.bonusPerHour);
+    if (Number.isFinite(amount) && amount > 0) {
+      out.push(`Weekly punctuality bonus: +${formatMoney(amount)}/hr when qualified; missed scheduled days require review.`);
+    }
+  }
+
   if (Array.isArray(rules.dayOfWeekBonuses)) {
     for (const b of rules.dayOfWeekBonuses) {
       const day = DAY_FULL[Number(b?.dayOfWeek)] ?? `day ${b?.dayOfWeek}`;

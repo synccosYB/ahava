@@ -3812,6 +3812,14 @@ function EmployeeProfile({
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          <div className="mt-6">
+            <EmployeeBonusesCard
+              userId={userId}
+              bonuses={(profile?.dayOfWeekBonuses as EmployeeDowBonus[]) ?? []}
+              canEdit={canEditPay}
+            />
+          </div>
         </TabsContent>}
 
         <TabsContent value="timeclock" className="space-y-6">
@@ -4163,6 +4171,160 @@ function CorrectionRequestStat({ userId }: { userId: string }) {
 // scope. The manager sees the UNION of their hats. "All" on a dimension means
 // unconstrained (all locations / all departments).
 type ManagerHat = { locationId: string; departmentId: string };
+
+type EmployeeDowBonus = {
+  id: string;
+  dayOfWeek: number;
+  minHoursThreshold: number;
+  bonusType: "money" | "hours";
+  bonusAmount: number;
+};
+
+const DOW_BONUS_DAYS: { value: number; label: string }[] = [
+  { value: 0, label: "Sunday" },
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" },
+];
+
+// Per-employee day-of-week bonuses, edited on the profile Pay Setup tab. Added
+// ON TOP of any policy bonus (additive). Saved to the employment profile.
+function EmployeeBonusesCard({ userId, bonuses, canEdit }: { userId: string; bonuses: EmployeeDowBonus[]; canEdit: boolean }) {
+  const { toast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [rows, setRows] = useState<EmployeeDowBonus[]>(bonuses);
+
+  useEffect(() => {
+    if (!editing) setRows(bonuses);
+  }, [bonuses, editing]);
+
+  const usedDays = new Set(rows.map((r) => r.dayOfWeek));
+  const dayLabel = (d: number) => DOW_BONUS_DAYS.find((o) => o.value === d)?.label ?? String(d);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PATCH", `/api/employment-profiles/${userId}`, { dayOfWeekBonuses: rows });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
+      setEditing(false);
+      toast({ title: "Bonuses saved" });
+      queryClient.invalidateQueries({ queryKey: ["/api/attendance/review-rules", userId] });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const addRow = () => {
+    const firstFree = DOW_BONUS_DAYS.find((o) => !usedDays.has(o.value));
+    if (!firstFree) return;
+    setRows((prev) => [
+      ...prev,
+      { id: `dow-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, dayOfWeek: firstFree.value, minHoursThreshold: 0, bonusType: "money", bonusAmount: 0 },
+    ]);
+  };
+  const patchRow = (id: string, patch: Partial<EmployeeDowBonus>) =>
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const removeRow = (id: string) => setRows((prev) => prev.filter((r) => r.id !== id));
+
+  const hasDuplicateDay = new Set(rows.map((r) => r.dayOfWeek)).size !== rows.length;
+  const hasInvalid = rows.some((r) => !(r.bonusAmount > 0) || r.minHoursThreshold < 0);
+
+  return (
+    <Card data-testid="card-employee-bonuses">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>Day-of-Week Bonuses</CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">
+            Extra pay for this employee on a specific day (e.g. a Sunday bonus). Added on top of any
+            company policy bonus. Set “Min Hours” to 0 to cover any time worked that day.
+          </p>
+        </div>
+        {canEdit && !editing && (
+          <Button variant="outline" size="sm" onClick={() => setEditing(true)} data-testid="button-edit-employee-bonuses">
+            Edit
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!editing ? (
+          rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="text-no-employee-bonuses">No bonuses set for this employee.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2" data-testid="list-employee-bonuses">
+              {rows.map((b) => (
+                <Badge key={b.id} variant="outline" className="text-sm">
+                  {dayLabel(b.dayOfWeek)} ≥ {b.minHoursThreshold}h →{" "}
+                  {b.bonusType === "money" ? `$${(b.bonusAmount || 0).toFixed(2)}` : `+${b.bonusAmount}h`}
+                </Badge>
+              ))}
+            </div>
+          )
+        ) : (
+          <>
+            {rows.map((b) => (
+              <div key={b.id} className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end p-2 rounded-md border bg-muted/30" data-testid={`row-employee-bonus-${b.id}`}>
+                <div>
+                  <Label className="text-xs">Day</Label>
+                  <Select value={String(b.dayOfWeek)} onValueChange={(v) => patchRow(b.id, { dayOfWeek: parseInt(v, 10) })}>
+                    <SelectTrigger data-testid={`select-employee-bonus-day-${b.id}`}><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {DOW_BONUS_DAYS.map((o) => (
+                        <SelectItem key={o.value} value={String(o.value)} disabled={o.value !== b.dayOfWeek && usedDays.has(o.value)}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Min Hours</Label>
+                  <Input type="number" min={0} step="0.25" value={b.minHoursThreshold}
+                    onChange={(e) => { const v = e.target.value === "" ? 0 : parseFloat(e.target.value); patchRow(b.id, { minHoursThreshold: Number.isNaN(v) ? 0 : Math.max(0, v) }); }}
+                    data-testid={`input-employee-bonus-threshold-${b.id}`} />
+                </div>
+                <div>
+                  <Label className="text-xs">Bonus Type</Label>
+                  <Select value={b.bonusType} onValueChange={(v) => patchRow(b.id, { bonusType: v as "money" | "hours" })}>
+                    <SelectTrigger data-testid={`select-employee-bonus-type-${b.id}`}><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="money">Extra Money ($)</SelectItem>
+                      <SelectItem value="hours">Extra Paid Hours</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Amount</Label>
+                  <Input type="number" min={0} step="0.01" value={b.bonusAmount}
+                    onChange={(e) => { const v = e.target.value === "" ? 0 : parseFloat(e.target.value); patchRow(b.id, { bonusAmount: Number.isNaN(v) ? 0 : Math.max(0, v) }); }}
+                    data-testid={`input-employee-bonus-amount-${b.id}`} />
+                </div>
+                <div className="flex items-center justify-end">
+                  <Button variant="ghost" size="icon" onClick={() => removeRow(b.id)} data-testid={`button-remove-employee-bonus-${b.id}`}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {hasDuplicateDay && <p className="text-xs text-destructive">Only one bonus per day is allowed.</p>}
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={addRow} disabled={rows.length >= 7} data-testid="button-add-employee-bonus">
+                <Plus className="h-4 w-4 mr-1" /> Add bonus
+              </Button>
+              <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending || hasDuplicateDay || hasInvalid} data-testid="button-save-employee-bonuses">
+                {save.isPending ? "Saving…" : "Save"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => { setRows(bonuses); setEditing(false); }} data-testid="button-cancel-employee-bonuses">
+                Cancel
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function ManagerScopeEditor({ userId }: { userId: string }) {
   const { toast } = useToast();
