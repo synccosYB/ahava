@@ -91,13 +91,15 @@ function CompactTags({ names, max = 3, testIdPrefix }: { names: string[]; max?: 
 // Per-user saved filter defaults for the Employees list. Stored in the browser,
 // keyed by user, so each admin keeps their own default view. View convenience
 // only (no security) — mirrors the Time Sheet Review / Reports save-as-default.
+type EmployeeSortOrder = "name_asc" | "name_desc" | "last_name_asc" | "last_name_desc";
+const EMPLOYEE_SORT_ORDERS: EmployeeSortOrder[] = ["name_asc", "name_desc", "last_name_asc", "last_name_desc"];
 type EmployeeFilterDefaults = {
   deptIds: string[];
   locIds: string[];
   companyIds: string[];
   taxClasses: string[];
   certStatuses: string[];
-  sort: "name_asc" | "name_desc";
+  sort: EmployeeSortOrder;
 };
 function employeesPrefKey(userId: string | undefined) {
   return `ahava.employees.filters.${userId ?? "anon"}`;
@@ -114,7 +116,7 @@ function loadEmployeeDefaults(userId: string | undefined): EmployeeFilterDefault
       companyIds: arr(v.companyIds),
       taxClasses: arr(v.taxClasses),
       certStatuses: arr(v.certStatuses),
-      sort: v.sort === "name_desc" ? "name_desc" : "name_asc",
+      sort: EMPLOYEE_SORT_ORDERS.includes(v.sort as EmployeeSortOrder) ? (v.sort as EmployeeSortOrder) : "name_asc",
     };
   } catch {
     return null;
