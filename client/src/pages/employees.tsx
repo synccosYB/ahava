@@ -137,7 +137,7 @@ export default function EmployeesPage() {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   // A→Z (default) or Z→A by name. Server-side so it holds across all pages.
-  const [sortOrder, setSortOrder] = useState<"name_asc" | "name_desc">("name_asc");
+  const [sortOrder, setSortOrder] = useState<"name_asc" | "name_desc" | "last_name_asc" | "last_name_desc">("name_asc");
   const { user: currentUser } = useAuth();
   const { has: hasPermission } = usePermissions();
   const canDelete = hasPermission("users.delete");
@@ -275,14 +275,16 @@ export default function EmployeesPage() {
             data-testid="input-search-employees"
           />
         </div>
-        <div className="w-[150px]" data-testid="sort-employees">
-          <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as "name_asc" | "name_desc"); setPage(0); }}>
-            <SelectTrigger data-testid="select-sort-order">
+        <div className="w-[180px]" data-testid="sort-employees">
+          <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as typeof sortOrder); setPage(0); }}>
+            <SelectTrigger data-testid="select-sort-order" aria-label="Sort employees">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="name_asc">Name A–Z</SelectItem>
-              <SelectItem value="name_desc">Name Z–A</SelectItem>
+              <SelectItem value="name_asc">First name A–Z</SelectItem>
+              <SelectItem value="name_desc">First name Z–A</SelectItem>
+              <SelectItem value="last_name_asc">Last name A–Z</SelectItem>
+              <SelectItem value="last_name_desc">Last name Z–A</SelectItem>
             </SelectContent>
           </Select>
         </div>
