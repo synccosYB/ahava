@@ -30,6 +30,9 @@ import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   attendanceLedger,
+  employeeSchedules,
+  punchLogs,
+  timeOffRequests,
   type AttendanceLedger,
   type PunchLog,
   type TimeOffRequest,
@@ -42,7 +45,7 @@ import {
   round2,
   type PayCalcPolicy,
 } from "./payrollEngine";
-import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "./policyEngine";
+import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES, loadPolicyResolutionContext, type PolicyResolutionContext } from "./policyEngine";
 import { MISSING_CLOCKOUT_STATUS, openPunchExceedsMaxShift } from "./punchHours";
 import { computeLunchAdjustedHours, type LunchDayPunch } from "./services/lunchBreak";
 
@@ -126,12 +129,15 @@ interface EmployeeContext {
   breakThresholdHours: number;
 }
 
-async function resolveEmployeeContext(employee: User): Promise<EmployeeContext> {
+async function resolveEmployeeContext(
+  employee: User,
+  bulk?: { policies: PolicyResolutionContext; schedules: Map<string, typeof employeeSchedules.$inferSelect[]> },
+): Promise<EmployeeContext> {
   const [payCalc, schedules, attendancePolicy, profile] = await Promise.all([
-    resolvePayCalcPolicy(employee),
-    storage.getEmployeeSchedules(employee.id),
-    getEffectivePolicy(employee.companyId, employee.id, "attendance", employee),
-    storage.getEmploymentProfile(employee.id).catch(() => undefined),
+    resolvePayCalcPolicy(employee, bulk?.policies),
+    bulk ? (bulk.schedules.get(employee.id) ?? []) : storage.getEmployeeSchedules(employee.id),
+    getEffectivePolicy(employee.companyId, employee.id, "attendance", employee, bulk?.policies),
+    bulk ? bulk.policies.profiles.get(employee.id) : storage.getEmploymentProfile(employee.id).catch(() => undefined),
   ]);
   const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
   return {
@@ -353,51 +359,43 @@ async function persistEmployeeRange(
         lte(attendanceLedger.workDate, endDate),
       ),
     );
-  const existingByDate = new Map(existing.map((r) => [r.workDate, r] as const));
-  const computedByDate = new Map(computed.map((d) => [d.workDate, d] as const));
+  await persistLedgerChanges(computed, existing);
+}
 
-  const toWrite: LedgerDay[] = [];
-  for (const day of computed) {
-    const prev = existingByDate.get(day.workDate);
-    if (!prev || !ledgerRowsEqual(day, prev)) toWrite.push(day);
-  }
-  const toDelete: string[] = [];
-  for (const r of existing) {
-    if (!computedByDate.has(r.workDate)) toDelete.push(r.workDate);
-  }
-
-  for (const day of toWrite) {
-    await db
-      .insert(attendanceLedger)
-      .values({ ...day, computedAt: new Date() })
+// Diff once, then write changed days in bounded batches rather than one round
+// trip per employee-day. Unchanged rows retain their computedAt timestamp.
+async function persistLedgerChanges(computed: LedgerDay[], existing: AttendanceLedger[]): Promise<void> {
+  const key = (row: { employeeId: string; workDate: string }) => `${row.employeeId}:${row.workDate}`;
+  const existingByKey = new Map(existing.map(row => [key(row), row]));
+  const computedKeys = new Set(computed.map(key));
+  const toWrite = computed.filter(day => {
+    const previous = existingByKey.get(key(day));
+    return !previous || !ledgerRowsEqual(day, previous);
+  });
+  const toDelete = existing.filter(row => !computedKeys.has(key(row))).map(row => row.id);
+  for (let offset = 0; offset < toWrite.length; offset += 250) {
+    await db.insert(attendanceLedger)
+      .values(toWrite.slice(offset, offset + 250).map(day => ({ ...day, computedAt: new Date() })))
       .onConflictDoUpdate({
         target: [attendanceLedger.employeeId, attendanceLedger.workDate],
         set: {
-          regularHours: day.regularHours,
-          overtimeHours: day.overtimeHours,
-          doubleTimeHours: day.doubleTimeHours,
-          totalHours: day.totalHours,
-          ptoHours: day.ptoHours,
-          isHoliday: day.isHoliday,
-          hasOpenPunch: day.hasOpenPunch,
-          status: day.status,
-          sourcePunchCount: day.sourcePunchCount,
-          attendancePolicyVersion: day.attendancePolicyVersion,
-          payrollPolicyVersion: day.payrollPolicyVersion,
-          computedAt: new Date(),
+          regularHours: sql`excluded.regular_hours`,
+          overtimeHours: sql`excluded.overtime_hours`,
+          doubleTimeHours: sql`excluded.double_time_hours`,
+          totalHours: sql`excluded.total_hours`,
+          ptoHours: sql`excluded.pto_hours`,
+          isHoliday: sql`excluded.is_holiday`,
+          hasOpenPunch: sql`excluded.has_open_punch`,
+          status: sql`excluded.status`,
+          sourcePunchCount: sql`excluded.source_punch_count`,
+          attendancePolicyVersion: sql`excluded.attendance_policy_version`,
+          payrollPolicyVersion: sql`excluded.payroll_policy_version`,
+          computedAt: sql`excluded.computed_at`,
         },
       });
   }
-
-  if (toDelete.length > 0) {
-    await db
-      .delete(attendanceLedger)
-      .where(
-        and(
-          eq(attendanceLedger.employeeId, employeeId),
-          inArray(attendanceLedger.workDate, toDelete),
-        ),
-      );
+  for (let offset = 0; offset < toDelete.length; offset += 500) {
+    await db.delete(attendanceLedger).where(inArray(attendanceLedger.id, toDelete.slice(offset, offset + 500)));
   }
 }
 
@@ -440,42 +438,10 @@ export async function getLedgerForEmployee(
 }
 
 /**
- * Run `fn` over `items` with at most `limit` in flight at once. The DB pool is
- * small (DB_POOL_MAX, default 5), and each employee task opens a couple of
- * connections (policy resolve + schedules, plus a ledger write), so firing the
- * whole roster at once (hundreds of employees) stampedes the pool and callers
- * wait past connectionTimeoutMillis — surfacing as "timeout exceeded when
- * trying to connect". Bounding concurrency keeps peak connection demand within
- * the pool while still overlapping work.
- */
-async function forEachLimited<T>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-  let cursor = 0;
-  const run = async () => {
-    while (true) {
-      const i = cursor++;
-      if (i >= items.length) return;
-      await fn(items[i], i);
-    }
-  };
-  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, run);
-  await Promise.all(workers);
-}
-
-// Max employees recomputed concurrently in getLedgerForEmployees. Kept well
-// under the DB pool (default 5) because each employee's recompute itself issues
-// a few parallel queries + a write; a larger roster is paced, not parallelized
-// all at once.
-const LEDGER_RECOMPUTE_CONCURRENCY = 3;
-
-/**
  * Bulk variant for multi-employee surfaces (reports, dashboards). Returns a map
  * of employeeId -> per-day ledger entries. Fetches punches/time-off in one pass
- * and resolves each employee's policy with bounded concurrency so a large
- * roster does not exhaust the DB connection pool.
+ * and loads policies, profiles, roles, schedules and existing ledger rows once.
+ * Changes are persisted in bounded batches, without per-employee reads.
  */
 export async function getLedgerForEmployees(
   employees: User[],
@@ -487,10 +453,21 @@ export async function getLedgerForEmployees(
   if (employees.length === 0) return result;
 
   const empIds = new Set(employees.map((e) => e.id));
-  const [allPunches, allTimeOff] = await Promise.all([
-    storage.getAttendanceByDateRange(startDate, endDate),
-    storage.getAllTimeOffRequests(),
+  const ids = [...empIds];
+  const [allPunches, allTimeOff, policies, schedules, existingLedger] = await Promise.all([
+    db.select().from(punchLogs).where(and(inArray(punchLogs.employeeId, ids), gte(punchLogs.workDate, startDate), lte(punchLogs.workDate, endDate))),
+    db.select().from(timeOffRequests).where(and(inArray(timeOffRequests.userId, ids), lte(timeOffRequests.startDate, endDate))),
+    loadPolicyResolutionContext(ids),
+    db.select().from(employeeSchedules).where(inArray(employeeSchedules.employeeId, ids)),
+    db.select().from(attendanceLedger).where(and(inArray(attendanceLedger.employeeId, ids), gte(attendanceLedger.workDate, startDate), lte(attendanceLedger.workDate, endDate))),
   ]);
+  const schedulesByEmployee = new Map<string, typeof employeeSchedules.$inferSelect[]>();
+  for (const row of schedules) {
+    const entries = schedulesByEmployee.get(row.employeeId) ?? [];
+    entries.push(row);
+    schedulesByEmployee.set(row.employeeId, entries);
+  }
+  const bulk = { policies, schedules: schedulesByEmployee };
 
   const punchesByEmp = new Map<string, Map<string, PunchLog[]>>();
   for (const p of allPunches) {
@@ -514,8 +491,8 @@ export async function getLedgerForEmployees(
   }
 
   const dates = eachDate(startDate, endDate);
-  await forEachLimited(employees, LEDGER_RECOMPUTE_CONCURRENCY, async (employee) => {
-    const ctx = await resolveEmployeeContext(employee);
+  for (const employee of employees) {
+    const ctx = await resolveEmployeeContext(employee, bulk);
     const byDate = punchesByEmp.get(employee.id) || new Map<string, PunchLog[]>();
     const approvedTimeOff = approvedTimeOffOverlapping(
       timeOffByEmp.get(employee.id) || [],
@@ -530,9 +507,9 @@ export async function getLedgerForEmployees(
       ctx,
       now,
     );
-    await persistEmployeeRange(employee.id, startDate, endDate, computed);
     result.set(employee.id, computed);
-  });
+  }
+  await persistLedgerChanges([...result.values()].flat(), existingLedger);
 
   return result;
 }
