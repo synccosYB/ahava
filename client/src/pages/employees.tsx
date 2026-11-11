@@ -3902,6 +3902,8 @@ const POLICY_TYPE_LABELS: Record<string, string> = {
 function EmployeePoliciesTab({ userId, isSelf }: { userId: string; isSelf: boolean }) {
   const { toast } = useToast();
   const [, navigate] = useLocation();
+  const { has } = usePermissions();
+  const canManagePolicies = has("policies.manage");
   const { data: rows, isLoading, isError, refetch } = useQuery<ApplicablePolicyRow[]>({
     queryKey: ["/api/users", userId, "applicable-policies"],
     queryFn: async () => {
@@ -3935,6 +3937,8 @@ function EmployeePoliciesTab({ userId, isSelf }: { userId: string; isSelf: boole
   };
 
   return (
+    <div className="space-y-6">
+    {canManagePolicies && <PolicyAssignmentManager userId={userId} />}
     <Card data-testid="card-employee-policies">
       <CardHeader>
         <CardTitle>Applicable Policies</CardTitle>
@@ -4038,6 +4042,142 @@ function EmployeePoliciesTab({ userId, isSelf }: { userId: string; isSelf: boole
               </TableBody>
             </Table>
           </div>
+        )}
+      </CardContent>
+    </Card>
+    </div>
+  );
+}
+
+type PolicyLite = { id: string; name: string; policyTypeId: string; status: string };
+type PolicyTypeLite = { id: string; key: string; name: string };
+type PolicyAssignmentLite = { id: string; policyId: string; userId: string | null };
+
+// Assign/remove a policy for THIS employee at the employee level, from the
+// profile (instead of the policy's own Assign button). Covers all policy types.
+function PolicyAssignmentManager({ userId }: { userId: string }) {
+  const { toast } = useToast();
+  const [selectedPolicyId, setSelectedPolicyId] = useState("");
+
+  const { data: policies = [] } = useQuery<PolicyLite[]>({ queryKey: ["/api/policies"] });
+  const { data: policyTypes = [] } = useQuery<PolicyTypeLite[]>({ queryKey: ["/api/policy-types"] });
+  const { data: directAssignments = [] } = useQuery<PolicyAssignmentLite[]>({
+    queryKey: ["/api/policy-assignments", { userId }],
+    queryFn: async () => {
+      const res = await fetch(`/api/policy-assignments?userId=${userId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load this employee's policy assignments");
+      return res.json();
+    },
+  });
+
+  const typeKeyById = new Map(policyTypes.map((t) => [t.id, t.key]));
+  const policyById = new Map(policies.map((p) => [p.id, p]));
+  const typeLabel = (policyTypeId: string) => {
+    const key = typeKeyById.get(policyTypeId);
+    return key ? (POLICY_TYPE_LABELS[key] || key) : "Policy";
+  };
+
+  const assignedPolicyIds = new Set(directAssignments.map((a) => a.policyId));
+  // Active policies not already assigned to this person, sorted by type then name.
+  const assignable = policies
+    .filter((p) => p.status === "active" && !assignedPolicyIds.has(p.id))
+    .sort((a, b) => typeLabel(a.policyTypeId).localeCompare(typeLabel(b.policyTypeId)) || a.name.localeCompare(b.name));
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/policy-assignments", { userId }] });
+    queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "applicable-policies"] });
+  };
+
+  const assignMutation = useMutation({
+    mutationFn: async (policyId: string) => {
+      await apiRequest("POST", "/api/policy-assignments", { policyId, userId });
+    },
+    onSuccess: () => { setSelectedPolicyId(""); invalidate(); toast({ title: "Policy assigned to this employee" }); },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+  const removeMutation = useMutation({
+    mutationFn: async (assignmentId: string) => {
+      await apiRequest("DELETE", `/api/policy-assignments/${assignmentId}`);
+    },
+    onSuccess: () => { invalidate(); toast({ title: "Removed" }); },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const selectedIsPayroll = selectedPolicyId
+    ? typeKeyById.get(policyById.get(selectedPolicyId)?.policyTypeId ?? "") === "payroll"
+    : false;
+
+  return (
+    <Card data-testid="card-assign-policy">
+      <CardHeader>
+        <CardTitle>Assigned to this employee</CardTitle>
+        <p className="text-sm text-muted-foreground mt-1">
+          Attach a policy directly to this person (payroll, attendance, or PTO). An employee-level
+          assignment is the most specific, so for its type it <strong>replaces</strong> any company/
+          location/department/role policy for them.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {directAssignments.length === 0 ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-no-direct-assignments">
+            No policies assigned directly to this employee.
+          </p>
+        ) : (
+          <div className="space-y-2" data-testid="list-direct-assignments">
+            {directAssignments.map((a) => {
+              const p = policyById.get(a.policyId);
+              return (
+                <div key={a.id} className="flex items-center justify-between gap-2 rounded-md border p-2" data-testid={`row-direct-assignment-${a.id}`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Badge variant="outline" className="shrink-0">{p ? typeLabel(p.policyTypeId) : "Policy"}</Badge>
+                    <span className="font-medium truncate">{p?.name ?? "(unknown policy)"}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeMutation.mutate(a.id)}
+                    disabled={removeMutation.isPending}
+                    data-testid={`button-remove-assignment-${a.id}`}
+                  >
+                    <X className="h-4 w-4 mr-1" /> Remove
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-end gap-2 pt-1">
+          <div className="flex-1 min-w-[240px] space-y-1">
+            <Label className="text-xs text-muted-foreground">Assign a policy</Label>
+            <Select value={selectedPolicyId} onValueChange={setSelectedPolicyId}>
+              <SelectTrigger data-testid="select-assign-policy">
+                <SelectValue placeholder="Pick a policy…" />
+              </SelectTrigger>
+              <SelectContent>
+                {assignable.length === 0 ? (
+                  <SelectItem value="__none__" disabled>No more policies to assign</SelectItem>
+                ) : (
+                  assignable.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>{typeLabel(p.policyTypeId)} · {p.name}</SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            onClick={() => assignMutation.mutate(selectedPolicyId)}
+            disabled={!selectedPolicyId || assignMutation.isPending}
+            data-testid="button-assign-policy"
+          >
+            {assignMutation.isPending ? "Assigning…" : "Assign"}
+          </Button>
+        </div>
+        {selectedIsPayroll && (
+          <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="text-payroll-replace-warning">
+            Heads up: this is a <strong>payroll</strong> policy — assigning it makes it this employee's entire
+            payroll policy (overtime, pay period, bonuses, etc.), replacing whatever applied before.
+          </p>
         )}
       </CardContent>
     </Card>
