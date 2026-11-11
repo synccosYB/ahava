@@ -787,7 +787,7 @@ export function PolicyWizard({
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!saveMutation.isPending) onOpenChange(o); }}>
       <DialogContent
-        className="max-w-2xl max-h-[90vh] overflow-y-auto p-0"
+        className="max-w-2xl max-h-[90dvh] overflow-y-auto scroll-pb-24 p-0"
         aria-describedby={undefined}
         data-testid="dialog-policy-wizard"
       >
@@ -897,9 +897,7 @@ export function PolicyWizard({
           )}
         </div>
 
-        <Separator />
-
-        <div className="p-6 pt-4 flex justify-between items-center">
+        <div className="sticky bottom-0 z-10 flex items-center justify-between gap-2 border-t bg-background p-4 sm:px-6">
           <Button
             variant="outline"
             onClick={goBack}
