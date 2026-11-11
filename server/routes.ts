@@ -3575,6 +3575,45 @@ export async function registerRoutes(
     res.json(profile);
   });
 
+  // Composable Payroll Rules: the baseline payroll rules this employee gets from
+  // their assigned policy (the "preset"), computed WITHOUT their per-employee
+  // overrides, plus the overrides themselves. Lets the profile UI show "policy
+  // gives X → overridden to Y" per rule. Pay-gated like the rates above.
+  app.get("/api/employment-profiles/:userId/effective-payroll", requireAuth, async (req, res) => {
+    const authUser = (req as any).authUser as User;
+    const targetUserId = String(req.params.userId);
+    const perms = await resolveUserPermissions(authUser.id);
+    const canSeePay =
+      perms.has("system.super_admin") || perms.has("compensation.view") || authUser.id === targetUserId;
+    if (!canSeePay) return res.status(403).json({ message: "Forbidden" });
+    if (authUser.role === "manager" && authUser.id !== targetUserId) {
+      const scopedIds = await storage.getScopedUserIds(authUser);
+      if (!scopedIds.has(targetUserId)) return res.status(403).json({ message: "Forbidden" });
+    }
+    const [target, profile] = await Promise.all([
+      storage.getUser(targetUserId),
+      storage.getEmploymentProfile(targetUserId),
+    ]);
+    if (!target) return res.status(404).json({ message: "User not found" });
+    // Resolve the preset policy alone (skipPayrollOverrides) so the baseline we
+    // return is what the employee would get WITHOUT their overrides.
+    const preset = await getEffectivePolicy(
+      target.companyId,
+      targetUserId,
+      "payroll",
+      target,
+      undefined,
+      { skipPayrollOverrides: true },
+    );
+    const baseline = { ...DEFAULT_PAYROLL_RULES, ...(preset?.rules ?? {}) };
+    res.json({
+      baseline,
+      overrides: (profile?.payrollOverrides as Record<string, unknown>) ?? {},
+      presetPolicyName: preset?.policyName ?? null,
+      presetLevel: preset?.assignmentLevel ?? null,
+    });
+  });
+
   app.post("/api/employment-profiles", requireAuth, requirePermission("users.edit"), async (req, res) => {
     const parsed = insertEmploymentProfileSchema.safeParse(req.body);
     if (!parsed.success) {
