@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, MapPin, Link2, Unlink, Plus, X, Lock, LockOpen, RefreshCw, Save } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, MapPin, Link2, Unlink, Plus, X, Lock, LockOpen, RefreshCw, Save } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -173,6 +173,8 @@ export default function EmployeesPage() {
   const [pageSize, setPageSize] = useState(25);
   // A→Z (default) or Z→A by name. Server-side so it holds across all pages.
   const [sortOrder, setSortOrder] = useState<"name_asc" | "name_desc" | "last_name_asc" | "last_name_desc">("name_asc");
+  const sortField = sortOrder.startsWith("last_name_") ? "last_name" : "name";
+  const sortDescending = sortOrder.endsWith("_desc");
   const { user: currentUser } = useAuth();
   const { has: hasPermission } = usePermissions();
   const { toast } = useToast();
@@ -350,18 +352,28 @@ export default function EmployeesPage() {
             data-testid="input-search-employees"
           />
         </div>
-        <div className="w-[180px]" data-testid="sort-employees">
-          <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as typeof sortOrder); setPage(0); }}>
+        <div className="flex items-center gap-1 w-[180px]" data-testid="sort-employees">
+          <Select value={sortField} onValueChange={(v) => { setSortOrder(`${v}_${sortDescending ? "desc" : "asc"}` as typeof sortOrder); setPage(0); }}>
             <SelectTrigger data-testid="select-sort-order" aria-label="Sort employees">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="name_asc">First name A–Z</SelectItem>
-              <SelectItem value="name_desc">First name Z–A</SelectItem>
-              <SelectItem value="last_name_asc">Last name A–Z</SelectItem>
-              <SelectItem value="last_name_desc">Last name Z–A</SelectItem>
+              <SelectItem value="name">First name</SelectItem>
+              <SelectItem value="last_name">Last name</SelectItem>
             </SelectContent>
           </Select>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="shrink-0"
+            data-testid="button-sort-direction"
+            aria-label={`Sort ${sortDescending ? "Z to A; switch to A to Z" : "A to Z; switch to Z to A"}`}
+            title={sortDescending ? "Z–A — click for A–Z" : "A–Z — click for Z–A"}
+            onClick={() => { setSortOrder(`${sortField}_${sortDescending ? "asc" : "desc"}`); setPage(0); }}
+          >
+            {sortDescending ? <ArrowDown className="h-4 w-4" aria-hidden="true" /> : <ArrowUp className="h-4 w-4" aria-hidden="true" />}
+          </Button>
         </div>
         <div className="w-[180px]" data-testid="filter-company-multi">
           <MultiSelect

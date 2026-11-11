@@ -22,6 +22,7 @@
 import type { User } from "@shared/schema";
 import {
   getEffectivePolicy,
+  type PolicyResolutionContext,
   DEFAULT_ATTENDANCE_RULES,
   DEFAULT_PAYROLL_RULES,
   DEFAULT_PTO_RULES,
@@ -128,11 +129,11 @@ export function buildPayCalcPolicy(
  * hierarchy (employee > pay_type > employment_type > role > department >
  * location > division > global). Reads attendance + payroll + pto policies.
  */
-export async function resolvePayCalcPolicy(employee: User): Promise<PayCalcPolicy> {
+export async function resolvePayCalcPolicy(employee: User, context?: PolicyResolutionContext): Promise<PayCalcPolicy> {
   const [att, pay, pto] = await Promise.all([
-    getEffectivePolicy(employee.companyId, employee.id, "attendance", employee),
-    getEffectivePolicy(employee.companyId, employee.id, "payroll", employee),
-    getEffectivePolicy(employee.companyId, employee.id, "pto", employee),
+    getEffectivePolicy(employee.companyId, employee.id, "attendance", employee, context),
+    getEffectivePolicy(employee.companyId, employee.id, "payroll", employee, context),
+    getEffectivePolicy(employee.companyId, employee.id, "pto", employee, context),
   ]);
   return buildPayCalcPolicy(att?.rules, pay?.rules, pto?.rules, {
     attendance: att?.version ?? null,

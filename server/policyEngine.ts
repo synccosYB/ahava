@@ -47,20 +47,57 @@ const isPureTarget = (
     keep.includes(k) ? !!a[k] : !a[k]
   );
 
+// One fresh snapshot per bulk calculation; never shared across requests. The
+// matching hierarchy below is reused unchanged by single and bulk callers.
+export interface PolicyResolutionContext {
+  types: Map<string, typeof policyTypes.$inferSelect>;
+  assignments: Array<{ assignment: PolicyAssignment; policy: Policy }>;
+  rules: Map<string, PolicyRule>;
+  rolesByUser: Map<string, string[]>;
+  profiles: Map<string, typeof userEmploymentProfiles.$inferSelect>;
+}
+
+export async function loadPolicyResolutionContext(userIds: string[]): Promise<PolicyResolutionContext> {
+  const [types, assignments, rules, roles, profiles] = await Promise.all([
+    db.select().from(policyTypes),
+    db.select({ assignment: policyAssignments, policy: policies })
+      .from(policyAssignments).innerJoin(policies, eq(policies.id, policyAssignments.policyId))
+      .where(eq(policies.status, "active")),
+    db.select().from(policyRules),
+    userIds.length ? db.select().from(userRoles).where(inArray(userRoles.userId, userIds)) : [],
+    userIds.length ? db.select().from(userEmploymentProfiles).where(inArray(userEmploymentProfiles.userId, userIds)) : [],
+  ]);
+  const rolesByUser = new Map<string, string[]>();
+  for (const row of roles) {
+    const ids = rolesByUser.get(row.userId) ?? [];
+    ids.push(row.roleId);
+    rolesByUser.set(row.userId, ids);
+  }
+  const rulesByPolicy = new Map<string, PolicyRule>();
+  for (const row of rules) if (!rulesByPolicy.has(row.policyId)) rulesByPolicy.set(row.policyId, row);
+  return {
+    types: new Map(types.map(t => [t.key, t])), assignments, rules: rulesByPolicy,
+    rolesByUser, profiles: new Map(profiles.map(p => [p.userId, p])),
+  };
+}
+
 export async function getEffectivePolicy(
   companyId: string | null,
   userId: string,
   policyTypeKey: string,
-  user?: User
+  user?: User,
+  context?: PolicyResolutionContext,
 ): Promise<EffectivePolicy | null> {
-  const [policyType] = await db
+  const policyType = context ? context.types.get(policyTypeKey) : (await db
     .select()
     .from(policyTypes)
-    .where(eq(policyTypes.key, policyTypeKey));
+    .where(eq(policyTypes.key, policyTypeKey)))[0];
 
   if (!policyType) return null;
 
-  const allAssignments = await db
+  const allAssignments = context
+    ? context.assignments.filter(a => a.policy.policyTypeId === policyType.id)
+    : await db
     .select({
       assignment: policyAssignments,
       policy: policies,
@@ -93,14 +130,20 @@ export async function getEffectivePolicy(
     const needEmploymentLookup = allAssignments.some(
       (a) => !!a.assignment.employmentType || !!a.assignment.payType
     );
-    if (needRoleLookup) {
+    if (context) {
+      userRoleIds = context.rolesByUser.get(userId) ?? [];
+      const profile = context.profiles.get(userId);
+      employmentType = profile?.employmentType ?? null;
+      payType = profile?.payType ?? null;
+    }
+    if (!context && needRoleLookup) {
       const rows = await db
         .select({ roleId: userRoles.roleId })
         .from(userRoles)
         .where(eq(userRoles.userId, userId));
       userRoleIds = rows.map((r) => r.roleId);
     }
-    if (needEmploymentLookup) {
+    if (!context && needEmploymentLookup) {
       const [profile] = await db
         .select({
           employmentType: userEmploymentProfiles.employmentType,
@@ -202,11 +245,11 @@ export async function getEffectivePolicy(
 
   if (!resolvedPolicy) return null;
 
-  const [rule] = await db
+  const rule = context ? context.rules.get(resolvedPolicy.id) : (await db
     .select()
     .from(policyRules)
     .where(eq(policyRules.policyId, resolvedPolicy.id))
-    .limit(1);
+    .limit(1))[0];
 
   return {
     policyId: resolvedPolicy.id,
