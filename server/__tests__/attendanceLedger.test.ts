@@ -22,7 +22,7 @@ const { db } = await import("../db.js");
 const { users, punchLogs, employeeSchedules, attendanceLedger } = await import("@shared/schema");
 const { eq, and } = await import("drizzle-orm");
 const { resolvePayCalcPolicy, splitDailyHours, round2 } = await import("../payrollEngine.js");
-const { getLedgerForEmployee, summarizeLedger, recomputeLedger, getPersistedHoursRollup } = await import("../attendanceLedger.js");
+const { getLedgerForEmployee, getLedgerForEmployees, summarizeLedger, recomputeLedger, getPersistedHoursRollup } = await import("../attendanceLedger.js");
 const { buildEmployeeTimesheet } = await import("../timesheetService.js");
 
 let passed = 0;
@@ -106,6 +106,11 @@ async function main() {
     const payCalc = await resolvePayCalcPolicy(user);
     const ledger = await getLedgerForEmployee(user, startDate, endDate, now);
     const ledgerByDate = new Map(ledger.map((d) => [d.workDate, d]));
+    const bulkLedger = await getLedgerForEmployees([user], startDate, endDate, now);
+    assert.deepEqual(bulkLedger.get(user.id), ledger, "bulk and single paths must preserve every ledger field");
+    assert.equal(bulkLedger.size, 1, "bulk result includes only requested employees");
+    assert.equal((await getLedgerForEmployees([], startDate, endDate, now)).size, 0);
+
 
     const scheduledDays = [1, 2, 3, 4, 5];
     const dayOfWeekUTC = (dateStr: string): number => {
@@ -258,6 +263,10 @@ async function main() {
       .from(attendanceLedger)
       .where(and(eq(attendanceLedger.employeeId, user.id), eq(attendanceLedger.workDate, "2025-01-06")));
     check("delete hook removed persisted row", monRows.length === 0);
+
+    const bulkAfter = await getLedgerForEmployees([user], startDate, endDate, now);
+    const singleAfter = await getLedgerForEmployee(user, startDate, endDate, now);
+    assert.deepEqual(bulkAfter.get(user.id), singleAfter, "bulk reflects edits and removed days");
 
     // (9) After the mutations, a ledger-backed timesheet read reflects them — the
     // timesheet endpoint derives ALL hours/OT from the ledger, so it can't drift.
