@@ -23,7 +23,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, UserPlus, ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, MapPin, Link2, Unlink, Plus, X, Lock, LockOpen, RefreshCw } from "lucide-react";
+import { Search, UserPlus, ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, KeyRound, Copy, Upload, Download, FileText, CheckCircle2, Circle, Clock, Trash2, Eye, ExternalLink, Building2, MapPin, Link2, Unlink, Plus, X, Lock, LockOpen, RefreshCw, Save } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
@@ -88,6 +88,41 @@ function CompactTags({ names, max = 3, testIdPrefix }: { names: string[]; max?: 
   );
 }
 
+// Per-user saved filter defaults for the Employees list. Stored in the browser,
+// keyed by user, so each admin keeps their own default view. View convenience
+// only (no security) — mirrors the Time Sheet Review / Reports save-as-default.
+type EmployeeSortOrder = "name_asc" | "name_desc" | "last_name_asc" | "last_name_desc";
+const EMPLOYEE_SORT_ORDERS: EmployeeSortOrder[] = ["name_asc", "name_desc", "last_name_asc", "last_name_desc"];
+type EmployeeFilterDefaults = {
+  deptIds: string[];
+  locIds: string[];
+  companyIds: string[];
+  taxClasses: string[];
+  certStatuses: string[];
+  sort: EmployeeSortOrder;
+};
+function employeesPrefKey(userId: string | undefined) {
+  return `ahava.employees.filters.${userId ?? "anon"}`;
+}
+function loadEmployeeDefaults(userId: string | undefined): EmployeeFilterDefaults | null {
+  try {
+    const raw = localStorage.getItem(employeesPrefKey(userId));
+    if (!raw) return null;
+    const v = JSON.parse(raw) as Partial<EmployeeFilterDefaults>;
+    const arr = (x: unknown) => (Array.isArray(x) ? (x as string[]).filter((s) => typeof s === "string") : []);
+    return {
+      deptIds: arr(v.deptIds),
+      locIds: arr(v.locIds),
+      companyIds: arr(v.companyIds),
+      taxClasses: arr(v.taxClasses),
+      certStatuses: arr(v.certStatuses),
+      sort: EMPLOYEE_SORT_ORDERS.includes(v.sort as EmployeeSortOrder) ? (v.sort as EmployeeSortOrder) : "name_asc",
+    };
+  } catch {
+    return null;
+  }
+}
+
 export default function EmployeesPage() {
   const [, navigate] = useLocation();
   const initialEmployeeId = (() => {
@@ -140,8 +175,45 @@ export default function EmployeesPage() {
   const [sortOrder, setSortOrder] = useState<"name_asc" | "name_desc" | "last_name_asc" | "last_name_desc">("name_asc");
   const { user: currentUser } = useAuth();
   const { has: hasPermission } = usePermissions();
+  const { toast } = useToast();
   const canDelete = hasPermission("users.delete");
   const canImport = currentUser?.role === "admin";
+
+  // Load this user's saved filter defaults once, and auto-apply them on open —
+  // unless a deep-link filter came in on the URL (that wins). Convenience only.
+  const defaultsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (defaultsLoadedRef.current || !currentUser?.id) return;
+    defaultsLoadedRef.current = true;
+    if (initialDepartment !== "all") return; // URL deep-link takes precedence
+    const d = loadEmployeeDefaults(currentUser.id);
+    if (!d) return;
+    setDraftDeptIds(d.deptIds); setAppliedDeptIds(d.deptIds);
+    setDraftLocIds(d.locIds); setAppliedLocIds(d.locIds);
+    setDraftCompanyIds(d.companyIds); setAppliedCompanyIds(d.companyIds);
+    setDraftTaxClasses(d.taxClasses); setAppliedTaxClasses(d.taxClasses);
+    setDraftCertStatuses(d.certStatuses); setAppliedCertStatuses(d.certStatuses);
+    setSortOrder(d.sort);
+  }, [currentUser?.id, initialDepartment]);
+
+  const saveEmployeeDefaults = () => {
+    try {
+      localStorage.setItem(
+        employeesPrefKey(currentUser?.id),
+        JSON.stringify({
+          deptIds: appliedDeptIds,
+          locIds: appliedLocIds,
+          companyIds: appliedCompanyIds,
+          taxClasses: appliedTaxClasses,
+          certStatuses: appliedCertStatuses,
+          sort: sortOrder,
+        } satisfies EmployeeFilterDefaults),
+      );
+      toast({ title: "Saved as default", description: "These filters and sort will load automatically next time." });
+    } catch {
+      toast({ title: "Couldn't save default", variant: "destructive" });
+    }
+  };
 
   // Reset to the first page whenever the search or any filter changes so the
   // user isn't stranded on an out-of-range page.
@@ -213,10 +285,13 @@ export default function EmployeesPage() {
   if (appliedCompanyIds.length) navParams.set("companyIds", appliedCompanyKey);
   if (appliedTaxClasses.length) navParams.set("taxClasses", appliedTaxKey);
   if (appliedCertStatuses.length) navParams.set("certStatuses", appliedCertKey);
+  // Match the table's sort so Prev/Next step through the list in the SAME order
+  // the user is seeing (e.g. last-name A–Z), not the server's default order.
+  navParams.set("sort", sortOrder);
   navParams.set("limit", "1000");
   navParams.set("offset", "0");
   const { data: navPage } = useQuery<{ data: User[] }>({
-    queryKey: ["/api/users", "nav", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey],
+    queryKey: ["/api/users", "nav", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, sortOrder],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${navParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employee navigation list");
@@ -367,6 +442,15 @@ export default function EmployeesPage() {
             </Button>
           );
         })()}
+        <Button
+          variant="outline"
+          onClick={saveEmployeeDefaults}
+          title="Save the current filters and sort as your default view"
+          data-testid="button-save-employee-defaults"
+        >
+          <Save className="h-4 w-4 mr-2" />
+          Save as default
+        </Button>
         {canImport && (
           <Button
             variant="outline"
