@@ -9797,9 +9797,13 @@ export async function registerRoutes(
   app.get("/api/policy-assignments", requireAuth, requirePermission("policies.view"), async (req, res) => {
     try {
       const policyId = req.query.policyId as string | undefined;
-      const assignments = policyId
+      const userId = req.query.userId as string | undefined;
+      let assignments = policyId
         ? await storage.getPolicyAssignmentsByPolicy(policyId)
         : await storage.getAllPolicyAssignments();
+      // Filter to a single employee's DIRECT (employee-level) assignments — used
+      // by the profile Policies tab to show/manage what's assigned to them.
+      if (userId) assignments = assignments.filter((a) => a.userId === userId);
       res.json(assignments);
     } catch (error) {
       console.error("Error fetching policy assignments:", error);
