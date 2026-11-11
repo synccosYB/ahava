@@ -6167,14 +6167,22 @@ export async function registerRoutes(
 
       const result = await buildEmployeeTimesheet(target, startDate, endDate);
 
+      // Bonus money is pay-sensitive: only surface it to viewers who may see pay
+      // (super admin / compensation.view) or to the employee viewing their own.
+      const perms = await resolveUserPermissions(requester.id);
+      const canSeePay =
+        perms.has("system.super_admin") || perms.has("compensation.view") || requester.id === employeeId;
+      const entries = canSeePay ? result.entries : result.entries.map(({ bonusAmount, ...rest }) => rest);
+      const totals = canSeePay ? result.totals : { ...result.totals, totalBonus: null };
+
       res.json({
         employeeId,
         employeeName: `${target.firstName || ""} ${target.lastName || ""}`.trim() || "Unknown",
         startDate,
         endDate,
         otThresholdDaily: result.otThresholdDaily,
-        entries: result.entries,
-        totals: result.totals,
+        entries,
+        totals,
         // Business/location timezone so clock-in/out render in the medical
         // center's wall-clock time, not the viewer's device timezone.
         timezone: await resolveEmployeeTimezone(employeeId),
