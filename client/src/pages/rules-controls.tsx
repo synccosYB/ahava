@@ -36,6 +36,9 @@ import { PageHeader } from "@/components/page-header";
 import { buildGoogleMapsUrl, GoogleMapsIconLink, AddressAutocompleteInput } from "@/lib/googleMaps";
 import { Link } from "wouter";
 import { PolicyWizard } from "@/components/policy-wizard";
+import {
+  employeeAssignmentOption, PolicyAssignmentPicker, usePolicyAssignmentTargets,
+} from "@/components/policy-assignment-picker";
 import { WorkflowBuilder } from "@/components/workflow-builder";
 import { RuleSummary } from "@/components/rule-summary";
 import {
@@ -60,7 +63,7 @@ import {
   CreateDepartmentDialog,
 } from "@/components/inline-entity-create";
 import type {
-  Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, User,
+  Policy, PolicyType, AuditLog, Location, Department, Division, PolicyAssignment, InsertPolicyAssignment, User,
   Workflow as WorkflowType, RoleAssignmentRule, ScheduleTemplate, ScheduleTemplateDay,
 } from "@shared/schema";
 
@@ -518,45 +521,74 @@ function LocationsSection() {
   );
 }
 
+function usePolicyAssignments(policyId: string, enabled = true) {
+  return useQuery<PolicyAssignment[]>({
+    queryKey: ["/api/policy-assignments", policyId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ policyId });
+      const res = await apiRequest("GET", `/api/policy-assignments?${params}`);
+      return res.json();
+    },
+    enabled,
+  });
+}
+
 function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: Division[] }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [level, setLevel] = useState<string>("");
   const [selectedId, setSelectedId] = useState<string>("");
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
   const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
   const [createLocationOpen, setCreateLocationOpen] = useState(false);
   const [createDepartmentOpen, setCreateDepartmentOpen] = useState(false);
 
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"], enabled: level === "location" });
   const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"], enabled: level === "department" });
-  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"], enabled: level === "employee" });
+  const selectingEmployees = level === "employee";
+  const targets = usePolicyAssignmentTargets(open && selectingEmployees);
+  const assignments = usePolicyAssignments(policy.id, open && selectingEmployees);
+  const assignedEmployeeIds = new Set(
+    assignments.data?.flatMap((assignment) => assignment.userId ? [assignment.userId] : []),
+  );
+  const employeesToAssign = selectedEmployeeIds.filter((id) => !assignedEmployeeIds.has(id));
+
+  const resetSelection = () => {
+    setSelectedId("");
+    setSelectedEmployeeIds([]);
+  };
 
   const assignMutation = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, string | null> = {
-        policyId: policy.id,
-        companyId: null,
-        locationId: null,
-        departmentId: null,
-        userId: null,
-      };
-      if (level === "division") payload.companyId = selectedId;
-      if (level === "location") payload.locationId = selectedId;
-      if (level === "department") payload.departmentId = selectedId;
-      if (level === "employee") payload.userId = selectedId;
+    mutationFn: async (payload: InsertPolicyAssignment | InsertPolicyAssignment[]) => {
       await apiRequest("POST", "/api/policy-assignments", payload);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/policy-assignments", policy.id] });
+    onSuccess: (_, payload) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/policy-assignments"] });
       setOpen(false);
       setLevel("");
-      setSelectedId("");
-      toast({ title: "Policy assigned successfully" });
+      resetSelection();
+      const count = Array.isArray(payload) ? payload.length : 0;
+      toast({
+        title: count ? `Policy assigned to ${count} ${count === 1 ? "employee" : "employees"}` : "Policy assigned successfully",
+      });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
+
+  const saveAssignment = () => {
+    const policyId = policy.id;
+    if (selectingEmployees) {
+      assignMutation.mutate(employeesToAssign.map((userId) => ({ policyId, userId })));
+      return;
+    }
+    const payload: InsertPolicyAssignment = { policyId };
+    if (level === "division") payload.companyId = selectedId;
+    if (level === "location") payload.locationId = selectedId;
+    if (level === "department") payload.departmentId = selectedId;
+    assignMutation.mutate(payload);
+  };
 
   const getOptions = () => {
     switch (level) {
@@ -566,29 +598,34 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
         return (locations || []).map((l) => ({ id: l.id, label: l.name }));
       case "department":
         return (departments || []).map((d) => ({ id: d.id, label: d.name }));
-      case "employee":
-        return (users || []).map((u) => ({ id: u.id, label: `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.email || u.id }));
       default:
         return [];
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setLevel(""); setSelectedId(""); } }}>
+    <Dialog open={open} onOpenChange={(nextOpen) => {
+      if (assignMutation.isPending) return;
+      setOpen(nextOpen);
+      if (!nextOpen) {
+        setLevel("");
+        resetSelection();
+      }
+    }}>
       <DialogTrigger asChild>
         <Button variant="ghost" size="sm" title="Assign policy" data-testid={`button-assign-policy-${policy.id}`}>
           <Link2 className="h-4 w-4 mr-1" /> Assign
         </Button>
       </DialogTrigger>
-      <DialogContent data-testid={`dialog-assign-policy-${policy.id}`}>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto" aria-describedby={undefined} data-testid={`dialog-assign-policy-${policy.id}`}>
         <DialogHeader>
           <DialogTitle>Assign: {policy.name}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
           <div>
-            <Label>Assignment Level</Label>
-            <Select value={level} onValueChange={(v) => { setLevel(v); setSelectedId(""); }}>
-              <SelectTrigger data-testid={`select-assignment-level-${policy.id}`}>
+            <Label htmlFor={`assignment-level-${policy.id}`}>Assignment Level</Label>
+            <Select value={level} disabled={assignMutation.isPending} onValueChange={(v) => { setLevel(v); resetSelection(); }}>
+              <SelectTrigger id={`assignment-level-${policy.id}`} data-testid={`select-assignment-level-${policy.id}`}>
                 <SelectValue placeholder="Select level..." />
               </SelectTrigger>
               <SelectContent>
@@ -599,11 +636,37 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
               </SelectContent>
             </Select>
           </div>
-          {level && (
+          {selectingEmployees && (
+            targets.isPending || assignments.isPending ? (
+              <p role="status" className="text-sm text-muted-foreground">Loading employees…</p>
+            ) : targets.isError || assignments.isError ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <p role="alert" className="text-sm text-destructive">Could not load employee assignments.</p>
+                <Button type="button" size="sm" variant="outline" onClick={() => {
+                  if (targets.isError) void targets.refetch();
+                  if (assignments.isError) void assignments.refetch();
+                }}>Retry</Button>
+              </div>
+            ) : (
+              <PolicyAssignmentPicker
+                label="Employees"
+                options={(targets.data?.users ?? []).map(employeeAssignmentOption).sort((a, b) => a.label.localeCompare(b.label))}
+                selectedIds={selectedEmployeeIds}
+                assignedIds={assignedEmployeeIds}
+                onChange={setSelectedEmployeeIds}
+                searchPlaceholder="Search by name or email"
+                emptyMessage="No employees available."
+                disabled={assignMutation.isPending}
+                testId={`employee-assignment-${policy.id}`}
+              />
+            )
+          )}
+          {level && !selectingEmployees && (
             <div>
-              <Label>Select {level === "division" ? "Company" : level === "location" ? "Location" : level === "department" ? "Department" : "Employee"}</Label>
+              <Label>Select {level === "division" ? "Company" : level === "location" ? "Location" : "Department"}</Label>
               <Select
                 value={selectedId}
+                disabled={assignMutation.isPending}
                 onValueChange={(v) => {
                   if (v === INLINE_ADD_NEW_VALUE) {
                     if (level === "division") setCreateCompanyOpen(true);
@@ -648,8 +711,16 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
           )}
         </div>
         <DialogFooter>
-          <Button onClick={() => assignMutation.mutate()} disabled={!level || !selectedId || assignMutation.isPending} data-testid={`button-save-assignment-${policy.id}`}>
-            {assignMutation.isPending ? "Assigning..." : "Assign"}
+          <Button
+            onClick={saveAssignment}
+            disabled={assignMutation.isPending || (selectingEmployees
+              ? !targets.isSuccess || !assignments.isSuccess || employeesToAssign.length === 0
+              : !level || !selectedId)}
+            data-testid={`button-save-assignment-${policy.id}`}
+          >
+            {assignMutation.isPending ? "Assigning..." : employeesToAssign.length > 0
+              ? `Assign ${employeesToAssign.length} ${employeesToAssign.length === 1 ? "employee" : "employees"}`
+              : "Assign"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -680,21 +751,12 @@ function AssignPolicyDialog({ policy, divisions }: { policy: Policy; divisions: 
 
 function PolicyAssignmentBadges({ policyId }: { policyId: string }) {
   const { toast } = useToast();
-  const { data: assignments, isLoading, isError } = useQuery<PolicyAssignment[]>({
-    queryKey: ["/api/policy-assignments", policyId],
-    queryFn: async () => {
-      const res = await fetch(`/api/policy-assignments?policyId=${policyId}`, { credentials: "include" });
-      if (!res.ok) {
-        throw new Error(`Failed to fetch assignments: ${res.status}`);
-      }
-      return res.json();
-    },
-  });
+  const { data: assignments, isLoading, isError } = usePolicyAssignments(policyId);
 
   const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
-  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
+  const { data: targets } = usePolicyAssignmentTargets();
   const { data: roles } = useQuery<{ id: string; name: string }[]>({ queryKey: ["/api/roles-summary"] });
 
   const deleteMutation = useMutation({
@@ -729,8 +791,8 @@ function PolicyAssignmentBadges({ policyId }: { policyId: string }) {
 
   const getLabel = (a: PolicyAssignment) => {
     if (a.userId) {
-      const user = users?.find((u) => u.id === a.userId);
-      const name = user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Employee" : "Employee";
+      const user = targets?.users.find((u) => u.id === a.userId);
+      const name = user ? employeeAssignmentOption(user).label : "Employee";
       return `Employee · ${name}`;
     }
     if (a.roleId) {
