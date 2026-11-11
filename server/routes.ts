@@ -10,7 +10,8 @@ import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, requireAnyPermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType, TERMINATION_REASONS } from "@shared/schema";
 import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport, OverlapPunchPair, OverlapPunchSummary, EmployeeSchedule } from "@shared/schema";
-import { userDepartmentIds, userLocationIds, users } from "@shared/schema";
+import { policies, policyAssignments, userDepartmentIds, userLocationIds, users } from "@shared/schema";
+import type { InsertPolicyAssignment, PolicyAssignment } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, notInArray, gte, lte, sql } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
 import { writeLedgerEntry, getLedgerContext, hoursDelta } from "./services/ledger";
@@ -9815,7 +9816,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "No assignments provided" });
       }
 
-      const parsedItems: any[] = [];
+      const parsedItems: InsertPolicyAssignment[] = [];
       const errorsByIndex: Record<number, any> = {};
       const friendlyRowMessages: string[] = [];
       items.forEach((item: unknown, idx: number) => {
@@ -9851,29 +9852,60 @@ export async function registerRoutes(
         });
       }
 
-      const created = [];
-      for (const data of parsedItems) {
-        const assignment = await storage.createPolicyAssignment(data);
-        created.push(assignment);
+      const directAssignments = parsedItems.filter((data) => data.userId && !data.effectiveDate);
+      const created = await db.transaction(async (tx) => {
+        const byEmployee = new Map<string, PolicyAssignment>();
+        if (directAssignments.length > 0) {
+          const policyIds = [...new Set(directAssignments.map((data) => data.policyId))];
+          const employeeIds = [...new Set(directAssignments.flatMap((data) => data.userId ? [data.userId] : []))];
+          // Serialize immediate employee assignments for the same policy so retries
+          // and overlapping batches reuse the existing rows.
+          await tx.select({ id: policies.id }).from(policies)
+            .where(inArray(policies.id, policyIds))
+            .orderBy(policies.id)
+            .for("no key update");
+          const existing = await tx.select().from(policyAssignments).where(and(
+            inArray(policyAssignments.policyId, policyIds),
+            inArray(policyAssignments.userId, employeeIds),
+            isNull(policyAssignments.effectiveDate),
+          ));
+          for (const row of existing) {
+            byEmployee.set(JSON.stringify([row.policyId, row.userId]), row);
+          }
+        }
 
-        await writeAuditLog({
-          actorUserId: req.authUser.id,
-          action: "policy_assignment.created",
-          targetId: assignment.id,
-          targetType: "policy_assignment",
-          newValue: {
-            policyId: data.policyId,
-            companyId: data.companyId,
-            locationId: data.locationId,
-            departmentId: data.departmentId,
-            userId: data.userId,
-            roleId: data.roleId,
-            employmentType: data.employmentType,
-            payType: data.payType,
-          },
-          ...getAuditContext(req),
-        });
-      }
+        const result: PolicyAssignment[] = [];
+        for (const data of parsedItems) {
+          const key = data.userId && !data.effectiveDate ? JSON.stringify([data.policyId, data.userId]) : null;
+          const existing = key ? byEmployee.get(key) : undefined;
+          if (existing) {
+            result.push(existing);
+            continue;
+          }
+          const assignment = await storage.createPolicyAssignment(data, tx);
+          result.push(assignment);
+          if (key) byEmployee.set(key, assignment);
+
+          await writeAuditLog({
+            actorUserId: req.authUser.id,
+            action: "policy_assignment.created",
+            targetId: assignment.id,
+            targetType: "policy_assignment",
+            newValue: {
+              policyId: data.policyId,
+              companyId: data.companyId,
+              locationId: data.locationId,
+              departmentId: data.departmentId,
+              userId: data.userId,
+              roleId: data.roleId,
+              employmentType: data.employmentType,
+              payType: data.payType,
+            },
+            ...getAuditContext(req),
+          }, tx);
+        }
+        return result;
+      });
 
       if (isArray) {
         return res.status(201).json(created);
