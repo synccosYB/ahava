@@ -341,6 +341,15 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // out and forgot to clock back in) is docked a flat 45-minute lunch on a shift
   // long enough to owe one.
   requireLunchBreak: boolean("require_lunch_break").default(false).notNull(),
+  // Per-employee day-of-week bonuses, applied ON TOP of any policy bonuses (they
+  // are additive, not a replacement). Each entry: a day (0=Sunday … 6=Saturday),
+  // a minimum-hours threshold to qualify, and either extra money ($) or extra
+  // paid hours. Lets an admin grant e.g. a Sunday bonus to one person from their
+  // profile without touching the shared payroll policy. Defaults to none.
+  dayOfWeekBonuses: jsonb("day_of_week_bonuses")
+    .$type<Array<{ id: string; dayOfWeek: number; minHoursThreshold: number; bonusType: "money" | "hours"; bonusAmount: number }>>()
+    .default(sql`'[]'::jsonb`)
+    .notNull(),
   employeeNumber: varchar("employee_number", { length: 20 }),
   // Payroll-only company (Task #475): which company this employee belongs to for
   // payroll identification. Deliberately INDEPENDENT of the assignment-derived
@@ -366,7 +375,19 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-export const insertEmploymentProfileSchema = createInsertSchema(userEmploymentProfiles).omit({
+export const insertEmploymentProfileSchema = createInsertSchema(userEmploymentProfiles, {
+  // Give the jsonb bonus column a precise element type so inserts/updates
+  // typecheck (drizzle-zod otherwise infers jsonb loosely).
+  dayOfWeekBonuses: z.array(
+    z.object({
+      id: z.string(),
+      dayOfWeek: z.number().int().min(0).max(6),
+      minHoursThreshold: z.number().min(0),
+      bonusType: z.enum(["money", "hours"]),
+      bonusAmount: z.number(),
+    }),
+  ).optional(),
+}).omit({
   id: true,
   createdAt: true,
   updatedAt: true,

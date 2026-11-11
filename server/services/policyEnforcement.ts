@@ -138,6 +138,29 @@ export function evaluateDayOfWeekBonuses(
   return result;
 }
 
+/**
+ * Day-of-week bonuses from the payroll POLICY plus the employee's OWN per-profile
+ * bonuses, summed. Per-employee bonuses are ADDITIVE on top of the policy's — so
+ * granting someone a Sunday bonus on their profile adds to (never replaces) any
+ * policy-level bonus. `employeeBonuses` is the profile's `dayOfWeekBonuses`.
+ */
+export function evaluateDayOfWeekBonusesCombined(
+  workDate: string,
+  hoursWorked: number,
+  payrollRules: Record<string, any>,
+  employeeBonuses: unknown,
+): DayOfWeekBonusResult {
+  const policy = evaluateDayOfWeekBonuses(workDate, hoursWorked, payrollRules);
+  const employee = evaluateDayOfWeekBonuses(workDate, hoursWorked, {
+    dayOfWeekBonuses: Array.isArray(employeeBonuses) ? employeeBonuses : [],
+  });
+  return {
+    bonusAmount: Math.round((policy.bonusAmount + employee.bonusAmount) * 100) / 100,
+    bonusHours: Math.round((policy.bonusHours + employee.bonusHours) * 100) / 100,
+    descriptions: [...policy.descriptions, ...employee.descriptions],
+  };
+}
+
 export function roundTime(date: Date, rule: string, intervalMinutes: number): Date {
   const ms = date.getTime();
   const intervalMs = intervalMinutes * 60 * 1000;

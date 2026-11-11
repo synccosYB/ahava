@@ -35,7 +35,7 @@ import {
 } from "./services/reconciliation";
 import { runAlertDetection } from "./services/alerts";
 import { auditUnrecoverableTimezones } from "./services/timezoneHeal";
-import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
+import { enforceClockIn, enforceClockOut, enforcePtoAdvanceNotice, enforcePtoBlackoutDates, runAutoClockOut, createPolicyAlerts, createPolicyAlert, evaluateDayOfWeekBonuses, evaluateDayOfWeekBonusesCombined, evaluateEarlyArrivalBonuses, roundTime } from "./services/policyEnforcement";
 import { MISSING_CLOCKOUT_STATUS, MISSING_CLOCKIN_STATUS, PENDING_APPROVAL_STATUS } from "./punchHours";
 import { materializeOnboardingChecklist, autoCompleteDocumentTask } from "./services/onboarding";
 import { materializeOffboardingChecklist, evaluateDeactivationGate } from "./services/offboarding";
@@ -3605,6 +3605,27 @@ export async function registerRoutes(
     res.status(201).json(profile);
   });
 
+  const dayOfWeekBonusesSchema = z.array(
+    z.object({
+      id: z.string().trim().min(1).optional(),
+      dayOfWeek: z.number().int().min(0).max(6),
+      minHoursThreshold: z.number().min(0).max(24),
+      bonusType: z.enum(["money", "hours"]),
+      bonusAmount: z.number().positive().max(100000),
+    }),
+  ).max(7).transform((rows) =>
+    rows.map((r) => ({
+      id: r.id || `dow-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      dayOfWeek: r.dayOfWeek,
+      minHoursThreshold: r.minHoursThreshold,
+      bonusType: r.bonusType,
+      bonusAmount: r.bonusAmount,
+    })),
+  ).refine(
+    (rows) => new Set(rows.map((r) => r.dayOfWeek)).size === rows.length,
+    { message: "Only one bonus per day of week is allowed." },
+  );
+
   app.patch("/api/employment-profiles/:userId", requireAuth, requirePermission("users.edit"), async (req, res) => {
     // Additive lock guard (does NOT change who can edit): a locked account can't
     // make edits until unlocked. Super admin is never locked.
@@ -3617,6 +3638,14 @@ export async function registerRoutes(
     }
     const before = await storage.getEmploymentProfile(String(req.params.userId));
     const data = { ...parsed.data };
+    // Validate + normalize per-employee day-of-week bonuses when provided.
+    if (data.dayOfWeekBonuses !== undefined) {
+      const parsedBonuses = dayOfWeekBonusesSchema.safeParse(data.dayOfWeekBonuses);
+      if (!parsedBonuses.success) {
+        return res.status(400).json({ message: "Invalid day-of-week bonuses", errors: parsedBonuses.error.flatten() });
+      }
+      data.dayOfWeekBonuses = parsedBonuses.data;
+    }
     const payTypeChanged = data.payType !== undefined && data.payType !== before?.payType;
     const rateTouched =
       data.hourlyRate !== undefined ||
@@ -10223,6 +10252,8 @@ export async function registerRoutes(
         taxClassification: string;
         payrollCompanyId: string | null;
         payrollCompanyName: string | null;
+        // Per-employee day-of-week bonuses (additive on top of policy bonuses).
+        employeeBonuses: unknown;
         // Punctuality-bonus inputs (Task: punctuality-bonus).
         schedules: EmployeeSchedule[];
         graceMinutes: number;
@@ -10278,6 +10309,8 @@ export async function registerRoutes(
           // Note #5: volunteers are never on payroll. Carried here so the export
           // loop can skip them entirely rather than list them at $0.
           taxClassification: profile?.taxClassification ?? "W-2",
+          // Per-employee day-of-week bonuses (additive on top of the policy's).
+          employeeBonuses: profile?.dayOfWeekBonuses ?? [],
           schedules,
           graceMinutes,
           timezone,
@@ -10330,7 +10363,7 @@ export async function registerRoutes(
         }
 
         for (const [employeeId, groups] of groupsByEmployee) {
-          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName, taxClassification, schedules: empSchedules, graceMinutes, timezone: empTimezone, punctualityConfig } = await resolveEmp(employeeId);
+          const { payCalc, payrollRules, rate, scheduledDays, payrollCompanyId, payrollCompanyName, taxClassification, employeeBonuses, schedules: empSchedules, graceMinutes, timezone: empTimezone, punctualityConfig } = await resolveEmp(employeeId);
           // Note #5: volunteers get no pay — exclude them from payroll entirely.
           if (taxClassification === "Volunteer") continue;
 
@@ -10370,7 +10403,7 @@ export async function registerRoutes(
             // pay-type logic). When the policy excludes holiday hours from OT,
             // the engine keeps them all regular AND out of the weekly threshold.
             const isHoliday = scheduledDays.length > 0 && !scheduledDays.includes(getDayOfWeekForDate(g.workDate));
-            const bonusResult = evaluateDayOfWeekBonuses(g.workDate, dayHours, payrollRules);
+            const bonusResult = evaluateDayOfWeekBonusesCombined(g.workDate, dayHours, payrollRules, employeeBonuses);
             const earlyResult = evaluateEarlyArrivalBonuses(g.workDate, earliestRounded, dayHours, payrollRules);
             const combinedBonusAmount = round2(bonusResult.bonusAmount + earlyResult.bonusAmount);
             const combinedDescriptions = [...bonusResult.descriptions, ...earlyResult.descriptions];
