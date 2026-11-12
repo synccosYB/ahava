@@ -5,7 +5,7 @@ import { storage, DuplicateOpenPunchError } from "./storage";
 import { badRequestFromZod, handleRouteError, mapRouteError, RouteConflictError, PayrollFinalizedError } from "./routeErrors";
 import { db } from "./db";
 import { employeeLocations as employeeLocationsTable } from "@shared/schema";
-import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
+import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollSubmissions as payrollSubmissionsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, requireAnyPermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType, TERMINATION_REASONS } from "@shared/schema";
@@ -10217,6 +10217,13 @@ export async function registerRoutes(
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     companyId: z.string().optional(),
     notes: z.string().optional(),
+    // "Ready for Payroll" mode: build the batch from ONLY the days an admin has
+    // confirmed via Send to Payroll (and not yet batched). Missing-punch / open
+    // days are excluded by construction, so the batch never waits on them.
+    confirmedOnly: z.boolean().optional(),
+    // When confirmedOnly, limit the batch to one paying company (Ahava or BCM),
+    // so each payroll processor gets its own report. Omit for all companies.
+    payrollCompanyId: z.string().optional(),
   });
 
   // ───────────────── "Send to Payroll" (per-day confirmation) ─────────────────
@@ -10302,6 +10309,103 @@ export async function registerRoutes(
     }
   });
 
+  // "Ready for Payroll": the confirmed, not-yet-batched days in a period, rolled
+  // up per employee and per paying company. This is what the admin reviews before
+  // generating the batch report they hand to each payroll processor.
+  app.get("/api/payroll/ready-for-payroll", requireAuth, requireAnyPermission("payroll.view_all", "payroll.manage"), async (req: any, res) => {
+    try {
+      const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+      if (!startDate || !endDate) {
+        return res.status(400).json({ message: "startDate and endDate are required." });
+      }
+      const subs = await storage.listUnbatchedPayrollSubmissions(startDate, endDate);
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const userMap = new Map(allUsers.map((u) => [u.id, u]));
+
+      // Resolve each employee's paying company once (profile → company name).
+      const companyNameCache = new Map<string, string | null>();
+      const payCompanyCache = new Map<string, { id: string | null; name: string | null }>();
+      const resolvePayingCompany = async (employeeId: string) => {
+        const cached = payCompanyCache.get(employeeId);
+        if (cached) return cached;
+        const profile = await storage.getEmploymentProfile(employeeId);
+        const id = profile?.payrollCompanyId ?? null;
+        let name: string | null = null;
+        if (id) {
+          if (!companyNameCache.has(id)) {
+            const c = await storage.getCompany(id);
+            companyNameCache.set(id, c?.name ?? null);
+          }
+          name = companyNameCache.get(id)!;
+        }
+        const resolved = { id, name };
+        payCompanyCache.set(employeeId, resolved);
+        return resolved;
+      };
+
+      type EmpRow = {
+        employeeId: string;
+        employeeName: string;
+        payrollCompanyId: string | null;
+        payrollCompanyName: string | null;
+        dayCount: number;
+        firstDate: string;
+        lastDate: string;
+      };
+      const byEmployee = new Map<string, EmpRow>();
+      for (const s of subs) {
+        // Skip a confirmed day whose employee is no longer visible (e.g. hidden
+        // super-admin) so the rollup never leaks or crashes on a missing user.
+        const user = userMap.get(s.employeeId);
+        if (!user) continue;
+        let row = byEmployee.get(s.employeeId);
+        if (!row) {
+          const pc = await resolvePayingCompany(s.employeeId);
+          row = {
+            employeeId: s.employeeId,
+            employeeName: `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Unknown",
+            payrollCompanyId: pc.id,
+            payrollCompanyName: pc.name,
+            dayCount: 0,
+            firstDate: s.workDate,
+            lastDate: s.workDate,
+          };
+          byEmployee.set(s.employeeId, row);
+        }
+        row.dayCount += 1;
+        if (s.workDate < row.firstDate) row.firstDate = s.workDate;
+        if (s.workDate > row.lastDate) row.lastDate = s.workDate;
+      }
+
+      const employees = Array.from(byEmployee.values()).sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+      const companyMap = new Map<string, { payrollCompanyId: string | null; payrollCompanyName: string | null; employeeCount: number; dayCount: number }>();
+      for (const e of employees) {
+        const key = e.payrollCompanyId ?? "__none__";
+        let c = companyMap.get(key);
+        if (!c) {
+          c = { payrollCompanyId: e.payrollCompanyId, payrollCompanyName: e.payrollCompanyName, employeeCount: 0, dayCount: 0 };
+          companyMap.set(key, c);
+        }
+        c.employeeCount += 1;
+        c.dayCount += e.dayCount;
+      }
+      const byCompany = Array.from(companyMap.values()).sort((a, b) =>
+        (a.payrollCompanyName || "~").localeCompare(b.payrollCompanyName || "~"),
+      );
+
+      res.json({
+        startDate,
+        endDate,
+        totalEmployees: employees.length,
+        totalDays: subs.length,
+        employees,
+        byCompany,
+      });
+    } catch (error) {
+      handleRouteError(res, error, "Failed to load ready-for-payroll list");
+    }
+  });
+
   app.get("/api/payroll/exports", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const companyId = req.query.companyId as string | undefined;
@@ -10383,6 +10487,8 @@ export async function registerRoutes(
       }
 
       const { startDate, endDate, companyId, notes } = parsed.data;
+      const confirmedOnly = parsed.data.confirmedOnly === true;
+      const payrollCompanyFilter = parsed.data.payrollCompanyId ?? null;
       const adminUser = req.authUser as User;
 
       if (startDate > endDate) {
@@ -10390,9 +10496,51 @@ export async function registerRoutes(
       }
 
       const unresolvedExceptions = await storage.getPendingAttendanceExceptions();
-      const attendanceRecords = await storage.getAttendanceByDateRange(startDate, endDate);
+      const allAttendanceRecords = await storage.getAttendanceByDateRange(startDate, endDate);
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+      // "Ready for Payroll" (confirmedOnly): the batch is built from ONLY the
+      // (employee, day) pairs an admin confirmed via Send to Payroll and that are
+      // not yet in a batch — optionally narrowed to one paying company. Everything
+      // downstream (validation, grouping, records) runs against this subset, so
+      // held-back missing-punch days never block the batch and are picked up in a
+      // later run once fixed and re-sent. PTO/cashouts are excluded here because
+      // they are not part of the per-day punch confirmation and would otherwise
+      // double-pay across successive confirmed-only runs for the same period.
+      let confirmedKeys: Set<string> | null = null;
+      // Maps a confirmed (employee, day) key to its submission id, so after the
+      // day groups are built we can link ONLY the days that actually produced a
+      // batch record (a confirmed day whose punch was since deleted stays in the
+      // ready list rather than being silently swallowed). Filled below.
+      const confirmedKeyToId = new Map<string, string>();
+      let confirmedSubmissionIds: string[] = [];
+      if (confirmedOnly) {
+        let subs = await storage.listUnbatchedPayrollSubmissions(startDate, endDate);
+        if (payrollCompanyFilter) {
+          const profileCompany = new Map<string, string | null>();
+          const filtered: typeof subs = [];
+          for (const s of subs) {
+            if (!profileCompany.has(s.employeeId)) {
+              const profile = await storage.getEmploymentProfile(s.employeeId);
+              profileCompany.set(s.employeeId, profile?.payrollCompanyId ?? null);
+            }
+            if (profileCompany.get(s.employeeId) === payrollCompanyFilter) filtered.push(s);
+          }
+          subs = filtered;
+        }
+        // Only confirmed days for employees still visible to this admin.
+        subs = subs.filter((s) => userMap.has(s.employeeId));
+        confirmedKeys = new Set(subs.map((s) => `${s.employeeId}__${s.workDate}`));
+        for (const s of subs) confirmedKeyToId.set(`${s.employeeId}__${s.workDate}`, s.id);
+        if (confirmedKeys.size === 0) {
+          return res.status(400).json({ message: "No confirmed days are ready to batch for this period." });
+        }
+      }
+
+      const attendanceRecords = confirmedKeys
+        ? allAttendanceRecords.filter((r) => confirmedKeys!.has(`${r.employeeId}__${r.workDate}`))
+        : allAttendanceRecords;
 
       const missingPunches = attendanceRecords.filter(
         r => r.clockIn && !r.clockOut && r.status !== "in-progress"
@@ -10400,6 +10548,7 @@ export async function registerRoutes(
 
       const dateRangeExceptions = unresolvedExceptions.filter(
         e => e.exceptionDate >= startDate && e.exceptionDate <= endDate
+          && (!confirmedKeys || confirmedKeys.has(`${e.employeeId}__${e.exceptionDate}`))
       );
 
       if (dateRangeExceptions.length > 0) {
@@ -10430,7 +10579,7 @@ export async function registerRoutes(
         overlapWarning = `Warning: ${overlapping.length} existing export(s) overlap with this date range`;
       }
 
-      const timeOffRequests = await storage.getAllTimeOffRequests();
+      const timeOffRequests = confirmedOnly ? [] : await storage.getAllTimeOffRequests();
       const approvedTimeOff = timeOffRequests.filter(
         r => r.status === "approved" && r.requestCategory !== "cashout" && r.startDate <= endDate && r.endDate >= startDate
       );
@@ -10452,6 +10601,16 @@ export async function registerRoutes(
           dayGroups.set(key, g);
         }
         g.punches.push(record);
+      }
+
+      // Confirmed-only: link exactly the confirmed days that yielded a day group
+      // (i.e. still have attendance in range) to the batch we're about to create.
+      if (confirmedOnly) {
+        confirmedSubmissionIds = [];
+        for (const key of dayGroups.keys()) {
+          const id = confirmedKeyToId.get(key);
+          if (id) confirmedSubmissionIds.push(id);
+        }
       }
 
       const totalRecordCount = dayGroups.size + approvedTimeOff.length + approvedCashouts.length;
@@ -10769,6 +10928,16 @@ export async function registerRoutes(
             hasIssues: false,
             issueDescription: null,
           });
+        }
+
+        // Confirmed-only batch: stamp each confirmed day with the batch that paid
+        // it (in the same transaction) so it is never pulled into a second batch.
+        // Guarded on payrollExportId IS NULL in case a day was batched concurrently.
+        if (confirmedOnly && confirmedSubmissionIds.length > 0) {
+          await tx
+            .update(payrollSubmissionsTable)
+            .set({ payrollExportId: created.id })
+            .where(and(inArray(payrollSubmissionsTable.id, confirmedSubmissionIds), isNull(payrollSubmissionsTable.payrollExportId)));
         }
 
         return created;

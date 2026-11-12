@@ -642,6 +642,12 @@ export interface IStorage {
   // Confirm a set of (employee, day) rows as sent. Idempotent: a day already
   // sent is skipped (unique per employee+day). Returns how many were newly added.
   addPayrollSubmissions(rows: InsertPayrollSubmission[]): Promise<number>;
+  // Confirmed days not yet pulled into a batch (payrollExportId IS NULL) within a
+  // period. These are the "Ready for Payroll" rows a batch report draws from.
+  listUnbatchedPayrollSubmissions(startDate: string, endDate: string): Promise<PayrollSubmission[]>;
+  // Link a set of confirmed days to the batch that paid them, so they are not
+  // pulled into a second batch. Returns how many rows were linked.
+  markPayrollSubmissionsBatched(ids: string[], exportId: string): Promise<number>;
 
   getPayrollAdjustment(id: string): Promise<PayrollAdjustment | undefined>;
   getPayrollAdjustmentsByExport(exportId: string): Promise<PayrollAdjustment[]>;
@@ -3616,6 +3622,30 @@ export class DatabaseStorage implements IStorage {
       .onConflictDoNothing()
       .returning({ id: payrollSubmissions.id });
     return inserted.length;
+  }
+
+  async listUnbatchedPayrollSubmissions(startDate: string, endDate: string): Promise<PayrollSubmission[]> {
+    return db
+      .select()
+      .from(payrollSubmissions)
+      .where(
+        and(
+          isNull(payrollSubmissions.payrollExportId),
+          gte(payrollSubmissions.workDate, startDate),
+          lte(payrollSubmissions.workDate, endDate),
+        ),
+      )
+      .orderBy(payrollSubmissions.workDate);
+  }
+
+  async markPayrollSubmissionsBatched(ids: string[], exportId: string): Promise<number> {
+    if (ids.length === 0) return 0;
+    const updated = await db
+      .update(payrollSubmissions)
+      .set({ payrollExportId: exportId })
+      .where(and(inArray(payrollSubmissions.id, ids), isNull(payrollSubmissions.payrollExportId)))
+      .returning({ id: payrollSubmissions.id });
+    return updated.length;
   }
 
   async getPayrollExports(companyId?: string): Promise<PayrollExport[]> {
