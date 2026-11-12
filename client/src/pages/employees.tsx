@@ -1820,7 +1820,7 @@ function AddEmployeeDialog({
           Add Employee
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-lg" data-testid="dialog-add-employee">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-lg grid-rows-[auto_minmax(0,1fr)_auto]" data-testid="dialog-add-employee">
         <DialogHeader>
           <DialogTitle data-testid="text-dialog-title">
             {step === 4 ? "Employee Created" : `Add Employee — Step ${step} of 3`}
@@ -1834,7 +1834,7 @@ function AddEmployeeDialog({
         </DialogHeader>
 
         {step === 1 && (
-          <div className="space-y-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-1">
             {nextNumberData?.nextNumber && (
               <div className="rounded-md border bg-muted/40 px-3 py-2 flex items-center justify-between" data-testid="info-next-clock-number">
                 <span className="text-sm text-muted-foreground">Clock # (auto-assigned)</span>
@@ -1985,7 +1985,7 @@ function AddEmployeeDialog({
         )}
 
         {step === 2 && (
-          <div className="space-y-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-1">
             <div className="space-y-2">
               <Label>Employment Type</Label>
               <Select value={formData.employmentType} onValueChange={(v) => setFormData({ ...formData, employmentType: v })}>
@@ -2100,7 +2100,7 @@ function AddEmployeeDialog({
         )}
 
         {step === 3 && (
-          <div className="space-y-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-1">
             <div className="space-y-2">
               <Label>Tax Form</Label>
               <Select
@@ -2284,7 +2284,7 @@ function AddEmployeeDialog({
         )}
 
         {step === 4 && tempPassword && (
-          <div className="space-y-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-1">
             {assignedNumber && (
               <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="box-assigned-clock-number">
                 <p className="text-sm text-blue-800 dark:text-blue-300 mb-2">
@@ -2317,7 +2317,6 @@ function AddEmployeeDialog({
             </div>
           </div>
         )}
-
         <DialogFooter>
           {step < 4 && step > 1 && (
             <Button variant="outline" onClick={() => setStep(step - 1)} data-testid="button-step-back">
