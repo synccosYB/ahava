@@ -171,7 +171,7 @@ export default function TimeSheetReviewPage() {
   );
 
   const loadMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (force: boolean = false) => {
       const res = await apiRequest("POST", "/api/reports/generate", {
         category: "time",
         reportType: "company",
@@ -180,10 +180,12 @@ export default function TimeSheetReviewPage() {
         departmentIds: departmentIds.length > 0 ? departmentIds : undefined,
         locationIds: locationIds.length > 0 ? locationIds : undefined,
         employeeIds: employeeIds.length > 0 ? employeeIds : undefined,
+        // A deliberate Refresh click bypasses the server's report cooldown.
+        force: force || undefined,
       });
       return res.json();
     },
-    onSuccess: (data: unknown) => {
+    onSuccess: (data: unknown, force: boolean = false) => {
       if (!isTimeResult(data)) {
         const cd = data as { message?: string; retryAfterMs?: number } | null;
         const secs = cd?.retryAfterMs ? Math.ceil(cd.retryAfterMs / 1000) : null;
@@ -195,6 +197,7 @@ export default function TimeSheetReviewPage() {
       }
       setResult(data);
       setExpanded(null);
+      if (force) toast({ title: "Refreshed", description: "Time sheets reloaded with the latest data." });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -207,9 +210,9 @@ export default function TimeSheetReviewPage() {
   // default", that saved search auto-runs once on open. `hasApplied` tracks
   // whether a search has been run yet.
   const [hasApplied, setHasApplied] = useState(false);
-  const applyFilters = () => {
+  const applyFilters = (force: boolean = false) => {
     setHasApplied(true);
-    loadMutation.mutate();
+    loadMutation.mutate(force);
   };
   useEffect(() => {
     if (initial.savedDefault && !hasApplied) {
@@ -291,12 +294,12 @@ export default function TimeSheetReviewPage() {
             </div>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <Button onClick={applyFilters} disabled={loadMutation.isPending} data-testid="button-review-load">
+            <Button onClick={() => applyFilters(false)} disabled={loadMutation.isPending} data-testid="button-review-load">
               {loadMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
               Apply
             </Button>
             {hasApplied && result && (
-              <Button variant="outline" onClick={applyFilters} disabled={loadMutation.isPending} data-testid="button-review-refresh">
+              <Button variant="outline" onClick={() => applyFilters(true)} disabled={loadMutation.isPending} data-testid="button-review-refresh">
                 <RefreshCw className={`h-4 w-4 mr-2 ${loadMutation.isPending ? "animate-spin" : ""}`} /> Refresh
               </Button>
             )}

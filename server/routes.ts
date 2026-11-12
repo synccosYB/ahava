@@ -8937,16 +8937,23 @@ export async function registerRoutes(
   // bookkeeper to "sees every employee". The Time Sheet Review page posts here.
   app.post("/api/reports/generate", requireAuth, requireAnyPermission("reports.view", "attendance.view_all"), async (req, res) => {
     const cdUser = (req as any).authUser as User;
-    const cdKey = `reports:generate:${cdUser?.id ?? "anon"}:${JSON.stringify(req.body ?? {})}`;
-    const gate = shouldRun(cdKey);
-    if (!gate.ok) {
-      return res.status(202).json({
-        message: `Report generation cooling down. Try again in ${Math.ceil(gate.retryAfterMs / 1000)}s.`,
-        retryAfterMs: gate.retryAfterMs,
-      });
+    // `force` is an explicit user action (the Refresh button) — it bypasses the
+    // cooldown so a deliberate click always re-runs. It is stripped before the
+    // key and the schema parse so it never affects either. The auto-run-on-open
+    // path sends no force and stays gated against accidental spam.
+    const { force: cdForce, ...reportBody } = (req.body ?? {}) as Record<string, unknown>;
+    const cdKey = `reports:generate:${cdUser?.id ?? "anon"}:${JSON.stringify(reportBody)}`;
+    if (!cdForce) {
+      const gate = shouldRun(cdKey);
+      if (!gate.ok) {
+        return res.status(202).json({
+          message: `Report generation cooling down. Try again in ${Math.ceil(gate.retryAfterMs / 1000)}s.`,
+          retryAfterMs: gate.retryAfterMs,
+        });
+      }
     }
     const user = (req as any).authUser as User;
-    const parsed = reportSchema.safeParse(req.body);
+    const parsed = reportSchema.safeParse(reportBody);
     if (!parsed.success) {
       return res.status(400).json({ message: "Invalid report parameters", errors: parsed.error.flatten() });
     }
