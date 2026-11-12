@@ -96,6 +96,9 @@ import {
   payrollBatchRecords,
   type PayrollBatchRecord,
   type InsertPayrollBatchRecord,
+  payrollSubmissions,
+  type PayrollSubmission,
+  type InsertPayrollSubmission,
   payrollAdjustments,
   type PayrollAdjustment,
   type InsertPayrollAdjustment,
@@ -319,6 +322,9 @@ export interface UsersPageOptions {
   companyIds?: string[];
   taxClasses?: string[];
   certStatuses?: string[];
+  // Employment status filter: "active" = not deactivated, "inactive" =
+  // deactivated, "all"/undefined = both. Defaults to all.
+  status?: "all" | "active" | "inactive";
   excludeUserIds?: string[];
   // Display order for the Employees list. "name_asc" (default) sorts A→Z by
   // first then last name; "last_name_*" sorts by last then first name.
@@ -630,6 +636,18 @@ export interface IStorage {
   getPayrollBatchRecords(exportId: string): Promise<PayrollBatchRecord[]>;
   createPayrollBatchRecord(data: InsertPayrollBatchRecord): Promise<PayrollBatchRecord>;
   deletePayrollBatchRecords(exportId: string): Promise<void>;
+
+  // Per-day "Send to Payroll" confirmations.
+  listPayrollSubmissions(employeeId: string, startDate: string, endDate: string): Promise<PayrollSubmission[]>;
+  // Confirm a set of (employee, day) rows as sent. Idempotent: a day already
+  // sent is skipped (unique per employee+day). Returns how many were newly added.
+  addPayrollSubmissions(rows: InsertPayrollSubmission[]): Promise<number>;
+  // Confirmed days not yet pulled into a batch (payrollExportId IS NULL) within a
+  // period. These are the "Ready for Payroll" rows a batch report draws from.
+  listUnbatchedPayrollSubmissions(startDate: string, endDate: string): Promise<PayrollSubmission[]>;
+  // Link a set of confirmed days to the batch that paid them, so they are not
+  // pulled into a second batch. Returns how many rows were linked.
+  markPayrollSubmissionsBatched(ids: string[], exportId: string): Promise<number>;
 
   getPayrollAdjustment(id: string): Promise<PayrollAdjustment | undefined>;
   getPayrollAdjustmentsByExport(exportId: string): Promise<PayrollAdjustment[]>;
@@ -1032,6 +1050,12 @@ export class DatabaseStorage implements IStorage {
     }
     if (opts.excludeUserIds && opts.excludeUserIds.length > 0) {
       conditions.push(sql`${users.id} not in (${sql.join(opts.excludeUserIds.map((id) => sql`${id}`), sql`, `)})` as SQL);
+    }
+    // Active (not deactivated) vs inactive (deactivated). "all"/undefined → both.
+    if (opts.status === "active") {
+      conditions.push(sql`${users.deactivatedAt} is null` as SQL);
+    } else if (opts.status === "inactive") {
+      conditions.push(sql`${users.deactivatedAt} is not null` as SQL);
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -3572,6 +3596,56 @@ export class DatabaseStorage implements IStorage {
   async getPayrollExport(id: string): Promise<PayrollExport | undefined> {
     const [record] = await db.select().from(payrollExports).where(eq(payrollExports.id, id));
     return record;
+  }
+
+  async listPayrollSubmissions(employeeId: string, startDate: string, endDate: string): Promise<PayrollSubmission[]> {
+    return db
+      .select()
+      .from(payrollSubmissions)
+      .where(
+        and(
+          eq(payrollSubmissions.employeeId, employeeId),
+          gte(payrollSubmissions.workDate, startDate),
+          lte(payrollSubmissions.workDate, endDate),
+        ),
+      )
+      .orderBy(payrollSubmissions.workDate);
+  }
+
+  async addPayrollSubmissions(rows: InsertPayrollSubmission[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    // onConflictDoNothing against the unique (employee_id, work_date) index makes
+    // re-sending a day a no-op, so a day is confirmed (and paid) at most once.
+    const inserted = await db
+      .insert(payrollSubmissions)
+      .values(rows)
+      .onConflictDoNothing()
+      .returning({ id: payrollSubmissions.id });
+    return inserted.length;
+  }
+
+  async listUnbatchedPayrollSubmissions(startDate: string, endDate: string): Promise<PayrollSubmission[]> {
+    return db
+      .select()
+      .from(payrollSubmissions)
+      .where(
+        and(
+          isNull(payrollSubmissions.payrollExportId),
+          gte(payrollSubmissions.workDate, startDate),
+          lte(payrollSubmissions.workDate, endDate),
+        ),
+      )
+      .orderBy(payrollSubmissions.workDate);
+  }
+
+  async markPayrollSubmissionsBatched(ids: string[], exportId: string): Promise<number> {
+    if (ids.length === 0) return 0;
+    const updated = await db
+      .update(payrollSubmissions)
+      .set({ payrollExportId: exportId })
+      .where(and(inArray(payrollSubmissions.id, ids), isNull(payrollSubmissions.payrollExportId)))
+      .returning({ id: payrollSubmissions.id });
+    return updated.length;
   }
 
   async getPayrollExports(companyId?: string): Promise<PayrollExport[]> {

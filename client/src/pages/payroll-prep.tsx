@@ -19,10 +19,12 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, CheckCircle, XCircle, Unlock, Eye, Info, RefreshCw, ArrowRight } from "lucide-react";
+import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, CheckCircle, XCircle, Unlock, Eye, Info, RefreshCw, ArrowRight, Send, ChevronLeft, ChevronRight, CalendarClock, Users, ChevronDown } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { usePermissions } from "@/hooks/use-permissions";
+import { currentPayrollPeriod, shiftBiweekly, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
 import type { PayrollExport, PayrollBatchRecord } from "@shared/schema";
 
 type EnrichedPayrollExport = PayrollExport & {
@@ -374,6 +376,8 @@ export default function PayrollPrepPage() {
         }
       />
 
+      <ReadyForPayroll />
+
       <Card data-testid="card-batch-list">
         <CardContent className="p-0">
           {isLoading ? (
@@ -691,6 +695,215 @@ export default function PayrollPrepPage() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+type ReadyCompany = {
+  payrollCompanyId: string | null;
+  payrollCompanyName: string | null;
+  employeeCount: number;
+  dayCount: number;
+};
+type ReadyEmployee = {
+  employeeId: string;
+  employeeName: string;
+  payrollCompanyId: string | null;
+  payrollCompanyName: string | null;
+  dayCount: number;
+  firstDate: string;
+  lastDate: string;
+};
+type ReadyForPayrollData = {
+  startDate: string;
+  endDate: string;
+  totalEmployees: number;
+  totalDays: number;
+  employees: ReadyEmployee[];
+  byCompany: ReadyCompany[];
+};
+
+// "Ready for Payroll": the confirmed (Send-to-Payroll) days for a pay period that
+// are not yet in a batch, grouped by paying company. The admin generates one
+// batch report per paying company to hand to that payroll processor; generating
+// pulls those days into a batch (below) so they are never paid twice.
+function ReadyForPayroll() {
+  const { toast } = useToast();
+  const { has } = usePermissions();
+  const canGenerate = has("payroll.manage");
+  const [range, setRange] = useState<DateRange>(() => currentPayrollPeriod());
+  const [showEmployees, setShowEmployees] = useState(false);
+  const [generatingKey, setGeneratingKey] = useState<string | null>(null);
+
+  const { data, isLoading } = useQuery<ReadyForPayrollData>({
+    queryKey: ["/api/payroll/ready-for-payroll", range.start, range.end],
+    queryFn: async () => {
+      const p = new URLSearchParams({ startDate: range.start, endDate: range.end });
+      const res = await apiRequest("GET", `/api/payroll/ready-for-payroll?${p.toString()}`);
+      return res.json();
+    },
+  });
+
+  const generate = useMutation({
+    mutationFn: async (company: ReadyCompany) => {
+      const res = await apiRequest("POST", "/api/payroll/exports", {
+        startDate: range.start,
+        endDate: range.end,
+        confirmedOnly: true,
+        payrollCompanyId: company.payrollCompanyId ?? undefined,
+        companyId: company.payrollCompanyId ?? undefined,
+        notes: company.payrollCompanyName ? `Confirmed days · ${company.payrollCompanyName}` : "Confirmed days",
+      });
+      return res.json();
+    },
+    onSuccess: (_d, company) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/ready-for-payroll"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      toast({ title: "Batch report generated", description: company.payrollCompanyName || undefined });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not generate batch", description: err.message, variant: "destructive" });
+    },
+    onSettled: () => setGeneratingKey(null),
+  });
+
+  const step = (n: number) => setRange((r) => shiftBiweekly(r, n));
+  const goCurrent = () => setRange(currentPayrollPeriod());
+  const isCurrent = range.start === currentPayrollPeriod().start;
+
+  const companies = data?.byCompany ?? [];
+  const employees = data?.employees ?? [];
+
+  return (
+    <Card data-testid="card-ready-for-payroll">
+      <CardContent className="p-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b">
+          <div>
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <Send className="h-4 w-4 text-green-600" /> Ready for Payroll
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Confirmed days not yet batched. Generate a report per paying company to send to payroll.
+            </p>
+          </div>
+          <div className="flex items-center gap-1" data-testid="ready-period-nav">
+            <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(-1)} aria-label="Previous pay period" data-testid="button-ready-prev">
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <span className="text-sm font-medium text-center whitespace-nowrap px-1" data-testid="text-ready-period">
+              {formatRangeLabel(range)}{isCurrent ? " · current" : ""}
+            </span>
+            <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(1)} disabled={isCurrent} aria-label="Next pay period" data-testid="button-ready-next">
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+            {!isCurrent && (
+              <Button variant="secondary" size="sm" className="h-8" onClick={goCurrent} data-testid="button-ready-current">
+                <CalendarClock className="h-4 w-4 mr-1" /> Current
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="p-6 space-y-2">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ) : !data || data.totalDays === 0 ? (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="text-ready-empty">
+            No confirmed days waiting for this period. Confirm complete days from an employee's Review Time Sheet with “Send to Payroll”.
+          </div>
+        ) : (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider">Paying Company</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Employees</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Confirmed Days</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {companies.map((c) => {
+                  const key = c.payrollCompanyId ?? "__none__";
+                  const noCompany = !c.payrollCompanyId;
+                  const busy = generate.isPending && generatingKey === key;
+                  return (
+                    <TableRow key={key} data-testid={`row-ready-company-${key}`}>
+                      <TableCell className="font-medium" data-testid={`text-ready-company-${key}`}>
+                        {c.payrollCompanyName || <span className="text-amber-600 inline-flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> No paying company set</span>}
+                      </TableCell>
+                      <TableCell className="tabular-nums text-right">{c.employeeCount}</TableCell>
+                      <TableCell className="tabular-nums text-right">{c.dayCount}</TableCell>
+                      <TableCell className="text-right">
+                        {noCompany ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span tabIndex={0} className="text-xs text-muted-foreground cursor-help">Fix employee first</span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs">
+                              Set a paying company on these employees' profiles, then their confirmed days can be batched.
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <Button
+                            size="sm"
+                            disabled={!canGenerate || generate.isPending}
+                            onClick={() => { setGeneratingKey(key); generate.mutate(c); }}
+                            data-testid={`button-generate-batch-${key}`}
+                          >
+                            {busy ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <FileText className="h-3 w-3 mr-1" />}
+                            Generate batch report
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+
+            <div className="px-4 py-2 border-t">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground"
+                onClick={() => setShowEmployees((v) => !v)}
+                data-testid="button-toggle-ready-employees"
+              >
+                <Users className="h-3 w-3 mr-1" />
+                {data.totalEmployees} employee{data.totalEmployees === 1 ? "" : "s"} · {data.totalDays} confirmed day{data.totalDays === 1 ? "" : "s"}
+                <ChevronDown className={`h-3 w-3 ml-1 transition-transform ${showEmployees ? "rotate-180" : ""}`} />
+              </Button>
+              {showEmployees && (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Paying Company</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider">Days</TableHead>
+                      <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Confirmed Days</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {employees.map((e) => (
+                      <TableRow key={e.employeeId} data-testid={`row-ready-employee-${e.employeeId}`}>
+                        <TableCell className="font-medium">{e.employeeName}</TableCell>
+                        <TableCell>{e.payrollCompanyName || <span className="text-amber-600">—</span>}</TableCell>
+                        <TableCell className="tabular-nums text-xs text-muted-foreground">
+                          {formatDateRange(e.firstDate, e.lastDate)}
+                        </TableCell>
+                        <TableCell className="tabular-nums text-right">{e.dayCount}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

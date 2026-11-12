@@ -226,7 +226,7 @@ export default function EmployeesPage() {
   const appliedCertKey = appliedCertStatuses.join(",");
   useEffect(() => {
     setPage(0);
-  }, [debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey]);
+  }, [debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, statusFilter]);
 
   const usersParams = new URLSearchParams();
   if (debouncedSearch) usersParams.set("search", debouncedSearch);
@@ -235,12 +235,13 @@ export default function EmployeesPage() {
   if (appliedCompanyIds.length) usersParams.set("companyIds", appliedCompanyKey);
   if (appliedTaxClasses.length) usersParams.set("taxClasses", appliedTaxKey);
   if (appliedCertStatuses.length) usersParams.set("certStatuses", appliedCertKey);
+  if (statusFilter !== "all") usersParams.set("status", statusFilter);
   usersParams.set("sort", sortOrder);
   usersParams.set("limit", String(pageSize));
   usersParams.set("offset", String(page * pageSize));
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
-    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, sortOrder, page, pageSize],
+    queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, statusFilter, sortOrder, page, pageSize],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employees");
@@ -287,13 +288,14 @@ export default function EmployeesPage() {
   if (appliedCompanyIds.length) navParams.set("companyIds", appliedCompanyKey);
   if (appliedTaxClasses.length) navParams.set("taxClasses", appliedTaxKey);
   if (appliedCertStatuses.length) navParams.set("certStatuses", appliedCertKey);
+  if (statusFilter !== "all") navParams.set("status", statusFilter);
   // Match the table's sort so Prev/Next step through the list in the SAME order
   // the user is seeing (e.g. last-name A–Z), not the server's default order.
   navParams.set("sort", sortOrder);
   navParams.set("limit", "1000");
   navParams.set("offset", "0");
   const { data: navPage } = useQuery<{ data: User[] }>({
-    queryKey: ["/api/users", "nav", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, sortOrder],
+    queryKey: ["/api/users", "nav", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, statusFilter, sortOrder],
     queryFn: async () => {
       const res = await cachedFetch(`/api/users?${navParams}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch employee navigation list");
@@ -384,6 +386,16 @@ export default function EmployeesPage() {
             allLabel="All Companies"
             searchPlaceholder="Search companies..."
           />
+        </div>
+        <div className="w-[160px]" data-testid="filter-status">
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger data-testid="select-employee-status"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All employees</SelectItem>
+              <SelectItem value="active">Active only</SelectItem>
+              <SelectItem value="inactive">Inactive only</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className="w-[180px]" data-testid="filter-tax-class-multi">
           <MultiSelect

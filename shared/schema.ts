@@ -1332,6 +1332,32 @@ export const insertPayrollBatchRecordSchema = createInsertSchema(payrollBatchRec
 export type InsertPayrollBatchRecord = z.infer<typeof insertPayrollBatchRecordSchema>;
 export type PayrollBatchRecord = typeof payrollBatchRecords.$inferSelect;
 
+// Per-day "Send to Payroll" confirmation. When an admin reviews an employee's
+// time sheet and sends it, each COMPLETE day is recorded here as confirmed and
+// ready for payroll; days with a missing punch are deliberately LEFT OUT — they
+// stay open and can be sent in a later run once fixed. The "Ready for Payroll"
+// list and the batch report are built from these rows, so a day is paid at most
+// once. `payrollExportId` is set when the day has been rolled into a batch.
+export const payrollSubmissions = pgTable("payroll_submissions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  workDate: date("work_date").notNull(),
+  sentAt: timestamp("sent_at").defaultNow().notNull(),
+  sentBy: varchar("sent_by").references(() => users.id),
+  payrollExportId: varchar("payroll_export_id").references(() => payrollExports.id),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (t) => ({
+  // A day is sent at most once per employee (guards against double-pay).
+  uniqEmployeeDay: uniqueIndex("uniq_payroll_submission_employee_day").on(t.employeeId, t.workDate),
+}));
+
+export const insertPayrollSubmissionSchema = createInsertSchema(payrollSubmissions).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertPayrollSubmission = z.infer<typeof insertPayrollSubmissionSchema>;
+export type PayrollSubmission = typeof payrollSubmissions.$inferSelect;
+
 export const payrollAdjustments = pgTable("payroll_adjustments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   payrollExportId: varchar("payroll_export_id").notNull().references(() => payrollExports.id),
