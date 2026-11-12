@@ -7,10 +7,48 @@
  * All values are date-only (YYYY-MM-DD, local calendar) — no timezone math,
  * because punches are stored/queried by local workDate.
  */
-import { startOfWeek, addDays, addWeeks, format, parseISO } from "date-fns";
+import { startOfWeek, addDays, addWeeks, format, parseISO, differenceInCalendarDays } from "date-fns";
 
 /** 0=Sun … 4=Thu … 6=Sat. Keep in sync with server DEFAULT_ATTENDANCE_RULES. */
 export const PAYROLL_WEEK_STARTS_ON = 4; // Thursday
+
+// ───────────────────────── Bi-weekly pay cadence ─────────────────────────
+// Pay is processed every 2 weeks. A pay period is 14 days, Thursday→Wednesday,
+// and periods are PHASE-ALIGNED to this anchor Thursday: periods begin on the
+// anchor and every 14 days from it (…, 2026-10-29, 2026-11-12, 2026-11-26, …).
+// The anchor only fixes WHICH Thursdays start a period — change it here if the
+// company ever shifts its pay calendar.
+//
+//   • Work period    = the in-progress 14-day block that contains today
+//                      (still being worked).
+//   • Payroll period = the most recently COMPLETED block (the one being paid),
+//                      i.e. the period right before the current work period.
+export const BIWEEKLY_ANCHOR = "2026-10-29"; // a Thursday that starts a pay period
+
+/** The aligned 14-day pay period (Thu–Wed) that CONTAINS `date`. */
+export function biweeklyPeriodFor(date: Date = new Date()): DateRange {
+  const anchor = parseISO(BIWEEKLY_ANCHOR);
+  const periodsFromAnchor = Math.floor(differenceInCalendarDays(date, anchor) / 14);
+  const start = addDays(anchor, periodsFromAnchor * 14);
+  return { start: toISO(start), end: toISO(addDays(start, 13)) };
+}
+
+/** Shift an aligned bi-weekly period by `n` periods (negative = earlier). */
+export function shiftBiweekly(range: DateRange, n: number): DateRange {
+  const start = addDays(parseISO(range.start), n * 14);
+  return { start: toISO(start), end: toISO(addDays(start, 13)) };
+}
+
+/** The current WORK period: the in-progress 14-day block containing today. */
+export function currentWorkPeriod(): DateRange {
+  return biweeklyPeriodFor(new Date());
+}
+
+/** The current PAYROLL period: the most recently completed 14-day block (the one
+ * being processed) — the period right before the current work period. */
+export function currentPayrollPeriod(): DateRange {
+  return shiftBiweekly(currentWorkPeriod(), -1);
+}
 
 export interface DateRange {
   /** YYYY-MM-DD, inclusive */

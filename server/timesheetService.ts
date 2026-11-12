@@ -53,6 +53,10 @@ export interface TimesheetResult {
   otThresholdDaily: number;
   entries: TimesheetEntry[];
   totals: TimesheetTotals;
+  // True when this employee is paid by the DAY (daily salary) or is
+  // attendance/confirmation-only — for them the review UI emphasizes DAYS worked
+  // over hours (hours aren't the pay basis).
+  emphasizeDays: boolean;
 }
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -386,5 +390,6 @@ export async function buildEmployeeTimesheet(
       daysWorked,
       totalBonus: Math.round(totalBonus * 100) / 100,
     },
+    emphasizeDays: confirmationOnly || employeeProfile?.payType === "daily",
   };
 }

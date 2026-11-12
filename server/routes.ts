@@ -6183,6 +6183,7 @@ export async function registerRoutes(
         otThresholdDaily: result.otThresholdDaily,
         entries,
         totals,
+        emphasizeDays: result.emphasizeDays,
         // Business/location timezone so clock-in/out render in the medical
         // center's wall-clock time, not the viewer's device timezone.
         timezone: await resolveEmployeeTimezone(employeeId),

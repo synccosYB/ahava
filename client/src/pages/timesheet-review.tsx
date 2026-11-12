@@ -29,7 +29,7 @@ import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange, RefreshCw,
 import { formatHoursMinutes, formatDate } from "@/lib/utils";
 import { formatRangeLabel } from "@/lib/payroll-week";
 import {
-  type Period, PERIOD_LABELS, PERIOD_KEYS, rangeForPeriod, ymdLocal, ymdToDate,
+  type Period, PERIOD_LABELS, PERIOD_KEYS, rangeForPeriod, normalizePeriod, ymdLocal, ymdToDate,
 } from "@/lib/timesheet-period";
 
 type FilterOptions = {
@@ -69,7 +69,7 @@ function loadPrefs(userId: string | undefined): Prefs {
     const raw = localStorage.getItem(prefKey(userId));
     if (!raw) return fallback;
     const p = JSON.parse(raw);
-    const period: Period = (PERIOD_LABELS as Record<string, string>)[p.period] ? p.period : "this_week";
+    const period: Period = normalizePeriod(p.period);
     return {
       period,
       customStart: typeof p.customStart === "string" ? p.customStart : "",
