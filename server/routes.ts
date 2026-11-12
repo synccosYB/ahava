@@ -703,6 +703,7 @@ export async function registerRoutes(
         companyIds: csvIds(req.query.companyIds),
         taxClasses: csvIds(req.query.taxClasses),
         certStatuses: csvIds(req.query.certStatuses),
+        status: req.query.status === "active" || req.query.status === "inactive" ? req.query.status : undefined,
         sort: req.query.sort === "last_name_asc" || req.query.sort === "last_name_desc" || req.query.sort === "name_desc"
           ? req.query.sort
           : "name_asc",

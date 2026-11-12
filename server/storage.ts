@@ -319,6 +319,9 @@ export interface UsersPageOptions {
   companyIds?: string[];
   taxClasses?: string[];
   certStatuses?: string[];
+  // Employment status filter: "active" = not deactivated, "inactive" =
+  // deactivated, "all"/undefined = both. Defaults to all.
+  status?: "all" | "active" | "inactive";
   excludeUserIds?: string[];
   // Display order for the Employees list. "name_asc" (default) sorts A→Z by
   // first then last name; "last_name_*" sorts by last then first name.
@@ -1032,6 +1035,12 @@ export class DatabaseStorage implements IStorage {
     }
     if (opts.excludeUserIds && opts.excludeUserIds.length > 0) {
       conditions.push(sql`${users.id} not in (${sql.join(opts.excludeUserIds.map((id) => sql`${id}`), sql`, `)})` as SQL);
+    }
+    // Active (not deactivated) vs inactive (deactivated). "all"/undefined → both.
+    if (opts.status === "active") {
+      conditions.push(sql`${users.deactivatedAt} is null` as SQL);
+    } else if (opts.status === "inactive") {
+      conditions.push(sql`${users.deactivatedAt} is not null` as SQL);
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
