@@ -13,13 +13,13 @@ import { EmployeeReviewRules } from "@/components/employee-review-rules";
 import { TimesheetEditor } from "@/components/timesheet-editor";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useAuth } from "@/hooks/use-auth";
-import { currentWeek, shiftWeeks, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
+import { currentWeek, currentWorkPeriod, currentPayrollPeriod, shiftWeeks, shiftBiweekly, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
 import { formatDate } from "@/lib/utils";
-import { type Period, PERIOD_LABELS, PERIOD_KEYS, rangeForPeriod, ymdLocal, ymdToDate } from "@/lib/timesheet-period";
+import { type Period, PERIOD_LABELS, PERIOD_KEYS, rangeForPeriod, normalizePeriod, ymdLocal, ymdToDate } from "@/lib/timesheet-period";
 
-// "this_week" and "pay_period" keep the ◀ / ▶ week-stepping; the rest are fixed
-// or custom ranges with no stepping.
-const NAVIGABLE: Period[] = ["this_week", "pay_period"];
+// "this_week" steps one week at a time; the two bi-weekly pay periods step one
+// 14-day period at a time. Every other preset is a fixed/custom range.
+const NAVIGABLE: Period[] = ["this_week", "work_period", "payroll_period"];
 
 // Per-user period preference. Stored in the browser, keyed by user, so each
 // admin/manager keeps their own default. View convenience only — guarded.
@@ -28,8 +28,7 @@ function prefKey(userId: string | undefined) {
 }
 function loadPeriod(userId: string | undefined): Period {
   try {
-    const v = localStorage.getItem(prefKey(userId));
-    return v && (PERIOD_LABELS as Record<string, string>)[v] ? (v as Period) : "this_week";
+    return normalizePeriod(localStorage.getItem(prefKey(userId)));
   } catch {
     return "this_week";
   }
@@ -73,8 +72,10 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
   const [period, setPeriod] = useState<Period>(() => loadPeriod(currentUser?.id));
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
-  // `anchor` is the LATEST payroll week in view for the navigable (◀/▶) modes.
-  const [anchor, setAnchor] = useState<DateRange>(() => currentWeek());
+  // How many steps back from the current week/period the ◀/▶ controls are (0 =
+  // current). A step is one week for "this_week" and one 14-day pay period for
+  // the work/payroll periods.
+  const [offset, setOffset] = useState(0);
   const [editing, setEditing] = useState(false);
 
   useEffect(() => {
@@ -82,30 +83,28 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
   }, [currentUser?.id]);
   const changePeriod = (p: Period) => {
     setPeriod(p);
-    if (NAVIGABLE.includes(p)) setAnchor(currentWeek()); // reset stepping to current
+    setOffset(0); // reset stepping to current
     try { localStorage.setItem(prefKey(currentUser?.id), p); } catch { /* ignore */ }
   };
 
-  const thisWeek = currentWeek();
   const navigable = NAVIGABLE.includes(period);
-  const isCurrent = anchor.end === thisWeek.end;
-  const step = period === "pay_period" ? 2 : 1;
+  const isCurrent = offset === 0;
 
-  // Displayed range: navigable modes step through weeks from the anchor; every
-  // other preset (and custom dates) resolves to a fixed range.
-  const displayed: DateRange = !navigable
-    ? rangeForPeriod(period, customStart, customEnd)
-    : period === "pay_period"
-      ? { start: shiftWeeks(anchor, -1).start, end: anchor.end }
-      : anchor;
+  // The current (offset 0) range for this preset, then stepped back by `offset`:
+  // whole weeks for "this_week", whole 14-day periods for the pay periods.
+  const baseRange: DateRange =
+    period === "this_week" ? currentWeek()
+    : period === "work_period" ? currentWorkPeriod()
+    : period === "payroll_period" ? currentPayrollPeriod()
+    : rangeForPeriod(period, customStart, customEnd);
+  const displayed: DateRange =
+    !navigable || offset === 0 ? baseRange
+    : period === "this_week" ? shiftWeeks(baseRange, -offset)
+    : shiftBiweekly(baseRange, -offset);
 
-  const goPrev = () => setAnchor((a) => shiftWeeks(a, -step));
-  const goNext = () =>
-    setAnchor((a) => {
-      const candidate = shiftWeeks(a, step);
-      return candidate.start >= thisWeek.start ? thisWeek : candidate;
-    });
-  const goCurrent = () => setAnchor(thisWeek);
+  const goPrev = () => setOffset((o) => o + 1);
+  const goNext = () => setOffset((o) => Math.max(0, o - 1));
+  const goCurrent = () => setOffset(0);
 
   return (
     <Card data-testid="card-review-timesheet">
