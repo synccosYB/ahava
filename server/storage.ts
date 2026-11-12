@@ -203,7 +203,7 @@ import {
   userDepartmentIds,
   userLocationIds,
 } from "@shared/schema";
-import { db } from "./db";
+import { db, type DatabaseConnection } from "./db";
 import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, isNotNull, type SQL } from "drizzle-orm";
 import {
   CORRECTION_COUNT_TYPES,
@@ -345,8 +345,8 @@ export interface IStorage {
   getUserDepartmentIds(userId: string): Promise<string[]>;
   getUserLocationIds(userId: string): Promise<string[]>;
   getEmployeeGeofencedAddresses(userId: string): Promise<LocationAddress[]>;
-  setUserDepartmentIds(userId: string, departmentIds: string[]): Promise<string[]>;
-  setUserLocationIds(userId: string, locationIds: string[]): Promise<string[]>;
+  setUserDepartmentIds(userId: string, departmentIds: string[], connection?: DatabaseConnection): Promise<string[]>;
+  setUserLocationIds(userId: string, locationIds: string[], connection?: DatabaseConnection): Promise<string[]>;
 
   getCompany(id: string): Promise<Company | undefined>;
   getAllCompanies(): Promise<Company[]>;
@@ -382,12 +382,12 @@ export interface IStorage {
   getEmploymentProfile(userId: string): Promise<EmploymentProfile | undefined>;
   getAllEmploymentProfiles(): Promise<EmploymentProfile[]>;
   getEmploymentProfilesByUserIds(userIds: string[]): Promise<Map<string, EmploymentProfile>>;
-  createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile>;
-  updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined>;
+  createEmploymentProfile(profile: InsertEmploymentProfile, connection?: DatabaseConnection): Promise<EmploymentProfile>;
+  updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>, connection?: DatabaseConnection): Promise<EmploymentProfile | undefined>;
   // Next free clock number (= employee number) across every place one can live:
   // employee profiles + the user-numbers enrolled/seen on any clock.
-  getNextEmployeeNumber(): Promise<string>;
-  getUserIdByEmployeeNumber(employeeNumber: string): Promise<string | undefined>;
+  getNextEmployeeNumber(connection?: DatabaseConnection): Promise<string>;
+  getUserIdByEmployeeNumber(employeeNumber: string, connection?: DatabaseConnection): Promise<string | undefined>;
   getUserReportDefaults(userId: string): Promise<UserReportDefaults | undefined>;
   setUserReportDefaults(userId: string, prefs: { locationIds: string[]; departmentIds: string[] }): Promise<UserReportDefaults>;
 
@@ -665,7 +665,7 @@ export interface IStorage {
   getAuditLogsByUser(userId: string, options?: { limit?: number; offset?: number; startDate?: string; endDate?: string }): Promise<{ logs: AuditLog[]; total: number }>;
   getLedgerEntriesByEmployee(employeeId: string, options?: { category?: string; startDate?: string; endDate?: string; limit?: number; offset?: number }): Promise<{ entries: AttendanceChangeLedger[]; total: number }>;
 
-  createUser(user: UpsertUser): Promise<User>;
+  createUser(user: UpsertUser, connection?: DatabaseConnection): Promise<User>;
   updateUser(id: string, data: Partial<UpsertUser>): Promise<User | undefined>;
   deleteUser(id: string): Promise<void>;
 
@@ -803,11 +803,10 @@ export interface IStorage {
   getOffboardingTasks(checklistId: string): Promise<OffboardingTask[]>;
   getOffboardingTask(id: string): Promise<OffboardingTask | undefined>;
   updateOffboardingTask(id: string, data: { status?: string; skippedReason?: string | null; completedBy?: string | null; completedAt?: Date | null; notes?: string | null }): Promise<OffboardingTask | undefined>;
-  setOffboardingChecklistDeactivation(id: string, actorUserId: string): Promise<OffboardingChecklist | undefined>;
+  setOffboardingChecklistDeactivation(id: string, actorUserId: string, connection?: DatabaseConnection): Promise<OffboardingChecklist | undefined>;
   computeOffboardingProgress(checklistId: string): Promise<{ progressPct: number; completedRequired: number; totalRequired: number; optionalCompleted: number; optionalTotal: number }>;
 
-  setUserDeactivated(userId: string, actorUserId: string, reason?: string | null): Promise<User | undefined>;
-  clearUserDeactivated(userId: string): Promise<User | undefined>;
+  setUserDeactivated(userId: string, actorUserId: string, reason?: string | null, connection?: DatabaseConnection): Promise<User | undefined>;
 
   // ===== Biometric kiosk =====
   getBiometricSettings(): Promise<BiometricSettings>;
@@ -1140,9 +1139,9 @@ export class DatabaseStorage implements IStorage {
   // Replace an employee's full department membership set. Also syncs the legacy
   // `users.department_id` shim to one representative (the first) for any code
   // still reading the single column. Returns the deduped set written.
-  async setUserDepartmentIds(userId: string, departmentIds: string[]): Promise<string[]> {
+  async setUserDepartmentIds(userId: string, departmentIds: string[], connection: DatabaseConnection = db): Promise<string[]> {
     const dedup = Array.from(new Set((departmentIds || []).filter(Boolean)));
-    await db.transaction(async (tx) => {
+    await connection.transaction(async (tx) => {
       await tx.delete(employeeDepartments).where(eq(employeeDepartments.userId, userId));
       if (dedup.length > 0) {
         await tx
@@ -1160,9 +1159,9 @@ export class DatabaseStorage implements IStorage {
 
   // Replace an employee's full location membership set; syncs the legacy
   // `users.location_id` shim to one representative.
-  async setUserLocationIds(userId: string, locationIds: string[]): Promise<string[]> {
+  async setUserLocationIds(userId: string, locationIds: string[], connection: DatabaseConnection = db): Promise<string[]> {
     const dedup = Array.from(new Set((locationIds || []).filter(Boolean)));
-    await db.transaction(async (tx) => {
+    await connection.transaction(async (tx) => {
       await tx.delete(employeeLocations).where(eq(employeeLocations.userId, userId));
       if (dedup.length > 0) {
         await tx
@@ -1373,13 +1372,13 @@ export class DatabaseStorage implements IStorage {
     return profile;
   }
 
-  async createEmploymentProfile(profile: InsertEmploymentProfile): Promise<EmploymentProfile> {
-    const [created] = await db.insert(userEmploymentProfiles).values(profile).returning();
+  async createEmploymentProfile(profile: InsertEmploymentProfile, connection: DatabaseConnection = db): Promise<EmploymentProfile> {
+    const [created] = await connection.insert(userEmploymentProfiles).values(profile).returning();
     return created;
   }
 
-  async updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>): Promise<EmploymentProfile | undefined> {
-    const [updated] = await db.update(userEmploymentProfiles).set({ ...profile, updatedAt: new Date() }).where(eq(userEmploymentProfiles.userId, userId)).returning();
+  async updateEmploymentProfile(userId: string, profile: Partial<InsertEmploymentProfile>, connection: DatabaseConnection = db): Promise<EmploymentProfile | undefined> {
+    const [updated] = await connection.update(userEmploymentProfiles).set({ ...profile, updatedAt: new Date() }).where(eq(userEmploymentProfiles.userId, userId)).returning();
     return updated;
   }
 
@@ -1389,13 +1388,13 @@ export class DatabaseStorage implements IStorage {
   // or a user-number seen in a punch event. Using max+1 (never gap-fill) avoids
   // ever reusing a number a deactivated employee's fingerprint still carries on a
   // physical clock. Non-numeric values are ignored.
-  async getNextEmployeeNumber(): Promise<string> {
+  async getNextEmployeeNumber(connection: DatabaseConnection = db): Promise<string> {
     const maxNumeric = (col: any) =>
       sql<string | null>`max(case when ${col} ~ '^[0-9]+$' then ${col}::bigint else null end)`;
     const [prof, devUsers, devEvents] = await Promise.all([
-      db.select({ m: maxNumeric(userEmploymentProfiles.employeeNumber) }).from(userEmploymentProfiles),
-      db.select({ m: maxNumeric(biometricDeviceUsers.deviceUserId) }).from(biometricDeviceUsers),
-      db.select({ m: maxNumeric(biometricDeviceEvents.deviceUserId) }).from(biometricDeviceEvents),
+      connection.select({ m: maxNumeric(userEmploymentProfiles.employeeNumber) }).from(userEmploymentProfiles),
+      connection.select({ m: maxNumeric(biometricDeviceUsers.deviceUserId) }).from(biometricDeviceUsers),
+      connection.select({ m: maxNumeric(biometricDeviceEvents.deviceUserId) }).from(biometricDeviceEvents),
     ]);
     const toNum = (v: unknown) => {
       const n = Number(v);
@@ -1405,8 +1404,8 @@ export class DatabaseStorage implements IStorage {
     return String(max + 1);
   }
 
-  async getUserIdByEmployeeNumber(employeeNumber: string): Promise<string | undefined> {
-    const [row] = await db
+  async getUserIdByEmployeeNumber(employeeNumber: string, connection: DatabaseConnection = db): Promise<string | undefined> {
+    const [row] = await connection
       .select({ userId: userEmploymentProfiles.userId })
       .from(userEmploymentProfiles)
       .where(eq(userEmploymentProfiles.employeeNumber, employeeNumber))
@@ -3883,12 +3882,12 @@ export class DatabaseStorage implements IStorage {
     return { entries, total: totalResult?.count || 0 };
   }
 
-  async createUser(user: UpsertUser): Promise<User> {
+  async createUser(user: UpsertUser, connection: DatabaseConnection = db): Promise<User> {
     const payload = { ...user };
     if (payload.email !== undefined) {
       payload.email = normalizeEmail(payload.email);
     }
-    const [created] = await db.insert(users).values(payload).returning();
+    const [created] = await connection.insert(users).values(payload).returning();
     return created;
   }
 
@@ -4645,25 +4644,19 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async setOffboardingChecklistDeactivation(id: string, actorUserId: string): Promise<OffboardingChecklist | undefined> {
+  async setOffboardingChecklistDeactivation(id: string, actorUserId: string, connection: DatabaseConnection = db): Promise<OffboardingChecklist | undefined> {
     const now = new Date();
-    const [updated] = await db.update(offboardingChecklists).set({ status: "completed", completedAt: now, accountDeactivatedAt: now, accountDeactivatedBy: actorUserId }).where(eq(offboardingChecklists.id, id)).returning();
-    return updated;
-  }
-
-  async setUserDeactivated(userId: string, _actorUserId: string, reason?: string | null): Promise<User | undefined> {
-    const [updated] = await db
-      .update(users)
-      .set({ deactivatedAt: new Date(), terminationReason: reason ?? null, updatedAt: new Date() })
-      .where(eq(users.id, userId))
+    const [updated] = await connection.update(offboardingChecklists)
+      .set({ status: "completed", completedAt: now, accountDeactivatedAt: now, accountDeactivatedBy: actorUserId })
+      .where(and(eq(offboardingChecklists.id, id), eq(offboardingChecklists.status, "in_progress")))
       .returning();
     return updated;
   }
 
-  async clearUserDeactivated(userId: string): Promise<User | undefined> {
-    const [updated] = await db
+  async setUserDeactivated(userId: string, _actorUserId: string, reason?: string | null, connection: DatabaseConnection = db): Promise<User | undefined> {
+    const [updated] = await connection
       .update(users)
-      .set({ deactivatedAt: null, terminationReason: null, updatedAt: new Date() })
+      .set({ deactivatedAt: new Date(), terminationReason: reason ?? null, updatedAt: new Date() })
       .where(eq(users.id, userId))
       .returning();
     return updated;

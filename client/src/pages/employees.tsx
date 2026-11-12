@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
-import { cachedFetch } from "@/lib/cachedFetch";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -50,12 +49,8 @@ import {
   HIGH_CORRECTION_THRESHOLD,
 } from "@shared/correctionCounts";
 
-type EmployeeListItem = User & {
-  departmentName?: string;
-  locationName?: string;
-  lastPunch?: string;
-  payType?: string;
-  ptoEligible?: boolean;
+type EmployeeDetails = User & {
+  assignedByRule?: { id: string; name: string } | null;
 };
 
 const REQUIRED_DOCUMENT_TYPES = [
@@ -242,8 +237,8 @@ export default function EmployeesPage() {
 
   const { data: usersPage, isLoading, isError } = useQuery<{ data: User[]; total: number; limit: number; offset: number }>({
     queryKey: ["/api/users", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, statusFilter, sortOrder, page, pageSize],
-    queryFn: async () => {
-      const res = await cachedFetch(`/api/users?${usersParams}`, { credentials: "include" });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/users?${usersParams}`, { credentials: "include", cache: "no-store", signal });
       if (!res.ok) throw new Error("Failed to fetch employees");
       return res.json();
     },
@@ -252,6 +247,9 @@ export default function EmployeesPage() {
   const users = usersPage?.data ?? [];
   const total = usersPage?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => {
+    if (usersPage && page >= totalPages) setPage(totalPages - 1);
+  }, [page, totalPages, usersPage]);
 
   const { data: departments } = useQuery<Department[]>({
     queryKey: ["/api/departments"],
@@ -296,14 +294,23 @@ export default function EmployeesPage() {
   navParams.set("offset", "0");
   const { data: navPage } = useQuery<{ data: User[] }>({
     queryKey: ["/api/users", "nav", debouncedSearch, appliedDeptKey, appliedLocKey, appliedCompanyKey, appliedTaxKey, appliedCertKey, statusFilter, sortOrder],
-    queryFn: async () => {
-      const res = await cachedFetch(`/api/users?${navParams}`, { credentials: "include" });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/users?${navParams}`, { credentials: "include", cache: "no-store", signal });
       if (!res.ok) throw new Error("Failed to fetch employee navigation list");
       return res.json();
     },
     enabled: !!selectedEmployee,
   });
   const navIds = (navPage?.data ?? []).map((u) => u.id);
+
+  const refreshEmployees = useMutation({
+    mutationFn: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] }, { throwOnError: true }),
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"], exact: true }, { throwOnError: true }),
+    ]),
+    onSuccess: () => toast({ title: "Employees refreshed" }),
+    onError: (error) => toast({ title: "Couldn't refresh employees", description: error.message, variant: "destructive" }),
+  });
 
   if (selectedEmployee) {
     return (
@@ -341,7 +348,16 @@ export default function EmployeesPage() {
 
   return (
     <div className="space-y-6" data-testid="employees-page">
-      <PageHeader title="Employees" subtitle="Manage employee records and profiles" />
+      <PageHeader
+        title="Employees"
+        subtitle="Manage employee records and profiles"
+        actions={
+          <Button variant="outline" size="sm" onClick={() => refreshEmployees.mutate()} disabled={refreshEmployees.isPending} data-testid="button-refresh-employees">
+            <RefreshCw className={`h-4 w-4 mr-2${refreshEmployees.isPending ? " animate-spin" : ""}`} />
+            {refreshEmployees.isPending ? "Refreshing…" : "Refresh"}
+          </Button>
+        }
+      />
 
       <div className="flex items-center gap-4 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
@@ -1804,7 +1820,7 @@ function AddEmployeeDialog({
           Add Employee
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-lg" data-testid="dialog-add-employee">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-lg grid-rows-[auto_minmax(0,1fr)_auto]" data-testid="dialog-add-employee">
         <DialogHeader>
           <DialogTitle data-testid="text-dialog-title">
             {step === 4 ? "Employee Created" : `Add Employee — Step ${step} of 3`}
@@ -1818,7 +1834,7 @@ function AddEmployeeDialog({
         </DialogHeader>
 
         {step === 1 && (
-          <div className="space-y-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-1">
             {nextNumberData?.nextNumber && (
               <div className="rounded-md border bg-muted/40 px-3 py-2 flex items-center justify-between" data-testid="info-next-clock-number">
                 <span className="text-sm text-muted-foreground">Clock # (auto-assigned)</span>
@@ -1969,7 +1985,7 @@ function AddEmployeeDialog({
         )}
 
         {step === 2 && (
-          <div className="space-y-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-1">
             <div className="space-y-2">
               <Label>Employment Type</Label>
               <Select value={formData.employmentType} onValueChange={(v) => setFormData({ ...formData, employmentType: v })}>
@@ -2084,7 +2100,7 @@ function AddEmployeeDialog({
         )}
 
         {step === 3 && (
-          <div className="space-y-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-1">
             <div className="space-y-2">
               <Label>Tax Form</Label>
               <Select
@@ -2268,7 +2284,7 @@ function AddEmployeeDialog({
         )}
 
         {step === 4 && tempPassword && (
-          <div className="space-y-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-1">
             {assignedNumber && (
               <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="box-assigned-clock-number">
                 <p className="text-sm text-blue-800 dark:text-blue-300 mb-2">
@@ -2301,7 +2317,6 @@ function AddEmployeeDialog({
             </div>
           </div>
         )}
-
         <DialogFooter>
           {step < 4 && step > 1 && (
             <Button variant="outline" onClick={() => setStep(step - 1)} data-testid="button-step-back">
@@ -2406,23 +2421,71 @@ function EmployeeProfile({
     const section = initialUrlParams.get("section");
     if (section === "certifications") return "basic";
     if (t === "certifications") return "basic";
-    if (t && ["basic", "timesheet", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "history"].includes(t)) return t;
+    if (t && ["basic", "timesheet", "employment", "pay", "timeclock", "pto", "schedule", "documents", "policies", "offboarding", "history"].includes(t)) return t;
     return "basic";
   })();
   const [activeTab, setActiveTab] = useState(initialTab);
   const certIdFromUrl = initialUrlParams.get("certId");
   const focusDocType = initialUrlParams.get("focus");
 
-  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
-  const user = users?.find((u) => u.id === userId);
-
-  const { data: profile, isLoading: profileLoading } = useQuery<EmploymentProfile>({
-    queryKey: ["/api/employment-profiles", userId],
+  const { data: user, isLoading: userLoading, isError: userError } = useQuery<EmployeeDetails>({
+    queryKey: ["/api/users", userId],
   });
+
+  const { data: profileData, isLoading: profileLoading } = useQuery<EmploymentProfile | null>({
+    queryKey: ["/api/employment-profiles", userId],
+    queryFn: async () => {
+      try {
+        const res = await apiRequest("GET", `/api/employment-profiles/${userId}`);
+        return res.json();
+      } catch (error) {
+        if (isApiError(error) && error.status === 404) return null;
+        throw error;
+      }
+    },
+  });
+  const profile = profileData ?? undefined;
 
   const { data: departments } = useQuery<Department[]>({ queryKey: ["/api/departments"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/locations"] });
   const { data: divisions } = useQuery<Division[]>({ queryKey: ["/api/companies"] });
+
+  const refreshProfile = useMutation({
+    mutationFn: () => queryClient.invalidateQueries(
+      {
+        predicate: ({ queryKey }) => {
+          const target = queryKey[1];
+          if (target === userId) return true;
+          if (["/api/companies", "/api/departments", "/api/locations", "/api/review-cycles"].includes(String(queryKey[0]))) return true;
+          if (target && typeof target === "object") {
+            const filter = target as { userId?: string; employeeId?: string };
+            return filter.userId === userId || filter.employeeId === userId;
+          }
+          return false;
+        },
+      },
+      { throwOnError: true },
+    ),
+    onSuccess: () => toast({ title: "Employee profile refreshed" }),
+    onError: (error) => toast({ title: "Couldn't refresh employee profile", description: error.message, variant: "destructive" }),
+  });
+
+  const reinstateEmployee = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/users/${userId}/reactivate`, {});
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/users"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/ledger/employee", userId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/audit-logs/employee", userId] }),
+      ]);
+      toast({ title: "Employee reinstated", description: "The account is active again." });
+    },
+    onError: (error) => toast({ title: "Couldn't reinstate employee", description: error.message, variant: "destructive" }),
+  });
 
   const companyId = user?.companyId || "";
 
@@ -2854,13 +2917,12 @@ function EmployeeProfile({
   const [profileCreateLocationOpen, setProfileCreateLocationOpen] = useState(false);
   const [profileCreateRoleOpen, setProfileCreateRoleOpen] = useState(false);
 
-  return (
-    <div className="max-w-6xl space-y-6" data-testid="employee-profile-page">
-      <PageHeader
-        title={`${user?.firstName || ""} ${user?.lastName || ""}`}
+  const profileHeader = (
+    <PageHeader
+        title={user ? `${user.firstName || ""} ${user.lastName || ""}` : "Employee profile"}
         subtitle={user?.email || ""}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {canNavigate && (
               <div className="flex items-center gap-1 mr-1" data-testid="employee-nav">
                 <Button
@@ -2893,28 +2955,48 @@ function EmployeeProfile({
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => queryClient.invalidateQueries()}
+              onClick={() => refreshProfile.mutate()}
+              disabled={refreshProfile.isPending}
               data-testid="button-refresh-profile"
               aria-label="Refresh"
               title="Refresh — reload this employee's data to see saved changes"
             >
-              <RefreshCw className="h-5 w-5" />
+              <RefreshCw className={`h-5 w-5${refreshProfile.isPending ? " animate-spin" : ""}`} />
             </Button>
             <Button variant="ghost" size="icon" onClick={onBack} data-testid="button-back">
               <ArrowLeft className="h-5 w-5" />
             </Button>
-            <Badge variant="outline" data-testid="badge-employee-profile-role">
-              {user?.role}
-            </Badge>
+            {user && <Badge variant="outline" data-testid="badge-employee-profile-role">{user.role}</Badge>}
+            {user?.deactivatedAt && <Badge variant="secondary" data-testid="badge-employee-inactive">Inactive</Badge>}
+            {user?.deactivatedAt && hasPermission("users.edit") && (
+              <Button size="sm" onClick={() => reinstateEmployee.mutate()} disabled={reinstateEmployee.isPending} data-testid="button-reinstate-employee">
+                {reinstateEmployee.isPending ? "Reinstating…" : "Reinstate employee"}
+              </Button>
+            )}
             {user?.editLocked && (
               <Badge variant="destructive" data-testid="badge-employee-locked">Locked</Badge>
             )}
-            <LockAccountButton userId={userId} locked={!!user?.editLocked} />
-            <ResetPasswordButton userId={userId} />
+            {user && <LockAccountButton userId={userId} locked={user.editLocked} />}
+            {user && <ResetPasswordButton userId={userId} />}
           </div>
         }
-      />
+    />
+  );
 
+  if (!user) {
+    return (
+      <div className="max-w-6xl space-y-6" data-testid="employee-profile-page">
+        {profileHeader}
+        {userLoading && <Skeleton className="h-32 w-full" />}
+        {userError && <p className="text-sm text-destructive" role="alert">Failed to load the employee profile.</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-6xl space-y-6" data-testid="employee-profile-page">
+      {profileHeader}
+      {userError && <p className="text-sm text-destructive" role="alert">Failed to load the employee profile.</p>}
       <OnboardingChecklist userId={userId} user={user} profile={profile} />
 
       <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-employee-profile">
@@ -3098,11 +3180,11 @@ function EmployeeProfile({
                   <Label className="text-muted-foreground text-xs">Role</Label>
                   {user?.roleManuallyOverriddenAt ? (
                     <Badge variant="secondary" className="text-xs" data-testid="badge-profile-role-manual">Manual override</Badge>
-                  ) : (user as any)?.assignedByRule ? (
+                  ) : user?.assignedByRule ? (
                     <Badge
                       variant="secondary"
                       className="text-xs"
-                      title={`Set by rule: ${(user as any).assignedByRule.name}`}
+                      title={`Set by rule: ${user.assignedByRule.name}`}
                       data-testid="badge-profile-role-auto"
                     >
                       Set by rule
@@ -3870,7 +3952,7 @@ function EmployeeProfile({
         </TabsContent>
 
         <TabsContent value="offboarding">
-          <OffboardingTab userId={userId} />
+          <OffboardingTab userId={userId} isDeactivated={!!user.deactivatedAt} />
         </TabsContent>
 
         {canViewPolicies && (
@@ -5831,13 +5913,8 @@ interface OffboardingChecklistDetail {
   progress: OffboardingProgress;
 }
 
-function OffboardingTab({ userId }: { userId: string }) {
+function OffboardingTab({ userId, isDeactivated }: { userId: string; isDeactivated: boolean }) {
   const { toast } = useToast();
-  const { has } = usePermissions();
-  // Mirror deactivation (which requires users.edit) so whoever can offboard an
-  // employee can also reinstate them.
-  const canReinstate = has("users.edit");
-  const { data: user } = useQuery<User>({ queryKey: ["/api/users", userId] });
   const { data: checklist, isLoading } = useQuery<OffboardingChecklistDetail | null>({
     queryKey: ["/api/offboarding-checklists/by-employee", userId],
   });
@@ -5874,6 +5951,7 @@ function OffboardingTab({ userId }: { userId: string }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employment-profiles"] });
       setConfirmOpen(false);
       setDeactivateReason("");
       toast({ title: "Account deactivated" });
@@ -5890,45 +5968,15 @@ function OffboardingTab({ userId }: { userId: string }) {
     },
   });
 
-  const reactivateMut = useMutation({
-    mutationFn: async () => apiRequest("POST", `/api/users/${userId}/reactivate`, {}),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/offboarding-checklists/by-employee", userId] });
-      toast({ title: "Employee reinstated", description: "The account is active again." });
-    },
-    onError: (e: unknown) => toast({ title: "Failed to reinstate", description: getErrorMessage(e), variant: "destructive" }),
-  });
-
-  // When an employee is deactivated, offer a one-click reinstate (clears the
-  // termination so they're active again). Available to anyone who can edit
-  // users, matching who can deactivate.
-  const reinstateButton = canReinstate && user?.deactivatedAt ? (
-    <Button
-      variant="default"
-      size="sm"
-      onClick={() => reactivateMut.mutate()}
-      disabled={reactivateMut.isPending}
-      data-testid="button-reinstate-employee"
-    >
-      {reactivateMut.isPending ? "Reinstating..." : "Reinstate employee"}
-    </Button>
-  ) : null;
-
   if (isLoading) return <Skeleton className="h-32 w-full" />;
 
   if (!checklist) {
-    const isDeactivated = !!user?.deactivatedAt;
     return (
       <Card data-testid="card-offboarding-tab">
         <CardHeader><CardTitle>Offboarding</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           {isDeactivated && (
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <p className="text-sm text-destructive">This account is deactivated.</p>
-              {reinstateButton}
-            </div>
+            <p className="text-sm text-destructive">This account is deactivated.</p>
           )}
           <p className="text-sm text-muted-foreground">No offboarding in progress.</p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-2xl">
@@ -5956,17 +6004,18 @@ function OffboardingTab({ userId }: { userId: string }) {
 
   const gateOk = checklist.gate?.ok ?? false;
   const isCompleted = checklist.status === "completed";
+  const isCancelled = checklist.status === "cancelled";
+  const inProgress = checklist.status === "in_progress";
 
   return (
     <Card data-testid="card-offboarding-tab">
       <CardHeader>
         <div className="flex items-center justify-between">
-          <CardTitle>Offboarding {isCompleted ? "(Completed)" : ""}</CardTitle>
+          <CardTitle>Offboarding {isCompleted ? "(Completed)" : isCancelled ? "(Cancelled)" : ""}</CardTitle>
           <div className="flex items-center gap-2">
             <Badge variant="secondary" data-testid="text-offboarding-progress">{checklist.progress.progressPct}% — {checklist.progress.completedRequired}/{checklist.progress.totalRequired} required</Badge>
-            {checklist.terminationDate && <Badge variant="outline">Termination: {formatDate(checklist.terminationDate)}</Badge>}
-            {reinstateButton}
-            {!isCompleted && (
+            {checklist.terminationDate && <Badge variant="outline">{inProgress || isDeactivated ? "Termination" : "Previous termination"}: {formatDate(checklist.terminationDate)}</Badge>}
+            {inProgress && !isDeactivated && (
               <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
                 <DialogTrigger asChild>
                   <Button variant="destructive" size="sm" disabled={!gateOk} data-testid="button-deactivate-account">
@@ -5996,7 +6045,7 @@ function OffboardingTab({ userId }: { userId: string }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        {!gateOk && !isCompleted && (
+        {!gateOk && inProgress && (
           <div className="rounded-md border border-destructive/50 bg-destructive/5 p-3 text-sm">
             <p className="font-medium text-destructive">Deactivation blocked. Complete or skip these tasks first:</p>
             <ul className="list-disc ml-5 text-destructive mt-1">

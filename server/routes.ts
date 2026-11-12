@@ -10,7 +10,7 @@ import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, requireAnyPermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType, TERMINATION_REASONS } from "@shared/schema";
 import type { User, UpsertUser, PunchLog, InsertPunchLog, TimeOffRequest, Department, Location, AttendanceException, PayrollExport, OverlapPunchPair, OverlapPunchSummary, EmployeeSchedule } from "@shared/schema";
-import { policies, policyAssignments, userDepartmentIds, userLocationIds, users } from "@shared/schema";
+import { offboardingChecklists, policies, policyAssignments, userDepartmentIds, userEmploymentProfiles, userLocationIds, users } from "@shared/schema";
 import type { InsertPolicyAssignment, PolicyAssignment } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, inArray, notInArray, gte, lte, sql } from "drizzle-orm";
 import { writeAuditLog, getAuditContext } from "./services/audit";
@@ -59,7 +59,7 @@ import {
 
 import { shouldRun } from "./lib/cooldown";
 import { drainPending, enqueue } from "./services/jobs";
-import { applyRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
+import { applyRoleForUser, evaluateRoleForUser, validateConditions, isAllowedRole } from "./services/roleAssignment";
 import { applyScheduleTemplate, validateTemplateDays } from "./services/scheduleTemplates";
 import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
@@ -677,7 +677,6 @@ export async function registerRoutes(
       storage.getAllEmploymentProfiles(),
     ]);
     const profileByUser = new Map(allProfiles.map(p => [p.userId, p]));
-    const { evaluateRoleForUser } = await import("./services/roleAssignment");
     const enrich = (list: User[]) => list.map(u => {
       const match = evaluateRoleForUser(u, profileByUser.get(u.id), activeRules);
       return {
@@ -988,18 +987,18 @@ export async function registerRoutes(
     }
   });
 
+  const optionalUserEmail = z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.string().trim().toLowerCase().pipe(z.string().email()).nullable().optional(),
+  );
+  const optionalUserPhone = z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.string().trim().max(30).nullable().optional(),
+  );
+
   const createUserSchema = z.object({
-    // Email is OPTIONAL. An empty string is treated as "no email" (stored null);
-    // when present it must be a valid address and is unique across users.
-    email: z.preprocess(
-      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-      z.string().trim().toLowerCase().pipe(z.string().email()).optional(),
-    ),
-    // Optional contact phone. Empty string → no phone.
-    phone: z.preprocess(
-      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-      z.string().trim().max(30).optional(),
-    ),
+    email: optionalUserEmail,
+    phone: optionalUserPhone,
     firstName: z.string().min(1),
     lastName: z.string().min(1),
     role: z.enum(["employee", "manager", "admin"]).default("employee"),
@@ -1058,18 +1057,6 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid user data", errors: parsed.error.flatten() });
     }
 
-    // Only enforce uniqueness when an email was actually supplied (it's optional).
-    if (parsed.data.email) {
-      const existing = await storage.getUserByEmail(parsed.data.email);
-      if (existing) {
-        return res.status(409).json({
-          message: "A user with this email already exists",
-          code: "EMAIL_ALREADY_EXISTS",
-          field: "email",
-        });
-      }
-    }
-
     // Note #1: operationally there is a single company (Ahava Medical). The
     // client no longer asks for it, so default any missing companyId to the
     // operational company and let every hire land under it. Locations and
@@ -1095,82 +1082,94 @@ export async function registerRoutes(
       return res.status(400).json({ message: 'A 1099 worker needs a "Pay to the order of" name.' });
     }
 
-    // Clock number: honor an explicit override if it's free, otherwise auto-assign
-    // the next number available across every clock. Done before the insert so the
-    // new hire's profile carries it and their very first punch auto-links.
-    let assignedEmployeeNumber: string;
     const overrideNumber = parsed.data.employeeNumber?.trim();
-    if (overrideNumber) {
-      if (!/^\d+$/.test(overrideNumber)) {
-        return res.status(400).json({ message: "Clock # must be a number.", field: "employeeNumber" });
-      }
-      const taken = await storage.getUserIdByEmployeeNumber(overrideNumber);
-      if (taken) {
-        return res.status(409).json({
-          message: `Clock # ${overrideNumber} is already assigned to another employee.`,
-          code: "EMPLOYEE_NUMBER_TAKEN",
-          field: "employeeNumber",
-        });
-      }
-      assignedEmployeeNumber = overrideNumber;
-    } else {
-      assignedEmployeeNumber = await storage.getNextEmployeeNumber();
+    if (overrideNumber && !/^\d+$/.test(overrideNumber)) {
+      return res.status(400).json({ message: "Clock # must be a number.", field: "employeeNumber" });
     }
 
     const tempPassword = generateTempPassword();
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
-
-    const newUser = await storage.createUser({
-      email: parsed.data.email ?? null,
-      phone: parsed.data.phone ?? null,
-      firstName: parsed.data.firstName,
-      lastName: parsed.data.lastName,
-      role: parsed.data.role,
-      password: hashedPassword,
-      passwordHash: hashedPassword,
-      forcePasswordChange: true,
-      companyId: operationalCompanyId,
-      locationId: parsed.data.locationId || null,
-      departmentId: parsed.data.departmentId || null,
-    });
-
-    // Persist many-to-many department/location memberships. When the arrays are
-    // provided they win; otherwise fall back to the single value just written.
     const newDeptIds = parsed.data.departmentIds ?? (parsed.data.departmentId ? [parsed.data.departmentId] : []);
     const newLocIds = parsed.data.locationIds ?? (parsed.data.locationId ? [parsed.data.locationId] : []);
-    await storage.setUserDepartmentIds(newUser.id, newDeptIds);
-    await storage.setUserLocationIds(newUser.id, newLocIds);
 
-    await storage.createEmploymentProfile({
-      userId: newUser.id,
-      employeeNumber: assignedEmployeeNumber,
-      employmentType: parsed.data.employmentType || "full_time",
-      taxClassification: parsed.data.taxClassification || "W-2",
-      // Volunteers are never on payroll, so they never carry a paying company.
-      payrollCompanyId:
-        parsed.data.taxClassification === "Volunteer" ? null : parsed.data.payrollCompanyId || null,
-      // 1099 payee ("pay to the order of") — only kept for 1099 workers.
-      payeeName: parsed.data.taxClassification === "1099" ? parsed.data.payeeName || null : null,
-      payeeAddress: parsed.data.taxClassification === "1099" ? parsed.data.payeeAddress || null : null,
-      payeeCity: parsed.data.taxClassification === "1099" ? parsed.data.payeeCity || null : null,
-      payeeState: parsed.data.taxClassification === "1099" ? parsed.data.payeeState || null : null,
-      payeeZip: parsed.data.taxClassification === "1099" ? parsed.data.payeeZip || null : null,
-      payeeTaxId: parsed.data.taxClassification === "1099" ? parsed.data.payeeTaxId || null : null,
-      payeeMemo: parsed.data.taxClassification === "1099" ? parsed.data.payeeMemo || null : null,
-      clockInRequired: parsed.data.clockInRequired ?? true,
-      clockConfirmationOnly: parsed.data.clockConfirmationOnly ?? false,
-      overnightShiftsAllowed: parsed.data.overnightShiftsAllowed ?? false,
-      useDevicePunchDirection: parsed.data.useDevicePunchDirection ?? false,
-      requireLunchBreak: parsed.data.requireLunchBreak ?? false,
-      payType: profilePayType,
-      hourlyRate: parsed.data.hourlyRate || null,
-      weeklySalary: parsed.data.weeklySalary || null,
-      dailySalary: parsed.data.dailySalary || null,
-      hireDate: parsed.data.hireDate || null,
-      overtimeEligible: profilePayType === "hourly",
-      holidayPayEnabled: false,
-      voluntaryPayEnabled: false,
+    // Keep the account, assignments and clock number together so a failed save
+    // can be retried without leaving behind an incomplete employee.
+    const createEmployee = () => db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ahava:employee-clock-number'))`);
+      if (overrideNumber && await storage.getUserIdByEmployeeNumber(overrideNumber, tx)) return null;
+      const employeeNumber = overrideNumber || await storage.getNextEmployeeNumber(tx);
+
+      const user = await storage.createUser({
+        email: parsed.data.email ?? null,
+        phone: parsed.data.phone ?? null,
+        firstName: parsed.data.firstName,
+        lastName: parsed.data.lastName,
+        role: parsed.data.role,
+        password: hashedPassword,
+        passwordHash: hashedPassword,
+        forcePasswordChange: true,
+        companyId: operationalCompanyId,
+      }, tx);
+
+      await storage.setUserDepartmentIds(user.id, newDeptIds, tx);
+      await storage.setUserLocationIds(user.id, newLocIds, tx);
+
+      await storage.createEmploymentProfile({
+        userId: user.id,
+        employeeNumber,
+        employmentType: parsed.data.employmentType || "full_time",
+        taxClassification: parsed.data.taxClassification || "W-2",
+        // Volunteers are never on payroll, so they never carry a paying company.
+        payrollCompanyId:
+          parsed.data.taxClassification === "Volunteer" ? null : parsed.data.payrollCompanyId || null,
+        // 1099 payee ("pay to the order of") — only kept for 1099 workers.
+        payeeName: parsed.data.taxClassification === "1099" ? parsed.data.payeeName || null : null,
+        payeeAddress: parsed.data.taxClassification === "1099" ? parsed.data.payeeAddress || null : null,
+        payeeCity: parsed.data.taxClassification === "1099" ? parsed.data.payeeCity || null : null,
+        payeeState: parsed.data.taxClassification === "1099" ? parsed.data.payeeState || null : null,
+        payeeZip: parsed.data.taxClassification === "1099" ? parsed.data.payeeZip || null : null,
+        payeeTaxId: parsed.data.taxClassification === "1099" ? parsed.data.payeeTaxId || null : null,
+        payeeMemo: parsed.data.taxClassification === "1099" ? parsed.data.payeeMemo || null : null,
+        clockInRequired: parsed.data.clockInRequired ?? true,
+        clockConfirmationOnly: parsed.data.clockConfirmationOnly ?? false,
+        overnightShiftsAllowed: parsed.data.overnightShiftsAllowed ?? false,
+        useDevicePunchDirection: parsed.data.useDevicePunchDirection ?? false,
+        requireLunchBreak: parsed.data.requireLunchBreak ?? false,
+        payType: profilePayType,
+        hourlyRate: parsed.data.hourlyRate || null,
+        weeklySalary: parsed.data.weeklySalary || null,
+        dailySalary: parsed.data.dailySalary || null,
+        hireDate: parsed.data.hireDate || null,
+        overtimeEligible: profilePayType === "hourly",
+        holidayPayEnabled: false,
+        voluntaryPayEnabled: false,
+      }, tx);
+      return { user, employeeNumber };
     });
+
+    let created: Awaited<ReturnType<typeof createEmployee>>;
+    try {
+      created = await createEmployee();
+    } catch (error) {
+      const dbError = error as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } };
+      const cause = dbError.cause ?? dbError;
+      if (cause.code === "23505" && cause.constraint === "users_email_lower_unique") {
+        return res.status(409).json({
+          message: "A user with this email already exists",
+          code: "EMAIL_ALREADY_EXISTS",
+          field: "email",
+        });
+      }
+      throw error;
+    }
+    if (!created) {
+      return res.status(409).json({
+        message: `Clock # ${overrideNumber} is already assigned to another employee.`,
+        code: "EMPLOYEE_NUMBER_TAKEN",
+        field: "employeeNumber",
+      });
+    }
+    const { user: newUser, employeeNumber: assignedEmployeeNumber } = created;
 
     try {
       const actor = (req as any).authUser as User | undefined;
@@ -1221,6 +1220,25 @@ export async function registerRoutes(
     res.json({ nextNumber });
   });
 
+  app.get("/api/users/:id", requireAuth, requirePermission("users.view"), async (req, res) => {
+    const id = String(req.params.id);
+    if (id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    const user = await storage.getUser(id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const [profile, rules] = await Promise.all([
+      storage.getEmploymentProfile(id),
+      storage.getActiveRoleAssignmentRules(),
+    ]);
+    const match = evaluateRoleForUser(user, profile, rules);
+    const { password: _password, passwordHash: _passwordHash, ...safeUser } = user;
+    res.set("Cache-Control", "private, no-store").json({
+      ...safeUser,
+      assignedByRule: match ? { id: match.rule.id, name: match.rule.name } : null,
+    });
+  });
+
   const updateUserSchema = z.object({
     companyId: z.string().nullable().optional(),
     departmentId: z.string().nullable().optional(),
@@ -1230,16 +1248,8 @@ export async function registerRoutes(
     locationIds: z.array(z.string()).optional(),
     firstName: z.string().trim().min(1).optional(),
     lastName: z.string().trim().min(1).optional(),
-    // Email is optional and clearable: an empty string clears it to null.
-    email: z.preprocess(
-      (v) => (typeof v === "string" && v.trim() === "" ? null : v),
-      z.string().trim().toLowerCase().pipe(z.string().email()).nullable().optional(),
-    ),
-    // Optional contact phone; empty string clears it to null.
-    phone: z.preprocess(
-      (v) => (typeof v === "string" && v.trim() === "" ? null : v),
-      z.string().trim().max(30).nullable().optional(),
-    ),
+    email: optionalUserEmail,
+    phone: optionalUserPhone,
   });
 
   const bulkAssignDivisionSchema = z.object({
@@ -13901,46 +13911,35 @@ export async function registerRoutes(
     const actor = (req as any).authUser as User;
     const ctx = getAuditContext(req);
 
-    const terminationDate = cl.terminationDate ?? new Date().toISOString().slice(0, 10);
-
-    // Termination must be written to the employment profile before we
-    // deactivate the user. Failure here aborts deactivation entirely.
-    const profile = await storage.getEmploymentProfile(cl.employeeId);
-    if (!profile) {
-      return res.status(409).json({ message: "Cannot deactivate: employment profile is missing" });
-    }
-    const updatedProfile = await storage.updateEmploymentProfile(cl.employeeId, { terminationDate });
-    if (!updatedProfile) {
-      return handleRouteError(
-        res,
-        new Error("employment profile update returned no row"),
-        "Failed to write termination date to employment profile",
-      );
-    }
-
-    // Optional termination reason (Resigned / Fired / Laid off / Other). Only a
-    // recognized value is stored; anything else is ignored so a bad body can't
-    // write junk into the column.
+    const terminationDate = cl.terminationDate;
     const reasonRaw = typeof (req.body as any)?.terminationReason === "string" ? String((req.body as any).terminationReason).trim() : "";
     const terminationReason = (TERMINATION_REASONS as readonly string[]).includes(reasonRaw) ? reasonRaw : null;
 
-    await storage.setUserDeactivated(cl.employeeId, actor.id, terminationReason);
-    const updated = await storage.setOffboardingChecklistDeactivation(String(req.params.id), actor.id);
+    try {
+      const updated = await db.transaction(async (tx) => {
+        // Lock the employee before touching the profile or checklist. Reinstate
+        // takes the same lock so the two transitions cannot interleave.
+        await tx.select({ id: users.id }).from(users).where(eq(users.id, cl.employeeId)).for("update");
+        const updatedProfile = await storage.updateEmploymentProfile(cl.employeeId, { terminationDate }, tx);
+        if (!updatedProfile) throw new RouteConflictError("Cannot deactivate: employment profile is missing");
+        const completed = await storage.setOffboardingChecklistDeactivation(cl.id, actor.id, tx);
+        if (!completed) throw new RouteConflictError("This offboarding checklist is no longer in progress.");
+        await storage.setUserDeactivated(cl.employeeId, actor.id, terminationReason, tx);
 
-    await writeAuditLog({ action: "user.deactivate", actorUserId: actor.id, targetType: "user", targetId: cl.employeeId, newValue: { checklistId: cl.id, terminationDate, terminationReason }, ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
-    // Per arch §6: explicit checklist state-transition audit alongside the
-    // user-level event so the offboarding lifecycle has its own trail.
-    await writeAuditLog({
-      action: "offboarding_checklist.deactivate",
-      actorUserId: actor.id,
-      targetType: "offboarding_checklist",
-      targetId: cl.id,
-      oldValue: cl,
-      newValue: updated,
-      ipAddress: ctx.ipAddress,
-      userAgent: ctx.userAgent,
-    });
-    res.json(updated);
+        await writeAuditLog({
+          action: "user.deactivate", actorUserId: actor.id, targetType: "user", targetId: cl.employeeId,
+          newValue: { checklistId: cl.id, terminationDate, terminationReason }, ...ctx,
+        }, tx);
+        await writeAuditLog({
+          action: "offboarding_checklist.deactivate", actorUserId: actor.id, targetType: "offboarding_checklist",
+          targetId: cl.id, oldValue: cl, newValue: completed, ...ctx,
+        }, tx);
+        return completed;
+      });
+      res.json(updated);
+    } catch (error) {
+      handleRouteError(res, error, "Failed to deactivate employee");
+    }
   });
 
   // Reinstate (reverse a termination). Gated on users.edit to mirror deactivation
@@ -13948,14 +13947,42 @@ export async function registerRoutes(
   // an employee can bring them back. The super-admin account itself may only be
   // reactivated by a super admin.
   app.post("/api/users/:id/reactivate", requireAuth, requirePermission("users.edit"), async (req, res) => {
-    if (String(req.params.id) === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
+    const id = String(req.params.id);
+    if (id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
       return res.status(403).json({ message: "Only a super admin can reactivate the super-admin account" });
     }
-    const u = await storage.getUser(String(req.params.id));
-    if (!u) return res.status(404).json({ message: "User not found" });
-    const updated = await storage.clearUserDeactivated(String(req.params.id));
+    const actor = (req as any).authUser as User;
     const ctx = getAuditContext(req);
-    await writeAuditLog({ action: "user.reactivate", actorUserId: (req as any).authUser.id, targetType: "user", targetId: String(req.params.id), ipAddress: ctx.ipAddress, userAgent: ctx.userAgent });
+    const updated = await db.transaction(async (tx) => {
+      const [user] = await tx.select().from(users).where(eq(users.id, id)).for("update");
+      if (!user) return null;
+      const { password: _password, passwordHash: _passwordHash, ...safeUser } = user;
+      if (!user.deactivatedAt) return safeUser;
+
+      const [profile] = await tx.select({ terminationDate: userEmploymentProfiles.terminationDate })
+        .from(userEmploymentProfiles).where(eq(userEmploymentProfiles.userId, id)).for("update");
+      if (profile?.terminationDate) await storage.updateEmploymentProfile(id, { terminationDate: null }, tx);
+      const cancelledChecklists = await tx.update(offboardingChecklists).set({ status: "cancelled" })
+        .where(and(eq(offboardingChecklists.employeeId, id), eq(offboardingChecklists.status, "in_progress")))
+        .returning({ id: offboardingChecklists.id });
+
+      const active = { deactivatedAt: null, terminationReason: null, updatedAt: new Date() };
+      await tx.update(users).set(active).where(eq(users.id, id));
+      await writeAuditLog({
+        action: "user.reactivate", actorUserId: actor.id, targetType: "user", targetId: id, ...ctx,
+        oldValue: {
+          deactivatedAt: user.deactivatedAt,
+          terminationReason: user.terminationReason,
+          terminationDate: profile?.terminationDate ?? null,
+        },
+        newValue: {
+          deactivatedAt: null, terminationReason: null, terminationDate: null,
+          cancelledChecklistIds: cancelledChecklists.map((checklist) => checklist.id),
+        },
+      }, tx);
+      return { ...safeUser, ...active };
+    });
+    if (!updated) return res.status(404).json({ message: "User not found" });
     res.json(updated);
   });
 
