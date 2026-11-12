@@ -10219,6 +10219,89 @@ export async function registerRoutes(
     notes: z.string().optional(),
   });
 
+  // ───────────────── "Send to Payroll" (per-day confirmation) ─────────────────
+  // A day is sendable (confirmed → paid) when it has complete attendance; a
+  // missing-punch or still-open day is held back (stays open for a later run).
+  const SENDABLE_TIMESHEET_STATUSES = new Set(["complete", "overtime", "confirmation", "pto"]);
+  const HELD_TIMESHEET_STATUSES = new Set(["missing_punch", "in_progress"]);
+
+  // Derives an employee's payroll-submission state for a period: which days are
+  // sendable, which are held (missing), which are already sent, and the rollup
+  // status shown as a badge.
+  async function computePayrollSubmissionStatus(employee: User, startDate: string, endDate: string) {
+    const sheet = await buildEmployeeTimesheet(employee, startDate, endDate);
+    const sendableDates = sheet.entries.filter((e) => SENDABLE_TIMESHEET_STATUSES.has(e.status)).map((e) => e.date);
+    const heldDates = sheet.entries.filter((e) => HELD_TIMESHEET_STATUSES.has(e.status)).map((e) => e.date);
+    const submissions = await storage.listPayrollSubmissions(employee.id, startDate, endDate);
+    const sentSet = new Set(submissions.map((s) => s.workDate));
+    const unsentSendable = sendableDates.filter((d) => !sentSet.has(d));
+    // Rollup: nothing sent → open; otherwise sent, flagged if any day is still
+    // held (missing) so the reviewer knows days were left behind for a later run.
+    const status: "open" | "sent" | "sent_with_missing" =
+      submissions.length === 0 ? "open" : heldDates.length > 0 ? "sent_with_missing" : "sent";
+    return {
+      status,
+      counts: {
+        sendable: sendableDates.length,
+        held: heldDates.length,
+        sent: submissions.length,
+        unsent: unsentSendable.length,
+      },
+      unsentSendable,
+      heldDates,
+    };
+  }
+
+  // Scope guard shared by both routes: admin sees anyone; a manager only their
+  // team; anyone may read their own. Returns the target User or null (forbidden).
+  async function resolveTimesheetTarget(requester: User, employeeId: string): Promise<User | null> {
+    if (employeeId !== requester.id && requester.role !== "admin") {
+      if (requester.role !== "manager") return null;
+      const teamIds = await getTeamUserIds(requester);
+      if (!teamIds.has(employeeId)) return null;
+    }
+    const target = await storage.getUser(employeeId);
+    if (!target || (target.id === SUPER_ADMIN_USER_ID && requester.id !== SUPER_ADMIN_USER_ID)) return null;
+    return target;
+  }
+
+  app.get("/api/payroll/submission-status", requireAuth, requireAnyPermission("payroll.view_all", "payroll.manage"), async (req: any, res) => {
+    try {
+      const requester = req.authUser as User;
+      const { employeeId, startDate, endDate } = req.query as { employeeId?: string; startDate?: string; endDate?: string };
+      if (!employeeId || !startDate || !endDate) {
+        return res.status(400).json({ message: "employeeId, startDate and endDate are required." });
+      }
+      const target = await resolveTimesheetTarget(requester, employeeId);
+      if (!target) return res.status(403).json({ message: "Not authorized for this employee." });
+      res.json(await computePayrollSubmissionStatus(target, startDate, endDate));
+    } catch (error) {
+      handleRouteError(res, error, "Failed to load payroll submission status");
+    }
+  });
+
+  app.post("/api/payroll/send-to-payroll", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const requester = req.authUser as User;
+      const { employeeId, startDate, endDate } = req.body as { employeeId?: string; startDate?: string; endDate?: string };
+      if (!employeeId || !startDate || !endDate) {
+        return res.status(400).json({ message: "employeeId, startDate and endDate are required." });
+      }
+      const target = await resolveTimesheetTarget(requester, employeeId);
+      if (!target) return res.status(403).json({ message: "Not authorized for this employee." });
+
+      const before = await computePayrollSubmissionStatus(target, startDate, endDate);
+      // Confirm only the complete, not-yet-sent days; missing days are left open.
+      const added = await storage.addPayrollSubmissions(
+        before.unsentSendable.map((workDate) => ({ employeeId, workDate, sentBy: requester.id })),
+      );
+      const after = await computePayrollSubmissionStatus(target, startDate, endDate);
+      res.json({ added, heldBack: after.counts.held, status: after.status, counts: after.counts });
+    } catch (error) {
+      handleRouteError(res, error, "Failed to send to payroll");
+    }
+  });
+
   app.get("/api/payroll/exports", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const companyId = req.query.companyId as string | undefined;

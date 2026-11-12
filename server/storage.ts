@@ -96,6 +96,9 @@ import {
   payrollBatchRecords,
   type PayrollBatchRecord,
   type InsertPayrollBatchRecord,
+  payrollSubmissions,
+  type PayrollSubmission,
+  type InsertPayrollSubmission,
   payrollAdjustments,
   type PayrollAdjustment,
   type InsertPayrollAdjustment,
@@ -633,6 +636,12 @@ export interface IStorage {
   getPayrollBatchRecords(exportId: string): Promise<PayrollBatchRecord[]>;
   createPayrollBatchRecord(data: InsertPayrollBatchRecord): Promise<PayrollBatchRecord>;
   deletePayrollBatchRecords(exportId: string): Promise<void>;
+
+  // Per-day "Send to Payroll" confirmations.
+  listPayrollSubmissions(employeeId: string, startDate: string, endDate: string): Promise<PayrollSubmission[]>;
+  // Confirm a set of (employee, day) rows as sent. Idempotent: a day already
+  // sent is skipped (unique per employee+day). Returns how many were newly added.
+  addPayrollSubmissions(rows: InsertPayrollSubmission[]): Promise<number>;
 
   getPayrollAdjustment(id: string): Promise<PayrollAdjustment | undefined>;
   getPayrollAdjustmentsByExport(exportId: string): Promise<PayrollAdjustment[]>;
@@ -3581,6 +3590,32 @@ export class DatabaseStorage implements IStorage {
   async getPayrollExport(id: string): Promise<PayrollExport | undefined> {
     const [record] = await db.select().from(payrollExports).where(eq(payrollExports.id, id));
     return record;
+  }
+
+  async listPayrollSubmissions(employeeId: string, startDate: string, endDate: string): Promise<PayrollSubmission[]> {
+    return db
+      .select()
+      .from(payrollSubmissions)
+      .where(
+        and(
+          eq(payrollSubmissions.employeeId, employeeId),
+          gte(payrollSubmissions.workDate, startDate),
+          lte(payrollSubmissions.workDate, endDate),
+        ),
+      )
+      .orderBy(payrollSubmissions.workDate);
+  }
+
+  async addPayrollSubmissions(rows: InsertPayrollSubmission[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    // onConflictDoNothing against the unique (employee_id, work_date) index makes
+    // re-sending a day a no-op, so a day is confirmed (and paid) at most once.
+    const inserted = await db
+      .insert(payrollSubmissions)
+      .values(rows)
+      .onConflictDoNothing()
+      .returning({ id: payrollSubmissions.id });
+    return inserted.length;
   }
 
   async getPayrollExports(companyId?: string): Promise<PayrollExport[]> {
