@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -61,6 +61,9 @@ export type TimesheetResponse = {
     // null when the viewer may not see pay; may be absent on older responses.
     totalBonus?: number | null;
   };
+  // When true (per-day / attendance-only employees), the summary emphasizes DAYS
+  // worked over hours. Absent on older responses → treated as false.
+  emphasizeDays?: boolean;
   // Business/location timezone so clock-in/out render in the medical center's
   // wall-clock time, not the viewer's device timezone.
   timezone?: string | null;
@@ -125,12 +128,20 @@ export function EmployeeTimesheetTable({
   endDate,
   showExport = false,
   exportFileName,
+  showEmployeeName = false,
+  navSlot,
 }: {
   employeeId: string;
   startDate: string;
   endDate: string;
   showExport?: boolean;
   exportFileName?: string;
+  // Show the employee's name inside the summary bar (used on the profile tab so
+  // the name sits right next to the totals — no scrolling up to the page title).
+  showEmployeeName?: boolean;
+  // Period navigation (◀ / ▶ / Current + range label) rendered INSIDE the
+  // summary bar, so the totals and the controls that change them share one spot.
+  navSlot?: ReactNode;
 }) {
   const { data, isLoading, isError } = useQuery<TimesheetResponse>({
     queryKey: ["/api/attendance/timesheet", employeeId, startDate, endDate],
@@ -207,15 +218,35 @@ export function EmployeeTimesheetTable({
 
   return (
     <div className="space-y-3" data-testid="timesheet-table-container">
-      <div className="flex items-center justify-between gap-4 flex-wrap rounded-md border bg-muted/30 px-4 py-3">
-        <div className="flex flex-wrap items-start gap-x-10 gap-y-3">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Total hours this period</p>
-            <p className="text-3xl font-bold tabular-nums leading-tight" data-testid="text-timesheet-total-hours-big">
-              {formatHoursMinutes(data.totals.totalHours)}
-            </p>
-            <p className="text-xs text-muted-foreground mt-0.5">{data.totals.daysWorked} day{data.totals.daysWorked === 1 ? "" : "s"} worked</p>
-          </div>
+      {/* One compact bar groups the three things a reviewer scans — the
+          employee name, the headline total, and the period controls — so the
+          eye doesn't travel up and down the page. */}
+      <div className="flex items-center justify-between gap-x-6 gap-y-2 flex-wrap rounded-md border bg-muted/30 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-2">
+          {showEmployeeName && (
+            <div className="text-lg font-bold leading-tight pr-1" data-testid="text-timesheet-employee-name">
+              {data.employeeName}
+            </div>
+          )}
+          {data.emphasizeDays ? (
+            <div data-testid="stat-timesheet-primary">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Days worked this period</p>
+              <p className="text-3xl font-bold tabular-nums leading-tight text-blue-600 dark:text-blue-400" data-testid="text-timesheet-days-big">
+                {data.totals.daysWorked}
+              </p>
+              {data.totals.totalHours > 0 && (
+                <p className="text-xs text-muted-foreground mt-0.5">{formatHoursMinutes(data.totals.totalHours)} total</p>
+              )}
+            </div>
+          ) : (
+            <div data-testid="stat-timesheet-primary">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Total hours this period</p>
+              <p className="text-3xl font-bold tabular-nums leading-tight text-blue-600 dark:text-blue-400" data-testid="text-timesheet-total-hours-big">
+                {formatHoursMinutes(data.totals.totalHours)}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">{data.totals.daysWorked} day{data.totals.daysWorked === 1 ? "" : "s"} worked</p>
+            </div>
+          )}
           {data.totals.totalBonus != null && data.totals.totalBonus > 0 && (
             <div data-testid="stat-timesheet-total-bonus">
               <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Bonuses this period</p>
@@ -226,17 +257,20 @@ export function EmployeeTimesheetTable({
             </div>
           )}
         </div>
-        {showExport && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={exportCSV}
-            disabled={!data.entries.length}
-            data-testid="button-timesheet-export-csv"
-          >
-            <Download className="h-4 w-4 mr-2" /> Export CSV
-          </Button>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {navSlot}
+          {showExport && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={exportCSV}
+              disabled={!data.entries.length}
+              data-testid="button-timesheet-export-csv"
+            >
+              <Download className="h-4 w-4 mr-2" /> Export CSV
+            </Button>
+          )}
+        </div>
       </div>
       <div className="border rounded-md overflow-x-auto">
         <Table>

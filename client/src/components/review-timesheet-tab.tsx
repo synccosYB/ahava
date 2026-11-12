@@ -106,9 +106,31 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
   const goNext = () => setOffset((o) => Math.max(0, o - 1));
   const goCurrent = () => setOffset(0);
 
+  // The period stepper (◀ range ▶ + "Current") rides INSIDE the timesheet's
+  // summary bar — next to the employee name and totals — so the three things a
+  // reviewer scans share one line instead of being stacked down the page.
+  const periodNav = navigable ? (
+    <div className="flex items-center gap-1" data-testid="timesheet-period-nav">
+      <Button variant="outline" size="icon" className="h-8 w-8" onClick={goPrev} data-testid="button-timesheet-prev" aria-label="Previous period">
+        <ChevronLeft className="h-4 w-4" />
+      </Button>
+      <span className="text-sm font-medium text-center whitespace-nowrap px-1" data-testid="text-timesheet-week">
+        {formatRangeLabel(displayed)}{isCurrent ? " · current" : ""}
+      </span>
+      <Button variant="outline" size="icon" className="h-8 w-8" onClick={goNext} disabled={isCurrent} data-testid="button-timesheet-next" aria-label="Next period">
+        <ChevronRight className="h-4 w-4" />
+      </Button>
+      {!isCurrent && (
+        <Button variant="secondary" size="sm" className="h-8" onClick={goCurrent} data-testid="button-timesheet-current">
+          <CalendarClock className="h-4 w-4 mr-1" /> Current
+        </Button>
+      )}
+    </div>
+  ) : null;
+
   return (
     <Card data-testid="card-review-timesheet">
-      <CardHeader className="space-y-3">
+      <CardHeader>
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <CardTitle>Review Time Sheet</CardTitle>
@@ -125,7 +147,7 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
           </div>
           <div className="flex items-end gap-2 flex-wrap">
             <Select value={period} onValueChange={(v) => changePeriod(v as Period)}>
-              <SelectTrigger className="w-[220px]" data-testid="select-timesheet-period">
+              <SelectTrigger className="w-[240px]" data-testid="select-timesheet-period">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -142,28 +164,6 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
             )}
           </div>
         </div>
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-2">
-            {navigable && (
-              <Button variant="outline" size="sm" onClick={goPrev} data-testid="button-timesheet-prev">
-                <ChevronLeft className="h-4 w-4 mr-1" /> Previous
-              </Button>
-            )}
-            <span className="text-sm font-medium min-w-[200px] text-center" data-testid="text-timesheet-week">
-              {formatRangeLabel(displayed)}{navigable && isCurrent ? " · current" : ""}
-            </span>
-            {navigable && (
-              <Button variant="outline" size="sm" onClick={goNext} disabled={isCurrent} data-testid="button-timesheet-next">
-                Next <ChevronRight className="h-4 w-4 ml-1" />
-              </Button>
-            )}
-          </div>
-          {navigable && !isCurrent && (
-            <Button variant="secondary" size="sm" onClick={goCurrent} data-testid="button-timesheet-current">
-              <CalendarClock className="h-4 w-4 mr-1" /> Jump to current
-            </Button>
-          )}
-        </div>
       </CardHeader>
       <CardContent>
         <EmployeeReviewRules employeeId={employeeId} />
@@ -172,6 +172,8 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
           startDate={displayed.start}
           endDate={displayed.end}
           showExport
+          showEmployeeName
+          navSlot={periodNav}
           exportFileName={`timesheet-${displayed.start}-to-${displayed.end}`}
         />
         {editing && canEdit && (
