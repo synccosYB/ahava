@@ -85,7 +85,10 @@ export function requestCache(opts: CacheOpts = {}): RequestHandler {
   const scope = opts.scope ?? "user";
   const prefix = opts.keyPrefix ?? REQUEST_CACHE_PREFIX;
   return async (req, res, next) => {
-    if (req.method !== "GET") return next();
+    // A manual reload must reach the route even if the TTL hasn't expired.
+    if (req.method !== "GET" || /(?:^|,)\s*(?:no-cache|no-store)\s*(?:,|$)/i.test(req.get("Cache-Control") ?? "")) {
+      return next();
+    }
     const userId = scope === "user" ? ((req as any).authUser?.id ?? "anon") : "g";
     const key = `${prefix}${userId}:${req.originalUrl}`;
     const hit = appCache.get(key) as Cached | undefined;
