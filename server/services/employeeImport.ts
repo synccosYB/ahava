@@ -22,10 +22,10 @@
  * creating duplicates.
  */
 import XLSX from "xlsx";
-import { eq } from "drizzle-orm";
+import { eq, isNotNull } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
-import { userEmploymentProfiles, users, type Company } from "../../shared/schema";
+import { userEmploymentProfiles, users, policyAssignments, policies as policiesTable, type Company } from "../../shared/schema";
 import { parseEmployeeName } from "./employeeNames";
 
 export const COMPANY_NAME = "Ahava Medical Center";
@@ -56,6 +56,15 @@ export interface ImportSummary {
   rolesAssigned: number;
   /** Rows whose Department cell was "Inactive" -> the employee was deactivated. */
   deactivated: { row: number; employeeNumber: string; name: string }[];
+  /** Employees reactivated because their Termination Date was cleared. */
+  reactivated: { row: number; name: string }[];
+  /** Counts of the enriched round-trip fields that were applied. */
+  baseRolesSet: number;
+  payUpdated: number;
+  lunchSet: number;
+  workingCompanySet: number;
+  policiesAdded: number;
+  policiesRemoved: number;
   skipped: { row: number; reason: string }[];
   /** Non-fatal per-row notes (e.g. an unrecognized paying company, wage type,
    * department, or role that was left unset); the employee is still imported. */
@@ -88,6 +97,59 @@ function normalizeWageType(raw: string): "W-2" | "1099" | "Volunteer" | undefine
   if (v === "w-2" || v === "w2") return "W-2";
   if (v === "1099") return "1099";
   if (v.startsWith("vol")) return "Volunteer";
+  return undefined;
+}
+
+/** Base role cell ("Employee"/"Manager"/"Admin") -> stored users.role, or
+ * undefined when blank/unrecognized (leave unchanged). */
+function normalizeBaseRole(raw: string): "employee" | "manager" | "admin" | undefined {
+  const v = raw.trim().toLowerCase();
+  if (v === "employee") return "employee";
+  if (v === "manager") return "manager";
+  if (v === "admin" || v === "administrator") return "admin";
+  return undefined;
+}
+
+/** Pay-setup cell ("Hourly"/"Daily"/"Salary") -> stored payType, or undefined. */
+function normalizePaySetup(raw: string): "hourly" | "daily" | "salary" | undefined {
+  const v = raw.trim().toLowerCase();
+  if (v === "hourly") return "hourly";
+  if (v === "daily") return "daily";
+  if (v === "salary" || v === "weekly") return "salary";
+  return undefined;
+}
+
+/** Lunch-break cell -> boolean, or undefined when blank/unrecognized. */
+function normalizeLunch(raw: string): boolean | undefined {
+  const v = raw.trim().toLowerCase();
+  if (!v) return undefined;
+  if (v.startsWith("req")) return true; // "Required"
+  if (v.startsWith("not") || v === "no" || v === "false") return false; // "Not required"
+  return undefined;
+}
+
+/** Parse a pay-amount cell to a positive number, or undefined. Strips $ and commas. */
+function normalizeAmount(raw: string): number | undefined {
+  if (!raw) return undefined;
+  const n = parseFloat(raw.replace(/[$,\s]/g, ""));
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/** Parse a termination-date cell to an ISO yyyy-mm-dd string, or undefined.
+ * Accepts yyyy-mm-dd, m/d/yyyy, and Excel serial date numbers. */
+function normalizeDate(raw: string): string | undefined {
+  const v = raw.trim();
+  if (!v) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  // Excel serial date (days since 1899-12-30).
+  if (/^\d{4,6}$/.test(v)) {
+    const serial = parseInt(v, 10);
+    const ms = Math.round((serial - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  const d = new Date(v);
+  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   return undefined;
 }
 
@@ -136,12 +198,24 @@ export async function importEmployeesFromBuffer(
   buffer: Buffer,
 ): Promise<ImportSummary> {
   const wb = XLSX.read(buffer, { type: "buffer" });
-  const sheetName = wb.SheetNames[0];
-  if (!sheetName) {
+  if (wb.SheetNames.length === 0) {
     throw new Error("The spreadsheet has no sheets.");
   }
-  const ws = wb.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: null });
+  // The export writes one tab PER LOCATION plus a hidden "Lists" sheet that backs
+  // the dropdowns. Gather rows from every data tab (skip "Lists"); a legacy
+  // single-sheet file just yields that one sheet's rows.
+  const rows: Record<string, unknown>[] = [];
+  for (const sn of wb.SheetNames) {
+    if (sn.trim().toLowerCase() === "lists") continue;
+    const sheetRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sn], { defval: null });
+    for (const r of sheetRows) rows.push(r);
+  }
+  // Detect the enriched EXPORT format by its hidden key column. In that format
+  // "Role" = base role (Employee/Manager/Admin) and "Access Level" = the custom
+  // permission role; in legacy files "Role" meant the custom role.
+  const exportFormat = rows.some((r) =>
+    Object.keys(r).some((k) => k.trim().toLowerCase() === "employee id"),
+  );
 
   const companyId = await ensureCompany();
   const allCompanies = await storage.getAllCompanies();
@@ -166,6 +240,39 @@ export async function importEmployeesFromBuffer(
   const roleByName = new Map<string, string>();
   for (const r of allRoles) {
     if (!r.isSystem) roleByName.set(r.name.trim().toLowerCase(), r.id);
+  }
+
+  // Working Company ("Working Company" cell) -> an existing company id, matched
+  // by name. Never creates a company; an unmatched value warns and leaves the
+  // current company. The operational default (Ahava Medical Center) is used when
+  // the cell is blank on a NEW employee.
+  const allCompaniesForWork = await storage.getAllCompanies();
+  const companyByName = new Map<string, string>();
+  for (const c of allCompaniesForWork) companyByName.set(c.name.trim().toLowerCase(), c.id);
+
+  // Policies ("Policies" cell, comma-separated) -> existing policy ids by name.
+  // Round-trip is reconciling: user-scoped assignments are made to match the
+  // listed set (add missing, remove unlisted). Only USER-scoped direct
+  // assignments are touched — company/department/role-scoped policies are left
+  // alone. Unknown names warn and are ignored.
+  const allPolicies = await storage.getAllPolicies();
+  const policyByName = new Map<string, string>();
+  const policyNameById = new Map<string, string>();
+  for (const p of allPolicies) {
+    policyByName.set(p.name.trim().toLowerCase(), p.id);
+    policyNameById.set(p.id, p.name);
+  }
+  // Current user-scoped policy assignments: userId -> (policyId -> assignmentId).
+  const userPolicyRows = await db
+    .select({ id: policyAssignments.id, userId: policyAssignments.userId, policyId: policyAssignments.policyId })
+    .from(policyAssignments)
+    .where(isNotNull(policyAssignments.userId));
+  const userPolicies = new Map<string, Map<string, string>>();
+  for (const r of userPolicyRows) {
+    if (!r.userId) continue;
+    const m = userPolicies.get(r.userId) ?? new Map<string, string>();
+    m.set(r.policyId, r.id);
+    userPolicies.set(r.userId, m);
   }
 
   // Location cache (cleaned name -> id), seeded from this company's locations so
@@ -207,152 +314,250 @@ export async function importEmployeesFromBuffer(
   let updated = 0;
   let departmentsAssigned = 0;
   let rolesAssigned = 0;
+  let baseRolesSet = 0;
+  let payUpdated = 0;
+  let lunchSet = 0;
+  let workingCompanySet = 0;
+  let policiesAdded = 0;
+  let policiesRemoved = 0;
   const deactivated: { row: number; employeeNumber: string; name: string }[] = [];
+  const reactivated: { row: number; name: string }[] = [];
   const skipped: { row: number; reason: string }[] = [];
   const warnings: { row: number; reason: string }[] = [];
 
   let rowNum = 1;
   for (const row of rows) {
     rowNum++;
-    // Clock # is the match key (employee number). Accept legacy "ID" too, but
-    // never the zero-padded "Employee Id" or the "Payroll Id".
+    // The export's hidden key (user id) is the most reliable match; Clock #
+    // (employee number) is the fallback and the key for brand-new rows.
+    const idCell = pick(row, ["Employee ID", "EmployeeId", "User ID"]);
     const employeeNumber = pick(row, ["Clock #", "Clock#", "Clock Number", "ID"]);
     const employeeCell = pick(row, ["Employee Name", "Employee", "Name"]);
     const explicitFirstName = pick(row, ["First Name", "FirstName", "Given Name"]);
     const explicitLastName = pick(row, ["Last Name", "LastName", "Surname", "Family Name"]);
-    const actualLocation = pick(row, ["Actual Location", "Work Location"]);
-    const legacyDept = pick(row, ["Location", "Department Name", "Dept", "Department"]);
-    const payingCompanyRaw = pick(row, ["Paying Company", "Payroll Company"]);
-    const wageTypeRaw = pick(row, ["Wage Type", "Tax Classification", "Tax Form"]);
-    // Department / Role only exist on the enriched owner sheet (which always
-    // carries an explicit Actual Location). On legacy files the "Department"
-    // column is actually a location label, so we only act on these when an
-    // Actual Location is present — see `enriched` below.
+    const payingCompanyRaw = pick(row, ["Paying Company"]);
+    const wageTypeRaw = pick(row, ["Tax Classification", "Wage Type", "Tax Form"]);
     const departmentRaw = pick(row, ["Department", "Dept"]);
-    const roleRaw = pick(row, ["Role", "Job Title", "Position"]);
+    const workingCompanyRaw = pick(row, ["Working Company"]);
+    // Export: "Role" = base role, "Access Level" = custom role. Legacy: "Role"
+    // was the custom role.
+    const baseRoleRaw = exportFormat ? pick(row, ["Role"]) : "";
+    const accessLevelRaw = exportFormat ? pick(row, ["Access Level"]) : pick(row, ["Role", "Job Title", "Position"]);
+    const paySetupRaw = pick(row, ["Pay Setup", "Pay Type"]);
+    const payAmountRaw = pick(row, ["Pay Amount"]);
+    const lunchRaw = pick(row, ["Lunch Break"]);
+    const terminationRaw = pick(row, ["Termination Date", "Termination"]);
+    const policiesRaw = pick(row, ["Policies"]);
 
-    if (!employeeNumber) {
-      skipped.push({ row: rowNum, reason: "missing Clock # / ID" });
-      continue;
+    // Resolve the match target. Employee ID wins; then Clock #.
+    let existingUserId: string | undefined;
+    if (idCell) {
+      const u = await storage.getUser(idCell);
+      if (u) existingUserId = u.id;
     }
-    if (!employeeCell && !explicitFirstName && !explicitLastName) {
-      skipped.push({ row: rowNum, reason: `missing name (Clock # ${employeeNumber})` });
-      continue;
-    }
+    if (!existingUserId && employeeNumber) existingUserId = userIdByNumber.get(employeeNumber);
 
-    // Resolve the work location: explicit Actual Location wins; otherwise fall
-    // back to mapping the legacy department cell.
-    let locationName = actualLocation;
-    if (!locationName) {
-      const mapped = LOCATION_NAME_MAP[legacyDept];
-      if (!mapped) {
-        skipped.push({
-          row: rowNum,
-          reason: `no Actual Location and unknown department "${legacyDept}" (Clock # ${employeeNumber})`,
-        });
+    // A row with no match needs a Clock # (its future key) and a name to create.
+    if (!existingUserId) {
+      if (idCell && !employeeNumber) {
+        warnings.push({ row: rowNum, reason: `Employee ID "${idCell}" no longer exists and no Clock # to create from; row skipped` });
         continue;
       }
-      locationName = mapped;
+      if (!employeeNumber) {
+        skipped.push({ row: rowNum, reason: "no Employee ID match and missing Clock #" });
+        continue;
+      }
+      if (!employeeCell && !explicitFirstName && !explicitLastName) {
+        skipped.push({ row: rowNum, reason: `missing name (Clock # ${employeeNumber})` });
+        continue;
+      }
     }
-    const locationId = await ensureLocation(locationName);
-    // Explicit columns win as a pair, including an intentionally blank surname.
+
+    // Work location: export uses the "Location" cell (first of a comma list);
+    // legacy uses "Actual Location" or the mapped department label. Blank is OK
+    // for an existing employee (membership left as-is); a NEW employee needs one.
+    const locCellRaw = exportFormat
+      ? pick(row, ["Location", "Actual Location", "Work Location"])
+      : pick(row, ["Actual Location", "Work Location"]);
+    let locationName = locCellRaw.split(",")[0].trim();
+    if (!locationName && !exportFormat) {
+      locationName = LOCATION_NAME_MAP[pick(row, ["Location", "Department Name", "Dept", "Department"])] || "";
+    }
+    if (!locationName && !existingUserId) {
+      skipped.push({ row: rowNum, reason: `new employee has no usable Location (Clock # ${employeeNumber})` });
+      continue;
+    }
+    const locationId = locationName ? await ensureLocation(locationName) : undefined;
+
     const { firstName, lastName } = explicitFirstName || explicitLastName
       ? { firstName: explicitFirstName, lastName: explicitLastName }
       : parseEmployeeName(employeeCell);
 
-    // Optional pay fields. Only set when the cell is present and recognized;
-    // blank or unrecognized values warn and are left at the schema default.
-    const profilePatch: { employeeNumber: string; payrollCompanyId?: string; taxClassification?: string } = {
-      employeeNumber,
-    };
+    // Working company -> operational companyId. Match by name; default Ahava.
+    let resolvedCompanyId = companyId;
+    if (workingCompanyRaw) {
+      const wc = companyByName.get(workingCompanyRaw.trim().toLowerCase());
+      if (wc) resolvedCompanyId = wc;
+      else warnings.push({ row: rowNum, reason: `unknown working company "${workingCompanyRaw}"; left at Ahava Medical Center` });
+    }
+
+    // Employment-profile patch. Only set fields whose cell is present+recognized.
+    const profilePatch: Record<string, unknown> = { employeeNumber: employeeNumber || undefined };
     if (payingCompanyRaw) {
       const payId = resolvePayingCompany(payingCompanyRaw);
       if (payId) profilePatch.payrollCompanyId = payId;
-      else warnings.push({ row: rowNum, reason: `unrecognized paying company "${payingCompanyRaw}" (Clock # ${employeeNumber}); left blank` });
+      else warnings.push({ row: rowNum, reason: `unrecognized paying company "${payingCompanyRaw}"; left unchanged` });
     }
     if (wageTypeRaw) {
       const wt = normalizeWageType(wageTypeRaw);
       if (wt) profilePatch.taxClassification = wt;
-      else warnings.push({ row: rowNum, reason: `unrecognized wage type "${wageTypeRaw}" (Clock # ${employeeNumber}); left at default` });
+      else warnings.push({ row: rowNum, reason: `unrecognized tax classification "${wageTypeRaw}"; left unchanged` });
+    }
+    let payTouched = false;
+    if (paySetupRaw) {
+      const pt = normalizePaySetup(paySetupRaw);
+      if (pt) {
+        profilePatch.payType = pt;
+        const amt = normalizeAmount(payAmountRaw);
+        if (amt !== undefined) {
+          // Clear the other amount fields so the pay basis is unambiguous.
+          profilePatch.hourlyRate = pt === "hourly" ? amt : null;
+          profilePatch.dailySalary = pt === "daily" ? amt : null;
+          profilePatch.weeklySalary = pt === "salary" ? amt : null;
+        }
+        payTouched = true;
+      } else warnings.push({ row: rowNum, reason: `unrecognized pay setup "${paySetupRaw}"; left unchanged` });
+    } else if (payAmountRaw) {
+      // Amount given without a pay setup: apply to the existing pay basis later.
+      const amt = normalizeAmount(payAmountRaw);
+      if (amt !== undefined) { profilePatch.__amountOnly = amt; }
+    }
+    let lunchVal: boolean | undefined;
+    if (lunchRaw) {
+      lunchVal = normalizeLunch(lunchRaw);
+      if (lunchVal !== undefined) profilePatch.requireLunchBreak = lunchVal;
+      else warnings.push({ row: rowNum, reason: `unrecognized lunch break "${lunchRaw}"; left unchanged` });
     }
 
-    // Department / Role / Inactive are only meaningful on the enriched sheet.
-    const enriched = !!actualLocation;
-    const isInactiveCell = enriched && departmentRaw.trim().toLowerCase() === "inactive";
-
-    // Resolve the department to an existing (global) department id. Blank and
-    // "Inactive" are not departments; an unknown name warns and is left unset.
+    // Department: match to an existing global department. "Inactive" (legacy) is
+    // handled below, not here.
+    const isLegacyInactive = !exportFormat && departmentRaw.trim().toLowerCase() === "inactive";
     let resolvedDepartmentId: string | undefined;
-    if (enriched && departmentRaw && !isInactiveCell) {
+    if (departmentRaw && !isLegacyInactive) {
       const did = departmentByName.get(departmentRaw.trim().toLowerCase());
       if (did) resolvedDepartmentId = did;
-      else warnings.push({ row: rowNum, reason: `unknown department "${departmentRaw}" (Clock # ${employeeNumber}); left unassigned` });
+      else warnings.push({ row: rowNum, reason: `unknown department "${departmentRaw}"; left unassigned` });
     }
 
-    // Resolve the role to an existing non-system role id; unknown warns.
+    // Access level -> an existing non-system role.
     let resolvedRoleId: string | undefined;
-    if (roleRaw) {
-      const rid = roleByName.get(roleRaw.trim().toLowerCase());
+    if (accessLevelRaw) {
+      const rid = roleByName.get(accessLevelRaw.trim().toLowerCase());
       if (rid) resolvedRoleId = rid;
-      else warnings.push({ row: rowNum, reason: `unknown role "${roleRaw}" (Clock # ${employeeNumber}); not assigned` });
+      else warnings.push({ row: rowNum, reason: `unknown access level "${accessLevelRaw}"; not assigned` });
     }
 
-    const existingUserId = userIdByNumber.get(employeeNumber);
+    // Base role (export only): Employee / Manager / Admin.
+    let resolvedBaseRole: "employee" | "manager" | "admin" | undefined;
+    if (baseRoleRaw) {
+      resolvedBaseRole = normalizeBaseRole(baseRoleRaw);
+      if (!resolvedBaseRole) warnings.push({ row: rowNum, reason: `unknown role "${baseRoleRaw}"; left unchanged` });
+    }
+
+    // ---- Apply ----
     let userId: string;
+    const wasDeactivated = existingUserId ? (deactivatedByNumber.get(employeeNumber) ?? !!(await storage.getUser(existingUserId))?.deactivatedAt) : false;
     if (existingUserId) {
-      // Idempotent update: refresh name/company/location/pay, never duplicate.
-      await storage.updateUser(existingUserId, {
-        firstName,
-        lastName,
-        role: "employee",
-        companyId,
-      });
-      await storage.setUserLocationIds(existingUserId, [locationId]);
+      const userPatch: Record<string, unknown> = { firstName, lastName, companyId: resolvedCompanyId };
+      if (resolvedBaseRole) { userPatch.role = resolvedBaseRole; baseRolesSet++; }
+      await storage.updateUser(existingUserId, userPatch);
+      if (locationId) await storage.setUserLocationIds(existingUserId, [locationId]);
+      // Amount-only (no pay setup): fill the field matching the current basis.
+      if (profilePatch.__amountOnly !== undefined) {
+        const cur = await storage.getEmploymentProfile(existingUserId);
+        const basis = cur?.payType ?? "hourly";
+        profilePatch[basis === "daily" ? "dailySalary" : basis === "salary" ? "weeklySalary" : "hourlyRate"] = profilePatch.__amountOnly;
+        payTouched = true;
+      }
+      delete profilePatch.__amountOnly;
       await storage.updateEmploymentProfile(existingUserId, profilePatch);
       userId = existingUserId;
       updated++;
     } else {
       const newUser = await storage.createUser({
-        firstName,
-        lastName,
-        role: "employee",
-        companyId,
+        firstName, lastName, role: resolvedBaseRole ?? "employee", companyId: resolvedCompanyId,
       });
-      await storage.setUserLocationIds(newUser.id, [locationId]);
+      if (resolvedBaseRole) baseRolesSet++;
+      if (locationId) await storage.setUserLocationIds(newUser.id, [locationId]);
+      delete profilePatch.__amountOnly;
       await storage.createEmploymentProfile({ userId: newUser.id, ...profilePatch });
-      userIdByNumber.set(employeeNumber, newUser.id);
+      if (employeeNumber) userIdByNumber.set(employeeNumber, newUser.id);
       deactivatedByNumber.set(employeeNumber, false);
       userId = newUser.id;
       created++;
     }
+    if (workingCompanyRaw && companyByName.has(workingCompanyRaw.trim().toLowerCase())) workingCompanySet++;
+    if (payTouched) payUpdated++;
+    if (lunchVal !== undefined) lunchSet++;
 
-    // Department assignment (only when matched; blank/unknown leave the current
-    // membership untouched so a partial sheet never wipes existing departments).
     if (resolvedDepartmentId) {
       await storage.setUserDepartmentIds(userId, [resolvedDepartmentId]);
       departmentsAssigned++;
     }
-
-    // Role assignment (non-system roles only; idempotent — never double-assign).
     if (resolvedRoleId) {
       const current = await storage.getUserRoles(userId);
       if (!current.some((r) => r.roleId === resolvedRoleId)) {
-        await storage.assignUserRole(userId, resolvedRoleId, companyId);
+        await storage.assignUserRole(userId, resolvedRoleId, resolvedCompanyId);
       }
       rolesAssigned++;
     }
 
-    // Inactive -> deactivate. Only when not already deactivated, so a re-import
-    // never resets a reason a human picked in the UI. We do NOT auto-reactivate
-    // the reverse case; instead we surface it as a warning.
-    if (isInactiveCell) {
-      if (deactivatedByNumber.get(employeeNumber) !== true) {
-        await storage.setUserDeactivated(userId, "import", null);
+    // Policies (export, "fully editable"): reconcile the user's DIRECT (user-
+    // scoped) assignments to match the listed set. Only user-scoped rows are
+    // touched; company/department/role-scoped policies are never removed.
+    if (exportFormat && policiesRaw !== "") {
+      const wanted = new Set<string>();
+      for (const nm of policiesRaw.split(",").map((s) => s.trim()).filter(Boolean)) {
+        const pid = policyByName.get(nm.toLowerCase());
+        if (pid) wanted.add(pid);
+        else warnings.push({ row: rowNum, reason: `unknown policy "${nm}"; ignored` });
+      }
+      const current = userPolicies.get(userId) ?? new Map<string, string>();
+      for (const pid of wanted) {
+        if (!current.has(pid)) {
+          const a = await storage.createPolicyAssignment({ policyId: pid, userId });
+          current.set(pid, a.id);
+          policiesAdded++;
+        }
+      }
+      for (const [pid, assignmentId] of current) {
+        if (!wanted.has(pid)) {
+          await storage.deletePolicyAssignment(assignmentId);
+          current.delete(pid);
+          policiesRemoved++;
+        }
+      }
+      userPolicies.set(userId, current);
+    }
+
+    // Deactivation / reactivation.
+    // Legacy: a "Inactive" department cell deactivates. Export: a Termination
+    // Date deactivates; clearing it reactivates.
+    const terminationDate = exportFormat ? normalizeDate(terminationRaw) : undefined;
+    if (isLegacyInactive || terminationDate) {
+      if (!wasDeactivated) {
+        await storage.setUserDeactivated(userId, "import", terminationDate ?? null);
+        if (terminationDate) await storage.updateEmploymentProfile(userId, { terminationDate });
         deactivatedByNumber.set(employeeNumber, true);
         deactivated.push({ row: rowNum, employeeNumber, name: `${firstName} ${lastName}`.trim() });
       }
-    } else if (enriched && deactivatedByNumber.get(employeeNumber) === true) {
-      warnings.push({ row: rowNum, reason: `${firstName} ${lastName}`.trim() + ` (Clock # ${employeeNumber}) is deactivated in the system but the sheet lists it active; not reactivated automatically` });
+    } else if (exportFormat && !terminationRaw.trim() && wasDeactivated) {
+      // Export row with an empty Termination Date for a currently-deactivated
+      // person -> reactivate (clear the termination).
+      await storage.updateUser(userId, { deactivatedAt: null, terminationReason: null });
+      await storage.updateEmploymentProfile(userId, { terminationDate: null });
+      deactivatedByNumber.set(employeeNumber, false);
+      reactivated.push({ row: rowNum, name: `${firstName} ${lastName}`.trim() });
     }
   }
 
@@ -374,7 +579,14 @@ export async function importEmployeesFromBuffer(
     updated,
     departmentsAssigned,
     rolesAssigned,
+    baseRolesSet,
+    payUpdated,
+    lunchSet,
+    workingCompanySet,
+    policiesAdded,
+    policiesRemoved,
     deactivated,
+    reactivated,
     skipped,
     warnings,
     profilesWithNumber,
