@@ -1221,6 +1221,28 @@ export async function registerRoutes(
     res.json({ nextNumber });
   });
 
+  // Export all employees to an .xlsx workbook (one tab per location, dropdowns,
+  // a hidden Employee ID key column) — the round-trip partner of the importer.
+  // MUST be registered before "/api/users/:id" or Express treats "export" as an
+  // :id and returns 404.
+  app.get(
+    "/api/users/export",
+    requireAuth,
+    requireRole("admin"),
+    requirePermission("users.view"),
+    async (_req: any, res) => {
+      try {
+        const buffer = await buildEmployeeExport();
+        const stamp = new Date().toISOString().slice(0, 10);
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader("Content-Disposition", `attachment; filename="ahava-employees-${stamp}.xlsx"`);
+        res.send(buffer);
+      } catch (error) {
+        handleRouteError(res, error, "Failed to export employees");
+      }
+    },
+  );
+
   app.get("/api/users/:id", requireAuth, requirePermission("users.view"), async (req, res) => {
     const id = String(req.params.id);
     if (id === SUPER_ADMIN_USER_ID && !isSuperAdmin(req)) {
@@ -1490,26 +1512,6 @@ export async function registerRoutes(
   // Idempotent: existing employees (matched on stored employee number) are
   // updated, new ones are created. Runs against whichever database the app is
   // connected to (so on the published site it loads production).
-  // Export all employees to an .xlsx workbook (one tab per location, dropdowns,
-  // a hidden Employee ID key column) — the round-trip partner of the importer.
-  app.get(
-    "/api/users/export",
-    requireAuth,
-    requireRole("admin"),
-    requirePermission("users.view"),
-    async (req: any, res) => {
-      try {
-        const buffer = await buildEmployeeExport();
-        const stamp = new Date().toISOString().slice(0, 10);
-        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        res.setHeader("Content-Disposition", `attachment; filename="ahava-employees-${stamp}.xlsx"`);
-        res.send(buffer);
-      } catch (error) {
-        handleRouteError(res, error, "Failed to export employees");
-      }
-    },
-  );
-
   app.post(
     "/api/users/import",
     requireAuth,
