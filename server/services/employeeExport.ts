@@ -156,7 +156,8 @@ export async function buildEmployeeExport(): Promise<Buffer> {
       storage.getUserRoles(u.id),
       storage.getEmploymentProfile(u.id),
     ]);
-    const locationName = locIds.map((id) => locById.get(id)).filter(Boolean).join(", ");
+    const primaryLocationId = locIds.find((id) => id === u.locationId) ?? locIds[0];
+    const locationName = locById.get(primaryLocationId) ?? "";
     const departmentName = deptIds.map((id) => deptById.get(id)).filter(Boolean).join(", ");
     // Access level = the first assigned non-system custom role, if any.
     const accessLevel = userRoles.map((r) => r.role?.name).filter(Boolean).join(", ");
@@ -168,20 +169,20 @@ export async function buildEmployeeExport(): Promise<Buffer> {
       role: titleCaseRole(u.role),
       accessLevel: accessLevel || "",
       department: departmentName,
-      location: locById.get(locIds[0] ?? "") ?? locationName,
+      location: locationName,
       workingCompany: companyById.get(u.companyId ?? "") ?? "",
       payingCompany: companyById.get(profile?.payrollCompanyId ?? "") ?? "",
       payrollCompany: "", // model-later: display-only dropdown, nothing stored yet
-      tax: profile?.taxClassification ?? "W-2",
-      paySetup: paySetupLabel(profile?.payType),
+      tax: profile?.taxClassification ?? "",
+      paySetup: profile ? paySetupLabel(profile.payType) : "",
       payAmount: payAmountFor(profile),
       policies: (policiesByUser.get(u.id) ?? []).join(", "),
-      lunch: profile?.requireLunchBreak ? "Required" : "Not required",
-      termination: u.deactivatedAt ? new Date(u.deactivatedAt).toISOString().slice(0, 10) : "",
+      lunch: profile ? (profile.requireLunchBreak ? "Required" : "Not required") : "",
+      termination: u.deactivatedAt
+        ? profile?.terminationDate ?? new Date(u.deactivatedAt).toISOString().slice(0, 10)
+        : "",
     };
-    // Group by the FIRST location for the tab; multi-location people land on
-    // their first location's tab (their full location list is still in the cell).
-    const tabLocation = locById.get(locIds[0] ?? "") ?? "Unassigned";
+    const tabLocation = locationName || "Unassigned";
     built.push({ row, locationName: tabLocation });
   }
 
