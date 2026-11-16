@@ -163,6 +163,7 @@ export default function EmployeesPage() {
   const [bulkLocationDialogOpen, setBulkLocationDialogOpen] = useState(false);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [importPunchesOpen, setImportPunchesOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
@@ -175,6 +176,29 @@ export default function EmployeesPage() {
   const { toast } = useToast();
   const canDelete = hasPermission("users.delete");
   const canImport = currentUser?.role === "admin";
+
+  // Download the all-employees workbook (one tab per location, dropdowns) for
+  // editing in Excel/Google Sheets and re-importing. Uses fetch+blob so the
+  // auth cookie is sent and errors surface as a toast instead of a broken file.
+  const exportEmployees = async () => {
+    setExporting(true);
+    try {
+      const res = await fetch("/api/users/export", { credentials: "include" });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ahava-employees-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: "Export ready", description: "Employee workbook downloaded." });
+    } catch (e) {
+      toast({ title: "Export failed", description: e instanceof Error ? e.message : "Please try again.", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Load this user's saved filter defaults once, and auto-apply them on open —
   // unless a deep-link filter came in on the URL (that wins). Convenience only.
@@ -491,6 +515,17 @@ export default function EmployeesPage() {
           <Save className="h-4 w-4 mr-2" />
           Save as default
         </Button>
+        {canImport && (
+          <Button
+            variant="outline"
+            onClick={exportEmployees}
+            disabled={exporting}
+            data-testid="button-export-employees"
+          >
+            {exporting ? <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
+            Export to Excel
+          </Button>
+        )}
         {canImport && (
           <Button
             variant="outline"

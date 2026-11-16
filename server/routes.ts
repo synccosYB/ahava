@@ -22,6 +22,7 @@ import { buildEmployeeTimesheet } from "./timesheetService";
 import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, summarizeLedger, recomputeLedger } from "./attendanceLedger";
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
+import { buildEmployeeExport } from "./services/employeeExport";
 import { importPunchesFromBuffer } from "./services/punchImport";
 import { reconcileOverlongShifts } from "./services/overlongShiftReconcile";
 import { autoPushEmployeeSafe, autoPushEmployeeToLocations } from "./adms/routes";
@@ -1489,6 +1490,26 @@ export async function registerRoutes(
   // Idempotent: existing employees (matched on stored employee number) are
   // updated, new ones are created. Runs against whichever database the app is
   // connected to (so on the published site it loads production).
+  // Export all employees to an .xlsx workbook (one tab per location, dropdowns,
+  // a hidden Employee ID key column) — the round-trip partner of the importer.
+  app.get(
+    "/api/users/export",
+    requireAuth,
+    requireRole("admin"),
+    requirePermission("users.view"),
+    async (req: any, res) => {
+      try {
+        const buffer = await buildEmployeeExport();
+        const stamp = new Date().toISOString().slice(0, 10);
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader("Content-Disposition", `attachment; filename="ahava-employees-${stamp}.xlsx"`);
+        res.send(buffer);
+      } catch (error) {
+        handleRouteError(res, error, "Failed to export employees");
+      }
+    },
+  );
+
   app.post(
     "/api/users/import",
     requireAuth,
