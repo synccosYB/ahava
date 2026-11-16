@@ -41,12 +41,10 @@ test("export: per-location tabs, columns, dropdowns, hidden key", async (t) => {
 
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf);
-  const names = wb.worksheets.map((w) => w.name);
-  // A hidden "Lists" sheet backs the dropdowns, plus a tab per seeded location.
-  assert.ok(names.includes("Lists"), "has hidden Lists sheet");
-  assert.ok(wb.getWorksheet("Lists")?.state !== "visible", "Lists sheet is hidden");
-  const sumnerTab = wb.worksheets.find((w) => w.name.startsWith(`Sumner ${stamp}`.slice(0, 20)) || w.name.includes(stamp.slice(0, 6)));
-  assert.ok(wb.worksheets.length >= 3, "at least Lists + two location tabs");
+  // At least two location tabs. A "Lists" sheet exists only if some dropdown is
+  // long enough to need a referenced source (short lists are embedded inline).
+  const dataTabs = wb.worksheets.filter((w) => w.name !== "Lists");
+  assert.ok(dataTabs.length >= 2, "at least two location tabs");
 
   // Find Aaron's tab and row.
   const tab = wb.worksheets.find((w) => w.name !== "Lists" && w.getColumn(3).values.some((v) => String(v).includes(`${stamp}A`)));
@@ -64,10 +62,12 @@ test("export: per-location tabs, columns, dropdowns, hidden key", async (t) => {
   const idValues = (idCol.values as unknown[]).map((v) => String(v ?? ""));
   assert.ok(idValues.includes(a.id), "hidden key column carries the user id");
 
-  // A dropdown (list data validation) is attached to the Tax Classification cell.
+  // The Tax Classification cell has an INLINE list dropdown (Google-friendly):
+  // the values are embedded in the formula, not a named-range reference.
   const taxIdx = headers.indexOf("Tax Classification");
   assert.ok(taxIdx > 0, "tax column located");
   const taxColLetter = tab!.getColumn(taxIdx).letter;
   const dv = tab!.getCell(`${taxColLetter}2`).dataValidation;
   assert.equal(dv?.type, "list", "tax cell has a list dropdown");
+  assert.match(String(dv?.formulae?.[0] ?? ""), /W-2/, "tax dropdown is an inline value list");
 });

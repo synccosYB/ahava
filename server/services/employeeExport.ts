@@ -4,9 +4,11 @@
  * Produces an .xlsx workbook with ONE TAB PER LOCATION (employees with no
  * location go on an "Unassigned" tab), every column the owner asked for, and
  * real dropdowns (Excel data validation, which Google Sheets preserves on
- * upload) sourced from a hidden "Lists" sheet. A hidden "Employee ID" column
- * carries the stable user id so a re-import matches each row to the exact
- * person even if their name or Clock # changed.
+ * upload). Short lists are embedded inline per cell; a long list (Department)
+ * is referenced from a VISIBLE "Lists" sheet (Google drops range dropdowns whose
+ * source sheet is hidden). A hidden "Employee ID" column carries the stable user
+ * id so a re-import matches each row to the exact person even if their name or
+ * Clock # changed.
  *
  * Built with exceljs (not SheetJS) because the community SheetJS build cannot
  * WRITE data validations; the import side keeps using SheetJS to parse.
@@ -58,21 +60,6 @@ const COLUMNS: { id: ColId; header: string; width: number; hidden?: boolean }[] 
   { id: "lunch", header: "Lunch Break", width: 14 },
   { id: "termination", header: "Termination Date", width: 16 },
 ];
-
-// Which columns get a dropdown, and the option list each pulls from (by a named
-// range defined on the hidden Lists sheet).
-const DROPDOWNS: Partial<Record<ColId, string>> = {
-  role: "roleList",
-  accessLevel: "accessLevelList",
-  department: "departmentList",
-  location: "locationList",
-  workingCompany: "workingCompanyList",
-  payingCompany: "payingCompanyList",
-  payrollCompany: "payrollCompanyList",
-  tax: "taxList",
-  paySetup: "paySetupList",
-  lunch: "lunchList",
-};
 
 type Row = Record<ColId, string | number | null>;
 
@@ -191,31 +178,50 @@ export async function buildEmployeeExport(): Promise<Buffer> {
   wb.creator = "Ahava Time & Attendance";
   wb.created = new Date();
 
-  // Hidden "Lists" sheet holds every dropdown's option column, referenced by a
-  // workbook-scoped named range so validations work from any tab.
-  const lists = wb.addWorksheet("Lists");
-  lists.state = "veryHidden";
-  const optionSets: { name: string; values: string[] }[] = [
-    { name: "roleList", values: ROLE_OPTIONS },
-    { name: "accessLevelList", values: Array.from(new Set(roles.filter((r) => !r.isSystem).map((r) => r.name))) },
-    { name: "departmentList", values: departments.map((d) => d.name) },
-    { name: "locationList", values: locationsAll.map((l) => l.name) },
-    { name: "workingCompanyList", values: WORKING_COMPANY_OPTIONS },
-    { name: "payingCompanyList", values: PAYING_COMPANY_OPTIONS },
-    { name: "payrollCompanyList", values: PAYROLL_COMPANY_OPTIONS },
-    { name: "taxList", values: TAX_OPTIONS },
-    { name: "paySetupList", values: PAY_SETUP_OPTIONS },
-    { name: "lunchList", values: LUNCH_OPTIONS },
+  // Dropdown sources. SHORT lists are embedded INLINE in each cell — Google
+  // Sheets keeps these when the .xlsx is opened as a Google Sheet. A LONG list
+  // (e.g. Department) can't fit inline, so it's written to a VISIBLE "Lists"
+  // sheet and referenced by range: Google drops a range dropdown whose source
+  // sheet is HIDDEN, so that sheet must stay visible. The importer skips any
+  // sheet named "Lists", so it is never read as employee data. The Lists sheet
+  // is created AFTER the data tabs (below) so the location tabs come first.
+  const INLINE_LIMIT = 250;
+  const dropSpecs: { col: ColId; values: string[] }[] = [
+    { col: "role", values: ROLE_OPTIONS },
+    { col: "accessLevel", values: Array.from(new Set(roles.filter((r) => !r.isSystem).map((r) => r.name))) },
+    { col: "department", values: departments.map((d) => d.name) },
+    { col: "location", values: locationsAll.map((l) => l.name) },
+    { col: "workingCompany", values: WORKING_COMPANY_OPTIONS },
+    { col: "payingCompany", values: PAYING_COMPANY_OPTIONS },
+    { col: "payrollCompany", values: PAYROLL_COMPANY_OPTIONS },
+    { col: "tax", values: TAX_OPTIONS },
+    { col: "paySetup", values: PAY_SETUP_OPTIONS },
+    { col: "lunch", values: LUNCH_OPTIONS },
   ];
-  optionSets.forEach((set, i) => {
-    const colIdx = i + 1;
-    const colLetter = lists.getColumn(colIdx).letter;
-    set.values.forEach((v, r) => {
-      lists.getCell(r + 1, colIdx).value = v;
-    });
-    const last = Math.max(set.values.length, 1);
-    wb.definedNames.add(`Lists!$${colLetter}$1:$${colLetter}$${last}`, set.name);
-  });
+  const colLetterFor = (n: number): string => {
+    let s = "", x = n;
+    while (x > 0) { const m = (x - 1) % 26; s = String.fromCharCode(65 + m) + s; x = Math.floor((x - 1) / 26); }
+    return s;
+  };
+  // Per-column validation formula (an inline quoted list, or a =Lists!$X$.. range)
+  // plus the long-list columns to write onto the visible Lists sheet afterwards.
+  const formulaByCol = new Map<ColId, string>();
+  const listColumns: { letter: string; header: string; values: string[] }[] = [];
+  let listColIdx = 0;
+  for (const spec of dropSpecs) {
+    const clean = spec.values.map((v) => String(v).replace(/"/g, "").trim()).filter(Boolean);
+    if (clean.length === 0) continue;
+    const inline = clean.join(",");
+    const canInline = inline.length <= INLINE_LIMIT && !clean.some((v) => v.includes(","));
+    if (canInline) {
+      formulaByCol.set(spec.col, `"${inline}"`);
+    } else {
+      listColIdx++;
+      const letter = colLetterFor(listColIdx);
+      listColumns.push({ letter, header: COLUMNS.find((c) => c.id === spec.col)?.header ?? spec.col, values: clean });
+      formulaByCol.set(spec.col, `=Lists!$${letter}$2:$${letter}$${clean.length + 1}`);
+    }
+  }
 
   // Group rows by tab location, sorted by last name.
   const byTab = new Map<string, Row[]>();
@@ -251,20 +257,32 @@ export async function buildEmployeeExport(): Promise<Buffer> {
     // row plus a buffer of blank rows so added rows still get the dropdown.
     const lastRow = Math.max(ws.rowCount, 1) + 200;
     for (const col of COLUMNS) {
-      const listName = DROPDOWNS[col.id];
-      if (!listName) continue;
+      const formula = formulaByCol.get(col.id);
+      if (!formula) continue;
       const colLetter = ws.getColumn(col.id).letter;
       for (let r = 2; r <= lastRow; r++) {
         ws.getCell(`${colLetter}${r}`).dataValidation = {
           type: "list",
           allowBlank: true,
-          formulae: [`=${listName}`],
+          formulae: [formula],
           showErrorMessage: true,
           errorStyle: "warning",
           error: "Pick a value from the dropdown (or clear the cell).",
         };
       }
     }
+  }
+
+  // Visible "Lists" sheet holding the long dropdown lists (Department, etc.),
+  // referenced by range above. Created after the data tabs so it sorts last.
+  if (listColumns.length > 0) {
+    const lists = wb.addWorksheet("Lists");
+    for (const lc of listColumns) {
+      lists.getCell(`${lc.letter}1`).value = lc.header;
+      lc.values.forEach((v, i) => { lists.getCell(`${lc.letter}${i + 2}`).value = v; });
+      lists.getColumn(lc.letter).width = 28;
+    }
+    lists.getRow(1).font = { bold: true };
   }
 
   // If nobody matched (empty system), still emit a usable empty tab.
