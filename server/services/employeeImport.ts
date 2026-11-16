@@ -25,8 +25,9 @@ import XLSX from "xlsx";
 import { eq, isNotNull } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
-import { userEmploymentProfiles, users, policyAssignments, policies as policiesTable, type Company } from "../../shared/schema";
+import { userEmploymentProfiles, users, policyAssignments, type Company, type InsertEmploymentProfile } from "../../shared/schema";
 import { parseEmployeeName } from "./employeeNames";
+import { isProtectedUser } from "./roleAssignment";
 
 export const COMPANY_NAME = "Ahava Medical Center";
 
@@ -130,8 +131,9 @@ function normalizeLunch(raw: string): boolean | undefined {
 
 /** Parse a pay-amount cell to a positive number, or undefined. Strips $ and commas. */
 function normalizeAmount(raw: string): number | undefined {
-  if (!raw) return undefined;
-  const n = parseFloat(raw.replace(/[$,\s]/g, ""));
+  const value = raw.replace(/[$,\s]/g, "");
+  if (!/^\d*\.?\d+$/.test(value)) return undefined;
+  const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
@@ -140,7 +142,14 @@ function normalizeAmount(raw: string): number | undefined {
 function normalizeDate(raw: string): string | undefined {
   const v = raw.trim();
   if (!v) return undefined;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  const usDate = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
+  const iso = usDate
+    ? `${usDate[3]}-${usDate[1].padStart(2, "0")}-${usDate[2].padStart(2, "0")}`
+    : v;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const date = new Date(`${iso}T00:00:00Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === iso ? iso : undefined;
+  }
   // Excel serial date (days since 1899-12-30).
   if (/^\d{4,6}$/.test(v)) {
     const serial = parseInt(v, 10);
@@ -148,8 +157,6 @@ function normalizeDate(raw: string): string | undefined {
     const d = new Date(ms);
     if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   }
-  const d = new Date(v);
-  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   return undefined;
 }
 
@@ -201,25 +208,22 @@ export async function importEmployeesFromBuffer(
   if (wb.SheetNames.length === 0) {
     throw new Error("The spreadsheet has no sheets.");
   }
-  // The export writes one tab PER LOCATION plus a hidden "Lists" sheet that backs
-  // the dropdowns. Gather rows from every data tab (skip "Lists"); a legacy
-  // single-sheet file just yields that one sheet's rows.
-  const rows: Record<string, unknown>[] = [];
-  for (const sn of wb.SheetNames) {
-    if (sn.trim().toLowerCase() === "lists") continue;
-    const sheetRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sn], { defval: null });
-    for (const r of sheetRows) rows.push(r);
-  }
-  // Detect the enriched EXPORT format by its hidden key column. In that format
-  // "Role" = base role (Employee/Manager/Admin) and "Access Level" = the custom
-  // permission role; in legacy files "Role" meant the custom role.
-  const exportFormat = rows.some((r) =>
-    Object.keys(r).some((k) => k.trim().toLowerCase() === "employee id"),
-  );
+  // The export contains multiple data tabs. Legacy clock sheets can also have
+  // an Employee Id column, but it carries a clock number rather than a user id.
+  const sheets = wb.SheetNames.map((name) => {
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[name], { defval: null });
+    const headers = Object.keys(rows[0] ?? {}).map((header) => header.trim().toLowerCase());
+    const exported = name.trim().toLowerCase() !== "lists" &&
+      ["employee id", "clock #", "access level"].every((header) => headers.includes(header));
+    return { rows, exported };
+  });
+  const exportedSheets = sheets.filter((sheet) => sheet.exported);
+  const exportFormat = exportedSheets.length > 0;
+  const rows = exportFormat ? exportedSheets.flatMap((sheet) => sheet.rows) : sheets[0].rows;
 
   const companyId = await ensureCompany();
   const allCompanies = await storage.getAllCompanies();
-  const resolvePayingCompany = makePayingCompanyResolver(allCompanies, companyId);
+  const resolveLegacyPayingCompany = makePayingCompanyResolver(allCompanies, companyId);
 
   // Departments are a single GLOBAL list (name is globally unique), so we match
   // a "Department" cell to an existing department by trimmed, case-insensitive
@@ -246,9 +250,8 @@ export async function importEmployeesFromBuffer(
   // by name. Never creates a company; an unmatched value warns and leaves the
   // current company. The operational default (Ahava Medical Center) is used when
   // the cell is blank on a NEW employee.
-  const allCompaniesForWork = await storage.getAllCompanies();
   const companyByName = new Map<string, string>();
-  for (const c of allCompaniesForWork) companyByName.set(c.name.trim().toLowerCase(), c.id);
+  for (const c of allCompanies) companyByName.set(c.name.trim().toLowerCase(), c.id);
 
   // Policies ("Policies" cell, comma-separated) -> existing policy ids by name.
   // Round-trip is reconciling: user-scoped assignments are made to match the
@@ -257,10 +260,8 @@ export async function importEmployeesFromBuffer(
   // alone. Unknown names warn and are ignored.
   const allPolicies = await storage.getAllPolicies();
   const policyByName = new Map<string, string>();
-  const policyNameById = new Map<string, string>();
   for (const p of allPolicies) {
     policyByName.set(p.name.trim().toLowerCase(), p.id);
-    policyNameById.set(p.id, p.name);
   }
   // Current user-scoped policy assignments: userId -> (policyId -> assignmentId).
   const userPolicyRows = await db
@@ -280,6 +281,9 @@ export async function importEmployeesFromBuffer(
   const existingLocations = await storage.getLocationsByCompany(companyId);
   const locationByName = new Map<string, string>(); // lowercase name -> id
   for (const l of existingLocations) locationByName.set(l.name.trim().toLowerCase(), l.id);
+  const locationNames = new Map((exportFormat ? await storage.getAllLocations() : [])
+    .map((location) => [location.id, location.name.trim().toLowerCase()]));
+  const locationsByCompany = new Map([[companyId, existingLocations]]);
   async function ensureLocation(name: string): Promise<string> {
     const key = name.trim().toLowerCase();
     const found = locationByName.get(key);
@@ -296,17 +300,14 @@ export async function importEmployeesFromBuffer(
     .select({
       userId: userEmploymentProfiles.userId,
       employeeNumber: userEmploymentProfiles.employeeNumber,
-      deactivatedAt: users.deactivatedAt,
     })
     .from(userEmploymentProfiles)
     .innerJoin(users, eq(users.id, userEmploymentProfiles.userId))
     .where(eq(users.companyId, companyId));
   const userIdByNumber = new Map<string, string>();
-  const deactivatedByNumber = new Map<string, boolean>();
   for (const p of existingProfiles) {
     if (p.employeeNumber) {
       userIdByNumber.set(p.employeeNumber, p.userId);
-      deactivatedByNumber.set(p.employeeNumber, !!p.deactivatedAt);
     }
   }
 
@@ -330,12 +331,12 @@ export async function importEmployeesFromBuffer(
     rowNum++;
     // The export's hidden key (user id) is the most reliable match; Clock #
     // (employee number) is the fallback and the key for brand-new rows.
-    const idCell = pick(row, ["Employee ID", "EmployeeId", "User ID"]);
+    const idCell = exportFormat ? pick(row, ["Employee ID"]) : "";
     const employeeNumber = pick(row, ["Clock #", "Clock#", "Clock Number", "ID"]);
     const employeeCell = pick(row, ["Employee Name", "Employee", "Name"]);
     const explicitFirstName = pick(row, ["First Name", "FirstName", "Given Name"]);
     const explicitLastName = pick(row, ["Last Name", "LastName", "Surname", "Family Name"]);
-    const payingCompanyRaw = pick(row, ["Paying Company"]);
+    const payingCompanyRaw = pick(row, exportFormat ? ["Paying Company"] : ["Paying Company", "Payroll Company"]);
     const wageTypeRaw = pick(row, ["Tax Classification", "Wage Type", "Tax Form"]);
     const departmentRaw = pick(row, ["Department", "Dept"]);
     const workingCompanyRaw = pick(row, ["Working Company"]);
@@ -350,19 +351,20 @@ export async function importEmployeesFromBuffer(
     const policiesRaw = pick(row, ["Policies"]);
 
     // Resolve the match target. Employee ID wins; then Clock #.
-    let existingUserId: string | undefined;
-    if (idCell) {
-      const u = await storage.getUser(idCell);
-      if (u) existingUserId = u.id;
+    const matchedUserId = idCell || userIdByNumber.get(employeeNumber);
+    const existingUser = matchedUserId ? await storage.getUser(matchedUserId) : undefined;
+    const existingUserId = existingUser?.id;
+    if (idCell && !existingUserId) {
+      skipped.push({ row: rowNum, reason: "Employee ID no longer exists; export a fresh workbook" });
+      continue;
     }
-    if (!existingUserId && employeeNumber) existingUserId = userIdByNumber.get(employeeNumber);
+    if (existingUserId && isProtectedUser(existingUserId)) {
+      skipped.push({ row: rowNum, reason: "this account cannot be changed through employee import" });
+      continue;
+    }
 
     // A row with no match needs a Clock # (its future key) and a name to create.
     if (!existingUserId) {
-      if (idCell && !employeeNumber) {
-        warnings.push({ row: rowNum, reason: `Employee ID "${idCell}" no longer exists and no Clock # to create from; row skipped` });
-        continue;
-      }
       if (!employeeNumber) {
         skipped.push({ row: rowNum, reason: "no Employee ID match and missing Clock #" });
         continue;
@@ -373,13 +375,12 @@ export async function importEmployeesFromBuffer(
       }
     }
 
-    // Work location: export uses the "Location" cell (first of a comma list);
-    // legacy uses "Actual Location" or the mapped department label. Blank is OK
-    // for an existing employee (membership left as-is); a NEW employee needs one.
+    // The exported Location cell represents the primary location. Existing
+    // secondary memberships are kept when that primary location changes.
     const locCellRaw = exportFormat
       ? pick(row, ["Location", "Actual Location", "Work Location"])
       : pick(row, ["Actual Location", "Work Location"]);
-    let locationName = locCellRaw.split(",")[0].trim();
+    let locationName = locCellRaw.trim();
     if (!locationName && !exportFormat) {
       locationName = LOCATION_NAME_MAP[pick(row, ["Location", "Department Name", "Dept", "Department"])] || "";
     }
@@ -387,24 +388,51 @@ export async function importEmployeesFromBuffer(
       skipped.push({ row: rowNum, reason: `new employee has no usable Location (Clock # ${employeeNumber})` });
       continue;
     }
-    const locationId = locationName ? await ensureLocation(locationName) : undefined;
-
     const { firstName, lastName } = explicitFirstName || explicitLastName
       ? { firstName: explicitFirstName, lastName: explicitLastName }
       : parseEmployeeName(employeeCell);
 
     // Working company -> operational companyId. Match by name; default Ahava.
-    let resolvedCompanyId = companyId;
+    let resolvedCompanyId = existingUser ? existingUser.companyId : companyId;
     if (workingCompanyRaw) {
       const wc = companyByName.get(workingCompanyRaw.trim().toLowerCase());
       if (wc) resolvedCompanyId = wc;
-      else warnings.push({ row: rowNum, reason: `unknown working company "${workingCompanyRaw}"; left at Ahava Medical Center` });
+      else warnings.push({ row: rowNum, reason: `unknown working company "${workingCompanyRaw}"; left unchanged` });
+    }
+
+    let locationIds: string[] | undefined;
+    if (locationName && !exportFormat) {
+      locationIds = [await ensureLocation(locationName)];
+    } else if (locationName) {
+      const currentIds = existingUserId ? await storage.getUserLocationIds(existingUserId) : [];
+      const currentPrimary = currentIds.find((id) => id === existingUser?.locationId) ?? currentIds[0];
+      const name = locationName.toLowerCase();
+      const currentMatch = currentIds.find((id) => locationNames.get(id) === name);
+      if (!currentMatch) {
+        const workCompany = resolvedCompanyId ?? companyId;
+        const available = locationsByCompany.get(workCompany) ?? await storage.getLocationsByCompany(workCompany);
+        locationsByCompany.set(workCompany, available);
+        const candidates = available.filter((location) => location.name.trim().toLowerCase() === name);
+        if (candidates.length === 1) {
+          locationIds = [candidates[0].id, ...currentIds.filter((id) => id !== currentPrimary)];
+        } else {
+          warnings.push({ row: rowNum, reason: `unknown or ambiguous location "${locationName}"; left unchanged` });
+        }
+      } else if (currentMatch !== currentPrimary) {
+        locationIds = [currentMatch, ...currentIds.filter((id) => id !== currentMatch)];
+      }
+    }
+    if (!existingUser && !locationIds) {
+      skipped.push({ row: rowNum, reason: `new employee has no usable Location (Clock # ${employeeNumber})` });
+      continue;
     }
 
     // Employment-profile patch. Only set fields whose cell is present+recognized.
-    const profilePatch: Record<string, unknown> = { employeeNumber: employeeNumber || undefined };
+    const existingProfile = existingUserId ? await storage.getEmploymentProfile(existingUserId) : undefined;
+    const profilePatch: Partial<InsertEmploymentProfile> = {};
+    if (employeeNumber) profilePatch.employeeNumber = employeeNumber;
     if (payingCompanyRaw) {
-      const payId = resolvePayingCompany(payingCompanyRaw);
+      const payId = companyByName.get(payingCompanyRaw.trim().toLowerCase()) ?? resolveLegacyPayingCompany(payingCompanyRaw);
       if (payId) profilePatch.payrollCompanyId = payId;
       else warnings.push({ row: rowNum, reason: `unrecognized paying company "${payingCompanyRaw}"; left unchanged` });
     }
@@ -413,24 +441,30 @@ export async function importEmployeesFromBuffer(
       if (wt) profilePatch.taxClassification = wt;
       else warnings.push({ row: rowNum, reason: `unrecognized tax classification "${wageTypeRaw}"; left unchanged` });
     }
+    const currentBasis = existingProfile?.payType ?? "hourly";
+    const basis = paySetupRaw ? normalizePaySetup(paySetupRaw) : normalizePaySetup(currentBasis);
+    const amount = normalizeAmount(payAmountRaw);
+    const changesBasis = !!paySetupRaw && basis !== currentBasis;
     let payTouched = false;
-    if (paySetupRaw) {
-      const pt = normalizePaySetup(paySetupRaw);
-      if (pt) {
-        profilePatch.payType = pt;
-        const amt = normalizeAmount(payAmountRaw);
-        if (amt !== undefined) {
-          // Clear the other amount fields so the pay basis is unambiguous.
-          profilePatch.hourlyRate = pt === "hourly" ? amt : null;
-          profilePatch.dailySalary = pt === "daily" ? amt : null;
-          profilePatch.weeklySalary = pt === "salary" ? amt : null;
-        }
-        payTouched = true;
-      } else warnings.push({ row: rowNum, reason: `unrecognized pay setup "${paySetupRaw}"; left unchanged` });
-    } else if (payAmountRaw) {
-      // Amount given without a pay setup: apply to the existing pay basis later.
-      const amt = normalizeAmount(payAmountRaw);
-      if (amt !== undefined) { profilePatch.__amountOnly = amt; }
+    if (paySetupRaw && !basis) {
+      warnings.push({ row: rowNum, reason: `unrecognized pay setup "${paySetupRaw}"; left unchanged` });
+    } else if (payAmountRaw && amount === undefined) {
+      warnings.push({ row: rowNum, reason: "invalid pay amount; pay left unchanged" });
+    } else if (changesBasis && existingProfile && amount === undefined) {
+      warnings.push({ row: rowNum, reason: "a new pay amount is required to change the pay setup" });
+    } else if (basis && amount !== undefined) {
+      profilePatch.payType = basis;
+      if (changesBasis) {
+        profilePatch.hourlyRate = null;
+        profilePatch.dailySalary = null;
+        profilePatch.weeklySalary = null;
+      }
+      const rate = basis === "daily" ? "dailySalary" : basis === "salary" ? "weeklySalary" : "hourlyRate";
+      profilePatch[rate] = amount;
+      payTouched = true;
+    } else if (basis && changesBasis) {
+      profilePatch.payType = basis;
+      payTouched = true;
     }
     let lunchVal: boolean | undefined;
     if (lunchRaw) {
@@ -441,9 +475,9 @@ export async function importEmployeesFromBuffer(
 
     // Department: match to an existing global department. "Inactive" (legacy) is
     // handled below, not here.
-    const isLegacyInactive = !exportFormat && departmentRaw.trim().toLowerCase() === "inactive";
+    const isLegacyInactive = !exportFormat && !!locCellRaw && departmentRaw.trim().toLowerCase() === "inactive";
     let resolvedDepartmentId: string | undefined;
-    if (departmentRaw && !isLegacyInactive) {
+    if ((exportFormat || locCellRaw) && departmentRaw && !isLegacyInactive) {
       const did = departmentByName.get(departmentRaw.trim().toLowerCase());
       if (did) resolvedDepartmentId = did;
       else warnings.push({ row: rowNum, reason: `unknown department "${departmentRaw}"; left unassigned` });
@@ -466,21 +500,18 @@ export async function importEmployeesFromBuffer(
 
     // ---- Apply ----
     let userId: string;
-    const wasDeactivated = existingUserId ? (deactivatedByNumber.get(employeeNumber) ?? !!(await storage.getUser(existingUserId))?.deactivatedAt) : false;
+    const wasDeactivated = !!existingUser?.deactivatedAt;
     if (existingUserId) {
-      const userPatch: Record<string, unknown> = { firstName, lastName, companyId: resolvedCompanyId };
+      const userPatch: Record<string, unknown> = { companyId: resolvedCompanyId };
+      if (employeeCell || explicitFirstName) userPatch.firstName = firstName;
+      if (employeeCell || explicitLastName) userPatch.lastName = lastName;
       if (resolvedBaseRole) { userPatch.role = resolvedBaseRole; baseRolesSet++; }
       await storage.updateUser(existingUserId, userPatch);
-      if (locationId) await storage.setUserLocationIds(existingUserId, [locationId]);
-      // Amount-only (no pay setup): fill the field matching the current basis.
-      if (profilePatch.__amountOnly !== undefined) {
-        const cur = await storage.getEmploymentProfile(existingUserId);
-        const basis = cur?.payType ?? "hourly";
-        profilePatch[basis === "daily" ? "dailySalary" : basis === "salary" ? "weeklySalary" : "hourlyRate"] = profilePatch.__amountOnly;
-        payTouched = true;
+      if (locationIds) await storage.setUserLocationIds(existingUserId, locationIds);
+      if (Object.keys(profilePatch).length > 0) {
+        if (existingProfile) await storage.updateEmploymentProfile(existingUserId, profilePatch);
+        else await storage.createEmploymentProfile({ ...profilePatch, userId: existingUserId });
       }
-      delete profilePatch.__amountOnly;
-      await storage.updateEmploymentProfile(existingUserId, profilePatch);
       userId = existingUserId;
       updated++;
     } else {
@@ -488,14 +519,12 @@ export async function importEmployeesFromBuffer(
         firstName, lastName, role: resolvedBaseRole ?? "employee", companyId: resolvedCompanyId,
       });
       if (resolvedBaseRole) baseRolesSet++;
-      if (locationId) await storage.setUserLocationIds(newUser.id, [locationId]);
-      delete profilePatch.__amountOnly;
+      if (locationIds) await storage.setUserLocationIds(newUser.id, locationIds);
       await storage.createEmploymentProfile({ userId: newUser.id, ...profilePatch });
-      if (employeeNumber) userIdByNumber.set(employeeNumber, newUser.id);
-      deactivatedByNumber.set(employeeNumber, false);
       userId = newUser.id;
       created++;
     }
+    if (employeeNumber) userIdByNumber.set(employeeNumber, userId);
     if (workingCompanyRaw && companyByName.has(workingCompanyRaw.trim().toLowerCase())) workingCompanySet++;
     if (payTouched) payUpdated++;
     if (lunchVal !== undefined) lunchSet++;
@@ -507,7 +536,7 @@ export async function importEmployeesFromBuffer(
     if (resolvedRoleId) {
       const current = await storage.getUserRoles(userId);
       if (!current.some((r) => r.roleId === resolvedRoleId)) {
-        await storage.assignUserRole(userId, resolvedRoleId, resolvedCompanyId);
+        await storage.assignUserRole(userId, resolvedRoleId, resolvedCompanyId ?? undefined);
       }
       rolesAssigned++;
     }
@@ -516,47 +545,56 @@ export async function importEmployeesFromBuffer(
     // scoped) assignments to match the listed set. Only user-scoped rows are
     // touched; company/department/role-scoped policies are never removed.
     if (exportFormat && policiesRaw !== "") {
-      const wanted = new Set<string>();
-      for (const nm of policiesRaw.split(",").map((s) => s.trim()).filter(Boolean)) {
-        const pid = policyByName.get(nm.toLowerCase());
-        if (pid) wanted.add(pid);
-        else warnings.push({ row: rowNum, reason: `unknown policy "${nm}"; ignored` });
-      }
-      const current = userPolicies.get(userId) ?? new Map<string, string>();
-      for (const pid of wanted) {
-        if (!current.has(pid)) {
-          const a = await storage.createPolicyAssignment({ policyId: pid, userId });
-          current.set(pid, a.id);
-          policiesAdded++;
+      const exactName = policyByName.get(policiesRaw.toLowerCase());
+      const names = exactName ? [policiesRaw] : policiesRaw.split(",").map((name) => name.trim());
+      const unknown = names.find((name) => !policyByName.has(name.toLowerCase()));
+      if (unknown !== undefined) {
+        warnings.push({ row: rowNum, reason: `unknown policy "${unknown}"; policy assignments left unchanged` });
+      } else {
+        const wanted = new Set(names.map((name) => policyByName.get(name.toLowerCase())!));
+        const current = userPolicies.get(userId) ?? new Map<string, string>();
+        for (const pid of wanted) {
+          if (!current.has(pid)) {
+            const assignment = await storage.createPolicyAssignment({ policyId: pid, userId });
+            current.set(pid, assignment.id);
+            policiesAdded++;
+          }
         }
-      }
-      for (const [pid, assignmentId] of current) {
-        if (!wanted.has(pid)) {
-          await storage.deletePolicyAssignment(assignmentId);
-          current.delete(pid);
-          policiesRemoved++;
+        for (const [pid, assignmentId] of current) {
+          if (!wanted.has(pid)) {
+            await storage.deletePolicyAssignment(assignmentId);
+            current.delete(pid);
+            policiesRemoved++;
+          }
         }
+        userPolicies.set(userId, current);
       }
-      userPolicies.set(userId, current);
     }
 
     // Deactivation / reactivation.
     // Legacy: a "Inactive" department cell deactivates. Export: a Termination
     // Date deactivates; clearing it reactivates.
     const terminationDate = exportFormat ? normalizeDate(terminationRaw) : undefined;
-    if (isLegacyInactive || terminationDate) {
+    const hasTerminationColumn = Object.keys(row).some((key) => key.trim().toLowerCase() === "termination date");
+    if (exportFormat && terminationRaw && !terminationDate) {
+      warnings.push({ row: rowNum, reason: "invalid termination date; employment status left unchanged" });
+    } else if (isLegacyInactive || terminationDate) {
       if (!wasDeactivated) {
-        await storage.setUserDeactivated(userId, "import", terminationDate ?? null);
-        if (terminationDate) await storage.updateEmploymentProfile(userId, { terminationDate });
-        deactivatedByNumber.set(employeeNumber, true);
+        await db.transaction(async (tx) => {
+          if (terminationDate) await storage.updateEmploymentProfile(userId, { terminationDate }, tx);
+          await storage.setUserDeactivated(userId, "import", null, tx);
+        });
         deactivated.push({ row: rowNum, employeeNumber, name: `${firstName} ${lastName}`.trim() });
       }
-    } else if (exportFormat && !terminationRaw.trim() && wasDeactivated) {
+    } else if (exportFormat && idCell && hasTerminationColumn && wasDeactivated) {
       // Export row with an empty Termination Date for a currently-deactivated
       // person -> reactivate (clear the termination).
-      await storage.updateUser(userId, { deactivatedAt: null, terminationReason: null });
-      await storage.updateEmploymentProfile(userId, { terminationDate: null });
-      deactivatedByNumber.set(employeeNumber, false);
+      await db.transaction(async (tx) => {
+        await tx.update(users)
+          .set({ deactivatedAt: null, terminationReason: null, updatedAt: new Date() })
+          .where(eq(users.id, userId));
+        await storage.updateEmploymentProfile(userId, { terminationDate: null }, tx);
+      });
       reactivated.push({ row: rowNum, name: `${firstName} ${lastName}`.trim() });
     }
   }
