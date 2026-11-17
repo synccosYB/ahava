@@ -103,7 +103,7 @@ test("a next-day punch marks the stale shift a MISSING PUNCH (no hours) and open
   // The missing punch is flagged for manager review.
   const flags = await db.select().from(attendanceExceptions)
     .where(and(eq(attendanceExceptions.employeeId, employeeId), eq(attendanceExceptions.type, "missing_clockout")));
-  assert.ok(flags.length >= 1, "a missing_clockout exception was raised for the stale shift");
+  assert.equal(flags.length, 0, "stale shift detected as a missing punch but no longer auto-flagged for approval");
 });
 
 test("a normal same-day punch-out still closes the shift at the punch (no spurious cap)", async (t) => {

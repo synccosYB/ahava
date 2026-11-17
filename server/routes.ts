@@ -5,7 +5,7 @@ import { storage, DuplicateOpenPunchError } from "./storage";
 import { badRequestFromZod, handleRouteError, mapRouteError, RouteConflictError, PayrollFinalizedError } from "./routeErrors";
 import { db } from "./db";
 import { employeeLocations as employeeLocationsTable } from "@shared/schema";
-import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollSubmissions as payrollSubmissionsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
+import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollSubmissions as payrollSubmissionsTable, payrollAdjustments as payrollAdjustmentsTable, payrollBackpayItems as payrollBackpayItemsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, requireAnyPermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType, TERMINATION_REASONS } from "@shared/schema";
@@ -66,6 +66,8 @@ import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
 import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/rank";
 import { resolveEmployeeTimezone, localWorkDate, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
+import { suggestShiftPairing, type PairingResult } from "./services/shiftPairing";
+import { routeBackpayForCorrection } from "./services/backpayRouting";
 import {
   resolvePunctualityBonusConfig,
   recomputePunctualityForEmployee,
@@ -7024,7 +7026,11 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Exception not found" });
       }
       if (exception.status !== "pending") {
-        return res.status(400).json({ message: "Exception already processed" });
+        // Already resolved before this click landed (commonly a stale list the
+        // reviewer is looking at). Surface it as a 409 conflict — like the
+        // transactional guard below — so the client refetches and the ghost
+        // card clears, instead of a dead-end 400 that leaves it on screen.
+        throw new RouteConflictError("This correction was already handled by someone else.");
       }
 
       const teamIds = await getTeamUserIds(reviewer);
@@ -7114,10 +7120,53 @@ export async function registerRoutes(
         return storage.getAttendanceForUserOnDate(exception.employeeId, exception.exceptionDate);
       };
 
-      if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+      // --- Phase 3: smart in/out pairing for employee "missing punch" corrections ---
+      // The employee enters the real time(s) they worked but NOT which is the
+      // clock-in vs the clock-out. Combine those with any punch already on that
+      // day and infer the complete shift, so approving posts a FINISHED shift to
+      // the timesheet (not a lone open clock-in). suggestShiftPairing is pure and
+      // advisory; it returns an error (we fall back below) when there isn't
+      // enough to pair — e.g. a single entered time and no existing punch.
+      let missingPunchPairing: PairingResult | null = null;
+      let missingPunchDayPunches: PunchLog[] = [];
+      if (exception.type === "missing_punch") {
+        const enteredTimes: (Date | string)[] = [];
+        if (correctedClockIn) enteredTimes.push(new Date(correctedClockIn));
+        if (correctedClockOut) enteredTimes.push(new Date(correctedClockOut));
+        if (enteredTimes.length === 0 && correctedTimestamp) enteredTimes.push(correctedTimestamp);
+        missingPunchDayPunches = await storage.getAttendancesForUserOnDate(
+          exception.employeeId,
+          exception.exceptionDate,
+        );
+        const overnightAllowed = await storage.isOvernightShiftsAllowed(exception.employeeId);
+        missingPunchPairing = suggestShiftPairing({
+          enteredTimes,
+          existingPunches: missingPunchDayPunches.map((p) => ({
+            id: p.id,
+            clockIn: p.clockIn,
+            clockOut: p.clockOut,
+          })),
+          overnightAllowed,
+        });
+      }
+      // The paired, ready-to-apply suggestion (null when we must fall back to the
+      // legacy lone open clock-in — one entered time, no punch to pair with).
+      const missingPunchPaired =
+        missingPunchPairing && !("error" in missingPunchPairing) ? missingPunchPairing : null;
+
+      if (exception.type === "forgotten_clock_in") {
         const existingOpen = await storage.getCurrentAttendance(exception.employeeId);
         if (existingOpen && existingOpen.workDate === exception.exceptionDate) {
           return res.status(400).json({ message: "Employee already has an open punch for this date" });
+        }
+      } else if (exception.type === "missing_punch") {
+        // An existing punch is NOT a conflict here — it's the pairing target. Only
+        // block the genuinely ambiguous cases the pairing brain rejects when a
+        // punch is present: multiple punches, or a day that's already a complete
+        // shift (use a time correction for that). With no punch to pair, we fall
+        // through to the lone open clock-in create below.
+        if (missingPunchPairing && "error" in missingPunchPairing && missingPunchDayPunches.length > 0) {
+          return res.status(400).json({ message: missingPunchPairing.error });
         }
       } else if (exception.type === "forgotten_clock_out") {
         const targetedRecord = await loadTargetedPunch();
@@ -7178,25 +7227,19 @@ export async function registerRoutes(
       // finalized payroll period. punch_removal is handled by its own block
       // above; deny was already returned earlier.
       const correctionAllowFuture = allowFuturePunchFromRules(exceptionAttRules);
-      const payrollLockResponse = (exports: PayrollExport[], verb: string) =>
-        res.status(409).json({
-          message: `This punch is part of finalized payroll (${describeFinalizedPayroll(exports)}). Reopen the affected payroll batch before ${verb}.`,
-          code: "PAYROLL_FINALIZED",
-          payrollExports: exports.map((e) => ({
-            id: e.id,
-            startDate: e.startDate,
-            endDate: e.endDate,
-            status: e.status,
-          })),
-        });
+      // Finalized (already-paid) exports this correction touches. For hours-
+      // affecting corrections we DON'T block anymore: the timesheet is updated and
+      // the pay difference is routed to the next payroll as back-pay (after the
+      // transaction commits). punch_removal keeps its hard block below.
+      const backpaySourceExports: PayrollExport[] = [];
 
-      if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+      if (exception.type === "forgotten_clock_in") {
         const dateLock = await findFinalizedPayrollExportsForEmployeeDate(
           exception.employeeId,
           exception.exceptionDate,
         );
         if (dateLock.length > 0) {
-          return payrollLockResponse(dateLock, "adding this punch");
+          backpaySourceExports.push(...dateLock);
         }
         const integrity = await validateProposedPunch({
           employeeId: exception.employeeId,
@@ -7209,12 +7252,53 @@ export async function registerRoutes(
         if (!integrity.ok) {
           return res.status(400).json({ message: integrity.reason });
         }
+      } else if (exception.type === "missing_punch") {
+        const dateLock = await findFinalizedPayrollExportsForEmployeeDate(
+          exception.employeeId,
+          exception.exceptionDate,
+        );
+        if (dateLock.length > 0) {
+          backpaySourceExports.push(...dateLock);
+        }
+        const tz = await resolveEmployeeTimezone(exception.employeeId);
+        if (missingPunchPaired) {
+          // Validate the full inferred shift. An overnight pair's clock-out lands
+          // on the next day, so include that date in the overlap scope.
+          const candidateDates = Array.from(
+            new Set([exception.exceptionDate, localWorkDate(missingPunchPaired.clockOut, tz)]),
+          );
+          const integrity = await validateProposedPunch({
+            employeeId: exception.employeeId,
+            clockIn: missingPunchPaired.clockIn,
+            clockOut: missingPunchPaired.clockOut,
+            punchId: missingPunchPaired.targetPunchId ?? undefined,
+            candidateDates,
+            allowFuturePunch: correctionAllowFuture,
+            timezone: tz,
+          });
+          if (!integrity.ok) {
+            return res.status(400).json({ message: integrity.reason });
+          }
+        } else {
+          // Fallback: a lone open clock-in (one entered time, nothing to pair).
+          const integrity = await validateProposedPunch({
+            employeeId: exception.employeeId,
+            clockIn: correctedTimestamp || new Date(),
+            clockOut: undefined,
+            candidateDates: [exception.exceptionDate],
+            allowFuturePunch: correctionAllowFuture,
+            timezone: tz,
+          });
+          if (!integrity.ok) {
+            return res.status(400).json({ message: integrity.reason });
+          }
+        }
       } else if (exception.type === "forgotten_clock_out") {
         const target = await loadTargetedPunch();
         if (target) {
           const punchLock = await findFinalizedPayrollExportsForPunch(target.id);
           if (punchLock.length > 0) {
-            return payrollLockResponse(punchLock, "correcting this punch");
+            backpaySourceExports.push(...punchLock);
           }
           const integrity = await validateProposedPunch({
             employeeId: exception.employeeId,
@@ -7234,7 +7318,7 @@ export async function registerRoutes(
         if (target) {
           const punchLock = await findFinalizedPayrollExportsForPunch(target.id);
           if (punchLock.length > 0) {
-            return payrollLockResponse(punchLock, "correcting this punch");
+            backpaySourceExports.push(...punchLock);
           }
           // Derive the punch's proposed final state exactly as the transaction
           // below will (explicit corrected in/out win; otherwise the legacy
@@ -7277,7 +7361,7 @@ export async function registerRoutes(
       const updated = await db.transaction(async (tx) => {
         let punchLog: PunchLog | undefined | null = null;
 
-        if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+        if (exception.type === "forgotten_clock_in") {
           const [created] = await tx.insert(punchLogs).values({
             employeeId: exception.employeeId,
             workDate: exception.exceptionDate,
@@ -7287,6 +7371,79 @@ export async function registerRoutes(
             approved: true,
           }).returning();
           punchLog = created;
+        } else if (exception.type === "missing_punch") {
+          if (missingPunchPaired) {
+            // Post the COMPLETE inferred shift. Round the clock-in and run the
+            // same clock-out enforcement as every other write path so hours,
+            // rounding, and status (complete/overtime/…) are consistent.
+            const roundingRule = exceptionAttRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+            const roundingInterval =
+              exceptionAttRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+            const roundedClockIn = roundTime(missingPunchPaired.clockIn, roundingRule, roundingInterval);
+            const enforcement = enforceClockOut(
+              roundedClockIn,
+              missingPunchPaired.clockOut,
+              0,
+              exceptionAttRules,
+              exceptionPayrollRules,
+              employeeUser,
+              exceptionAttendancePolicy?.policyName,
+            );
+            if (missingPunchPaired.action === "update" && missingPunchPaired.targetPunchId) {
+              // Re-load the pairing target inside the tx and guard against a race:
+              // if it was completed or removed since we built the suggestion, abort
+              // so we never double-apply or clobber a finished shift.
+              const [currentTarget] = await tx
+                .select()
+                .from(punchLogs)
+                .where(and(
+                  eq(punchLogs.id, missingPunchPaired.targetPunchId),
+                  eq(punchLogs.employeeId, exception.employeeId),
+                ))
+                .limit(1);
+              if (!currentTarget || (currentTarget.clockIn && currentTarget.clockOut)) {
+                throw new RouteConflictError(
+                  "The punch being paired changed before this approval completed — refresh and try again.",
+                );
+              }
+              const [updated] = await tx.update(punchLogs).set({
+                clockIn: missingPunchPaired.clockIn,
+                roundedClockIn,
+                clockOut: missingPunchPaired.clockOut,
+                roundedClockOut: enforcement.roundedTime,
+                hoursWorked: enforcement.hoursWorked,
+                status: enforcement.status,
+                source: "manager",
+              }).where(eq(punchLogs.id, missingPunchPaired.targetPunchId)).returning();
+              punchLog = updated;
+            } else {
+              const [created] = await tx.insert(punchLogs).values({
+                employeeId: exception.employeeId,
+                workDate: exception.exceptionDate,
+                clockIn: missingPunchPaired.clockIn,
+                roundedClockIn,
+                clockOut: missingPunchPaired.clockOut,
+                roundedClockOut: enforcement.roundedTime,
+                hoursWorked: enforcement.hoursWorked,
+                status: enforcement.status,
+                source: "manager",
+                approved: true,
+              }).returning();
+              punchLog = created;
+            }
+          } else {
+            // Fallback: a lone open clock-in (one entered time, nothing to pair) —
+            // the employee can close it later, same as the legacy behavior.
+            const [created] = await tx.insert(punchLogs).values({
+              employeeId: exception.employeeId,
+              workDate: exception.exceptionDate,
+              clockIn: correctedTimestamp || new Date(),
+              status: "in-progress",
+              source: "manager",
+              approved: true,
+            }).returning();
+            punchLog = created;
+          }
         } else if (exception.type === "forgotten_clock_out") {
           // Prefer the FK target so multi-punch days resolve unambiguously;
           // fall back to "latest punch on this date" for legacy rows that
@@ -7605,7 +7762,30 @@ export async function registerRoutes(
       );
       void recomputeLedger(exception.employeeId, affectedDates);
 
-      return res.json(updated.result);
+      // The correction is applied. If it touched a finalized (already-paid)
+      // export, record the pay owed / clawed-back as a PENDING back-pay item for
+      // admin approval (carried into the next batch once approved). Best-effort:
+      // the correction is already committed, so a failure here is logged and
+      // surfaced, never fatal.
+      let backpayItems: Awaited<ReturnType<typeof routeBackpayForCorrection>> = [];
+      let backpayError = false;
+      if (backpaySourceExports.length > 0) {
+        try {
+          backpayItems = await routeBackpayForCorrection({
+            employee: employeeUser,
+            workDate: updated.punchLog?.workDate ?? exception.exceptionDate,
+            sourceExports: backpaySourceExports,
+            attendanceExceptionId: exceptionId,
+            punchLogId: updated.punchLog?.id ?? null,
+            requestedBy: reviewer.id,
+          });
+        } catch (err) {
+          backpayError = true;
+          console.error("Back-pay routing failed after correction was applied:", err);
+        }
+      }
+
+      return res.json({ ...updated.result, backpayItems, backpayError });
     } catch (error) {
       console.error("Error resolving attendance exception:", error);
       handleRouteError(res, error, "Failed to resolve attendance exception");
@@ -8373,7 +8553,12 @@ export async function registerRoutes(
       const requestId = String(req.params.id) as string;
       const request = await storage.getTimeOffRequest(requestId);
       if (!request) return res.status(404).json({ message: "Request not found" });
-      if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
+      if (request.status !== "pending") {
+        // Already decided before this click landed (usually a stale list). Use a
+        // 409 conflict so the client refetches and the ghost card clears,
+        // matching the transactional guard rather than a dead-end 400.
+        throw new RouteConflictError("This request was already handled by someone else.");
+      }
 
       const teamIds = await getTeamUserIds(user);
       if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to approve this request" });
@@ -8472,7 +8657,12 @@ export async function registerRoutes(
       const requestId = String(req.params.id) as string;
       const request = await storage.getTimeOffRequest(requestId);
       if (!request) return res.status(404).json({ message: "Request not found" });
-      if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
+      if (request.status !== "pending") {
+        // Already decided before this click landed (usually a stale list). Use a
+        // 409 conflict so the client refetches and the ghost card clears,
+        // matching the transactional guard rather than a dead-end 400.
+        throw new RouteConflictError("This request was already handled by someone else.");
+      }
 
       const teamIds = await getTeamUserIds(user);
       if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to deny this request" });
@@ -10653,7 +10843,19 @@ export async function registerRoutes(
         }
       }
 
-      const totalRecordCount = dayGroups.size + approvedTimeOff.length + approvedCashouts.length;
+      // Approved back-pay owed to employees who ALSO appear in this batch (so a
+      // batch never silently pulls in an unrelated employee just for back-pay).
+      // These ride along as labeled "backpay" lines and are marked paid in the
+      // transaction below, so a later batch never pays them twice.
+      const batchEmployeeIds = new Set<string>();
+      for (const g of dayGroups.values()) batchEmployeeIds.add(g.employeeId);
+      for (const r of approvedTimeOff) batchEmployeeIds.add(r.userId);
+      for (const co of approvedCashouts) batchEmployeeIds.add(co.userId);
+      const eligibleBackpayItems = (await storage.getApprovedUnpaidPayrollBackpayItems())
+        .filter((it) => batchEmployeeIds.has(it.employeeId) && userMap.has(it.employeeId));
+
+      const totalRecordCount =
+        dayGroups.size + approvedTimeOff.length + approvedCashouts.length + eligibleBackpayItems.length;
 
       // Per-employee resolution caches: the frozen pay-engine snapshot, the raw
       // payroll rules (for bonus evaluation), the hourly rate, and the active
@@ -10970,6 +11172,39 @@ export async function registerRoutes(
           });
         }
 
+        // Approved back-pay: one labeled "backpay" line per owed item (signed —
+        // negative hours are a claw-back), paid at the frozen rate from the source
+        // period. Mark each item paid in the SAME transaction (status-guarded) so
+        // it can never be carried into a second batch.
+        for (const bp of eligibleBackpayItems) {
+          const { rate, payrollCompanyId, payrollCompanyName } = await resolveEmp(bp.employeeId);
+          await tx.insert(payrollBatchRecordsTable).values({
+            payrollExportId: created.id,
+            employeeId: bp.employeeId,
+            punchLogId: bp.punchLogId,
+            timeOffRequestId: null,
+            recordType: "backpay",
+            workDate: bp.workDate,
+            regularHours: bp.regularHours,
+            overtimeHours: bp.overtimeHours,
+            doubleTimeHours: bp.doubleTimeHours,
+            ptoHours: 0,
+            overtimeMultiplier: bp.overtimeMultiplier,
+            doubleTimeMultiplier: bp.doubleTimeMultiplier,
+            hourlyRate: bp.hourlyRate ?? rate,
+            payrollCompanyId,
+            payrollCompanyName,
+            bonusAmount: 0,
+            bonusHours: 0,
+            hasIssues: false,
+            issueDescription: bp.reason,
+          });
+          await tx
+            .update(payrollBackpayItemsTable)
+            .set({ status: "paid", paidInExportId: created.id, paidAt: new Date() })
+            .where(and(eq(payrollBackpayItemsTable.id, bp.id), eq(payrollBackpayItemsTable.status, "approved")));
+        }
+
         // Confirmed-only batch: stamp each confirmed day with the batch that paid
         // it (in the same transaction) so it is never pulled into a second batch.
         // Guarded on payrollExportId IS NULL in case a day was batched concurrently.
@@ -11001,6 +11236,56 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error creating payroll batch:", error);
       handleRouteError(res, error, "Failed to create payroll batch");
+    }
+  });
+
+  // Delete a DRAFT batch (never a sent one). This is what the "Rebuild draft
+  // batch" action uses: delete the stale draft, then re-create it fresh so it
+  // reflects the latest punches/corrections. Releases the batch's confirmed days
+  // back to "ready" and REVERTS any back-pay it had carried in (back to approved,
+  // unpaid) so nothing owed is lost. A sent (exported/locked/reopened) batch must
+  // be reopened/handled through its own flow, never deleted here.
+  app.delete("/api/payroll/exports/:id", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const exportId = String(req.params.id);
+      const exp = await storage.getPayrollExport(exportId);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+      if (exp.status !== "draft") {
+        return res.status(409).json({
+          message: `Only draft batches can be deleted (this one is "${exp.status}"). Reopen a sent batch before changing it.`,
+          code: "PAYROLL_NOT_DRAFT",
+        });
+      }
+
+      await db.transaction(async (tx) => {
+        // Un-pay any back-pay this draft carried, so it rides the next batch.
+        await tx
+          .update(payrollBackpayItemsTable)
+          .set({ status: "approved", paidInExportId: null, paidAt: null })
+          .where(eq(payrollBackpayItemsTable.paidInExportId, exportId));
+        // Release the confirmed days this draft claimed back to "ready".
+        await tx
+          .update(payrollSubmissionsTable)
+          .set({ payrollExportId: null })
+          .where(eq(payrollSubmissionsTable.payrollExportId, exportId));
+        await tx.delete(payrollBatchRecordsTable).where(eq(payrollBatchRecordsTable.payrollExportId, exportId));
+        await tx.delete(payrollExportsTable).where(eq(payrollExportsTable.id, exportId));
+      });
+
+      await writeAuditLog({
+        actorUserId: (req.authUser as User).id,
+        targetType: "payroll_export",
+        targetId: exportId,
+        action: "payroll_export.deleted",
+        oldValue: { status: exp.status, startDate: exp.startDate, endDate: exp.endDate },
+        newValue: null,
+        ...getAuditContext(req),
+      });
+
+      res.json({ deleted: true });
+    } catch (error) {
+      console.error("Error deleting draft payroll batch:", error);
+      handleRouteError(res, error, "Failed to delete draft payroll batch");
     }
   });
 
@@ -11599,6 +11884,72 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error acknowledging adjustment:", error);
       handleRouteError(res, error, "Failed to acknowledge adjustment");
+    }
+  });
+
+  // --- Back-pay items (corrections to already-paid days) ---------------------
+  // Pending queue for the admin approval UI, enriched with employee name.
+  app.get("/api/payroll/backpay/pending", requireAuth, requirePermission("payroll.view_all"), async (req: any, res) => {
+    try {
+      const items = await storage.getPendingPayrollBackpayItems();
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const userMap = new Map(allUsers.map((u) => [u.id, u]));
+      const enriched = items.map((it) => {
+        const emp = userMap.get(it.employeeId);
+        return {
+          ...it,
+          employeeName: emp ? `${emp.firstName || ""} ${emp.lastName || ""}`.trim() : "Unknown",
+        };
+      });
+      res.json(enriched);
+    } catch (error) {
+      console.error("Error fetching pending back-pay items:", error);
+      handleRouteError(res, error, "Failed to fetch pending back-pay items");
+    }
+  });
+
+  // Admin-only FINAL approval of a back-pay item (status-guarded against a stale
+  // list). Approved items are carried into the next payroll batch.
+  app.post("/api/payroll/backpay/:id/approve", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const item = await storage.getPayrollBackpayItem(String(req.params.id));
+      if (!item) return res.status(404).json({ message: "Back-pay item not found" });
+      if (item.status !== "pending") {
+        throw new RouteConflictError("This back-pay item was already handled by someone else.");
+      }
+      const adminUser = req.authUser as User;
+      const updated = await storage.updatePayrollBackpayItem(item.id, {
+        status: "approved",
+        approvedBy: adminUser.id,
+        approvedAt: new Date(),
+        reviewNotes: typeof req.body?.reviewNotes === "string" ? req.body.reviewNotes : item.reviewNotes,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error approving back-pay item:", error);
+      handleRouteError(res, error, "Failed to approve back-pay item");
+    }
+  });
+
+  // Admin-only rejection (e.g. the correction was itself reverted).
+  app.post("/api/payroll/backpay/:id/reject", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const item = await storage.getPayrollBackpayItem(String(req.params.id));
+      if (!item) return res.status(404).json({ message: "Back-pay item not found" });
+      if (item.status !== "pending") {
+        throw new RouteConflictError("This back-pay item was already handled by someone else.");
+      }
+      const adminUser = req.authUser as User;
+      const updated = await storage.updatePayrollBackpayItem(item.id, {
+        status: "rejected",
+        approvedBy: adminUser.id,
+        approvedAt: new Date(),
+        reviewNotes: typeof req.body?.reviewNotes === "string" ? req.body.reviewNotes : item.reviewNotes,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error rejecting back-pay item:", error);
+      handleRouteError(res, error, "Failed to reject back-pay item");
     }
   });
 

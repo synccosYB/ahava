@@ -102,6 +102,9 @@ import {
   payrollAdjustments,
   type PayrollAdjustment,
   type InsertPayrollAdjustment,
+  payrollBackpayItems,
+  type PayrollBackpayItem,
+  type InsertPayrollBackpayItem,
   systemAlerts,
   type SystemAlert,
   type InsertSystemAlert,
@@ -204,7 +207,7 @@ import {
   userLocationIds,
 } from "@shared/schema";
 import { db, type DatabaseConnection } from "./db";
-import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, isNotNull, type SQL } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, asc, desc, ne, count, sql, inArray, isNull, isNotNull, type SQL } from "drizzle-orm";
 import {
   CORRECTION_COUNT_TYPES,
   CORRECTION_COUNT_WINDOW_DAYS,
@@ -473,6 +476,7 @@ export interface IStorage {
   searchUsersByName(query: string): Promise<User[]>;
   getLatestAttendanceForUser(userId: string): Promise<PunchLog | undefined>;
   getAttendanceForUserOnDate(userId: string, workDate: string): Promise<PunchLog | undefined>;
+  getAttendancesForUserOnDate(userId: string, workDate: string): Promise<PunchLog[]>;
 
   getUsersByDepartment(departmentId: string): Promise<User[]>;
   getUsersByLocation(locationId: string): Promise<User[]>;
@@ -654,6 +658,14 @@ export interface IStorage {
   getPendingPayrollAdjustments(): Promise<PayrollAdjustment[]>;
   createPayrollAdjustment(data: InsertPayrollAdjustment): Promise<PayrollAdjustment>;
   updatePayrollAdjustment(id: string, data: Partial<InsertPayrollAdjustment>): Promise<PayrollAdjustment | undefined>;
+
+  createPayrollBackpayItem(data: InsertPayrollBackpayItem): Promise<PayrollBackpayItem>;
+  getPayrollBackpayItem(id: string): Promise<PayrollBackpayItem | undefined>;
+  updatePayrollBackpayItem(id: string, data: Partial<InsertPayrollBackpayItem>): Promise<PayrollBackpayItem | undefined>;
+  deletePayrollBackpayItem(id: string): Promise<void>;
+  getPendingPayrollBackpayItems(): Promise<PayrollBackpayItem[]>;
+  getPendingPayrollBackpayItemsForEmployee(employeeId: string): Promise<PayrollBackpayItem[]>;
+  getApprovedUnpaidPayrollBackpayItems(): Promise<PayrollBackpayItem[]>;
 
   getExportedBatchRecordsByPunchLog(punchLogId: string): Promise<(PayrollBatchRecord & { payrollExport?: PayrollExport })[]>;
 
@@ -2369,6 +2381,18 @@ export class DatabaseStorage implements IStorage {
     return record ? punchLogToLegacy(record) : undefined;
   }
 
+  // Every punch recorded on a given work date for one employee (0, 1, or more).
+  // Used by the missing-punch correction pairing, which must distinguish "no
+  // punch" / "one lone punch to pair with" / "multiple punches (ambiguous)".
+  async getAttendancesForUserOnDate(userId: string, workDate: string): Promise<PunchLog[]> {
+    const rows = await db
+      .select()
+      .from(punchLogs)
+      .where(and(eq(punchLogs.employeeId, userId), eq(punchLogs.workDate, workDate)))
+      .orderBy(asc(punchLogs.createdAt));
+    return rows.map(punchLogToLegacy);
+  }
+
   async getUsersByDepartment(departmentId: string): Promise<User[]> {
     // Membership: anyone assigned to this department via the join OR the legacy
     // single column (kept in sync). Mirrors the "is a member of" semantics.
@@ -3718,6 +3742,54 @@ export class DatabaseStorage implements IStorage {
   async updatePayrollAdjustment(id: string, data: Partial<InsertPayrollAdjustment>): Promise<PayrollAdjustment | undefined> {
     const [updated] = await db.update(payrollAdjustments).set(data).where(eq(payrollAdjustments.id, id)).returning();
     return updated;
+  }
+
+  // ---- Back-pay items (corrections to already-paid days) --------------------
+  async createPayrollBackpayItem(data: InsertPayrollBackpayItem): Promise<PayrollBackpayItem> {
+    const [created] = await db.insert(payrollBackpayItems).values(data).returning();
+    return created;
+  }
+
+  async getPayrollBackpayItem(id: string): Promise<PayrollBackpayItem | undefined> {
+    const [row] = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.id, id));
+    return row;
+  }
+
+  async updatePayrollBackpayItem(id: string, data: Partial<InsertPayrollBackpayItem>): Promise<PayrollBackpayItem | undefined> {
+    const [updated] = await db.update(payrollBackpayItems).set(data).where(eq(payrollBackpayItems.id, id)).returning();
+    return updated;
+  }
+
+  async deletePayrollBackpayItem(id: string): Promise<void> {
+    await db.delete(payrollBackpayItems).where(eq(payrollBackpayItems.id, id));
+  }
+
+  // Admin approval queue: everything awaiting a decision, newest first.
+  async getPendingPayrollBackpayItems(): Promise<PayrollBackpayItem[]> {
+    return db.select().from(payrollBackpayItems)
+      .where(eq(payrollBackpayItems.status, "pending"))
+      .orderBy(desc(payrollBackpayItems.createdAt));
+  }
+
+  // Pending items for one employee — used to SUPERSEDE a prior pending item when
+  // a fresh correction re-recomputes the same week (so we never double-pay).
+  async getPendingPayrollBackpayItemsForEmployee(employeeId: string): Promise<PayrollBackpayItem[]> {
+    return db.select().from(payrollBackpayItems)
+      .where(and(
+        eq(payrollBackpayItems.employeeId, employeeId),
+        eq(payrollBackpayItems.status, "pending"),
+      ))
+      .orderBy(desc(payrollBackpayItems.createdAt));
+  }
+
+  // Approved but not-yet-paid items — what the next batch build carries in.
+  async getApprovedUnpaidPayrollBackpayItems(): Promise<PayrollBackpayItem[]> {
+    return db.select().from(payrollBackpayItems)
+      .where(and(
+        eq(payrollBackpayItems.status, "approved"),
+        isNull(payrollBackpayItems.paidInExportId),
+      ))
+      .orderBy(asc(payrollBackpayItems.workDate));
   }
 
   async getExportedBatchRecordsByPunchLog(punchLogId: string): Promise<(PayrollBatchRecord & { payrollExport?: PayrollExport })[]> {

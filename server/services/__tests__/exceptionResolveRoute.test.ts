@@ -17,6 +17,9 @@ import {
   users,
   payrollExports,
   payrollBatchRecords,
+  payrollBackpayItems,
+  payrollAdjustments,
+  payrollSubmissions,
   attendanceChangeLedger,
   attendanceLedger,
 } from "@shared/schema";
@@ -1689,4 +1692,386 @@ test("PATCH /attendance/exceptions/:id rejects clearing the punch on a punch_rem
     .from(attendanceExceptions)
     .where(eq(attendanceExceptions.id, exception.id));
   assert.equal(unchanged.punchLogId, punch.id, "rejected edit must leave the FK intact");
+});
+
+test("POST /attendance/exceptions/:id/resolve: resolving an ALREADY-decided exception returns 409 (not a dead-end 400) so a stale approvals list self-heals", async (t) => {
+  const fx = await setupFixture("already-decided-409");
+  t.after(fx.cleanup);
+
+  // An exception that was already approved — e.g. the reviewer is looking at a
+  // stale Requests & Approvals list and clicks Approve on a row that was already
+  // handled. The route must answer 409 (a concurrency conflict the client
+  // refetches on), matching the in-transaction guard, rather than a 400 that
+  // leaves the ghost card on screen.
+  const workDate = "2026-05-02";
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: new Date("2026-05-02T09:00:00Z"),
+      type: "missing_punch",
+      reason: "already-decided row for the stale-list 409 regression",
+      status: "approved",
+      reviewedBy: REVIEWER_ID,
+      reviewedAt: new Date(),
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "approve" }),
+  });
+  assert.equal(res.status, 409, `expected 409 for an already-decided exception, got ${res.status}`);
+
+  // The already-decided row is untouched by the rejected re-resolve.
+  const [after] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(after.status, "approved", "a rejected re-resolve must not change the existing decision");
+});
+
+test("Phase 3 missing_punch: a fully-missed day (no punch) approves into one COMPLETE shift from both entered times", async (t) => {
+  const fx = await setupFixture("mp-fully-missed");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-10";
+  const reqIn = new Date("2026-05-10T09:00:00Z");
+  const reqOut = new Date("2026-05-10T13:00:00Z"); // 4h
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: reqIn,
+      type: "missing_punch",
+      reason: "forgot to punch all day [Corrected In: 09:00, Corrected Out: 13:00]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({
+      action: "approve",
+      correctedClockIn: reqIn.toISOString(),
+      correctedClockOut: reqOut.toISOString(),
+    }),
+  });
+  assert.equal(res.status, 200, `expected 200, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "exactly one punch created (no duplicate/open-only)");
+  assert.ok(rows[0].clockIn && rows[0].clockOut, "a COMPLETE shift (both sides set)");
+  assert.notEqual(rows[0].status, "in-progress", "not left as an open clock-in");
+  assert.equal(Number(rows[0].hoursWorked), 4, "~4h posted");
+});
+
+test("Phase 3 missing_punch: a lone punch + one entered time PAIRS into the existing punch (Ayala — direction inferred, no duplicate)", async (t) => {
+  const fx = await setupFixture("mp-lone-pairing");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-11";
+  // The system has a single 5:17 PM punch recorded as an (open) clock-in.
+  const loneAt = new Date("2026-05-11T17:17:00Z");
+  const [lone] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn: loneAt,
+      roundedClockIn: loneAt,
+      status: "in-progress",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // The employee says they actually clocked IN at 9:12 AM that day.
+  const enteredIn = new Date("2026-05-11T09:12:00Z");
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: enteredIn,
+      type: "missing_punch",
+      reason: "the 5:17 is really my clock-out [Corrected In: 09:12]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({ action: "approve", correctedClockIn: enteredIn.toISOString() }),
+  });
+  assert.equal(res.status, 200, `expected 200, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "the existing punch was updated, not duplicated");
+  assert.equal(rows[0].id, lone.id, "same punch row");
+  assert.equal(new Date(rows[0].clockIn!).toISOString(), "2026-05-11T09:12:00.000Z", "9:12 became the clock-in");
+  assert.equal(new Date(rows[0].clockOut!).toISOString(), "2026-05-11T17:17:00.000Z", "5:17 became the clock-out");
+});
+
+test("Phase 3 missing_punch: one entered time and NO existing punch still falls back to a lone open clock-in (legacy behavior preserved)", async (t) => {
+  const fx = await setupFixture("mp-fallback-open");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-12";
+  const onlyIn = new Date("2026-05-12T08:30:00Z");
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: onlyIn,
+      type: "missing_punch",
+      reason: "only gave one time [Corrected In: 08:30]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({ action: "approve", correctedClockIn: onlyIn.toISOString() }),
+  });
+  assert.equal(res.status, 200, `expected 200, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "one punch");
+  assert.ok(rows[0].clockIn && !rows[0].clockOut, "open clock-in (no clock-out) — fallback");
+  assert.equal(rows[0].status, "in-progress");
+});
+
+test("Phase 3b back-pay: a time_correction that ADDS hours to an already-paid day updates the timesheet AND creates a pending back-pay item (not a 409 block)", async (t) => {
+  const fx = await setupFixture("backpay-time-correction");
+
+  const workDate = "2026-05-12";
+  const clockIn = new Date("2026-05-12T09:00:00Z");
+  const paidClockOut = new Date("2026-05-12T13:00:00Z"); // paid as 4h
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut: paidClockOut,
+      roundedClockOut: paidClockOut,
+      hoursWorked: 4,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Finalized export that already paid 4 regular hours for that day, with a
+  // frozen policy snapshot (daily OT at 8, weekly OT off) so the recompute is
+  // deterministic.
+  const [exp] = await db
+    .insert(payrollExports)
+    .values({ startDate: workDate, endDate: workDate, status: "exported", exportedAt: new Date() })
+    .returning();
+  await db.insert(payrollBatchRecords).values({
+    payrollExportId: exp.id,
+    employeeId: fx.employeeId,
+    punchLogId: punch.id,
+    recordType: "attendance",
+    workDate,
+    regularHours: 4,
+    overtimeHours: 0,
+    doubleTimeHours: 0,
+    otThresholdDaily: 8,
+    overtimeMultiplier: 1.5,
+    doubleTimeThresholdDaily: null,
+    autoCalculateOt: true,
+    overtimeEnabled: true,
+    weeklyOvertimeEnabled: false,
+    workweekStartDay: 0,
+    hourlyRate: 20,
+  });
+
+  t.after(async () => {
+    await db.delete(payrollBackpayItems).where(eq(payrollBackpayItems.employeeId, fx.employeeId));
+    // The resolve route's checkPostExportModification also flags the modified
+    // punch as a payroll_adjustment; clear it so the punch can be deleted.
+    await db.delete(payrollAdjustments).where(eq(payrollAdjustments.employeeId, fx.employeeId));
+    await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exp.id));
+    await db.delete(payrollExports).where(eq(payrollExports.id, exp.id));
+    await fx.cleanup();
+  });
+
+  // Employee says they actually worked until 5 PM (8h), not 1 PM.
+  const correctedOut = new Date("2026-05-12T17:00:00Z");
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: correctedOut,
+      type: "time_correction",
+      reason: "I actually left at 5 [Original In: 09:00, Original Out: 13:00, Corrected In: 09:00, Corrected Out: 17:00]",
+      status: "pending",
+      punchLogId: punch.id,
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({
+      action: "approve",
+      correctedClockIn: clockIn.toISOString(),
+      correctedClockOut: correctedOut.toISOString(),
+    }),
+  });
+  assert.equal(res.status, 200, `expected 200 (back-pay routed, not blocked), got ${res.status} (${await res.text().catch(() => "")})`);
+
+  // Timesheet updated: the punch now reads 8h.
+  const [updatedPunch] = await db.select().from(punchLogs).where(eq(punchLogs.id, punch.id));
+  assert.equal(Number(updatedPunch.hoursWorked), 8, "punch corrected to 8h on the timesheet");
+
+  // A pending back-pay item for the +4 regular-hour difference exists.
+  const items = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.employeeId, fx.employeeId));
+  assert.equal(items.length, 1, "exactly one back-pay item created");
+  assert.equal(items[0].status, "pending", "awaits admin approval");
+  assert.equal(items[0].sourcePayrollExportId, exp.id, "points at the source (already-paid) export");
+  assert.equal(Number(items[0].regularHours), 4, "+4 regular hours owed");
+  assert.equal(Number(items[0].overtimeHours), 0);
+  assert.equal(items[0].hourlyRate, 20, "frozen rate carried for the back-pay line");
+});
+
+test("Phase 3b back-pay: building the next batch carries an APPROVED back-pay item in as a labeled line and marks it paid", async (t) => {
+  const fx = await setupFixture("backpay-batch-consume");
+
+  // A clean future day with a complete, approved punch, confirmed for payroll.
+  const workDate = "2026-06-09";
+  const clockIn = new Date("2026-06-09T09:00:00Z");
+  const clockOut = new Date("2026-06-09T17:00:00Z");
+  const [punch] = await db.insert(punchLogs).values({
+    employeeId: fx.employeeId, workDate, clockIn, roundedClockIn: clockIn,
+    clockOut, roundedClockOut: clockOut, hoursWorked: 8, status: "complete",
+    source: "test", approved: true,
+  }).returning();
+  await db.insert(payrollSubmissions).values({
+    employeeId: fx.employeeId, workDate, sentBy: REVIEWER_ID,
+  });
+
+  // An approved, unpaid back-pay item owed to the same employee.
+  const [bp] = await db.insert(payrollBackpayItems).values({
+    employeeId: fx.employeeId, workDate: "2026-05-20",
+    reason: "back-pay owed for a corrected earlier shift",
+    regularHours: 3, overtimeHours: 0, doubleTimeHours: 0,
+    hourlyRate: 25, status: "approved",
+  }).returning();
+
+  t.after(async () => {
+    const exps = await db.select().from(payrollExports);
+    for (const e of exps) {
+      await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, e.id));
+    }
+    await db.delete(payrollBackpayItems).where(eq(payrollBackpayItems.employeeId, fx.employeeId));
+    await db.delete(payrollSubmissions).where(eq(payrollSubmissions.employeeId, fx.employeeId));
+    // Remove exports created by this build (those with no remaining records).
+    for (const e of exps) {
+      await db.delete(payrollExports).where(eq(payrollExports.id, e.id)).catch(() => {});
+    }
+    await fx.cleanup();
+  });
+
+  const res = await fetch(`${fx.baseUrl}/api/payroll/exports`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({ startDate: workDate, endDate: workDate, confirmedOnly: true }),
+  });
+  const bodyText = await res.text();
+  assert.equal(res.status, 201, `expected 201 from batch build, got ${res.status} (${bodyText})`);
+  const exp = JSON.parse(bodyText);
+
+  const records = await db.select().from(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exp.id));
+  const backpayRows = records.filter((r) => r.recordType === "backpay" && r.employeeId === fx.employeeId);
+  assert.equal(backpayRows.length, 1, "one back-pay line in the new batch");
+  assert.equal(Number(backpayRows[0].regularHours), 3, "owed hours carried through");
+  assert.equal(backpayRows[0].hourlyRate, 25, "frozen rate carried through");
+
+  const [paidItem] = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.id, bp.id));
+  assert.equal(paidItem.status, "paid", "the item is now marked paid");
+  assert.equal(paidItem.paidInExportId, exp.id, "stamped with the batch that paid it");
+});
+
+test("Phase 3b rebuild: deleting a DRAFT batch reverts the back-pay it consumed (back to approved/unpaid) and releases its confirmed days", async (t) => {
+  const fx = await setupFixture("backpay-draft-delete");
+
+  const workDate = "2026-06-16";
+  const clockIn = new Date("2026-06-16T09:00:00Z");
+  const clockOut = new Date("2026-06-16T17:00:00Z");
+  await db.insert(punchLogs).values({
+    employeeId: fx.employeeId, workDate, clockIn, roundedClockIn: clockIn,
+    clockOut, roundedClockOut: clockOut, hoursWorked: 8, status: "complete",
+    source: "test", approved: true,
+  });
+  const [sub] = await db.insert(payrollSubmissions).values({
+    employeeId: fx.employeeId, workDate, sentBy: REVIEWER_ID,
+  }).returning();
+  const [bp] = await db.insert(payrollBackpayItems).values({
+    employeeId: fx.employeeId, workDate: "2026-05-27",
+    reason: "back-pay to be carried then reverted",
+    regularHours: 2, hourlyRate: 30, status: "approved",
+  }).returning();
+
+  t.after(async () => {
+    const exps = await db.select().from(payrollExports);
+    for (const e of exps) await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, e.id));
+    await db.delete(payrollBackpayItems).where(eq(payrollBackpayItems.employeeId, fx.employeeId));
+    await db.delete(payrollSubmissions).where(eq(payrollSubmissions.employeeId, fx.employeeId));
+    for (const e of exps) await db.delete(payrollExports).where(eq(payrollExports.id, e.id)).catch(() => {});
+    await fx.cleanup();
+  });
+
+  // Reproduce the post-build draft state directly (the builder has a per-admin
+  // cooldown gate, so this suite can't POST a second build in-process): a draft
+  // export that claimed the confirmed day and carried the back-pay in (paid).
+  const [exp] = await db
+    .insert(payrollExports)
+    .values({ startDate: workDate, endDate: workDate, status: "draft" })
+    .returning();
+  await db.insert(payrollBatchRecords).values({
+    payrollExportId: exp.id, employeeId: fx.employeeId, recordType: "backpay",
+    workDate: "2026-05-27", regularHours: 2, hourlyRate: 30,
+  });
+  await db.update(payrollBackpayItems)
+    .set({ status: "paid", paidInExportId: exp.id, paidAt: new Date() })
+    .where(eq(payrollBackpayItems.id, bp.id));
+  await db.update(payrollSubmissions)
+    .set({ payrollExportId: exp.id })
+    .where(eq(payrollSubmissions.id, sub.id));
+  const [afterBuild] = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.id, bp.id));
+  assert.equal(afterBuild.status, "paid", "precondition: draft carried the item (paid)");
+
+  // Delete the draft (the rebuild action's first half).
+  const delRes = await fetch(`${fx.baseUrl}/api/payroll/exports/${exp.id}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${fx.reviewerToken}` },
+  });
+  assert.equal(delRes.status, 200, `expected 200 from draft delete, got ${delRes.status} (${await delRes.text().catch(() => "")})`);
+
+  // Back-pay reverted to approved/unpaid so it isn't lost.
+  const [afterDelete] = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.id, bp.id));
+  assert.equal(afterDelete.status, "approved", "back-pay reverted to approved");
+  assert.equal(afterDelete.paidInExportId, null, "no longer stamped paid");
+  // Export + its records are gone; the confirmed day is released.
+  const remaining = await db.select().from(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exp.id));
+  assert.equal(remaining.length, 0, "batch records deleted");
+  const [relSub] = await db.select().from(payrollSubmissions).where(eq(payrollSubmissions.id, sub.id));
+  assert.equal(relSub.payrollExportId, null, "confirmed day released back to ready");
 });

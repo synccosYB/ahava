@@ -1378,6 +1378,60 @@ export const insertPayrollAdjustmentSchema = createInsertSchema(payrollAdjustmen
 export type InsertPayrollAdjustment = z.infer<typeof insertPayrollAdjustmentSchema>;
 export type PayrollAdjustment = typeof payrollAdjustments.$inferSelect;
 
+// Back-pay owed when a time correction lands on a day that was ALREADY PAID in a
+// finalized (exported/locked) payroll export. Rather than blocking the
+// correction, the timesheet is updated and the pay difference is recorded here
+// as a back-pay item that an ADMIN must approve; once approved it is carried into
+// the NEXT payroll batch as a clearly-labeled line. The hour deltas come from a
+// full recompute of the affected week WITH the correction, minus what the source
+// export already paid, so a correction that adds (or removes) hours is reconciled
+// exactly. Rates/multipliers are frozen from the source period so the back-pay
+// pays at the rate in effect when the work was done.
+export const payrollBackpayItems = pgTable("payroll_backpay_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull().references(() => users.id),
+  workDate: date("work_date").notNull(),
+  // The finalized export that already paid this day (the source of the shortfall).
+  sourcePayrollExportId: varchar("source_payroll_export_id").references(() => payrollExports.id),
+  // The attendance correction that produced it (audit trail).
+  attendanceExceptionId: varchar("attendance_exception_id").references(() => attendanceExceptions.id),
+  punchLogId: varchar("punch_log_id").references(() => punchLogs.id),
+  reason: text("reason").notNull(),
+  // Owed hour deltas: recomputed week WITH the correction minus already-paid. May
+  // be negative when a correction REDUCES hours (a claw-back on the next payroll).
+  regularHours: real("regular_hours").default(0).notNull(),
+  overtimeHours: real("overtime_hours").default(0).notNull(),
+  doubleTimeHours: real("double_time_hours").default(0).notNull(),
+  // Frozen pay snapshot from the source period so $ is computed at the right rate.
+  hourlyRate: real("hourly_rate"),
+  overtimeMultiplier: real("overtime_multiplier"),
+  doubleTimeMultiplier: real("double_time_multiplier"),
+  // pending -> approved (admin) -> paid ; or rejected. Admin-only approval.
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
+  requestedBy: varchar("requested_by").references(() => users.id),
+  approvedBy: varchar("approved_by").references(() => users.id),
+  approvedAt: timestamp("approved_at"),
+  reviewNotes: text("review_notes"),
+  // The future batch that actually pays it, stamped when carried in.
+  paidInExportId: varchar("paid_in_export_id").references(() => payrollExports.id),
+  paidAt: timestamp("paid_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPayrollBackpayItemSchema = createInsertSchema(payrollBackpayItems).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertPayrollBackpayItem = z.infer<typeof insertPayrollBackpayItemSchema>;
+export type PayrollBackpayItem = typeof payrollBackpayItems.$inferSelect;
+
+export const payrollBackpayItemsRelations = relations(payrollBackpayItems, ({ one }) => ({
+  employee: one(users, { fields: [payrollBackpayItems.employeeId], references: [users.id] }),
+  sourceExport: one(payrollExports, { fields: [payrollBackpayItems.sourcePayrollExportId], references: [payrollExports.id] }),
+  paidInExport: one(payrollExports, { fields: [payrollBackpayItems.paidInExportId], references: [payrollExports.id] }),
+  punchLog: one(punchLogs, { fields: [payrollBackpayItems.punchLogId], references: [punchLogs.id] }),
+}));
+
 export const payrollExportsRelations = relations(payrollExports, ({ one, many }) => ({
   company: one(companies, { fields: [payrollExports.companyId], references: [companies.id] }),
   exporter: one(users, { fields: [payrollExports.exportedBy], references: [users.id] }),

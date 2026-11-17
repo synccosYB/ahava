@@ -20,6 +20,7 @@ import { storage } from "../storage";
 import { punchLogs, attendanceExceptions } from "@shared/schema";
 import { and, isNotNull, sql, eq, inArray } from "drizzle-orm";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES } from "../policyEngine";
+import { autoFlagMissingPunchExceptions } from "./policyEnforcement";
 import { recomputeLedger } from "../attendanceLedger";
 import { MISSING_CLOCKOUT_STATUS } from "../punchHours";
 import { resolveEmployeeTimezone, localWorkDate } from "./punchOverlap";
@@ -191,7 +192,9 @@ export async function reconcileOverlongShifts(opts: { apply: boolean }): Promise
           exceptionTime: cap,
           status: "pending",
         });
-      } else {
+      } else if (autoFlagMissingPunchExceptions()) {
+        // Detection stays on the punch (status set above); auto-flagging for
+        // approval is off by default — see autoFlagMissingPunchExceptions.
         const ex = await storage.createAttendanceException({
           employeeId: p.employeeId,
           exceptionDate: p.workDate,

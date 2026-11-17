@@ -68,8 +68,10 @@ test("device OUT with no open shift → clock-out-only MISSING PUNCH (forgot to 
   assert.equal(rows[0].status, "missing_clockin", "recorded as a missing-clock-in punch");
   assert.equal(rows[0].clockIn, null, "no clock-in");
   assert.ok(rows[0].clockOut, "clock-out kept");
+  // Missing punches are DETECTED (status above) but no longer AUTO-flagged as a
+  // pending approval item — a correction is raised only on employee request.
   const flags = await db.select().from(attendanceExceptions).where(eq(attendanceExceptions.employeeId, id));
-  assert.ok(flags.some((f) => f.type === "missing_clockin"), "flagged for review");
+  assert.equal(flags.filter((f) => f.type === "missing_clockin").length, 0, "detected but not auto-flagged");
 });
 
 test("device IN while a shift is open → old shift capped missing, new shift opens (no close)", async () => {

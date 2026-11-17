@@ -1814,11 +1814,16 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   const isForgottenClockOut = exception.type === "forgotten_clock_out";
   const isRemoval = exception.type === "punch_removal";
   const isOverlap = exception.type === "punch_overlap";
-  // Both time_correction and forgotten_clock_out route corrected times through
-  // approval. The manager can now always edit (counter-approve) those times —
-  // they pre-fill with whatever the employee requested, or empty when the
-  // request didn't include any.
-  const isEditableTimeType = isTimeCorrection || isForgottenClockOut;
+  // A "missing punch" correction: the employee enters the real time(s) they
+  // worked and the backend pairs them (with any punch already on the day) into a
+  // complete shift on approval. The manager reviews/edits the time(s) here, same
+  // as the other time-bearing types.
+  const isMissingPunch = exception.type === "missing_punch";
+  // time_correction, forgotten_clock_out and missing_punch all route the
+  // employee's requested time(s) through approval. The manager can edit
+  // (counter-approve) those times — they pre-fill with whatever the employee
+  // requested, or empty when the request didn't include any.
+  const isEditableTimeType = isTimeCorrection || isForgottenClockOut || isMissingPunch;
   const [editReqIn, setEditReqIn] = useState(timeInfo.reqIn);
   const [editReqOut, setEditReqOut] = useState(timeInfo.reqOut);
   // True when the manager's approved times differ from what the employee asked.
@@ -1850,6 +1855,13 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
           throw new Error("Enter a corrected clock-out time before approving.");
         }
         body.correctedTime = outIso;
+      } else if (isMissingPunch) {
+        // Send whatever time(s) the employee entered (one or both). The backend
+        // infers in vs out by time order and pairs with any existing punch, so
+        // which field a lone time lands in doesn't matter. With no time here the
+        // backend falls back to the single stored exceptionTime.
+        const payload = buildTimeCorrectionPayload(exception.exceptionDate, editReqIn, editReqOut);
+        Object.assign(body, payload);
       }
       await apiRequest("POST", `/api/attendance/exceptions/${exception.id}/resolve`, body);
     },
@@ -1964,7 +1976,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
                     Approve times {timeInfo.reqIn || timeInfo.reqOut ? "(edit to counter)" : "(employee left blank)"}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    {isTimeCorrection && (
+                    {(isTimeCorrection || isMissingPunch) && (
                       <div>
                         <label className="text-[10px] uppercase font-bold text-muted-foreground" htmlFor={`input-corrected-in-${exception.id}`}>
                           Clock In
@@ -1978,7 +1990,7 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
                         />
                       </div>
                     )}
-                    <div className={isTimeCorrection ? "" : "col-span-2"}>
+                    <div className={isTimeCorrection || isMissingPunch ? "" : "col-span-2"}>
                       <label className="text-[10px] uppercase font-bold text-muted-foreground" htmlFor={`input-corrected-out-${exception.id}`}>
                         Clock Out
                       </label>
