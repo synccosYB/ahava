@@ -11239,6 +11239,56 @@ export async function registerRoutes(
     }
   });
 
+  // Delete a DRAFT batch (never a sent one). This is what the "Rebuild draft
+  // batch" action uses: delete the stale draft, then re-create it fresh so it
+  // reflects the latest punches/corrections. Releases the batch's confirmed days
+  // back to "ready" and REVERTS any back-pay it had carried in (back to approved,
+  // unpaid) so nothing owed is lost. A sent (exported/locked/reopened) batch must
+  // be reopened/handled through its own flow, never deleted here.
+  app.delete("/api/payroll/exports/:id", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const exportId = String(req.params.id);
+      const exp = await storage.getPayrollExport(exportId);
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+      if (exp.status !== "draft") {
+        return res.status(409).json({
+          message: `Only draft batches can be deleted (this one is "${exp.status}"). Reopen a sent batch before changing it.`,
+          code: "PAYROLL_NOT_DRAFT",
+        });
+      }
+
+      await db.transaction(async (tx) => {
+        // Un-pay any back-pay this draft carried, so it rides the next batch.
+        await tx
+          .update(payrollBackpayItemsTable)
+          .set({ status: "approved", paidInExportId: null, paidAt: null })
+          .where(eq(payrollBackpayItemsTable.paidInExportId, exportId));
+        // Release the confirmed days this draft claimed back to "ready".
+        await tx
+          .update(payrollSubmissionsTable)
+          .set({ payrollExportId: null })
+          .where(eq(payrollSubmissionsTable.payrollExportId, exportId));
+        await tx.delete(payrollBatchRecordsTable).where(eq(payrollBatchRecordsTable.payrollExportId, exportId));
+        await tx.delete(payrollExportsTable).where(eq(payrollExportsTable.id, exportId));
+      });
+
+      await writeAuditLog({
+        actorUserId: (req.authUser as User).id,
+        targetType: "payroll_export",
+        targetId: exportId,
+        action: "payroll_export.deleted",
+        oldValue: { status: exp.status, startDate: exp.startDate, endDate: exp.endDate },
+        newValue: null,
+        ...getAuditContext(req),
+      });
+
+      res.json({ deleted: true });
+    } catch (error) {
+      console.error("Error deleting draft payroll batch:", error);
+      handleRouteError(res, error, "Failed to delete draft payroll batch");
+    }
+  });
+
   app.get("/api/payroll/exports/:id/records", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));

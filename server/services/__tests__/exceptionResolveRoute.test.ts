@@ -2008,3 +2008,70 @@ test("Phase 3b back-pay: building the next batch carries an APPROVED back-pay it
   assert.equal(paidItem.status, "paid", "the item is now marked paid");
   assert.equal(paidItem.paidInExportId, exp.id, "stamped with the batch that paid it");
 });
+
+test("Phase 3b rebuild: deleting a DRAFT batch reverts the back-pay it consumed (back to approved/unpaid) and releases its confirmed days", async (t) => {
+  const fx = await setupFixture("backpay-draft-delete");
+
+  const workDate = "2026-06-16";
+  const clockIn = new Date("2026-06-16T09:00:00Z");
+  const clockOut = new Date("2026-06-16T17:00:00Z");
+  await db.insert(punchLogs).values({
+    employeeId: fx.employeeId, workDate, clockIn, roundedClockIn: clockIn,
+    clockOut, roundedClockOut: clockOut, hoursWorked: 8, status: "complete",
+    source: "test", approved: true,
+  });
+  const [sub] = await db.insert(payrollSubmissions).values({
+    employeeId: fx.employeeId, workDate, sentBy: REVIEWER_ID,
+  }).returning();
+  const [bp] = await db.insert(payrollBackpayItems).values({
+    employeeId: fx.employeeId, workDate: "2026-05-27",
+    reason: "back-pay to be carried then reverted",
+    regularHours: 2, hourlyRate: 30, status: "approved",
+  }).returning();
+
+  t.after(async () => {
+    const exps = await db.select().from(payrollExports);
+    for (const e of exps) await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, e.id));
+    await db.delete(payrollBackpayItems).where(eq(payrollBackpayItems.employeeId, fx.employeeId));
+    await db.delete(payrollSubmissions).where(eq(payrollSubmissions.employeeId, fx.employeeId));
+    for (const e of exps) await db.delete(payrollExports).where(eq(payrollExports.id, e.id)).catch(() => {});
+    await fx.cleanup();
+  });
+
+  // Reproduce the post-build draft state directly (the builder has a per-admin
+  // cooldown gate, so this suite can't POST a second build in-process): a draft
+  // export that claimed the confirmed day and carried the back-pay in (paid).
+  const [exp] = await db
+    .insert(payrollExports)
+    .values({ startDate: workDate, endDate: workDate, status: "draft" })
+    .returning();
+  await db.insert(payrollBatchRecords).values({
+    payrollExportId: exp.id, employeeId: fx.employeeId, recordType: "backpay",
+    workDate: "2026-05-27", regularHours: 2, hourlyRate: 30,
+  });
+  await db.update(payrollBackpayItems)
+    .set({ status: "paid", paidInExportId: exp.id, paidAt: new Date() })
+    .where(eq(payrollBackpayItems.id, bp.id));
+  await db.update(payrollSubmissions)
+    .set({ payrollExportId: exp.id })
+    .where(eq(payrollSubmissions.id, sub.id));
+  const [afterBuild] = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.id, bp.id));
+  assert.equal(afterBuild.status, "paid", "precondition: draft carried the item (paid)");
+
+  // Delete the draft (the rebuild action's first half).
+  const delRes = await fetch(`${fx.baseUrl}/api/payroll/exports/${exp.id}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${fx.reviewerToken}` },
+  });
+  assert.equal(delRes.status, 200, `expected 200 from draft delete, got ${delRes.status} (${await delRes.text().catch(() => "")})`);
+
+  // Back-pay reverted to approved/unpaid so it isn't lost.
+  const [afterDelete] = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.id, bp.id));
+  assert.equal(afterDelete.status, "approved", "back-pay reverted to approved");
+  assert.equal(afterDelete.paidInExportId, null, "no longer stamped paid");
+  // Export + its records are gone; the confirmed day is released.
+  const remaining = await db.select().from(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exp.id));
+  assert.equal(remaining.length, 0, "batch records deleted");
+  const [relSub] = await db.select().from(payrollSubmissions).where(eq(payrollSubmissions.id, sub.id));
+  assert.equal(relSub.payrollExportId, null, "confirmed day released back to ready");
+});
