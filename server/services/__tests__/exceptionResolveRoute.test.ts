@@ -19,6 +19,7 @@ import {
   payrollBatchRecords,
   payrollBackpayItems,
   payrollAdjustments,
+  payrollSubmissions,
   attendanceChangeLedger,
   attendanceLedger,
 } from "@shared/schema";
@@ -1948,4 +1949,62 @@ test("Phase 3b back-pay: a time_correction that ADDS hours to an already-paid da
   assert.equal(Number(items[0].regularHours), 4, "+4 regular hours owed");
   assert.equal(Number(items[0].overtimeHours), 0);
   assert.equal(items[0].hourlyRate, 20, "frozen rate carried for the back-pay line");
+});
+
+test("Phase 3b back-pay: building the next batch carries an APPROVED back-pay item in as a labeled line and marks it paid", async (t) => {
+  const fx = await setupFixture("backpay-batch-consume");
+
+  // A clean future day with a complete, approved punch, confirmed for payroll.
+  const workDate = "2026-06-09";
+  const clockIn = new Date("2026-06-09T09:00:00Z");
+  const clockOut = new Date("2026-06-09T17:00:00Z");
+  const [punch] = await db.insert(punchLogs).values({
+    employeeId: fx.employeeId, workDate, clockIn, roundedClockIn: clockIn,
+    clockOut, roundedClockOut: clockOut, hoursWorked: 8, status: "complete",
+    source: "test", approved: true,
+  }).returning();
+  await db.insert(payrollSubmissions).values({
+    employeeId: fx.employeeId, workDate, sentBy: REVIEWER_ID,
+  });
+
+  // An approved, unpaid back-pay item owed to the same employee.
+  const [bp] = await db.insert(payrollBackpayItems).values({
+    employeeId: fx.employeeId, workDate: "2026-05-20",
+    reason: "back-pay owed for a corrected earlier shift",
+    regularHours: 3, overtimeHours: 0, doubleTimeHours: 0,
+    hourlyRate: 25, status: "approved",
+  }).returning();
+
+  t.after(async () => {
+    const exps = await db.select().from(payrollExports);
+    for (const e of exps) {
+      await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, e.id));
+    }
+    await db.delete(payrollBackpayItems).where(eq(payrollBackpayItems.employeeId, fx.employeeId));
+    await db.delete(payrollSubmissions).where(eq(payrollSubmissions.employeeId, fx.employeeId));
+    // Remove exports created by this build (those with no remaining records).
+    for (const e of exps) {
+      await db.delete(payrollExports).where(eq(payrollExports.id, e.id)).catch(() => {});
+    }
+    await fx.cleanup();
+  });
+
+  const res = await fetch(`${fx.baseUrl}/api/payroll/exports`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({ startDate: workDate, endDate: workDate, confirmedOnly: true }),
+  });
+  const bodyText = await res.text();
+  assert.equal(res.status, 201, `expected 201 from batch build, got ${res.status} (${bodyText})`);
+  const exp = JSON.parse(bodyText);
+
+  const records = await db.select().from(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exp.id));
+  const backpayRows = records.filter((r) => r.recordType === "backpay" && r.employeeId === fx.employeeId);
+  assert.equal(backpayRows.length, 1, "one back-pay line in the new batch");
+  assert.equal(Number(backpayRows[0].regularHours), 3, "owed hours carried through");
+  assert.equal(backpayRows[0].hourlyRate, 25, "frozen rate carried through");
+
+  const [paidItem] = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.id, bp.id));
+  assert.equal(paidItem.status, "paid", "the item is now marked paid");
+  assert.equal(paidItem.paidInExportId, exp.id, "stamped with the batch that paid it");
 });

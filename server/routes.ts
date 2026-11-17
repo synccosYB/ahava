@@ -5,7 +5,7 @@ import { storage, DuplicateOpenPunchError } from "./storage";
 import { badRequestFromZod, handleRouteError, mapRouteError, RouteConflictError, PayrollFinalizedError } from "./routeErrors";
 import { db } from "./db";
 import { employeeLocations as employeeLocationsTable } from "@shared/schema";
-import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollSubmissions as payrollSubmissionsTable, payrollAdjustments as payrollAdjustmentsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
+import { payrollExports as payrollExportsTable, payrollBatchRecords as payrollBatchRecordsTable, payrollSubmissions as payrollSubmissionsTable, payrollAdjustments as payrollAdjustmentsTable, payrollBackpayItems as payrollBackpayItemsTable, biometricSupervisorOverrides as biometricSupervisorOverridesTable, userRoles as userRolesTable } from "@shared/schema";
 import { requireAuth, requirePasswordChanged } from "./middleware/auth";
 import { requirePermission, requireAnyPermission, resolveUserPermissions } from "./middleware/rbac";
 import { insertDepartmentSchema, insertTimeOffRequestSchema, insertCompanySchema, insertLocationSchema, insertLocationAddressSchema, insertEmploymentProfileSchema, insertPtoPolicySchema, insertEmployeePtoSettingsSchema, insertAttendanceExceptionSchema, insertPolicySchema, insertPolicyAssignmentSchema, insertKioskDeviceSchema, insertRoleSchema, timeOffRequests, attendanceExceptions, auditLogs, punchLogs, insertPerformanceReviewCycleSchema, insertOnboardingTemplateSchema, insertOnboardingTemplateTaskSchema, insertOffboardingTemplateSchema, insertOffboardingTemplateTaskSchema, insertOnboardingTemplateSectionSchema, insertOnboardingTemplateScopeSchema, insertOffboardingTemplateSectionSchema, insertOffboardingTemplateScopeSchema, dueRuleSchema, customFieldDefSchema, onboardingTemplateTasks, offboardingTemplateTasks, MAX_TIME_OFF_HOURS_PER_REQUEST, MIN_TIME_OFF_HOURS_APPROVED, isSaneTimeOffHours, isBalanceTrackedTimeOffType, TERMINATION_REASONS } from "@shared/schema";
@@ -10843,7 +10843,19 @@ export async function registerRoutes(
         }
       }
 
-      const totalRecordCount = dayGroups.size + approvedTimeOff.length + approvedCashouts.length;
+      // Approved back-pay owed to employees who ALSO appear in this batch (so a
+      // batch never silently pulls in an unrelated employee just for back-pay).
+      // These ride along as labeled "backpay" lines and are marked paid in the
+      // transaction below, so a later batch never pays them twice.
+      const batchEmployeeIds = new Set<string>();
+      for (const g of dayGroups.values()) batchEmployeeIds.add(g.employeeId);
+      for (const r of approvedTimeOff) batchEmployeeIds.add(r.userId);
+      for (const co of approvedCashouts) batchEmployeeIds.add(co.userId);
+      const eligibleBackpayItems = (await storage.getApprovedUnpaidPayrollBackpayItems())
+        .filter((it) => batchEmployeeIds.has(it.employeeId) && userMap.has(it.employeeId));
+
+      const totalRecordCount =
+        dayGroups.size + approvedTimeOff.length + approvedCashouts.length + eligibleBackpayItems.length;
 
       // Per-employee resolution caches: the frozen pay-engine snapshot, the raw
       // payroll rules (for bonus evaluation), the hourly rate, and the active
@@ -11158,6 +11170,39 @@ export async function registerRoutes(
             hasIssues: false,
             issueDescription: null,
           });
+        }
+
+        // Approved back-pay: one labeled "backpay" line per owed item (signed —
+        // negative hours are a claw-back), paid at the frozen rate from the source
+        // period. Mark each item paid in the SAME transaction (status-guarded) so
+        // it can never be carried into a second batch.
+        for (const bp of eligibleBackpayItems) {
+          const { rate, payrollCompanyId, payrollCompanyName } = await resolveEmp(bp.employeeId);
+          await tx.insert(payrollBatchRecordsTable).values({
+            payrollExportId: created.id,
+            employeeId: bp.employeeId,
+            punchLogId: bp.punchLogId,
+            timeOffRequestId: null,
+            recordType: "backpay",
+            workDate: bp.workDate,
+            regularHours: bp.regularHours,
+            overtimeHours: bp.overtimeHours,
+            doubleTimeHours: bp.doubleTimeHours,
+            ptoHours: 0,
+            overtimeMultiplier: bp.overtimeMultiplier,
+            doubleTimeMultiplier: bp.doubleTimeMultiplier,
+            hourlyRate: bp.hourlyRate ?? rate,
+            payrollCompanyId,
+            payrollCompanyName,
+            bonusAmount: 0,
+            bonusHours: 0,
+            hasIssues: false,
+            issueDescription: bp.reason,
+          });
+          await tx
+            .update(payrollBackpayItemsTable)
+            .set({ status: "paid", paidInExportId: created.id, paidAt: new Date() })
+            .where(and(eq(payrollBackpayItemsTable.id, bp.id), eq(payrollBackpayItemsTable.status, "approved")));
         }
 
         // Confirmed-only batch: stamp each confirmed day with the batch that paid
