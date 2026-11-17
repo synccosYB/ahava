@@ -97,8 +97,10 @@ test("NON-overnight employee: next-morning punch splits the stale evening shift 
   assert.equal(new Date(morning.clockIn as any).getTime(), morningIn.getTime(), "morning shift starts at the morning punch");
   assert.equal(morning.clockOut, null, "morning shift is a fresh open shift");
 
+  // The evening shift is detected as a missing punch on the punch itself (status
+  // asserted above); it is no longer auto-flagged as a pending approval item.
   const flags = await db.select().from(attendanceExceptions).where(eq(attendanceExceptions.employeeId, id));
-  assert.ok(flags.some((f) => f.type === "missing_clockout"), "evening shift flagged for review");
+  assert.ok(!flags.some((f) => f.type === "missing_clockout"), "evening shift not auto-flagged for approval");
 });
 
 test("OVERNIGHT-allowed employee: the cross-midnight shift closes normally (no split)", async () => {

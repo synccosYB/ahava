@@ -13,7 +13,7 @@
 // biometric_device_events regardless, so nothing is lost.
 import { storage, DuplicateOpenPunchError } from "../storage";
 import { localWorkDate, resolveEmployeeTimezone } from "../services/punchOverlap";
-import { capStaleOpenShiftAtMaxShift, markOpenShiftMissing } from "../services/policyEnforcement";
+import { capStaleOpenShiftAtMaxShift, markOpenShiftMissing, autoFlagMissingPunchExceptions } from "../services/policyEnforcement";
 import { writeLedgerEntry } from "../services/ledger";
 import { MISSING_CLOCKIN_STATUS } from "../punchHours";
 import { logger } from "../lib/logger";
@@ -118,17 +118,23 @@ export async function ingestPunches(
           source: "biometric",
           approved: true,
         });
-        const ex = await storage.createAttendanceException({
-          employeeId: userId,
-          exceptionDate: record.workDate,
-          exceptionTime: punchAt,
-          type: "missing_clockin",
-          reason:
-            "The clock reported a clock-out with no open shift — the employee forgot to clock in. " +
-            "Recorded as a MISSING PUNCH; enter the real clock-in to record the hours.",
-          status: "pending",
-        }).catch(() => null);
-        if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: record.id }).catch(() => {});
+        // Detection only by default — the punch above is already marked a missing
+        // punch (shows on the timesheet); the pending approval item is created
+        // only when the employee requests a correction. See
+        // autoFlagMissingPunchExceptions.
+        if (autoFlagMissingPunchExceptions()) {
+          const ex = await storage.createAttendanceException({
+            employeeId: userId,
+            exceptionDate: record.workDate,
+            exceptionTime: punchAt,
+            type: "missing_clockin",
+            reason:
+              "The clock reported a clock-out with no open shift — the employee forgot to clock in. " +
+              "Recorded as a MISSING PUNCH; enter the real clock-in to record the hours.",
+            status: "pending",
+          }).catch(() => null);
+          if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: record.id }).catch(() => {});
+        }
         await safeLedger({ eventType: "clock_out", employeeId: userId, entityId: record.id, workDate: record.workDate });
         await adms.updateEvent(event.id, { userId, punchLogId: record.id, direction: "clock_out", status: "processed" });
         result.processed += 1;

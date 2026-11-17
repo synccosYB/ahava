@@ -438,6 +438,15 @@ export function computeAutoClockOutValues(opts: {
  * handling in punchHours / timesheetService / attendanceLedger / the SQL
  * aggregates). Returns the manager alert to raise; the caller records it.
  */
+// Missing punches are always DETECTED (the punch is marked MISSING_CLOCKOUT /
+// MISSING_CLOCKIN and shows on the timesheet), but by default they are NO LONGER
+// auto-flagged as a pending approval item — corrections now come only from an
+// employee's own request. Set AUTO_FLAG_MISSING_PUNCH_EXCEPTIONS=true to restore
+// the old behaviour of auto-creating the pending attendance_exception.
+export function autoFlagMissingPunchExceptions(): boolean {
+  return process.env.AUTO_FLAG_MISSING_PUNCH_EXCEPTIONS === "true";
+}
+
 async function markShiftMissingClockout(
   punch: PunchLog,
   maxShiftHours: number,
@@ -457,18 +466,23 @@ async function markShiftMissingClockout(
     status: MISSING_CLOCKOUT_STATUS,
     breakStartedAt: null,
   });
-  const ex = await storage.createAttendanceException({
-    employeeId: punch.employeeId,
-    exceptionDate: punch.workDate,
-    exceptionTime: cap,
-    type: "missing_clockout",
-    reason:
-      `Shift passed the ${maxShiftHours}-hour limit with no punch-out — the employee forgot to clock out. ` +
-      `The clock is stopped and this is recorded as a MISSING PUNCH (no hours counted). ` +
-      `Enter the real clock-out to record the actual hours.`,
-    status: "pending",
-  });
-  if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: punch.id });
+  // Auto-flagging for approval is off by default (see autoFlagMissingPunchExceptions):
+  // the punch is already marked a missing punch above, so the timesheet shows it;
+  // a correction is raised only when the employee requests one.
+  if (autoFlagMissingPunchExceptions()) {
+    const ex = await storage.createAttendanceException({
+      employeeId: punch.employeeId,
+      exceptionDate: punch.workDate,
+      exceptionTime: cap,
+      type: "missing_clockout",
+      reason:
+        `Shift passed the ${maxShiftHours}-hour limit with no punch-out — the employee forgot to clock out. ` +
+        `The clock is stopped and this is recorded as a MISSING PUNCH (no hours counted). ` +
+        `Enter the real clock-out to record the actual hours.`,
+      status: "pending",
+    });
+    if (ex?.id) await storage.updateAttendanceException(ex.id, { punchLogId: punch.id });
+  }
   await recomputeLedger(punch.employeeId, [punch.workDate]);
 
   return {

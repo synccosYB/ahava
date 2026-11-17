@@ -51,10 +51,11 @@ test("a shift open past the max shift is marked a missing punch (no hours, no se
   const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, employeeId));
   assert.equal(rows.length, 1, "exactly one punch — no auto-started second shift");
 
-  // Manager flagged.
+  // Detected on the punch (status asserted above) and an alert is returned, but
+  // the missing punch is no longer auto-flagged as a pending approval item.
   const flags = await db.select().from(attendanceExceptions)
     .where(and(eq(attendanceExceptions.employeeId, employeeId), eq(attendanceExceptions.type, "missing_clockout")));
-  assert.ok(flags.length >= 1, "a missing_clockout exception was raised");
+  assert.equal(flags.length, 0, "missing punch detected but not auto-flagged for approval");
   assert.ok(alerts.some((a) => a.employeeId === employeeId && a.type === "missing_clockout"), "an alert was returned");
 
   // Idempotent: the marked shift is no longer open, so a second pass is a no-op.
@@ -88,4 +89,35 @@ test("a shift still within the max shift is left untouched (stays open)", async 
   const still = await storage.getPunchLog(open.id);
   assert.equal(still?.status, "in-progress", "within-limit shift stays in-progress");
   assert.equal(still?.clockOut, null, "within-limit shift stays open");
+});
+
+test("reversible: AUTO_FLAG_MISSING_PUNCH_EXCEPTIONS=true restores auto-flagging", async (t) => {
+  const prev = process.env.AUTO_FLAG_MISSING_PUNCH_EXCEPTIONS;
+  process.env.AUTO_FLAG_MISSING_PUNCH_EXCEPTIONS = "true";
+  const admin = await storage.getUser("admin-dev-001");
+  const [emp] = await db.insert(users).values({
+    email: `${stamp}-flag@example.invalid`, firstName: "AutoCOflag", lastName: `${stamp}flag`,
+    role: "employee", companyId: admin?.companyId ?? null,
+  }).returning();
+  const flagId = emp.id;
+  t.after(async () => {
+    if (prev === undefined) delete process.env.AUTO_FLAG_MISSING_PUNCH_EXCEPTIONS;
+    else process.env.AUTO_FLAG_MISSING_PUNCH_EXCEPTIONS = prev;
+    await db.delete(attendanceExceptions).where(eq(attendanceExceptions.employeeId, flagId)).catch(() => {});
+    await db.delete(punchLogs).where(eq(punchLogs.employeeId, flagId)).catch(() => {});
+    await db.delete(users).where(eq(users.id, flagId)).catch(() => {});
+  });
+
+  const staleIn = new Date(Date.now() - 20 * 60 * 60 * 1000);
+  await storage.createPunchLog({
+    employeeId: flagId, workDate: staleIn.toISOString().slice(0, 10),
+    clockIn: staleIn, clockOut: null, hoursWorked: null,
+    status: "in-progress", source: "biometric", approved: true,
+  });
+
+  await runAutoClockOut();
+
+  const flags = await db.select().from(attendanceExceptions)
+    .where(and(eq(attendanceExceptions.employeeId, flagId), eq(attendanceExceptions.type, "missing_clockout")));
+  assert.equal(flags.length, 1, "with the flag on, the missing punch is auto-flagged again");
 });

@@ -67,7 +67,7 @@ test("an existing ~24h shift becomes a MISSING PUNCH (0 hours), flagged, and the
 
   const flags = await db.select().from(attendanceExceptions)
     .where(and(eq(attendanceExceptions.employeeId, employeeId), eq(attendanceExceptions.type, "missing_clockout")));
-  assert.ok(flags.length >= 1, "a missing_clockout review flag was raised");
+  assert.equal(flags.length, 0, "missing punch is detected on the punch but no longer auto-flagged for approval");
 
   // Idempotent — re-running finds nothing for this employee (now a missing punch).
   const again = await reconcileOverlongShifts({ apply: true });
