@@ -66,6 +66,7 @@ import { autocompleteAddress, isSerpApiConfigured } from "./services/serpApi";
 import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeofence, buildGeofenceBlockMessage, recordGeofenceBlockedAttempt, type GeofenceMapData } from "./services/geofence";
 import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/rank";
 import { resolveEmployeeTimezone, localWorkDate, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
+import { suggestShiftPairing, type PairingResult } from "./services/shiftPairing";
 import {
   resolvePunctualityBonusConfig,
   recomputePunctualityForEmployee,
@@ -7118,10 +7119,53 @@ export async function registerRoutes(
         return storage.getAttendanceForUserOnDate(exception.employeeId, exception.exceptionDate);
       };
 
-      if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+      // --- Phase 3: smart in/out pairing for employee "missing punch" corrections ---
+      // The employee enters the real time(s) they worked but NOT which is the
+      // clock-in vs the clock-out. Combine those with any punch already on that
+      // day and infer the complete shift, so approving posts a FINISHED shift to
+      // the timesheet (not a lone open clock-in). suggestShiftPairing is pure and
+      // advisory; it returns an error (we fall back below) when there isn't
+      // enough to pair — e.g. a single entered time and no existing punch.
+      let missingPunchPairing: PairingResult | null = null;
+      let missingPunchDayPunches: PunchLog[] = [];
+      if (exception.type === "missing_punch") {
+        const enteredTimes: (Date | string)[] = [];
+        if (correctedClockIn) enteredTimes.push(new Date(correctedClockIn));
+        if (correctedClockOut) enteredTimes.push(new Date(correctedClockOut));
+        if (enteredTimes.length === 0 && correctedTimestamp) enteredTimes.push(correctedTimestamp);
+        missingPunchDayPunches = await storage.getAttendancesForUserOnDate(
+          exception.employeeId,
+          exception.exceptionDate,
+        );
+        const overnightAllowed = await storage.isOvernightShiftsAllowed(exception.employeeId);
+        missingPunchPairing = suggestShiftPairing({
+          enteredTimes,
+          existingPunches: missingPunchDayPunches.map((p) => ({
+            id: p.id,
+            clockIn: p.clockIn,
+            clockOut: p.clockOut,
+          })),
+          overnightAllowed,
+        });
+      }
+      // The paired, ready-to-apply suggestion (null when we must fall back to the
+      // legacy lone open clock-in — one entered time, no punch to pair with).
+      const missingPunchPaired =
+        missingPunchPairing && !("error" in missingPunchPairing) ? missingPunchPairing : null;
+
+      if (exception.type === "forgotten_clock_in") {
         const existingOpen = await storage.getCurrentAttendance(exception.employeeId);
         if (existingOpen && existingOpen.workDate === exception.exceptionDate) {
           return res.status(400).json({ message: "Employee already has an open punch for this date" });
+        }
+      } else if (exception.type === "missing_punch") {
+        // An existing punch is NOT a conflict here — it's the pairing target. Only
+        // block the genuinely ambiguous cases the pairing brain rejects when a
+        // punch is present: multiple punches, or a day that's already a complete
+        // shift (use a time correction for that). With no punch to pair, we fall
+        // through to the lone open clock-in create below.
+        if (missingPunchPairing && "error" in missingPunchPairing && missingPunchDayPunches.length > 0) {
+          return res.status(400).json({ message: missingPunchPairing.error });
         }
       } else if (exception.type === "forgotten_clock_out") {
         const targetedRecord = await loadTargetedPunch();
@@ -7194,7 +7238,7 @@ export async function registerRoutes(
           })),
         });
 
-      if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+      if (exception.type === "forgotten_clock_in") {
         const dateLock = await findFinalizedPayrollExportsForEmployeeDate(
           exception.employeeId,
           exception.exceptionDate,
@@ -7212,6 +7256,47 @@ export async function registerRoutes(
         });
         if (!integrity.ok) {
           return res.status(400).json({ message: integrity.reason });
+        }
+      } else if (exception.type === "missing_punch") {
+        const dateLock = await findFinalizedPayrollExportsForEmployeeDate(
+          exception.employeeId,
+          exception.exceptionDate,
+        );
+        if (dateLock.length > 0) {
+          return payrollLockResponse(dateLock, "adding this punch");
+        }
+        const tz = await resolveEmployeeTimezone(exception.employeeId);
+        if (missingPunchPaired) {
+          // Validate the full inferred shift. An overnight pair's clock-out lands
+          // on the next day, so include that date in the overlap scope.
+          const candidateDates = Array.from(
+            new Set([exception.exceptionDate, localWorkDate(missingPunchPaired.clockOut, tz)]),
+          );
+          const integrity = await validateProposedPunch({
+            employeeId: exception.employeeId,
+            clockIn: missingPunchPaired.clockIn,
+            clockOut: missingPunchPaired.clockOut,
+            punchId: missingPunchPaired.targetPunchId ?? undefined,
+            candidateDates,
+            allowFuturePunch: correctionAllowFuture,
+            timezone: tz,
+          });
+          if (!integrity.ok) {
+            return res.status(400).json({ message: integrity.reason });
+          }
+        } else {
+          // Fallback: a lone open clock-in (one entered time, nothing to pair).
+          const integrity = await validateProposedPunch({
+            employeeId: exception.employeeId,
+            clockIn: correctedTimestamp || new Date(),
+            clockOut: undefined,
+            candidateDates: [exception.exceptionDate],
+            allowFuturePunch: correctionAllowFuture,
+            timezone: tz,
+          });
+          if (!integrity.ok) {
+            return res.status(400).json({ message: integrity.reason });
+          }
         }
       } else if (exception.type === "forgotten_clock_out") {
         const target = await loadTargetedPunch();
@@ -7281,7 +7366,7 @@ export async function registerRoutes(
       const updated = await db.transaction(async (tx) => {
         let punchLog: PunchLog | undefined | null = null;
 
-        if (exception.type === "forgotten_clock_in" || exception.type === "missing_punch") {
+        if (exception.type === "forgotten_clock_in") {
           const [created] = await tx.insert(punchLogs).values({
             employeeId: exception.employeeId,
             workDate: exception.exceptionDate,
@@ -7291,6 +7376,79 @@ export async function registerRoutes(
             approved: true,
           }).returning();
           punchLog = created;
+        } else if (exception.type === "missing_punch") {
+          if (missingPunchPaired) {
+            // Post the COMPLETE inferred shift. Round the clock-in and run the
+            // same clock-out enforcement as every other write path so hours,
+            // rounding, and status (complete/overtime/…) are consistent.
+            const roundingRule = exceptionAttRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+            const roundingInterval =
+              exceptionAttRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+            const roundedClockIn = roundTime(missingPunchPaired.clockIn, roundingRule, roundingInterval);
+            const enforcement = enforceClockOut(
+              roundedClockIn,
+              missingPunchPaired.clockOut,
+              0,
+              exceptionAttRules,
+              exceptionPayrollRules,
+              employeeUser,
+              exceptionAttendancePolicy?.policyName,
+            );
+            if (missingPunchPaired.action === "update" && missingPunchPaired.targetPunchId) {
+              // Re-load the pairing target inside the tx and guard against a race:
+              // if it was completed or removed since we built the suggestion, abort
+              // so we never double-apply or clobber a finished shift.
+              const [currentTarget] = await tx
+                .select()
+                .from(punchLogs)
+                .where(and(
+                  eq(punchLogs.id, missingPunchPaired.targetPunchId),
+                  eq(punchLogs.employeeId, exception.employeeId),
+                ))
+                .limit(1);
+              if (!currentTarget || (currentTarget.clockIn && currentTarget.clockOut)) {
+                throw new RouteConflictError(
+                  "The punch being paired changed before this approval completed — refresh and try again.",
+                );
+              }
+              const [updated] = await tx.update(punchLogs).set({
+                clockIn: missingPunchPaired.clockIn,
+                roundedClockIn,
+                clockOut: missingPunchPaired.clockOut,
+                roundedClockOut: enforcement.roundedTime,
+                hoursWorked: enforcement.hoursWorked,
+                status: enforcement.status,
+                source: "manager",
+              }).where(eq(punchLogs.id, missingPunchPaired.targetPunchId)).returning();
+              punchLog = updated;
+            } else {
+              const [created] = await tx.insert(punchLogs).values({
+                employeeId: exception.employeeId,
+                workDate: exception.exceptionDate,
+                clockIn: missingPunchPaired.clockIn,
+                roundedClockIn,
+                clockOut: missingPunchPaired.clockOut,
+                roundedClockOut: enforcement.roundedTime,
+                hoursWorked: enforcement.hoursWorked,
+                status: enforcement.status,
+                source: "manager",
+                approved: true,
+              }).returning();
+              punchLog = created;
+            }
+          } else {
+            // Fallback: a lone open clock-in (one entered time, nothing to pair) —
+            // the employee can close it later, same as the legacy behavior.
+            const [created] = await tx.insert(punchLogs).values({
+              employeeId: exception.employeeId,
+              workDate: exception.exceptionDate,
+              clockIn: correctedTimestamp || new Date(),
+              status: "in-progress",
+              source: "manager",
+              approved: true,
+            }).returning();
+            punchLog = created;
+          }
         } else if (exception.type === "forgotten_clock_out") {
           // Prefer the FK target so multi-punch days resolve unambiguously;
           // fall back to "latest punch on this date" for legacy rows that

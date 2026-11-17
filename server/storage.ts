@@ -204,7 +204,7 @@ import {
   userLocationIds,
 } from "@shared/schema";
 import { db, type DatabaseConnection } from "./db";
-import { eq, and, or, ilike, gte, lte, desc, ne, count, sql, inArray, isNull, isNotNull, type SQL } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, asc, desc, ne, count, sql, inArray, isNull, isNotNull, type SQL } from "drizzle-orm";
 import {
   CORRECTION_COUNT_TYPES,
   CORRECTION_COUNT_WINDOW_DAYS,
@@ -473,6 +473,7 @@ export interface IStorage {
   searchUsersByName(query: string): Promise<User[]>;
   getLatestAttendanceForUser(userId: string): Promise<PunchLog | undefined>;
   getAttendanceForUserOnDate(userId: string, workDate: string): Promise<PunchLog | undefined>;
+  getAttendancesForUserOnDate(userId: string, workDate: string): Promise<PunchLog[]>;
 
   getUsersByDepartment(departmentId: string): Promise<User[]>;
   getUsersByLocation(locationId: string): Promise<User[]>;
@@ -2367,6 +2368,18 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(punchLogs.createdAt))
       .limit(1);
     return record ? punchLogToLegacy(record) : undefined;
+  }
+
+  // Every punch recorded on a given work date for one employee (0, 1, or more).
+  // Used by the missing-punch correction pairing, which must distinguish "no
+  // punch" / "one lone punch to pair with" / "multiple punches (ambiguous)".
+  async getAttendancesForUserOnDate(userId: string, workDate: string): Promise<PunchLog[]> {
+    const rows = await db
+      .select()
+      .from(punchLogs)
+      .where(and(eq(punchLogs.employeeId, userId), eq(punchLogs.workDate, workDate)))
+      .orderBy(asc(punchLogs.createdAt));
+    return rows.map(punchLogToLegacy);
   }
 
   async getUsersByDepartment(departmentId: string): Promise<User[]> {

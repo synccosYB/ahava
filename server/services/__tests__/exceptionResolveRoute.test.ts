@@ -1732,3 +1732,120 @@ test("POST /attendance/exceptions/:id/resolve: resolving an ALREADY-decided exce
     .where(eq(attendanceExceptions.id, exception.id));
   assert.equal(after.status, "approved", "a rejected re-resolve must not change the existing decision");
 });
+
+test("Phase 3 missing_punch: a fully-missed day (no punch) approves into one COMPLETE shift from both entered times", async (t) => {
+  const fx = await setupFixture("mp-fully-missed");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-10";
+  const reqIn = new Date("2026-05-10T09:00:00Z");
+  const reqOut = new Date("2026-05-10T13:00:00Z"); // 4h
+
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: reqIn,
+      type: "missing_punch",
+      reason: "forgot to punch all day [Corrected In: 09:00, Corrected Out: 13:00]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({
+      action: "approve",
+      correctedClockIn: reqIn.toISOString(),
+      correctedClockOut: reqOut.toISOString(),
+    }),
+  });
+  assert.equal(res.status, 200, `expected 200, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "exactly one punch created (no duplicate/open-only)");
+  assert.ok(rows[0].clockIn && rows[0].clockOut, "a COMPLETE shift (both sides set)");
+  assert.notEqual(rows[0].status, "in-progress", "not left as an open clock-in");
+  assert.equal(Number(rows[0].hoursWorked), 4, "~4h posted");
+});
+
+test("Phase 3 missing_punch: a lone punch + one entered time PAIRS into the existing punch (Ayala — direction inferred, no duplicate)", async (t) => {
+  const fx = await setupFixture("mp-lone-pairing");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-11";
+  // The system has a single 5:17 PM punch recorded as an (open) clock-in.
+  const loneAt = new Date("2026-05-11T17:17:00Z");
+  const [lone] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn: loneAt,
+      roundedClockIn: loneAt,
+      status: "in-progress",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // The employee says they actually clocked IN at 9:12 AM that day.
+  const enteredIn = new Date("2026-05-11T09:12:00Z");
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: enteredIn,
+      type: "missing_punch",
+      reason: "the 5:17 is really my clock-out [Corrected In: 09:12]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({ action: "approve", correctedClockIn: enteredIn.toISOString() }),
+  });
+  assert.equal(res.status, 200, `expected 200, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "the existing punch was updated, not duplicated");
+  assert.equal(rows[0].id, lone.id, "same punch row");
+  assert.equal(new Date(rows[0].clockIn!).toISOString(), "2026-05-11T09:12:00.000Z", "9:12 became the clock-in");
+  assert.equal(new Date(rows[0].clockOut!).toISOString(), "2026-05-11T17:17:00.000Z", "5:17 became the clock-out");
+});
+
+test("Phase 3 missing_punch: one entered time and NO existing punch still falls back to a lone open clock-in (legacy behavior preserved)", async (t) => {
+  const fx = await setupFixture("mp-fallback-open");
+  t.after(fx.cleanup);
+
+  const workDate = "2026-05-12";
+  const onlyIn = new Date("2026-05-12T08:30:00Z");
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: onlyIn,
+      type: "missing_punch",
+      reason: "only gave one time [Corrected In: 08:30]",
+      status: "pending",
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({ action: "approve", correctedClockIn: onlyIn.toISOString() }),
+  });
+  assert.equal(res.status, 200, `expected 200, got ${res.status} (${await res.text().catch(() => "")})`);
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, fx.employeeId));
+  assert.equal(rows.length, 1, "one punch");
+  assert.ok(rows[0].clockIn && !rows[0].clockOut, "open clock-in (no clock-out) — fallback");
+  assert.equal(rows[0].status, "in-progress");
+});
