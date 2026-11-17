@@ -1690,3 +1690,45 @@ test("PATCH /attendance/exceptions/:id rejects clearing the punch on a punch_rem
     .where(eq(attendanceExceptions.id, exception.id));
   assert.equal(unchanged.punchLogId, punch.id, "rejected edit must leave the FK intact");
 });
+
+test("POST /attendance/exceptions/:id/resolve: resolving an ALREADY-decided exception returns 409 (not a dead-end 400) so a stale approvals list self-heals", async (t) => {
+  const fx = await setupFixture("already-decided-409");
+  t.after(fx.cleanup);
+
+  // An exception that was already approved — e.g. the reviewer is looking at a
+  // stale Requests & Approvals list and clicks Approve on a row that was already
+  // handled. The route must answer 409 (a concurrency conflict the client
+  // refetches on), matching the in-transaction guard, rather than a 400 that
+  // leaves the ghost card on screen.
+  const workDate = "2026-05-02";
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: new Date("2026-05-02T09:00:00Z"),
+      type: "missing_punch",
+      reason: "already-decided row for the stale-list 409 regression",
+      status: "approved",
+      reviewedBy: REVIEWER_ID,
+      reviewedAt: new Date(),
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${fx.reviewerToken}`,
+    },
+    body: JSON.stringify({ action: "approve" }),
+  });
+  assert.equal(res.status, 409, `expected 409 for an already-decided exception, got ${res.status}`);
+
+  // The already-decided row is untouched by the rejected re-resolve.
+  const [after] = await db
+    .select()
+    .from(attendanceExceptions)
+    .where(eq(attendanceExceptions.id, exception.id));
+  assert.equal(after.status, "approved", "a rejected re-resolve must not change the existing decision");
+});

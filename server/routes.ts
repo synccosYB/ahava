@@ -7024,7 +7024,11 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Exception not found" });
       }
       if (exception.status !== "pending") {
-        return res.status(400).json({ message: "Exception already processed" });
+        // Already resolved before this click landed (commonly a stale list the
+        // reviewer is looking at). Surface it as a 409 conflict — like the
+        // transactional guard below — so the client refetches and the ghost
+        // card clears, instead of a dead-end 400 that leaves it on screen.
+        throw new RouteConflictError("This correction was already handled by someone else.");
       }
 
       const teamIds = await getTeamUserIds(reviewer);
@@ -8373,7 +8377,12 @@ export async function registerRoutes(
       const requestId = String(req.params.id) as string;
       const request = await storage.getTimeOffRequest(requestId);
       if (!request) return res.status(404).json({ message: "Request not found" });
-      if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
+      if (request.status !== "pending") {
+        // Already decided before this click landed (usually a stale list). Use a
+        // 409 conflict so the client refetches and the ghost card clears,
+        // matching the transactional guard rather than a dead-end 400.
+        throw new RouteConflictError("This request was already handled by someone else.");
+      }
 
       const teamIds = await getTeamUserIds(user);
       if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to approve this request" });
@@ -8472,7 +8481,12 @@ export async function registerRoutes(
       const requestId = String(req.params.id) as string;
       const request = await storage.getTimeOffRequest(requestId);
       if (!request) return res.status(404).json({ message: "Request not found" });
-      if (request.status !== "pending") return res.status(400).json({ message: "Request already processed" });
+      if (request.status !== "pending") {
+        // Already decided before this click landed (usually a stale list). Use a
+        // 409 conflict so the client refetches and the ghost card clears,
+        // matching the transactional guard rather than a dead-end 400.
+        throw new RouteConflictError("This request was already handled by someone else.");
+      }
 
       const teamIds = await getTeamUserIds(user);
       if (!teamIds.has(request.userId)) return res.status(403).json({ message: "Not authorized to deny this request" });
