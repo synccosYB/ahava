@@ -67,6 +67,7 @@ import { flagClockInGeofence, attachGeofenceMapToExceptions, evaluateClockInGeof
 import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/rank";
 import { resolveEmployeeTimezone, localWorkDate, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import { suggestShiftPairing, type PairingResult } from "./services/shiftPairing";
+import { routeBackpayForCorrection } from "./services/backpayRouting";
 import {
   resolvePunctualityBonusConfig,
   recomputePunctualityForEmployee,
@@ -7226,17 +7227,11 @@ export async function registerRoutes(
       // finalized payroll period. punch_removal is handled by its own block
       // above; deny was already returned earlier.
       const correctionAllowFuture = allowFuturePunchFromRules(exceptionAttRules);
-      const payrollLockResponse = (exports: PayrollExport[], verb: string) =>
-        res.status(409).json({
-          message: `This punch is part of finalized payroll (${describeFinalizedPayroll(exports)}). Reopen the affected payroll batch before ${verb}.`,
-          code: "PAYROLL_FINALIZED",
-          payrollExports: exports.map((e) => ({
-            id: e.id,
-            startDate: e.startDate,
-            endDate: e.endDate,
-            status: e.status,
-          })),
-        });
+      // Finalized (already-paid) exports this correction touches. For hours-
+      // affecting corrections we DON'T block anymore: the timesheet is updated and
+      // the pay difference is routed to the next payroll as back-pay (after the
+      // transaction commits). punch_removal keeps its hard block below.
+      const backpaySourceExports: PayrollExport[] = [];
 
       if (exception.type === "forgotten_clock_in") {
         const dateLock = await findFinalizedPayrollExportsForEmployeeDate(
@@ -7244,7 +7239,7 @@ export async function registerRoutes(
           exception.exceptionDate,
         );
         if (dateLock.length > 0) {
-          return payrollLockResponse(dateLock, "adding this punch");
+          backpaySourceExports.push(...dateLock);
         }
         const integrity = await validateProposedPunch({
           employeeId: exception.employeeId,
@@ -7263,7 +7258,7 @@ export async function registerRoutes(
           exception.exceptionDate,
         );
         if (dateLock.length > 0) {
-          return payrollLockResponse(dateLock, "adding this punch");
+          backpaySourceExports.push(...dateLock);
         }
         const tz = await resolveEmployeeTimezone(exception.employeeId);
         if (missingPunchPaired) {
@@ -7303,7 +7298,7 @@ export async function registerRoutes(
         if (target) {
           const punchLock = await findFinalizedPayrollExportsForPunch(target.id);
           if (punchLock.length > 0) {
-            return payrollLockResponse(punchLock, "correcting this punch");
+            backpaySourceExports.push(...punchLock);
           }
           const integrity = await validateProposedPunch({
             employeeId: exception.employeeId,
@@ -7323,7 +7318,7 @@ export async function registerRoutes(
         if (target) {
           const punchLock = await findFinalizedPayrollExportsForPunch(target.id);
           if (punchLock.length > 0) {
-            return payrollLockResponse(punchLock, "correcting this punch");
+            backpaySourceExports.push(...punchLock);
           }
           // Derive the punch's proposed final state exactly as the transaction
           // below will (explicit corrected in/out win; otherwise the legacy
@@ -7767,7 +7762,30 @@ export async function registerRoutes(
       );
       void recomputeLedger(exception.employeeId, affectedDates);
 
-      return res.json(updated.result);
+      // The correction is applied. If it touched a finalized (already-paid)
+      // export, record the pay owed / clawed-back as a PENDING back-pay item for
+      // admin approval (carried into the next batch once approved). Best-effort:
+      // the correction is already committed, so a failure here is logged and
+      // surfaced, never fatal.
+      let backpayItems: Awaited<ReturnType<typeof routeBackpayForCorrection>> = [];
+      let backpayError = false;
+      if (backpaySourceExports.length > 0) {
+        try {
+          backpayItems = await routeBackpayForCorrection({
+            employee: employeeUser,
+            workDate: updated.punchLog?.workDate ?? exception.exceptionDate,
+            sourceExports: backpaySourceExports,
+            attendanceExceptionId: exceptionId,
+            punchLogId: updated.punchLog?.id ?? null,
+            requestedBy: reviewer.id,
+          });
+        } catch (err) {
+          backpayError = true;
+          console.error("Back-pay routing failed after correction was applied:", err);
+        }
+      }
+
+      return res.json({ ...updated.result, backpayItems, backpayError });
     } catch (error) {
       console.error("Error resolving attendance exception:", error);
       handleRouteError(res, error, "Failed to resolve attendance exception");
@@ -11771,6 +11789,72 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error acknowledging adjustment:", error);
       handleRouteError(res, error, "Failed to acknowledge adjustment");
+    }
+  });
+
+  // --- Back-pay items (corrections to already-paid days) ---------------------
+  // Pending queue for the admin approval UI, enriched with employee name.
+  app.get("/api/payroll/backpay/pending", requireAuth, requirePermission("payroll.view_all"), async (req: any, res) => {
+    try {
+      const items = await storage.getPendingPayrollBackpayItems();
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const userMap = new Map(allUsers.map((u) => [u.id, u]));
+      const enriched = items.map((it) => {
+        const emp = userMap.get(it.employeeId);
+        return {
+          ...it,
+          employeeName: emp ? `${emp.firstName || ""} ${emp.lastName || ""}`.trim() : "Unknown",
+        };
+      });
+      res.json(enriched);
+    } catch (error) {
+      console.error("Error fetching pending back-pay items:", error);
+      handleRouteError(res, error, "Failed to fetch pending back-pay items");
+    }
+  });
+
+  // Admin-only FINAL approval of a back-pay item (status-guarded against a stale
+  // list). Approved items are carried into the next payroll batch.
+  app.post("/api/payroll/backpay/:id/approve", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const item = await storage.getPayrollBackpayItem(String(req.params.id));
+      if (!item) return res.status(404).json({ message: "Back-pay item not found" });
+      if (item.status !== "pending") {
+        throw new RouteConflictError("This back-pay item was already handled by someone else.");
+      }
+      const adminUser = req.authUser as User;
+      const updated = await storage.updatePayrollBackpayItem(item.id, {
+        status: "approved",
+        approvedBy: adminUser.id,
+        approvedAt: new Date(),
+        reviewNotes: typeof req.body?.reviewNotes === "string" ? req.body.reviewNotes : item.reviewNotes,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error approving back-pay item:", error);
+      handleRouteError(res, error, "Failed to approve back-pay item");
+    }
+  });
+
+  // Admin-only rejection (e.g. the correction was itself reverted).
+  app.post("/api/payroll/backpay/:id/reject", requireAuth, requireRole("admin"), async (req: any, res) => {
+    try {
+      const item = await storage.getPayrollBackpayItem(String(req.params.id));
+      if (!item) return res.status(404).json({ message: "Back-pay item not found" });
+      if (item.status !== "pending") {
+        throw new RouteConflictError("This back-pay item was already handled by someone else.");
+      }
+      const adminUser = req.authUser as User;
+      const updated = await storage.updatePayrollBackpayItem(item.id, {
+        status: "rejected",
+        approvedBy: adminUser.id,
+        approvedAt: new Date(),
+        reviewNotes: typeof req.body?.reviewNotes === "string" ? req.body.reviewNotes : item.reviewNotes,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error rejecting back-pay item:", error);
+      handleRouteError(res, error, "Failed to reject back-pay item");
     }
   });
 

@@ -17,6 +17,8 @@ import {
   users,
   payrollExports,
   payrollBatchRecords,
+  payrollBackpayItems,
+  payrollAdjustments,
   attendanceChangeLedger,
   attendanceLedger,
 } from "@shared/schema";
@@ -1848,4 +1850,102 @@ test("Phase 3 missing_punch: one entered time and NO existing punch still falls 
   assert.equal(rows.length, 1, "one punch");
   assert.ok(rows[0].clockIn && !rows[0].clockOut, "open clock-in (no clock-out) — fallback");
   assert.equal(rows[0].status, "in-progress");
+});
+
+test("Phase 3b back-pay: a time_correction that ADDS hours to an already-paid day updates the timesheet AND creates a pending back-pay item (not a 409 block)", async (t) => {
+  const fx = await setupFixture("backpay-time-correction");
+
+  const workDate = "2026-05-12";
+  const clockIn = new Date("2026-05-12T09:00:00Z");
+  const paidClockOut = new Date("2026-05-12T13:00:00Z"); // paid as 4h
+  const [punch] = await db
+    .insert(punchLogs)
+    .values({
+      employeeId: fx.employeeId,
+      workDate,
+      clockIn,
+      roundedClockIn: clockIn,
+      clockOut: paidClockOut,
+      roundedClockOut: paidClockOut,
+      hoursWorked: 4,
+      status: "complete",
+      source: "test",
+      approved: true,
+    })
+    .returning();
+
+  // Finalized export that already paid 4 regular hours for that day, with a
+  // frozen policy snapshot (daily OT at 8, weekly OT off) so the recompute is
+  // deterministic.
+  const [exp] = await db
+    .insert(payrollExports)
+    .values({ startDate: workDate, endDate: workDate, status: "exported", exportedAt: new Date() })
+    .returning();
+  await db.insert(payrollBatchRecords).values({
+    payrollExportId: exp.id,
+    employeeId: fx.employeeId,
+    punchLogId: punch.id,
+    recordType: "attendance",
+    workDate,
+    regularHours: 4,
+    overtimeHours: 0,
+    doubleTimeHours: 0,
+    otThresholdDaily: 8,
+    overtimeMultiplier: 1.5,
+    doubleTimeThresholdDaily: null,
+    autoCalculateOt: true,
+    overtimeEnabled: true,
+    weeklyOvertimeEnabled: false,
+    workweekStartDay: 0,
+    hourlyRate: 20,
+  });
+
+  t.after(async () => {
+    await db.delete(payrollBackpayItems).where(eq(payrollBackpayItems.employeeId, fx.employeeId));
+    // The resolve route's checkPostExportModification also flags the modified
+    // punch as a payroll_adjustment; clear it so the punch can be deleted.
+    await db.delete(payrollAdjustments).where(eq(payrollAdjustments.employeeId, fx.employeeId));
+    await db.delete(payrollBatchRecords).where(eq(payrollBatchRecords.payrollExportId, exp.id));
+    await db.delete(payrollExports).where(eq(payrollExports.id, exp.id));
+    await fx.cleanup();
+  });
+
+  // Employee says they actually worked until 5 PM (8h), not 1 PM.
+  const correctedOut = new Date("2026-05-12T17:00:00Z");
+  const [exception] = await db
+    .insert(attendanceExceptions)
+    .values({
+      employeeId: fx.employeeId,
+      exceptionDate: workDate,
+      exceptionTime: correctedOut,
+      type: "time_correction",
+      reason: "I actually left at 5 [Original In: 09:00, Original Out: 13:00, Corrected In: 09:00, Corrected Out: 17:00]",
+      status: "pending",
+      punchLogId: punch.id,
+    })
+    .returning();
+
+  const res = await fetch(`${fx.baseUrl}/api/attendance/exceptions/${exception.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${fx.reviewerToken}` },
+    body: JSON.stringify({
+      action: "approve",
+      correctedClockIn: clockIn.toISOString(),
+      correctedClockOut: correctedOut.toISOString(),
+    }),
+  });
+  assert.equal(res.status, 200, `expected 200 (back-pay routed, not blocked), got ${res.status} (${await res.text().catch(() => "")})`);
+
+  // Timesheet updated: the punch now reads 8h.
+  const [updatedPunch] = await db.select().from(punchLogs).where(eq(punchLogs.id, punch.id));
+  assert.equal(Number(updatedPunch.hoursWorked), 8, "punch corrected to 8h on the timesheet");
+
+  // A pending back-pay item for the +4 regular-hour difference exists.
+  const items = await db.select().from(payrollBackpayItems).where(eq(payrollBackpayItems.employeeId, fx.employeeId));
+  assert.equal(items.length, 1, "exactly one back-pay item created");
+  assert.equal(items[0].status, "pending", "awaits admin approval");
+  assert.equal(items[0].sourcePayrollExportId, exp.id, "points at the source (already-paid) export");
+  assert.equal(Number(items[0].regularHours), 4, "+4 regular hours owed");
+  assert.equal(Number(items[0].overtimeHours), 0);
+  assert.equal(items[0].hourlyRate, 20, "frozen rate carried for the back-pay line");
 });
