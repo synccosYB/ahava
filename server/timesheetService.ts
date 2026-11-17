@@ -385,8 +385,13 @@ export async function buildEmployeeTimesheet(
     otThresholdDaily: otThreshold,
     entries,
     totals: {
-      totalHours: Math.round(ledgerTotals.totalHours * 10) / 10,
-      overtimeHours: Math.round(ledgerTotals.overtimeCombined * 10) / 10,
+      // Round to hundredths — the SAME precision as the per-day rows (which show
+      // ledger day hours to the minute) and as payroll (round2). Rounding the
+      // total to tenths (1/10 h) made it read up to ~3 min higher than the sum of
+      // the visible days and than actual pay (e.g. an 8h02m day nets 7h17m but the
+      // total showed 7h18m), so the totals row never added up.
+      totalHours: Math.round(ledgerTotals.totalHours * 100) / 100,
+      overtimeHours: Math.round(ledgerTotals.overtimeCombined * 100) / 100,
       daysWorked,
       totalBonus: Math.round(totalBonus * 100) / 100,
     },
