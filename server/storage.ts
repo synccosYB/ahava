@@ -477,6 +477,7 @@ export interface IStorage {
   getLatestAttendanceForUser(userId: string): Promise<PunchLog | undefined>;
   getAttendanceForUserOnDate(userId: string, workDate: string): Promise<PunchLog | undefined>;
   getAttendancesForUserOnDate(userId: string, workDate: string): Promise<PunchLog[]>;
+  getMostRecentPunchEventTime(userId: string): Promise<Date | null>;
 
   getUsersByDepartment(departmentId: string): Promise<User[]>;
   getUsersByLocation(locationId: string): Promise<User[]>;
@@ -2391,6 +2392,27 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(punchLogs.employeeId, userId), eq(punchLogs.workDate, workDate)))
       .orderBy(asc(punchLogs.createdAt));
     return rows.map(punchLogToLegacy);
+  }
+
+  // The most recent clock-in/out INSTANT for an employee (across their latest
+  // punches), used to debounce accidental double-punches. Looks at the last few
+  // punches by creation so a backdated manual punch never masks a real one.
+  async getMostRecentPunchEventTime(employeeId: string): Promise<Date | null> {
+    const rows = await db
+      .select({ clockIn: punchLogs.clockIn, clockOut: punchLogs.clockOut })
+      .from(punchLogs)
+      .where(eq(punchLogs.employeeId, employeeId))
+      .orderBy(desc(punchLogs.createdAt))
+      .limit(5);
+    let maxMs: number | null = null;
+    for (const r of rows) {
+      for (const t of [r.clockIn, r.clockOut]) {
+        if (!t) continue;
+        const ms = new Date(t).getTime();
+        if (Number.isFinite(ms) && (maxMs == null || ms > maxMs)) maxMs = ms;
+      }
+    }
+    return maxMs == null ? null : new Date(maxMs);
   }
 
   async getUsersByDepartment(departmentId: string): Promise<User[]> {

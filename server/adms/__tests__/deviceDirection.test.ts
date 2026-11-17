@@ -120,3 +120,36 @@ test("WITHOUT the flag, the device status code is ignored (state logic): an OUT-
   assert.ok(rows[0].clockIn && !rows[0].clockOut, "opened a shift (status code ignored)");
   assert.notEqual(rows[0].status, "missing_clockin");
 });
+
+test("double-scan debounce: a second scan within 3 minutes is ignored, not recorded twice", async () => {
+  const id = await makeEmp("dbz", false);
+  await adms.mapDeviceUser(deviceId, "8009", id);
+
+  const r1 = await ingestPunches(dev(), line("8009", "2026-11-10 09:00:00", "0"));
+  assert.equal(r1.processed, 1, "first scan recorded");
+  assert.equal(r1.debounced, 0);
+
+  // Same employee taps again 90 seconds later — accidental double-punch.
+  const r2 = await ingestPunches(dev(), line("8009", "2026-11-10 09:01:30", "0"));
+  assert.equal(r2.debounced, 1, "second scan ignored as a double-punch");
+  assert.equal(r2.processed, 0, "no new punch processed");
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, id));
+  assert.equal(rows.length, 1, "only one punch exists");
+  assert.ok(rows[0].clockIn && !rows[0].clockOut, "still just the open clock-in");
+});
+
+test("double-scan debounce: a scan AFTER the 3-minute window is processed normally", async () => {
+  const id = await makeEmp("dbw", false);
+  await adms.mapDeviceUser(deviceId, "8010", id);
+
+  const r1 = await ingestPunches(dev(), line("8010", "2026-11-10 09:00:00", "0")); // clock-in
+  assert.equal(r1.processed, 1);
+  const r2 = await ingestPunches(dev(), line("8010", "2026-11-10 09:05:00", "0")); // 5 min later
+  assert.equal(r2.debounced, 0, "outside the window — not debounced");
+  assert.equal(r2.processed, 1, "processed (closes the shift)");
+
+  const rows = await db.select().from(punchLogs).where(eq(punchLogs.employeeId, id));
+  assert.equal(rows.length, 1, "one shift");
+  assert.ok(rows[0].clockIn && rows[0].clockOut, "closed by the second scan");
+});
