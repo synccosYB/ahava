@@ -219,6 +219,29 @@ export default function PayrollPrepPage() {
     },
   });
 
+  // Delete a DRAFT batch (the "Rebuild" flow: delete the stale draft, then
+  // regenerate it to pick up the latest corrections). Back-pay the draft carried
+  // is reverted server-side, so nothing owed is lost.
+  const [deleteBatch, setDeleteBatch] = useState<EnrichedPayrollExport | null>(null);
+  const deleteMutation = useMutation({
+    mutationFn: async (batch: EnrichedPayrollExport) => {
+      const res = await apiRequest("DELETE", `/api/payroll/exports/${batch.id}`);
+      return res.json();
+    },
+    onSuccess: (_data, batch) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/ready-for-payroll"] });
+      // Pre-fill the generate form with the deleted draft's range so the admin
+      // can immediately rebuild it.
+      setForm((f) => ({ ...f, periodStart: batch.startDate, periodEnd: batch.endDate }));
+      setDeleteBatch(null);
+      toast({ title: "Draft deleted", description: "Regenerate the batch to rebuild it with the latest corrections." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to delete draft", description: err.message, variant: "destructive" });
+    },
+  });
+
   const createBatch = () => {
     if (!form.periodStart || !form.periodEnd) return;
     createMutation.mutate({
@@ -440,6 +463,11 @@ export default function PayrollPrepPage() {
                             Export
                           </Button>
                         )}
+                        {batch.status === "draft" && (
+                          <Button variant="outline" size="sm" onClick={() => setDeleteBatch(batch)} data-testid={`button-rebuild-${batch.id}`}>
+                            <RefreshCw className="h-3 w-3 mr-1" /> Rebuild
+                          </Button>
+                        )}
                         {batch.status === "exported" && (
                           <Button variant="outline" size="sm" onClick={() => handleLock(batch.id)} disabled={lockMutation.isPending || checkingDriftId === batch.id} data-testid={`button-lock-${batch.id}`}>
                             {checkingDriftId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Lock className="h-3 w-3 mr-1" />} Lock
@@ -459,6 +487,30 @@ export default function PayrollPrepPage() {
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={!!deleteBatch} onOpenChange={(open) => !open && setDeleteBatch(null)}>
+        <AlertDialogContent data-testid="dialog-rebuild-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rebuild this draft batch?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteBatch ? `This deletes the draft for ${formatDateRange(deleteBatch.startDate, deleteBatch.endDate)} and pre-fills the generator with its dates so you can regenerate it with the latest corrections. ` : ""}
+              Its confirmed days are released back to "ready" and any back-pay it carried is returned to the pending-paid queue — nothing owed is lost. Only drafts can be rebuilt; sent batches must be reopened.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-rebuild-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteBatch && deleteMutation.mutate(deleteBatch)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-rebuild-confirm"
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete draft"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <BackpayReview />
 
       <PunctualityBonusReview />
 
@@ -924,6 +976,106 @@ type PunctualityBonusWeekRow = {
 // Manager review of Weekly Punctuality Rate Bonus weeks that need a decision
 // (an employee missed a scheduled day with no approved PTO — never-late weeks
 // auto-qualify and any-late weeks auto-forfeit without landing here).
+type BackpayItemRow = {
+  id: string; employeeName: string; workDate: string; reason: string;
+  regularHours: number; overtimeHours: number; doubleTimeHours: number;
+  hourlyRate: number | null; overtimeMultiplier: number | null; doubleTimeMultiplier: number | null;
+};
+
+function BackpayReview() {
+  const { toast } = useToast();
+  const { data: items = [], isLoading } = useQuery<BackpayItemRow[]>({
+    queryKey: ["/api/payroll/backpay/pending"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/payroll/backpay/pending");
+      return res.json();
+    },
+  });
+
+  const decideMutation = useMutation({
+    mutationFn: async ({ id, decision }: { id: string; decision: "approve" | "reject" }) => {
+      await apiRequest("POST", `/api/payroll/backpay/${id}/${decision}`);
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/backpay/pending"] });
+      toast({ title: vars.decision === "approve" ? "Back-pay approved" : "Back-pay rejected" });
+    },
+    onError: (error: any) => {
+      toast({ title: "Could not save decision", description: error?.message || "Please try again.", variant: "destructive" });
+    },
+  });
+
+  if (!isLoading && items.length === 0) return null;
+
+  const estimate = (it: BackpayItemRow) => {
+    const rate = it.hourlyRate ?? 0;
+    const otM = it.overtimeMultiplier ?? 1.5;
+    const dtM = it.doubleTimeMultiplier ?? 2;
+    return it.regularHours * rate + it.overtimeHours * rate * otM + it.doubleTimeHours * rate * dtM;
+  };
+  const fmtHrs = (it: BackpayItemRow) => {
+    const parts: string[] = [];
+    if (it.regularHours) parts.push(`${it.regularHours} reg`);
+    if (it.overtimeHours) parts.push(`${it.overtimeHours} OT`);
+    if (it.doubleTimeHours) parts.push(`${it.doubleTimeHours} DT`);
+    return parts.length ? parts.join(", ") : "0";
+  };
+
+  return (
+    <Card data-testid="card-backpay-review">
+      <CardContent className="p-0">
+        <div className="px-4 py-3 border-b">
+          <h3 className="text-sm font-semibold">Back-Pay — Pending Admin Approval</h3>
+          <p className="text-xs text-muted-foreground">
+            Corrections to days that were already paid. Approve to carry the difference into the next payroll batch (a negative amount is a claw-back), or reject.
+          </p>
+        </div>
+        {isLoading ? (
+          <div className="p-6 space-y-2"><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-full" /></div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Day</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Hours</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider">Reason</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Est. $</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((it) => (
+                <TableRow key={it.id} data-testid={`row-backpay-${it.id}`}>
+                  <TableCell className="font-medium" data-testid={`text-backpay-employee-${it.id}`}>{it.employeeName}</TableCell>
+                  <TableCell className="tabular-nums">{formatDate(it.workDate)}</TableCell>
+                  <TableCell className="text-xs tabular-nums">{fmtHrs(it)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground max-w-md">{it.reason || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums" data-testid={`text-backpay-amount-${it.id}`}>{formatCurrency(estimate(it))}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex gap-2 justify-end">
+                      <Button size="sm" variant="outline" disabled={decideMutation.isPending}
+                        onClick={() => decideMutation.mutate({ id: it.id, decision: "approve" })}
+                        data-testid={`button-backpay-approve-${it.id}`}>
+                        <CheckCircle className="h-3 w-3 mr-1" /> Approve
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={decideMutation.isPending}
+                        onClick={() => decideMutation.mutate({ id: it.id, decision: "reject" })}
+                        data-testid={`button-backpay-reject-${it.id}`}>
+                        <XCircle className="h-3 w-3 mr-1" /> Reject
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function PunctualityBonusReview() {
   const { toast } = useToast();
   const { data: weeks = [], isLoading } = useQuery<PunctualityBonusWeekRow[]>({
