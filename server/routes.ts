@@ -1549,25 +1549,35 @@ export async function registerRoutes(
       }
       const actor = (req as any).authUser as User;
       const auditCtx = getAuditContext(req);
+      // ?dryRun=1 computes the full change set WITHOUT writing (preview).
+      // ?updateOnly=1 (default on) only touches existing employees — unmatched
+      // Clock #s are skipped & flagged instead of creating new people.
+      const truthy = (v: unknown) => v === "1" || v === "true" || v === true;
+      const dryRun = truthy(req.query?.dryRun) || truthy(req.body?.dryRun);
+      const updateOnly = req.query?.updateOnly === undefined && req.body?.updateOnly === undefined
+        ? true
+        : truthy(req.query?.updateOnly) || truthy(req.body?.updateOnly);
       try {
-        const summary = await importEmployeesFromBuffer(req.file.buffer);
-        invalidateUserCache();
-        await writeAuditLog({
-          actorUserId: actor.id,
-          targetType: "company",
-          targetId: summary.companyId,
-          action: "user.bulk_import",
-          oldValue: null,
-          newValue: {
-            created: summary.created,
-            updated: summary.updated,
-            skipped: summary.skipped.length,
-            warnings: summary.warnings.length,
-            company: summary.company,
-          },
-          context: { fileName: req.file.originalname },
-          ...auditCtx,
-        });
+        const summary = await importEmployeesFromBuffer(req.file.buffer, { dryRun, updateOnly });
+        if (!dryRun) {
+          invalidateUserCache();
+          await writeAuditLog({
+            actorUserId: actor.id,
+            targetType: "company",
+            targetId: summary.companyId,
+            action: "user.bulk_import",
+            oldValue: null,
+            newValue: {
+              created: summary.created,
+              updated: summary.updated,
+              skipped: summary.skipped.length,
+              warnings: summary.warnings.length,
+              company: summary.company,
+            },
+            context: { fileName: req.file.originalname },
+            ...auditCtx,
+          });
+        }
         res.json(summary);
       } catch (err) {
         handleRouteError(res, err, "Failed to import employees");

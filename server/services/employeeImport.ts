@@ -71,6 +71,17 @@ export interface ImportSummary {
    * department, or role that was left unset); the employee is still imported. */
   warnings: { row: number; reason: string }[];
   profilesWithNumber: number;
+  /** True when this run computed changes WITHOUT writing them (preview). */
+  dryRun: boolean;
+  /** Per-row plain-language summary of what changed (or would change). */
+  changes: { row: number; employeeNumber: string; name: string; actions: string[] }[];
+}
+
+export interface ImportOptions {
+  /** Preview only — compute everything but write nothing to the database. */
+  dryRun?: boolean;
+  /** Never create new employees: a Clock # with no match is skipped + flagged. */
+  updateOnly?: boolean;
 }
 
 /**
@@ -203,18 +214,39 @@ function makePayingCompanyResolver(companies: Company[], operationalId: string) 
  */
 export async function importEmployeesFromBuffer(
   buffer: Buffer,
+  opts: ImportOptions = {},
 ): Promise<ImportSummary> {
+  const dryRun = opts.dryRun === true;
+  const updateOnly = opts.updateOnly === true;
+  const changes: ImportSummary["changes"] = [];
   const wb = XLSX.read(buffer, { type: "buffer" });
   if (wb.SheetNames.length === 0) {
     throw new Error("The spreadsheet has no sheets.");
   }
-  // The export contains multiple data tabs. Legacy clock sheets can also have
-  // an Employee Id column, but it carries a clock number rather than a user id.
+  // Recognize the export format by its distinctive columns — "Access Level" (and
+  // "Clock #") only appear on the exported workbook, never on a legacy clock
+  // sheet. The hidden "Employee ID" column is NOT required: when it's absent
+  // (e.g. the client worked from a copy that dropped it), we still apply the full
+  // field set and match rows by Clock # instead. "Lists" is the dropdown sheet.
   const sheets = wb.SheetNames.map((name) => {
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[name], { defval: null });
+    const ws = wb.Sheets[name];
+    // Google Sheets (and hand-edited copies) can leave a blank banner row above
+    // the headers. Object-mode parsing would turn that blank row into the header,
+    // producing "__EMPTY" keys and dropping every real column, so first locate the
+    // actual header row (the first row with any non-empty cell) and parse from it.
+    const aoa = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, blankrows: true });
+    let headerRow = 0;
+    while (
+      headerRow < aoa.length &&
+      (aoa[headerRow] ?? []).every((cell) => cell == null || String(cell).trim() === "")
+    ) headerRow++;
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
+      defval: null,
+      range: headerRow < aoa.length ? headerRow : 0,
+    });
     const headers = Object.keys(rows[0] ?? {}).map((header) => header.trim().toLowerCase());
     const exported = name.trim().toLowerCase() !== "lists" &&
-      ["employee id", "clock #", "access level"].every((header) => headers.includes(header));
+      ["clock #", "access level"].every((header) => headers.includes(header));
     return { rows, exported };
   });
   const exportedSheets = sheets.filter((sheet) => sheet.exported);
@@ -363,6 +395,18 @@ export async function importEmployeesFromBuffer(
       continue;
     }
 
+    // Update-only mode: never create — a Clock # that matches no one is skipped
+    // and flagged, so a typo'd clock number can't become a duplicate employee.
+    if (!existingUserId && updateOnly) {
+      skipped.push({
+        row: rowNum,
+        reason: employeeNumber
+          ? `Clock # ${employeeNumber} not found — update-only, skipped`
+          : "no matching employee and missing Clock # — skipped",
+      });
+      continue;
+    }
+
     // A row with no match needs a Clock # (its future key) and a name to create.
     if (!existingUserId) {
       if (!employeeNumber) {
@@ -499,6 +543,24 @@ export async function importEmployeesFromBuffer(
     }
 
     // ---- Apply ----
+    // rowActions records, in plain language, every field this row changes — used
+    // for the dry-run preview and the final report.
+    const rowActions: string[] = [];
+    if (existingUser && (employeeCell || explicitFirstName || explicitLastName)) {
+      const newName = `${firstName} ${lastName}`.trim();
+      const oldName = `${existingUser.firstName ?? ""} ${existingUser.lastName ?? ""}`.trim();
+      if (newName && newName !== oldName) rowActions.push(`name → ${newName}`);
+    }
+    if (resolvedBaseRole) rowActions.push(`base role → ${resolvedBaseRole}`);
+    if (profilePatch.payrollCompanyId && payingCompanyRaw) rowActions.push(`paying company → ${payingCompanyRaw.trim()}`);
+    if (profilePatch.taxClassification) rowActions.push(`tax → ${profilePatch.taxClassification}`);
+    if (payTouched) rowActions.push(`pay → ${profilePatch.payType ?? basis}${amount !== undefined ? ` $${amount}` : ""}`);
+    if (lunchVal !== undefined) rowActions.push(`lunch → ${lunchVal ? "required" : "not required"}`);
+    if (locationIds && locationName) rowActions.push(`location → ${locationName}`);
+    if (resolvedDepartmentId && departmentRaw) rowActions.push(`department → ${departmentRaw.trim()}`);
+    if (resolvedRoleId && accessLevelRaw) rowActions.push(`access level → ${accessLevelRaw.trim()}`);
+    if (workingCompanyRaw && companyByName.has(workingCompanyRaw.trim().toLowerCase())) rowActions.push(`working company → ${workingCompanyRaw.trim()}`);
+
     let userId: string;
     const wasDeactivated = !!existingUser?.deactivatedAt;
     if (existingUserId) {
@@ -506,37 +568,44 @@ export async function importEmployeesFromBuffer(
       if (employeeCell || explicitFirstName) userPatch.firstName = firstName;
       if (employeeCell || explicitLastName) userPatch.lastName = lastName;
       if (resolvedBaseRole) { userPatch.role = resolvedBaseRole; baseRolesSet++; }
-      await storage.updateUser(existingUserId, userPatch);
-      if (locationIds) await storage.setUserLocationIds(existingUserId, locationIds);
-      if (Object.keys(profilePatch).length > 0) {
-        if (existingProfile) await storage.updateEmploymentProfile(existingUserId, profilePatch);
-        else await storage.createEmploymentProfile({ ...profilePatch, userId: existingUserId });
+      if (!dryRun) {
+        await storage.updateUser(existingUserId, userPatch);
+        if (locationIds) await storage.setUserLocationIds(existingUserId, locationIds);
+        if (Object.keys(profilePatch).length > 0) {
+          if (existingProfile) await storage.updateEmploymentProfile(existingUserId, profilePatch);
+          else await storage.createEmploymentProfile({ ...profilePatch, userId: existingUserId });
+        }
       }
       userId = existingUserId;
       updated++;
     } else {
-      const newUser = await storage.createUser({
-        firstName, lastName, role: resolvedBaseRole ?? "employee", companyId: resolvedCompanyId,
-      });
+      // (reached only when updateOnly is off — a genuine new hire)
+      userId = `(new:${employeeNumber})`;
+      if (!dryRun) {
+        const newUser = await storage.createUser({
+          firstName, lastName, role: resolvedBaseRole ?? "employee", companyId: resolvedCompanyId,
+        });
+        if (locationIds) await storage.setUserLocationIds(newUser.id, locationIds);
+        await storage.createEmploymentProfile({ userId: newUser.id, ...profilePatch });
+        userId = newUser.id;
+      }
       if (resolvedBaseRole) baseRolesSet++;
-      if (locationIds) await storage.setUserLocationIds(newUser.id, locationIds);
-      await storage.createEmploymentProfile({ userId: newUser.id, ...profilePatch });
-      userId = newUser.id;
+      rowActions.unshift("CREATE new employee");
       created++;
     }
-    if (employeeNumber) userIdByNumber.set(employeeNumber, userId);
+    if (employeeNumber && !userId.startsWith("(new")) userIdByNumber.set(employeeNumber, userId);
     if (workingCompanyRaw && companyByName.has(workingCompanyRaw.trim().toLowerCase())) workingCompanySet++;
     if (payTouched) payUpdated++;
     if (lunchVal !== undefined) lunchSet++;
 
     if (resolvedDepartmentId) {
-      await storage.setUserDepartmentIds(userId, [resolvedDepartmentId]);
+      if (!dryRun && !userId.startsWith("(new")) await storage.setUserDepartmentIds(userId, [resolvedDepartmentId]);
       departmentsAssigned++;
     }
-    if (resolvedRoleId) {
+    if (resolvedRoleId && !userId.startsWith("(new")) {
       const current = await storage.getUserRoles(userId);
       if (!current.some((r) => r.roleId === resolvedRoleId)) {
-        await storage.assignUserRole(userId, resolvedRoleId, resolvedCompanyId ?? undefined);
+        if (!dryRun) await storage.assignUserRole(userId, resolvedRoleId, resolvedCompanyId ?? undefined);
       }
       rolesAssigned++;
     }
@@ -553,21 +622,27 @@ export async function importEmployeesFromBuffer(
       } else {
         const wanted = new Set(names.map((name) => policyByName.get(name.toLowerCase())!));
         const current = userPolicies.get(userId) ?? new Map<string, string>();
+        let added = 0, removed = 0;
         for (const pid of wanted) {
           if (!current.has(pid)) {
-            const assignment = await storage.createPolicyAssignment({ policyId: pid, userId });
-            current.set(pid, assignment.id);
-            policiesAdded++;
+            if (!dryRun) {
+              const assignment = await storage.createPolicyAssignment({ policyId: pid, userId });
+              current.set(pid, assignment.id);
+            } else {
+              current.set(pid, `(dry:${pid})`);
+            }
+            policiesAdded++; added++;
           }
         }
         for (const [pid, assignmentId] of current) {
           if (!wanted.has(pid)) {
-            await storage.deletePolicyAssignment(assignmentId);
+            if (!dryRun) await storage.deletePolicyAssignment(assignmentId);
             current.delete(pid);
-            policiesRemoved++;
+            policiesRemoved++; removed++;
           }
         }
         userPolicies.set(userId, current);
+        if (added || removed) rowActions.push(`policies → set to "${names.join(", ")}" (+${added}/-${removed})`);
       }
     }
 
@@ -579,23 +654,33 @@ export async function importEmployeesFromBuffer(
     if (exportFormat && terminationRaw && !terminationDate) {
       warnings.push({ row: rowNum, reason: "invalid termination date; employment status left unchanged" });
     } else if (isLegacyInactive || terminationDate) {
-      if (!wasDeactivated) {
-        await db.transaction(async (tx) => {
-          if (terminationDate) await storage.updateEmploymentProfile(userId, { terminationDate }, tx);
-          await storage.setUserDeactivated(userId, "import", null, tx);
-        });
+      if (!wasDeactivated && !userId.startsWith("(new")) {
+        if (!dryRun) {
+          await db.transaction(async (tx) => {
+            if (terminationDate) await storage.updateEmploymentProfile(userId, { terminationDate }, tx);
+            await storage.setUserDeactivated(userId, "import", null, tx);
+          });
+        }
         deactivated.push({ row: rowNum, employeeNumber, name: `${firstName} ${lastName}`.trim() });
+        rowActions.push(`DEACTIVATE${terminationDate ? ` (termination ${terminationDate})` : ""}`);
       }
-    } else if (exportFormat && idCell && hasTerminationColumn && wasDeactivated) {
+    } else if (exportFormat && idCell && hasTerminationColumn && wasDeactivated && !userId.startsWith("(new")) {
       // Export row with an empty Termination Date for a currently-deactivated
       // person -> reactivate (clear the termination).
-      await db.transaction(async (tx) => {
-        await tx.update(users)
-          .set({ deactivatedAt: null, terminationReason: null, updatedAt: new Date() })
-          .where(eq(users.id, userId));
-        await storage.updateEmploymentProfile(userId, { terminationDate: null }, tx);
-      });
+      if (!dryRun) {
+        await db.transaction(async (tx) => {
+          await tx.update(users)
+            .set({ deactivatedAt: null, terminationReason: null, updatedAt: new Date() })
+            .where(eq(users.id, userId));
+          await storage.updateEmploymentProfile(userId, { terminationDate: null }, tx);
+        });
+      }
       reactivated.push({ row: rowNum, name: `${firstName} ${lastName}`.trim() });
+      rowActions.push("REACTIVATE");
+    }
+
+    if (rowActions.length > 0) {
+      changes.push({ row: rowNum, employeeNumber, name: `${firstName} ${lastName}`.trim(), actions: rowActions });
     }
   }
 
@@ -628,5 +713,7 @@ export async function importEmployeesFromBuffer(
     skipped,
     warnings,
     profilesWithNumber,
+    dryRun,
+    changes,
   };
 }
