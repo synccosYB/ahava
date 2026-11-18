@@ -25,6 +25,10 @@ export interface TimesheetEntry {
   clockOut: string | null;
   breakMinutes: number;
   totalHours: number | null;
+  // Worked hours shown for REFERENCE only when totalHours is not the pay basis
+  // (attendance/confirmation-only employees are paid per day, not per hour). The
+  // reviewer can still see how long the person was clocked in. null otherwise.
+  referenceHours: number | null;
   overtimeHours: number;
   status: TimesheetStatus;
   ptoType: string | null;
@@ -322,12 +326,15 @@ export async function buildEmployeeTimesheet(
         date: dateStr,
         dayOfWeek,
         clockIn: firstIn ? firstIn.toISOString() : null,
-        // A confirmation marker is a single daily tap; the placeholder clock-out
-        // isn't a real punch-out, so leave the clock-out column blank.
-        clockOut: confirmationOnly ? null : (lastOut ? lastOut.toISOString() : null),
-        breakMinutes: confirmationOnly ? 0 : breakMin,
-        // Hours are not counted for attendance-only employees — show "—".
+        // Show the real clock-out time even for attendance-only employees, so the
+        // reviewer can see when they left (reference, not pay).
+        clockOut: lastOut ? lastOut.toISOString() : null,
+        breakMinutes: breakMin,
+        // Hours are not the pay basis for attendance-only employees — keep
+        // totalHours null (so pay/totals are unaffected) but expose the worked
+        // hours as referenceHours so they still show on the timesheet.
         totalHours: confirmationOnly ? null : roundedHours,
+        referenceHours: confirmationOnly ? roundedHours : null,
         overtimeHours: confirmationOnly || inProgress ? 0 : dayOvertime,
         status,
         ptoType: null,
@@ -344,6 +351,7 @@ export async function buildEmployeeTimesheet(
         clockOut: null,
         breakMinutes: 0,
         totalHours: null,
+        referenceHours: null,
         overtimeHours: 0,
         status: "pto",
         ptoType: primary.type,
@@ -358,6 +366,7 @@ export async function buildEmployeeTimesheet(
         clockOut: null,
         breakMinutes: 0,
         totalHours: null,
+        referenceHours: null,
         overtimeHours: 0,
         status: "none",
         ptoType: null,
