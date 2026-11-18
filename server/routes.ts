@@ -1,4 +1,4 @@
-import type { Express, RequestHandler } from "express";
+import type { Express, RequestHandler, Response } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage, DuplicateOpenPunchError } from "./storage";
@@ -68,6 +68,7 @@ import { getUserRank, outranks, canUnlock, RANK, RANK_LABEL } from "./services/r
 import { resolveEmployeeTimezone, localWorkDate, flagPunchOverlapForReconciliation, parseConflictingPunchId } from "./services/punchOverlap";
 import { suggestShiftPairing, type PairingResult } from "./services/shiftPairing";
 import { routeBackpayForCorrection } from "./services/backpayRouting";
+import { punchDebounceRemaining } from "./services/punchDebounce";
 import {
   resolvePunctualityBonusConfig,
   recomputePunctualityForEmployee,
@@ -278,6 +279,19 @@ async function checkPostExportModification(punchLogId: string, modifiedBy: strin
 // desync payroll without a paper trail (and the FK from payroll_batch_records /
 // payroll_adjustments would otherwise surface a raw DB error on delete).
 const FINALIZED_PAYROLL_STATUSES = ["exported", "locked"] as const;
+
+// Accidental double-punch guard (shared with the device ingest).
+async function punchDebounceRemainingMs(employeeId: string, now: Date): Promise<number> {
+  return punchDebounceRemaining(await storage.getMostRecentPunchEventTime(employeeId), now);
+}
+function punchDebouncedResponse(res: Response, remainingMs: number) {
+  const secs = Math.max(1, Math.ceil(remainingMs / 1000));
+  return res.status(409).json({
+    code: "PUNCH_DEBOUNCED",
+    message: `Ignored — you just punched a moment ago. Try again in ${secs}s.`,
+    retryAfterSeconds: secs,
+  });
+}
 
 type DbOrTx = Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db;
 
@@ -4413,6 +4427,11 @@ export async function registerRoutes(
         return res.status(409).json({ message: "You're already clocked in." });
       }
 
+      // Accidental double-punch guard: ignore a clock-in landing within the
+      // debounce window of the employee's last clock event (e.g. a double-tap).
+      const debounce = await punchDebounceRemainingMs(userId, new Date());
+      if (debounce > 0) return punchDebouncedResponse(res, debounce);
+
       const source = req.body?.source || "web";
       const rules = getPolicyRules(req, "attendance");
       if (!isPunchSourceAllowed(rules, source)) {
@@ -4546,6 +4565,12 @@ export async function registerRoutes(
       }
 
       const now = new Date();
+      // Accidental double-punch guard: ignore a clock-out landing within the
+      // debounce window of the clock-in (e.g. a double-tap that would otherwise
+      // record a 0-minute shift).
+      const debounce = await punchDebounceRemainingMs(userId, now);
+      if (debounce > 0) return punchDebouncedResponse(res, debounce);
+
       const roundedClockInTime = new Date(current.roundedClockIn ?? current.clockIn);
       // Auto-end an in-progress break so its minutes are never orphaned: fold the
       // elapsed minutes into the single break_minutes accumulator BEFORE the pay

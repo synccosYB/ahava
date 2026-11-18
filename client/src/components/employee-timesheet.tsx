@@ -23,6 +23,9 @@ export type TimesheetEntry = {
   clockOut: string | null;
   breakMinutes: number;
   totalHours: number | null;
+  // Worked hours for REFERENCE (attendance-only employees paid per day): shown
+  // muted, not counted toward pay. null when totalHours is the pay basis.
+  referenceHours?: number | null;
   overtimeHours: number;
   status: TimesheetStatus;
   ptoType: string | null;
@@ -300,7 +303,15 @@ export function EmployeeTimesheetTable({
                 </TableCell>
                 <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
                 <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>
-                  {e.totalHours != null ? formatHoursMinutes(e.totalHours) : "—"}
+                  {e.totalHours != null ? (
+                    formatHoursMinutes(e.totalHours)
+                  ) : e.referenceHours != null ? (
+                    <span className="font-normal text-muted-foreground" title="For reference — paid per day, not per hour">
+                      ({formatHoursMinutes(e.referenceHours)})
+                    </span>
+                  ) : (
+                    "—"
+                  )}
                 </TableCell>
                 <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-ot-${e.date}`}>
                   {e.overtimeHours > 0 ? (

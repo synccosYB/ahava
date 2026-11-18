@@ -64,9 +64,11 @@ test("ledger: lunch-required forgot to clock back in -> span minus 45 fine", asy
   near(day!.totalHours, 8 - 45 / 60, "span 9->17 (8h) - 45m fine (7.25h)");
 });
 
-test("ledger: NON-lunch employee is unaffected (no paid lunch, no fine)", async (t) => {
+test("ledger: NON-lunch employee gets the PAID break too (within-hour break paid up to 45, no fine)", async (t) => {
   const u = await makeLunchEmployee(false);
   t.after(() => cleanup(u.id));
+  // 9-12 (3h), 60-min break, 13-17 (4h) = 7h worked. The 60-min break is within
+  // the hour, so 45 min of it is PAID (the time counts): 7 + 0.75 = 7.75h.
   await db.insert(punchLogs).values([
     { employeeId: u.id, workDate: "2026-11-05", clockIn: D("2026-11-05T09:00:00Z"), clockOut: D("2026-11-05T12:00:00Z"), roundedClockIn: D("2026-11-05T09:00:00Z"), roundedClockOut: D("2026-11-05T12:00:00Z"), hoursWorked: 3, status: "complete", approved: true },
     { employeeId: u.id, workDate: "2026-11-05", clockIn: D("2026-11-05T13:00:00Z"), clockOut: D("2026-11-05T17:00:00Z"), roundedClockIn: D("2026-11-05T13:00:00Z"), roundedClockOut: D("2026-11-05T17:00:00Z"), hoursWorked: 4, status: "complete", approved: true },
@@ -75,5 +77,33 @@ test("ledger: NON-lunch employee is unaffected (no paid lunch, no fine)", async 
   assert.deepEqual((await getLedgerForEmployees([u], "2026-11-05", "2026-11-05", now)).get(u.id), ledger, "bulk preserves lunch rules");
   const day = ledger.find((d) => d.workDate === "2026-11-05");
   assert.ok(day, "ledger day present");
-  near(day!.totalHours, 7, "7h worked, lunch gap unpaid, no fine");
+  near(day!.totalHours, 7.75, "7h worked + 45m paid break (no fine)");
+});
+
+test("ledger: NON-lunch employee straight-through shift is NEVER docked (no fine by default)", async (t) => {
+  const u = await makeLunchEmployee(false);
+  t.after(() => cleanup(u.id));
+  // One 9-17 shift, no break -> full 8h, no 45-min fine (not lunch-required).
+  await db.insert(punchLogs).values([
+    { employeeId: u.id, workDate: "2026-11-05", clockIn: D("2026-11-05T09:00:00Z"), clockOut: D("2026-11-05T17:00:00Z"), roundedClockIn: D("2026-11-05T09:00:00Z"), roundedClockOut: D("2026-11-05T17:00:00Z"), hoursWorked: 8, status: "complete", approved: true },
+  ]);
+  const ledger = await getLedgerForEmployee(u, "2026-11-05", "2026-11-05", now);
+  const day = ledger.find((d) => d.workDate === "2026-11-05");
+  assert.ok(day, "ledger day present");
+  near(day!.totalHours, 8, "full 8h, no deduction");
+});
+
+test("ledger: a break OVER an hour starts a new shift (break unpaid, for anyone)", async (t) => {
+  const u = await makeLunchEmployee(false);
+  t.after(() => cleanup(u.id));
+  // 9-12 (3h), 90-min break, 13:30-17 (3.5h). Over the hour -> two shifts, break
+  // unpaid: 6.5h.
+  await db.insert(punchLogs).values([
+    { employeeId: u.id, workDate: "2026-11-05", clockIn: D("2026-11-05T09:00:00Z"), clockOut: D("2026-11-05T12:00:00Z"), roundedClockIn: D("2026-11-05T09:00:00Z"), roundedClockOut: D("2026-11-05T12:00:00Z"), hoursWorked: 3, status: "complete", approved: true },
+    { employeeId: u.id, workDate: "2026-11-05", clockIn: D("2026-11-05T13:30:00Z"), clockOut: D("2026-11-05T17:00:00Z"), roundedClockIn: D("2026-11-05T13:30:00Z"), roundedClockOut: D("2026-11-05T17:00:00Z"), hoursWorked: 3.5, status: "complete", approved: true },
+  ]);
+  const ledger = await getLedgerForEmployee(u, "2026-11-05", "2026-11-05", now);
+  const day = ledger.find((d) => d.workDate === "2026-11-05");
+  assert.ok(day, "ledger day present");
+  near(day!.totalHours, 6.5, "6.5h worked, over-hour break unpaid");
 });

@@ -16,6 +16,7 @@ import { localWorkDate, resolveEmployeeTimezone } from "../services/punchOverlap
 import { capStaleOpenShiftAtMaxShift, markOpenShiftMissing, autoFlagMissingPunchExceptions } from "../services/policyEnforcement";
 import { writeLedgerEntry } from "../services/ledger";
 import { MISSING_CLOCKIN_STATUS } from "../punchHours";
+import { punchDebounceRemaining } from "../services/punchDebounce";
 import { logger } from "../lib/logger";
 import type { BiometricDevice } from "@shared/schema";
 import { parseDevicePunchTime, deviceDirection, type AttendancePunch } from "./protocol";
@@ -26,6 +27,8 @@ export interface IngestResult {
   duplicates: number;
   pendingMapping: number;
   errors: number;
+  /** Punches ignored as accidental double-scans (within the debounce window). */
+  debounced: number;
 }
 
 /** Process one device's batch of punches. Never throws — each punch is isolated. */
@@ -33,7 +36,7 @@ export async function ingestPunches(
   device: BiometricDevice,
   punches: AttendancePunch[],
 ): Promise<IngestResult> {
-  const result: IngestResult = { processed: 0, duplicates: 0, pendingMapping: 0, errors: 0 };
+  const result: IngestResult = { processed: 0, duplicates: 0, pendingMapping: 0, errors: 0, debounced: 0 };
 
   for (const punch of punches) {
     try {
@@ -76,6 +79,16 @@ export async function ingestPunches(
       //    sync delay no longer skews the recorded time.
       const tz = await resolveEmployeeTimezone(userId);
       const punchAt = parseDevicePunchTime(punch.timeRaw, tz) ?? new Date();
+
+      // 3b) Accidental double-scan guard: ignore a punch landing within the
+      //     debounce window of the employee's last clock event (someone tapped
+      //     the clock twice). The raw event is kept (acked) so it is not retried.
+      const lastEvent = await storage.getMostRecentPunchEventTime(userId);
+      if (punchDebounceRemaining(lastEvent, punchAt) > 0) {
+        await adms.updateEvent(event.id, { userId, status: "duplicate" });
+        result.debounced += 1;
+        continue;
+      }
 
       // 4) Decide direction. By default it's derived from the current open-punch
       //    state (the device status key is ignored). For an employee set to trust
