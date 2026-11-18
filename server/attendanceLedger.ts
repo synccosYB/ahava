@@ -204,10 +204,13 @@ function computeRawDay(
     }
   }
 
-  // Lunch-required employees: apply the lunch rules (paid lunch within the hour,
-  // or a 45-min fine when no proper lunch was taken) on top of the base worked
-  // hours. See services/lunchBreak.computeLunchAdjustedHours.
-  if (ctx.requireLunchBreak && workedPunchCount > 0) {
+  // Lunch rules apply to EVERYONE: a break taken by clocking out and back in
+  // within the hour is PAID up to 45 min (the time counts, it is not deducted),
+  // and a break over an hour starts a new shift (unpaid). The flat no-lunch FINE
+  // is docked ONLY for lunch-required employees — by default no one is required,
+  // so a straight-through shift is never shortened.
+  // See services/lunchBreak.computeLunchAdjustedHours.
+  if (workedPunchCount > 0) {
     const lunchPunches: LunchDayPunch[] = dayPunches
       .filter((p) => p.clockIn)
       .map((p) => ({
@@ -224,6 +227,7 @@ function computeRawDay(
       }));
     dayHours = computeLunchAdjustedHours(lunchPunches, dayHours, {
       breakThresholdHours: ctx.breakThresholdHours,
+      applyFine: ctx.requireLunchBreak,
     });
   }
 

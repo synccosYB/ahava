@@ -101,6 +101,13 @@ export interface LunchAdjustOptions {
   fineMinutes?: number;
   /** Only dock the fine on a shift at least this long (owes a lunch). Default 6h. */
   breakThresholdHours?: number;
+  /**
+   * Whether to dock the no-lunch fine (default true). Set false for employees who
+   * are NOT lunch-required: they still get the PAID break (clock out & back within
+   * the hour, paid up to 45 min) and the over-the-hour "new shift" split, but a
+   * straight-through shift is never docked.
+   */
+  applyFine?: boolean;
 }
 
 /**
@@ -145,7 +152,12 @@ export function computeLunchAdjustedHours(
   // no fine (they DID clock out and back in).
   if (segments.length >= 2 && lb.newShiftGaps > 0) return baseWorkedHours;
 
-  // No proper lunch taken -> fine. The paid span is first punch to last punch.
+  // No proper lunch taken. For a lunch-required employee this docks a flat fine;
+  // for everyone else there is nothing to dock — their straight-through hours
+  // stand (the paid-break and new-shift cases above already handled any break).
+  if (opts.applyFine === false) return baseWorkedHours;
+
+  // The paid span is first punch to last punch, minus the flat fine.
   const instants: number[] = [];
   for (const p of punches) {
     if (p.clockIn) instants.push(p.clockIn.getTime());
