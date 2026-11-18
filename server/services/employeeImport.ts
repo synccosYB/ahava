@@ -140,6 +140,22 @@ function normalizeLunch(raw: string): boolean | undefined {
   return undefined;
 }
 
+/**
+ * Payroll-processor cell -> canonical label, or undefined when blank/unknown.
+ * Accepts the sheet's short forms ("EZ", "PC", "Inhouse") and the full dropdown
+ * labels. Keep the canonical set in sync with PAYROLL_COMPANY_OPTIONS in
+ * services/employeeExport.ts (the export's dropdown source of truth).
+ */
+function normalizePayrollProcessor(raw: string): string | undefined {
+  const v = raw.trim().toLowerCase().replace(/[\s-]+/g, "");
+  if (!v) return undefined;
+  if (v === "ez" || v === "ezpayroll") return "EZ Payroll";
+  if (v === "pc" || v === "pcpayroll") return "PC Payroll";
+  if (v === "inhouse") return "Inhouse";
+  if (v.startsWith("hirschfeld")) return "Hirschfeld Oncology";
+  return undefined;
+}
+
 /** Parse a pay-amount cell to a positive number, or undefined. Strips $ and commas. */
 function normalizeAmount(raw: string): number | undefined {
   const value = raw.replace(/[$,\s]/g, "");
@@ -369,6 +385,10 @@ export async function importEmployeesFromBuffer(
     const explicitFirstName = pick(row, ["First Name", "FirstName", "Given Name"]);
     const explicitLastName = pick(row, ["Last Name", "LastName", "Surname", "Family Name"]);
     const payingCompanyRaw = pick(row, exportFormat ? ["Paying Company"] : ["Paying Company", "Payroll Company"]);
+    // "Payroll Company" is the payroll PROCESSOR (EZ / PC / Inhouse / …). Only the
+    // export format has a distinct column for it; in legacy sheets that header is
+    // an alias for the paying company (read above), so don't double-read it.
+    const payrollProcessorRaw = exportFormat ? pick(row, ["Payroll Company"]) : "";
     const wageTypeRaw = pick(row, ["Tax Classification", "Wage Type", "Tax Form"]);
     const departmentRaw = pick(row, ["Department", "Dept"]);
     const workingCompanyRaw = pick(row, ["Working Company"]);
@@ -480,6 +500,11 @@ export async function importEmployeesFromBuffer(
       if (payId) profilePatch.payrollCompanyId = payId;
       else warnings.push({ row: rowNum, reason: `unrecognized paying company "${payingCompanyRaw}"; left unchanged` });
     }
+    if (payrollProcessorRaw) {
+      const proc = normalizePayrollProcessor(payrollProcessorRaw);
+      if (proc) profilePatch.payrollProcessor = proc;
+      else warnings.push({ row: rowNum, reason: `unrecognized payroll company "${payrollProcessorRaw}"; left unchanged` });
+    }
     if (wageTypeRaw) {
       const wt = normalizeWageType(wageTypeRaw);
       if (wt) profilePatch.taxClassification = wt;
@@ -553,6 +578,7 @@ export async function importEmployeesFromBuffer(
     }
     if (resolvedBaseRole) rowActions.push(`base role → ${resolvedBaseRole}`);
     if (profilePatch.payrollCompanyId && payingCompanyRaw) rowActions.push(`paying company → ${payingCompanyRaw.trim()}`);
+    if (profilePatch.payrollProcessor) rowActions.push(`payroll company → ${profilePatch.payrollProcessor}`);
     if (profilePatch.taxClassification) rowActions.push(`tax → ${profilePatch.taxClassification}`);
     if (payTouched) rowActions.push(`pay → ${profilePatch.payType ?? basis}${amount !== undefined ? ` $${amount}` : ""}`);
     if (lunchVal !== undefined) rowActions.push(`lunch → ${lunchVal ? "required" : "not required"}`);

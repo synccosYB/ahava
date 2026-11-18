@@ -408,6 +408,12 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // company (users.companyId / department & location assignments). Nullable —
   // existing employees fall back to a blank placeholder, not an error.
   payrollCompanyId: varchar("payroll_company_id").references(() => companies.id),
+  // Which third-party payroll PROCESSOR this employee's pay is run through (e.g.
+  // "EZ Payroll", "PC Payroll", "Inhouse", "Hirschfeld Oncology"). Distinct from
+  // the paying company above — it identifies WHO cuts the checks, for routing the
+  // payroll export. Stored as the canonical option label. Nullable; existing
+  // employees have none until set via the employee sheet or the profile form.
+  payrollProcessor: varchar("payroll_processor", { length: 40 }),
   // Note #5 (1099 payee): a 1099 worker's check is written to this company/LLC
   // ("pay to the order of"), distinct from the paying entity above. Only the
   // name is required at entry; address + Tax ID are optional. Null for W-2 and

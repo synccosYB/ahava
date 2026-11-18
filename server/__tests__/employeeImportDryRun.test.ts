@@ -65,7 +65,8 @@ test("dry-run preview + update-only Clock# matching", async (t) => {
   const unmatched = `${stamp}-ghost`;
   const buf = await buildSheet([
     { "Clock #": clockNum, "First Name": "Pre", "Last Name": stamp, "Role": "Employee",
-      "Pay Setup": "Daily", "Pay Amount": 375, "Lunch Break": "Required" },
+      "Pay Setup": "Daily", "Pay Amount": 375, "Lunch Break": "Required",
+      "Payroll Company": "EZ" },
     { "Clock #": unmatched, "First Name": "Ghost", "Last Name": "Nobody",
       "Pay Setup": "Hourly", "Pay Amount": 20 },
   ]);
@@ -78,6 +79,7 @@ test("dry-run preview + update-only Clock# matching", async (t) => {
   assert.ok(mine, "matched employee appears in the change set");
   assert.ok(mine!.actions.some((a) => /pay →/.test(a)), `pay change described: ${mine!.actions.join("; ")}`);
   assert.ok(mine!.actions.some((a) => /lunch → required/.test(a)), "lunch change described");
+  assert.ok(mine!.actions.some((a) => /payroll company → EZ Payroll/.test(a)), "payroll processor (EZ→EZ Payroll) described");
   assert.ok(preview.skipped.some((s) => s.reason.includes("not found")), "unmatched Clock # is skipped & flagged");
   assert.equal(preview.created, 0, "dry run creates nobody");
 
@@ -99,4 +101,5 @@ test("dry-run preview + update-only Clock# matching", async (t) => {
   assert.equal(Number(afterReal?.dailySalary), 375, "daily salary applied");
   assert.equal(afterReal?.hourlyRate, null, "old hourly rate cleared");
   assert.equal(afterReal?.requireLunchBreak, true, "lunch requirement applied");
+  assert.equal(afterReal?.payrollProcessor, "EZ Payroll", "payroll processor stored from the sheet's 'EZ'");
 });
