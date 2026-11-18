@@ -1242,6 +1242,10 @@ interface ImportSummary {
   skipped: { row: number; reason: string }[];
   warnings: { row: number; reason: string }[];
   profilesWithNumber: number;
+  /** True when this run computed changes WITHOUT writing them (a preview). */
+  dryRun?: boolean;
+  /** Per-row plain-language summary of what changed (or would change). */
+  changes?: { row: number; employeeNumber: string; name: string; actions: string[] }[];
 }
 
 function ImportEmployeesDialog({
@@ -1256,27 +1260,38 @@ function ImportEmployeesDialog({
   const [file, setFile] = useState<File | null>(null);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
 
-  const importMutation = useMutation({
-    mutationFn: async (selectedFile: File): Promise<ImportSummary> => {
-      const formData = new FormData();
-      formData.append("file", selectedFile);
-      const res = await fetch("/api/users/import", {
-        method: "POST",
-        body: formData,
-        credentials: "include",
-      });
-      if (!res.ok) {
-        let message = "Failed to import employees";
-        try {
-          const body = await res.json();
-          if (body?.message) message = body.message;
-        } catch {
-          /* keep default */
-        }
-        throw new Error(message);
+  const runImport = async (selectedFile: File, dryRun: boolean): Promise<ImportSummary> => {
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+    const res = await fetch(`/api/users/import?dryRun=${dryRun ? 1 : 0}`, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      let message = "Failed to import employees";
+      try {
+        const body = await res.json();
+        if (body?.message) message = body.message;
+      } catch {
+        /* keep default */
       }
-      return res.json();
-    },
+      throw new Error(message);
+    }
+    return res.json();
+  };
+
+  // Step 1: preview — compute the full change set, write nothing.
+  const previewMutation = useMutation({
+    mutationFn: (selectedFile: File) => runImport(selectedFile, true),
+    onSuccess: (result) => setSummary(result),
+    onError: (err: Error) =>
+      toast({ title: "Preview failed", description: err.message, variant: "destructive" }),
+  });
+
+  // Step 2: apply — the real write, after the admin has reviewed the preview.
+  const applyMutation = useMutation({
+    mutationFn: (selectedFile: File) => runImport(selectedFile, false),
     onSuccess: (result) => {
       setSummary(result);
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
@@ -1288,19 +1303,20 @@ function ImportEmployeesDialog({
         description: `${result.created} added, ${result.updated} updated.`,
       });
     },
-    onError: (err: Error) => {
-      toast({
-        title: "Import failed",
-        description: err.message,
-        variant: "destructive",
-      });
-    },
+    onError: (err: Error) =>
+      toast({ title: "Import failed", description: err.message, variant: "destructive" }),
   });
+
+  const busy = previewMutation.isPending || applyMutation.isPending;
+  const isPreview = summary?.dryRun === true;
+  const changeCount = summary?.changes?.length ?? 0;
 
   const handleClose = (next: boolean) => {
     if (!next) {
       setFile(null);
       setSummary(null);
+      previewMutation.reset();
+      applyMutation.reset();
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
     onOpenChange(next);
@@ -1312,27 +1328,63 @@ function ImportEmployeesDialog({
         <DialogHeader>
           <DialogTitle>Import Employees</DialogTitle>
           <DialogDescription>
-            Upload an Excel (.xlsx) spreadsheet. Recognized columns:{" "}
-            <span className="font-medium">First Name</span> and{" "}
-            <span className="font-medium">Last Name</span> (preferred), or{" "}
-            <span className="font-medium">Employee Name</span> in Last First order;{" "}
-            <span className="font-medium">Clock #</span>,{" "}
-            <span className="font-medium">Actual Location</span>,{" "}
-            <span className="font-medium">Paying Company</span>, and{" "}
-            <span className="font-medium">Wage Type</span> (W-2 / 1099 /
-            Volunteer). Existing staff (matched by Clock #) are updated, new ones
-            are added. Blank Paying Company / Wage Type cells are left for you to
-            set by hand. (Legacy files using Employee / ID / Location still work.)
+            Upload an Excel (.xlsx) roster. You'll get a{" "}
+            <span className="font-medium">preview of every change first</span> —
+            nothing is saved until you review it and click Apply. Existing staff
+            are matched by <span className="font-medium">Clock #</span> and
+            updated; a Clock&nbsp;# that matches nobody is skipped and flagged
+            (never creates a duplicate). Blank cells are left unchanged.
           </DialogDescription>
         </DialogHeader>
 
         {summary ? (
           <div className="space-y-2 text-sm" data-testid="text-import-summary">
+            {isPreview ? (
+              <div className="rounded-md border border-indigo-200 bg-indigo-50 p-3 dark:border-indigo-900 dark:bg-indigo-950/30">
+                <p className="font-medium text-indigo-800 dark:text-indigo-300">
+                  Preview — nothing saved yet
+                </p>
+                <p className="text-xs text-indigo-700 dark:text-indigo-400">
+                  {changeCount} employee{changeCount === 1 ? "" : "s"} would change
+                  {summary.created ? ` · ${summary.created} new` : ""}
+                  {summary.updated ? ` · ${summary.updated} updated` : ""}. Review
+                  below, then click Apply to write these changes.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-md border border-green-200 bg-green-50 p-3 dark:border-green-900 dark:bg-green-950/30">
+                <p className="font-medium text-green-800 dark:text-green-300">
+                  Import complete — changes saved
+                </p>
+              </div>
+            )}
             <p>
               <span className="font-medium">{summary.created}</span> employees
               added, <span className="font-medium">{summary.updated}</span>{" "}
               updated.
             </p>
+            {summary.changes && summary.changes.length > 0 && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/40">
+                <p className="font-medium text-slate-800 dark:text-slate-200">
+                  {summary.changes.length} employee
+                  {summary.changes.length === 1 ? "" : "s"}{" "}
+                  {isPreview ? "will change" : "changed"}
+                </p>
+                <ul className="mt-1 max-h-56 overflow-auto text-xs text-slate-700 dark:text-slate-300">
+                  {summary.changes.slice(0, 100).map((c, i) => (
+                    <li key={i} className="py-0.5">
+                      <span className="font-medium">{c.name || `Clock #${c.employeeNumber}`}</span>
+                      {c.employeeNumber ? ` (#${c.employeeNumber})` : ""}: {c.actions.join(" · ")}
+                    </li>
+                  ))}
+                  {summary.changes.length > 100 && (
+                    <li className="py-0.5 italic">
+                      …and {summary.changes.length - 100} more
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
             <p className="text-muted-foreground">
               Company: {summary.company} · Locations: {summary.locationsTotal} ·
               Rows read: {summary.rowsParsed}
@@ -1347,7 +1399,8 @@ function ImportEmployeesDialog({
               <div className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30">
                 <p className="font-medium text-red-800 dark:text-red-300">
                   {summary.deactivated.length} employee
-                  {summary.deactivated.length === 1 ? "" : "s"} deactivated (marked "Inactive")
+                  {summary.deactivated.length === 1 ? "" : "s"}{" "}
+                  {isPreview ? "will be deactivated (terminated)" : "deactivated (terminated)"}
                 </p>
                 <ul className="mt-1 max-h-40 overflow-auto text-xs text-red-700 dark:text-red-400">
                   {summary.deactivated.slice(0, 25).map((d, i) => (
@@ -1407,26 +1460,49 @@ function ImportEmployeesDialog({
         )}
 
         <DialogFooter>
-          {summary ? (
+          {summary && !isPreview ? (
+            // Applied — nothing left to do.
             <Button onClick={() => handleClose(false)} data-testid="button-import-done">
               Done
             </Button>
+          ) : isPreview ? (
+            // Preview shown — let the admin apply or back out.
+            <>
+              <Button
+                variant="outline"
+                onClick={() => { setSummary(null); previewMutation.reset(); }}
+                disabled={busy}
+                data-testid="button-import-back"
+              >
+                Back
+              </Button>
+              <Button
+                onClick={() => file && applyMutation.mutate(file)}
+                disabled={!file || busy}
+                data-testid="button-import-apply"
+              >
+                {applyMutation.isPending
+                  ? "Applying…"
+                  : `Apply ${changeCount} change${changeCount === 1 ? "" : "s"}`}
+              </Button>
+            </>
           ) : (
+            // Initial — choose a file and preview.
             <>
               <Button
                 variant="outline"
                 onClick={() => handleClose(false)}
-                disabled={importMutation.isPending}
+                disabled={busy}
                 data-testid="button-import-cancel"
               >
                 Cancel
               </Button>
               <Button
-                onClick={() => file && importMutation.mutate(file)}
-                disabled={!file || importMutation.isPending}
+                onClick={() => file && previewMutation.mutate(file)}
+                disabled={!file || busy}
                 data-testid="button-import-submit"
               >
-                {importMutation.isPending ? "Importing…" : "Import"}
+                {previewMutation.isPending ? "Previewing…" : "Preview changes"}
               </Button>
             </>
           )}
@@ -1604,6 +1680,11 @@ function ImportPunchesDialog({
   );
 }
 
+// Third-party payroll processors an employee's pay can be run through. Keep in
+// sync with PAYROLL_COMPANY_OPTIONS in server/services/employeeExport.ts (the
+// export dropdown + importer source of truth).
+const PAYROLL_PROCESSOR_OPTIONS = ["EZ Payroll", "PC Payroll", "Hirschfeld Oncology", "Inhouse"];
+
 function AddEmployeeDialog({
   open,
   onOpenChange,
@@ -1642,6 +1723,7 @@ function AddEmployeeDialog({
     employmentType: "full_time",
     taxClassification: "W-2",
     payrollCompanyId: "",
+    payrollProcessor: "",
     payeeName: "",
     payeeAddress: "",
     payeeCity: "",
@@ -1730,6 +1812,7 @@ function AddEmployeeDialog({
         employmentType: formData.employmentType,
         taxClassification: formData.taxClassification,
         payrollCompanyId: isVolunteer ? null : formData.payrollCompanyId || null,
+        payrollProcessor: formData.payrollProcessor || null,
         clockInRequired: formData.clockInRequired,
         clockConfirmationOnly: formData.clockConfirmationOnly,
         overnightShiftsAllowed: formData.overnightShiftsAllowed,
@@ -1809,7 +1892,7 @@ function AddEmployeeDialog({
     setFormData({
       firstName: "", lastName: "", email: "", phone: "", role: "employee",
       companyId: "", departmentIds: [], locationIds: [], employmentType: "full_time",
-      taxClassification: "W-2", payrollCompanyId: "", clockInRequired: true, clockConfirmationOnly: false, overnightShiftsAllowed: false, useDevicePunchDirection: false, requireLunchBreak: false,
+      taxClassification: "W-2", payrollCompanyId: "", payrollProcessor: "", clockInRequired: true, clockConfirmationOnly: false, overnightShiftsAllowed: false, useDevicePunchDirection: false, requireLunchBreak: false,
       payeeName: "", payeeAddress: "", payeeCity: "", payeeState: "", payeeZip: "", payeeTaxId: "", payeeMemo: "",
       hireDate: new Date().toISOString().split("T")[0], payType: "hourly",
       hourlyRate: "", weeklySalary: "", dailySalary: "", onboardingTemplateId: "",
@@ -2179,6 +2262,26 @@ function AddEmployeeDialog({
                 </p>
               </div>
             )}
+            <div className="space-y-2">
+              <Label>Payroll Company</Label>
+              <Select
+                value={formData.payrollProcessor || "none"}
+                onValueChange={(v) => setFormData({ ...formData, payrollProcessor: v === "none" ? "" : v })}
+              >
+                <SelectTrigger data-testid="select-add-payroll-processor">
+                  <SelectValue placeholder="Payroll processor" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">—</SelectItem>
+                  {PAYROLL_PROCESSOR_OPTIONS.map((p) => (
+                    <SelectItem key={p} value={p}>{p}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Which payroll processor runs this person's pay (EZ / PC / Inhouse).
+              </p>
+            </div>
             {formData.taxClassification === "1099" && (
               <div className="space-y-2 rounded-md border p-3">
                 <div className="space-y-1">
@@ -2869,6 +2972,7 @@ function EmployeeProfile({
     holidayPayEnabled: false,
     overtimeEligible: false,
     payrollCompanyId: "none",
+    payrollProcessor: "none",
     payeeName: "",
     payeeAddress: "",
     payeeCity: "",
@@ -2887,6 +2991,7 @@ function EmployeeProfile({
       holidayPayEnabled: !!profile?.holidayPayEnabled,
       overtimeEligible: !!profile?.overtimeEligible,
       payrollCompanyId: profile?.payrollCompanyId || "none",
+      payrollProcessor: profile?.payrollProcessor || "none",
       payeeName: profile?.payeeName || "",
       payeeAddress: profile?.payeeAddress || "",
       payeeCity: profile?.payeeCity || "",
@@ -2918,6 +3023,7 @@ function EmployeeProfile({
         dailySalary: payForm.payType === "daily" ? parseFloat(payForm.dailySalary) : null,
         weeklySalary: payForm.payType === "salary" ? parseFloat(payForm.weeklySalary) : null,
         payrollCompanyId: payForm.payrollCompanyId === "none" ? null : payForm.payrollCompanyId,
+        payrollProcessor: payForm.payrollProcessor === "none" ? null : payForm.payrollProcessor,
       };
       // 1099 payee ("pay to the order of") + memo — only for 1099 workers.
       if (profile?.taxClassification === "1099") {
@@ -3772,11 +3878,17 @@ function EmployeeProfile({
                 </p>
               </div>
               <div>
-                <Label className="text-muted-foreground text-xs">Payroll Company</Label>
+                <Label className="text-muted-foreground text-xs">Paying Company</Label>
                 <p className="font-medium" data-testid="text-profile-payroll-company">
                   {profile?.payrollCompanyId
                     ? (divisions?.find((d) => d.id === profile.payrollCompanyId)?.name || "—")
                     : "—"}
+                </p>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Payroll Company</Label>
+                <p className="font-medium" data-testid="text-profile-payroll-processor">
+                  {profile?.payrollProcessor || "—"}
                 </p>
               </div>
             </CardContent>
@@ -3877,7 +3989,7 @@ function EmployeeProfile({
                   <Label htmlFor="checkbox-pay-overtime">Overtime Eligible</Label>
                 </div>
                 <div className="space-y-2">
-                  <Label>Payroll Company</Label>
+                  <Label>Paying Company</Label>
                   <Select
                     value={payForm.payrollCompanyId}
                     onValueChange={(v) => setPayForm((f) => ({ ...f, payrollCompanyId: v }))}
@@ -3895,7 +4007,30 @@ function EmployeeProfile({
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Used for payroll reporting only — independent of department/location assignment.
+                    Which entity issues this person's payment — for payroll reporting only,
+                    independent of department/location assignment.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Payroll Company</Label>
+                  <Select
+                    value={payForm.payrollProcessor}
+                    onValueChange={(v) => setPayForm((f) => ({ ...f, payrollProcessor: v }))}
+                  >
+                    <SelectTrigger data-testid="select-payroll-processor">
+                      <SelectValue placeholder="None" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">None</SelectItem>
+                      {PAYROLL_PROCESSOR_OPTIONS.map((p) => (
+                        <SelectItem key={p} value={p} data-testid={`option-payroll-processor-${p}`}>
+                          {p}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Which payroll processor runs this person's pay (EZ / PC / Inhouse).
                   </p>
                 </div>
                 {profile?.taxClassification === "1099" && (

@@ -159,7 +159,7 @@ export async function buildEmployeeExport(): Promise<Buffer> {
       location: locationName,
       workingCompany: companyById.get(u.companyId ?? "") ?? "",
       payingCompany: companyById.get(profile?.payrollCompanyId ?? "") ?? "",
-      payrollCompany: "", // model-later: display-only dropdown, nothing stored yet
+      payrollCompany: profile?.payrollProcessor ?? "",
       tax: profile?.taxClassification ?? "",
       paySetup: profile ? paySetupLabel(profile.payType) : "",
       payAmount: payAmountFor(profile),
