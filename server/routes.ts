@@ -3746,6 +3746,25 @@ export async function registerRoutes(
       }
       data.dayOfWeekBonuses = parsedBonuses.data;
     }
+    // Clock # (employee number): numeric, and unique across employees so an
+    // import can always resolve it to one person. Empty clears it.
+    if (data.employeeNumber !== undefined) {
+      const trimmed = (data.employeeNumber ?? "").trim();
+      if (trimmed === "") {
+        data.employeeNumber = null;
+      } else if (!/^\d+$/.test(trimmed)) {
+        return res.status(400).json({ message: "Clock # must be a number.", field: "employeeNumber" });
+      } else {
+        const clash = await db
+          .select({ userId: userEmploymentProfiles.userId })
+          .from(userEmploymentProfiles)
+          .where(eq(userEmploymentProfiles.employeeNumber, trimmed));
+        if (clash.some((c) => c.userId !== String(req.params.userId))) {
+          return res.status(409).json({ message: `Clock # ${trimmed} is already used by another employee.`, field: "employeeNumber" });
+        }
+        data.employeeNumber = trimmed;
+      }
+    }
     const payTypeChanged = data.payType !== undefined && data.payType !== before?.payType;
     const rateTouched =
       data.hourlyRate !== undefined ||

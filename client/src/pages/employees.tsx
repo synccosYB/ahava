@@ -2900,6 +2900,7 @@ function EmployeeProfile({
 
   const [editEmployment, setEditEmployment] = useState(false);
   const [employmentForm, setEmploymentForm] = useState({
+    employeeNumber: "",
     employmentType: "full_time",
     hireDate: "",
     terminationDate: "",
@@ -2915,6 +2916,7 @@ function EmployeeProfile({
   useEffect(() => {
     if (profile && !editEmployment) {
       setEmploymentForm({
+        employeeNumber: profile.employeeNumber ?? "",
         employmentType: profile.employmentType || "full_time",
         hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
         terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
@@ -2931,6 +2933,7 @@ function EmployeeProfile({
 
   const employmentMutation = useMutation({
     mutationFn: async (data: {
+      employeeNumber?: string | null;
       employmentType: string;
       hireDate: string | null;
       terminationDate: string | null;
@@ -3590,6 +3593,7 @@ function EmployeeProfile({
                       setEditEmployment(false);
                       if (profile) {
                         setEmploymentForm({
+                          employeeNumber: profile.employeeNumber ?? "",
                           employmentType: profile.employmentType || "full_time",
                           hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
                           terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
@@ -3611,6 +3615,7 @@ function EmployeeProfile({
                     size="sm"
                     onClick={() =>
                       employmentMutation.mutate({
+                        employeeNumber: employmentForm.employeeNumber.trim() || null,
                         employmentType: employmentForm.employmentType,
                         hireDate: employmentForm.hireDate ? employmentForm.hireDate : null,
                         terminationDate: employmentForm.terminationDate ? employmentForm.terminationDate : null,
@@ -3643,8 +3648,23 @@ function EmployeeProfile({
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <Label className="text-muted-foreground text-xs">Employee Number</Label>
-                <p className="font-medium" data-testid="text-profile-employee-number">{profile?.employeeNumber || "—"}</p>
+                <Label className="text-muted-foreground text-xs">Clock # (Employee Number)</Label>
+                {editEmployment ? (
+                  <>
+                    <Input
+                      inputMode="numeric"
+                      value={employmentForm.employeeNumber}
+                      onChange={(e) => setEmploymentForm((f) => ({ ...f, employeeNumber: e.target.value.replace(/[^0-9]/g, "") }))}
+                      placeholder="e.g. 8585"
+                      data-testid="input-profile-employee-number"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      The employee's clock number — must match the User ID enrolled on the time clock.
+                    </p>
+                  </>
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-employee-number">{profile?.employeeNumber || "—"}</p>
+                )}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Department</Label>
