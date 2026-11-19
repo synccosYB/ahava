@@ -1325,26 +1325,13 @@ export async function registerRoutes(
         continue;
       }
 
-      let nextLocationId: string | null = null;
-      let nextDepartmentId: string | null = null;
-
-      if (keepCompatible) {
-        if (existing.locationId) {
-          const loc = await storage.getLocation(existing.locationId);
-          if (loc) {
-            const locCompanyIds = await storage.getLocationCompanyIds(loc.id);
-            const merged = new Set([
-              ...(loc.companyId ? [loc.companyId] : []),
-              ...locCompanyIds,
-            ]);
-            if (merged.has(companyId)) nextLocationId = existing.locationId;
-          }
-        }
-        if (existing.departmentId) {
-          const dept = await storage.getDepartment(existing.departmentId);
-          if (dept && (!dept.companyId || dept.companyId === companyId)) nextDepartmentId = existing.departmentId;
-        }
-      }
+      // Changing an employee's company NEVER clears their department or location
+      // — those assignments are preserved as-is (an admin changes them
+      // separately if needed). Previously an incompatible department/location was
+      // nulled on a company change, which silently wiped assignments.
+      const nextLocationId: string | null = existing.locationId ?? null;
+      const nextDepartmentId: string | null = existing.departmentId ?? null;
+      void keepCompatible; // retained for API compatibility; no longer clears anything
 
       const result = await storage.updateUser(uid, {
         companyId,
