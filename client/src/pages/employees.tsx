@@ -2780,6 +2780,24 @@ function EmployeeProfile({
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
+  // Changing only the company. Routed through bulk-assign-division (not the user
+  // PATCH) so the employee's existing department and location are preserved
+  // as-is — the PATCH path would reject them as "not in the new company".
+  const companyChangeMutation = useMutation({
+    mutationFn: async (companyId: string) => {
+      await apiRequest("POST", "/api/users/bulk-assign-division", { userIds: [userId], companyId });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      toast({ title: "Company updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const updateMutation = useMutation({
     mutationFn: async (data: {
       companyId?: string | null;
@@ -3379,7 +3397,9 @@ function EmployeeProfile({
                       setProfileCreateCompanyOpen(true);
                       return;
                     }
-                    updateMutation.mutate({ companyId: v, departmentId: null, locationId: null });
+                    // Change only the company — keep the employee's department
+                    // and location (changing company must never reset them).
+                    companyChangeMutation.mutate(v);
                   }}
                 >
                   <SelectTrigger data-testid="select-profile-division">
@@ -3521,7 +3541,7 @@ function EmployeeProfile({
             open={profileCreateCompanyOpen}
             onOpenChange={setProfileCreateCompanyOpen}
             onCreated={(company) => {
-              updateMutation.mutate({ companyId: company.id, departmentId: null, locationId: null });
+              companyChangeMutation.mutate(company.id);
             }}
           />
           <CreateDepartmentDialog
