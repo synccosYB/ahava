@@ -25,7 +25,7 @@ import XLSX from "xlsx";
 import { eq, isNotNull } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
-import { userEmploymentProfiles, users, policyAssignments, type Company, type InsertEmploymentProfile } from "../../shared/schema";
+import { userEmploymentProfiles, users, policyAssignments, biometricDeviceUsers, type Company, type InsertEmploymentProfile } from "../../shared/schema";
 import { parseEmployeeName } from "./employeeNames";
 import { isProtectedUser } from "./roleAssignment";
 
@@ -341,23 +341,65 @@ export async function importEmployeesFromBuffer(
     return loc.id;
   }
 
-  // Build a lookup of existing employees by stored employee number so the run
-  // is idempotent. Scoped to THIS company (join users) so a matching employee
-  // number in another company is never updated or moved across tenants.
+  // Build a lookup of existing employees by Clock # so the run is idempotent.
+  //
+  // Match across ALL employees, not just this company's: at Ahava the Clock #
+  // (employee number) is one person's single identifier regardless of which
+  // paying/working company they're under, so an employee filed under a different
+  // company record must still be found and updated (never duplicated). A Clock #
+  // that maps to MORE THAN ONE person is ambiguous — those rows are skipped and
+  // flagged rather than guessing.
   const existingProfiles = await db
     .select({
       userId: userEmploymentProfiles.userId,
       employeeNumber: userEmploymentProfiles.employeeNumber,
     })
-    .from(userEmploymentProfiles)
-    .innerJoin(users, eq(users.id, userEmploymentProfiles.userId))
-    .where(eq(users.companyId, companyId));
-  const userIdByNumber = new Map<string, string>();
-  for (const p of existingProfiles) {
-    if (p.employeeNumber) {
-      userIdByNumber.set(p.employeeNumber, p.userId);
-    }
+    .from(userEmploymentProfiles);
+  const numberToUserIds = new Map<string, Set<string>>();
+  const addNumber = (num: string | null, userId: string) => {
+    const key = (num ?? "").trim();
+    if (!key) return;
+    const set = numberToUserIds.get(key) ?? new Set<string>();
+    set.add(userId);
+    numberToUserIds.set(key, set);
+  };
+  for (const p of existingProfiles) addNumber(p.employeeNumber, p.userId);
+
+  // Fallback: the fingerprint clock's device number. "Employee number" and
+  // "clock number" are meant to be the same value, but if a profile's number
+  // field was never filled while the person is enrolled (and clocking in) on a
+  // device, reconcile through the device enrollment so the sheet still finds
+  // them. The import then writes the Clock # onto the profile, closing the gap.
+  const deviceUsers = await db
+    .select({ userId: biometricDeviceUsers.userId, deviceUserId: biometricDeviceUsers.deviceUserId })
+    .from(biometricDeviceUsers);
+  const deviceNumberToUserIds = new Map<string, Set<string>>();
+  for (const d of deviceUsers) {
+    const key = (d.deviceUserId ?? "").trim();
+    if (!key) continue;
+    const set = deviceNumberToUserIds.get(key) ?? new Set<string>();
+    set.add(d.userId);
+    deviceNumberToUserIds.set(key, set);
   }
+
+  // Resolve a Clock # to a single existing user. Profile number wins; the device
+  // number is the fallback. Returns { ambiguous: true } when a number maps to
+  // several distinct people (so the caller can skip & flag instead of guessing).
+  const resolveByClockNumber = (num: string): { userId?: string; ambiguous?: boolean } => {
+    const key = num.trim();
+    if (!key) return {};
+    const direct = numberToUserIds.get(key);
+    if (direct && direct.size === 1) return { userId: [...direct][0] };
+    if (direct && direct.size > 1) return { ambiguous: true };
+    const viaDevice = deviceNumberToUserIds.get(key);
+    if (viaDevice && viaDevice.size === 1) return { userId: [...viaDevice][0] };
+    if (viaDevice && viaDevice.size > 1) return { ambiguous: true };
+    return {};
+  };
+
+  // Newly-created people (within this run) are keyed by Clock # too, so a second
+  // sheet row with the same number updates the just-created person.
+  const userIdByNumber = new Map<string, string>();
 
   let created = 0;
   let updated = 0;
@@ -402,8 +444,23 @@ export async function importEmployeesFromBuffer(
     const terminationRaw = pick(row, ["Termination Date", "Termination"]);
     const policiesRaw = pick(row, ["Policies"]);
 
-    // Resolve the match target. Employee ID wins; then Clock #.
-    const matchedUserId = idCell || userIdByNumber.get(employeeNumber);
+    // Resolve the match target. Employee ID wins; then Clock # (this run's
+    // newly-created people first, then any existing employee by profile number
+    // or fingerprint-device number, across all companies).
+    let clockAmbiguous = false;
+    let matchedUserId = idCell || userIdByNumber.get(employeeNumber);
+    if (!matchedUserId && employeeNumber) {
+      const resolved = resolveByClockNumber(employeeNumber);
+      if (resolved.ambiguous) clockAmbiguous = true;
+      else matchedUserId = resolved.userId;
+    }
+    if (clockAmbiguous) {
+      skipped.push({
+        row: rowNum,
+        reason: `Clock # ${employeeNumber} matches more than one employee — skipped (resolve the duplicate, then re-run)`,
+      });
+      continue;
+    }
     const existingUser = matchedUserId ? await storage.getUser(matchedUserId) : undefined;
     const existingUserId = existingUser?.id;
     if (idCell && !existingUserId) {
