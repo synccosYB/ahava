@@ -10,6 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { classifyCorrection, correctionTimeLabel, type CorrectionRequestType, type CorrectionSide } from "@shared/correctionType";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -793,8 +795,15 @@ function CorrectionFormBody({
   const isEditing = !!editingExceptionId;
   const defaultReason = initialReason ?? (missingPunch ? "I forgot to clock out at the end of my shift." : "");
   const [date, setDate] = useState(initialDate);
-  const [reqIn, setReqIn] = useState(initialReqIn);
-  const [reqOut, setReqOut] = useState(initialReqOut);
+  // The employee explicitly chooses WHAT they're requesting (a missing punch vs
+  // fixing an existing time) and WHICH punch (In or Out) — one side per request.
+  // Prefill only when editing an existing request; new requests start blank.
+  const initialSide: CorrectionSide | "" = initialReqIn ? "in" : initialReqOut ? "out" : "";
+  const [requestType, setRequestType] = useState<CorrectionRequestType | "">(
+    isEditing ? (missingPunch ? "missing" : "fix") : "",
+  );
+  const [side, setSide] = useState<CorrectionSide | "">(isEditing ? initialSide : "");
+  const [reqTime, setReqTime] = useState(initialReqIn || initialReqOut || "");
   const [reason, setReason] = useState(defaultReason);
 
   // In the standalone "New Correction Request" card we receive the loaded
@@ -822,15 +831,18 @@ function CorrectionFormBody({
     : (punchLogId ?? null);
   const noPunchForDate = isLookupMode && !!date && !matchedRecord;
 
-  // Three-way classification driven by whether a punch is linked and whether
-  // it already has a clock-out:
-  //   - no linked punch        -> missing_punch       (INSERT a new punch)
-  //   - linked, missing out    -> forgotten_clock_out (UPDATE the open punch)
-  //   - linked, has out        -> time_correction     (UPDATE the punch in place)
-  const correctionType: "missing_punch" | "forgotten_clock_out" | "time_correction" =
-    effectivePunchLogId
-      ? (effectiveMissingPunch ? "forgotten_clock_out" : "time_correction")
+  // Classification from the EMPLOYEE's explicit choice (requestType + side) plus
+  // whether a punch already exists for the date (controls insert vs update).
+  const hasExistingPunch = !!effectivePunchLogId;
+  const correctionType =
+    requestType && side
+      ? classifyCorrection({ requestType, side, hasExistingPunch })
       : "missing_punch";
+  // The single corrected time maps onto the chosen side; the other stays blank.
+  const reqIn = side === "in" ? reqTime : "";
+  const reqOut = side === "out" ? reqTime : "";
+  // "Fix an existing punch" needs a punch to fix. Flag it when the date has none.
+  const fixWithoutPunch = requestType === "fix" && isLookupMode && !!date && !hasExistingPunch;
 
   // Block duplicates on a per-punch basis when a punch is linked, otherwise
   // fall back to the legacy per-date check (which now only counts pending
@@ -872,10 +884,12 @@ function CorrectionFormBody({
 
   useEffect(() => {
     setDate(initialDate);
-    setReqIn(initialReqIn);
-    setReqOut(initialReqOut);
+    const nextSide: CorrectionSide | "" = initialReqIn ? "in" : initialReqOut ? "out" : "";
+    setRequestType(isEditing ? (missingPunch ? "missing" : "fix") : "");
+    setSide(isEditing ? nextSide : "");
+    setReqTime(initialReqIn || initialReqOut || "");
     setReason(initialReason ?? (missingPunch ? "I forgot to clock out at the end of my shift." : ""));
-  }, [initialDate, initialReqIn, initialReqOut, initialReason, missingPunch]);
+  }, [initialDate, initialReqIn, initialReqOut, initialReason, missingPunch, isEditing]);
 
   const submitMutation = useMutation({
     mutationFn: async () => {
@@ -916,8 +930,9 @@ function CorrectionFormBody({
       queryClient.invalidateQueries({ queryKey: ["/api/attendance/exceptions/correction-counts/me"] });
       if (!lockDate && !isEditing) {
         setDate("");
-        setReqIn("");
-        setReqOut("");
+        setRequestType("");
+        setSide("");
+        setReqTime("");
         setReason("");
       }
       toast({
@@ -996,32 +1011,75 @@ function CorrectionFormBody({
           <span>This request asks your manager to delete the punch above entirely. There are no corrected times — if approved, the punch is removed from your attendance.</span>
         </div>
       ) : (
-        <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4" data-testid="section-corrected-punch">
-          <div className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 mb-3">
-            Corrected Times (what it should be)
+        <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4 space-y-4" data-testid="section-corrected-punch">
+          {/* 1) What kind of request */}
+          <div className="space-y-2">
+            <Label className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+              What are you requesting?
+            </Label>
+            <RadioGroup
+              value={requestType}
+              onValueChange={(v) => setRequestType(v as CorrectionRequestType)}
+              className="grid grid-cols-1 gap-2"
+            >
+              <label className="flex items-start gap-2 cursor-pointer" htmlFor="req-type-missing">
+                <RadioGroupItem value="missing" id="req-type-missing" data-testid="radio-request-missing" className="mt-0.5" />
+                <span className="text-sm">
+                  <span className="font-medium">A missing punch</span>
+                  <span className="block text-xs text-muted-foreground">I never clocked in or out — add the punch.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer" htmlFor="req-type-fix">
+                <RadioGroupItem value="fix" id="req-type-fix" data-testid="radio-request-fix" className="mt-0.5" />
+                <span className="text-sm">
+                  <span className="font-medium">Fix the time on a recorded punch</span>
+                  <span className="block text-xs text-muted-foreground">The punch is there, but the time is wrong.</span>
+                </span>
+              </label>
+            </RadioGroup>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs text-blue-700 dark:text-blue-300">Clock In</Label>
-              <Input
-                type="time"
-                value={reqIn}
-                onChange={(e) => setReqIn(e.target.value)}
-                data-testid="input-corrected-clock-in"
-              />
-            </div>
+
+          {/* 2) Which punch */}
+          <div className="space-y-2">
+            <Label className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+              Which punch?
+            </Label>
+            <RadioGroup
+              value={side}
+              onValueChange={(v) => setSide(v as CorrectionSide)}
+              className="grid grid-cols-2 gap-2"
+            >
+              <label className="flex items-center gap-2 cursor-pointer rounded-md border border-blue-200 dark:border-blue-800 px-3 py-2" htmlFor="req-side-in">
+                <RadioGroupItem value="in" id="req-side-in" data-testid="radio-side-in" />
+                <span className="text-sm font-medium">Clock In</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer rounded-md border border-blue-200 dark:border-blue-800 px-3 py-2" htmlFor="req-side-out">
+                <RadioGroupItem value="out" id="req-side-out" data-testid="radio-side-out" />
+                <span className="text-sm font-medium">Clock Out</span>
+              </label>
+            </RadioGroup>
+          </div>
+
+          {/* 3) The one time */}
+          {requestType && side && (
             <div className="space-y-1">
               <Label className="text-xs text-blue-700 dark:text-blue-300">
-                Clock Out{effectiveMissingPunch ? " (required)" : ""}
+                {correctionTimeLabel(requestType, side)}
               </Label>
               <Input
                 type="time"
-                value={reqOut}
-                onChange={(e) => setReqOut(e.target.value)}
-                data-testid="input-corrected-clock-out"
+                value={reqTime}
+                onChange={(e) => setReqTime(e.target.value)}
+                data-testid="input-corrected-time"
               />
             </div>
-          </div>
+          )}
+
+          {fixWithoutPunch && (
+            <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="text-fix-without-punch">
+              There's no punch recorded for this date to fix. Choose "A missing punch" instead.
+            </p>
+          )}
         </div>
       )}
 
@@ -1063,7 +1121,10 @@ function CorrectionFormBody({
       )}
       <Button
         onClick={() => submitMutation.mutate()}
-        disabled={!date || !reason || submitMutation.isPending || (!removal && effectiveMissingPunch && !reqOut) || blockDuplicate}
+        disabled={
+          !date || !reason || submitMutation.isPending || blockDuplicate ||
+          (!removal && (!requestType || !side || !reqTime || fixWithoutPunch))
+        }
         className="w-full"
         variant={removal ? "destructive" : "default"}
         data-testid="button-submit-correction"

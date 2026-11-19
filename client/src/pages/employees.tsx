@@ -834,13 +834,11 @@ function BulkAssignDivisionDialog({
 }) {
   const { toast } = useToast();
   const [companyId, setCompanyId] = useState("");
-  const [keepCompatible, setKeepCompatible] = useState(false);
   const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
 
   useEffect(() => {
     if (!open) {
       setCompanyId("");
-      setKeepCompatible(false);
     }
   }, [open]);
 
@@ -849,7 +847,6 @@ function BulkAssignDivisionDialog({
       const res = await apiRequest("POST", "/api/users/bulk-assign-division", {
         userIds,
         companyId,
-        keepCompatible,
       });
       return res.json();
     },
@@ -906,22 +903,10 @@ function BulkAssignDivisionDialog({
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-start gap-3 rounded-md border p-3">
-            <Checkbox
-              id="keep-compatible"
-              checked={keepCompatible}
-              onCheckedChange={(v) => setKeepCompatible(v === true)}
-              data-testid="checkbox-keep-compatible"
-            />
-            <div className="space-y-1">
-              <Label htmlFor="keep-compatible" className="cursor-pointer">
-                Keep existing department & location if compatible
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                When unchecked, department and location are cleared. When checked, they're kept only if they belong to the new company.
-              </p>
-            </div>
-          </div>
+          <p className="text-xs text-muted-foreground rounded-md border p-3">
+            The employee's department, location, and all other details are kept —
+            only their company changes.
+          </p>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-bulk">
@@ -2795,6 +2780,24 @@ function EmployeeProfile({
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
+  // Changing only the company. Routed through bulk-assign-division (not the user
+  // PATCH) so the employee's existing department and location are preserved
+  // as-is — the PATCH path would reject them as "not in the new company".
+  const companyChangeMutation = useMutation({
+    mutationFn: async (companyId: string) => {
+      await apiRequest("POST", "/api/users/bulk-assign-division", { userIds: [userId], companyId });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      toast({ title: "Company updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const updateMutation = useMutation({
     mutationFn: async (data: {
       companyId?: string | null;
@@ -2900,6 +2903,7 @@ function EmployeeProfile({
 
   const [editEmployment, setEditEmployment] = useState(false);
   const [employmentForm, setEmploymentForm] = useState({
+    employeeNumber: "",
     employmentType: "full_time",
     hireDate: "",
     terminationDate: "",
@@ -2915,6 +2919,7 @@ function EmployeeProfile({
   useEffect(() => {
     if (profile && !editEmployment) {
       setEmploymentForm({
+        employeeNumber: profile.employeeNumber ?? "",
         employmentType: profile.employmentType || "full_time",
         hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
         terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
@@ -2931,6 +2936,7 @@ function EmployeeProfile({
 
   const employmentMutation = useMutation({
     mutationFn: async (data: {
+      employeeNumber?: string | null;
       employmentType: string;
       hireDate: string | null;
       terminationDate: string | null;
@@ -3394,7 +3400,9 @@ function EmployeeProfile({
                       setProfileCreateCompanyOpen(true);
                       return;
                     }
-                    updateMutation.mutate({ companyId: v, departmentId: null, locationId: null });
+                    // Change only the company — keep the employee's department
+                    // and location (changing company must never reset them).
+                    companyChangeMutation.mutate(v);
                   }}
                 >
                   <SelectTrigger data-testid="select-profile-division">
@@ -3536,7 +3544,7 @@ function EmployeeProfile({
             open={profileCreateCompanyOpen}
             onOpenChange={setProfileCreateCompanyOpen}
             onCreated={(company) => {
-              updateMutation.mutate({ companyId: company.id, departmentId: null, locationId: null });
+              companyChangeMutation.mutate(company.id);
             }}
           />
           <CreateDepartmentDialog
@@ -3590,6 +3598,7 @@ function EmployeeProfile({
                       setEditEmployment(false);
                       if (profile) {
                         setEmploymentForm({
+                          employeeNumber: profile.employeeNumber ?? "",
                           employmentType: profile.employmentType || "full_time",
                           hireDate: profile.hireDate ? String(profile.hireDate).slice(0, 10) : "",
                           terminationDate: profile.terminationDate ? String(profile.terminationDate).slice(0, 10) : "",
@@ -3611,6 +3620,7 @@ function EmployeeProfile({
                     size="sm"
                     onClick={() =>
                       employmentMutation.mutate({
+                        employeeNumber: employmentForm.employeeNumber.trim() || null,
                         employmentType: employmentForm.employmentType,
                         hireDate: employmentForm.hireDate ? employmentForm.hireDate : null,
                         terminationDate: employmentForm.terminationDate ? employmentForm.terminationDate : null,
@@ -3643,8 +3653,23 @@ function EmployeeProfile({
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <Label className="text-muted-foreground text-xs">Employee Number</Label>
-                <p className="font-medium" data-testid="text-profile-employee-number">{profile?.employeeNumber || "—"}</p>
+                <Label className="text-muted-foreground text-xs">Clock # (Employee Number)</Label>
+                {editEmployment ? (
+                  <>
+                    <Input
+                      inputMode="numeric"
+                      value={employmentForm.employeeNumber}
+                      onChange={(e) => setEmploymentForm((f) => ({ ...f, employeeNumber: e.target.value.replace(/[^0-9]/g, "") }))}
+                      placeholder="e.g. 8585"
+                      data-testid="input-profile-employee-number"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      The employee's clock number — must match the User ID enrolled on the time clock.
+                    </p>
+                  </>
+                ) : (
+                  <p className="font-medium" data-testid="text-profile-employee-number">{profile?.employeeNumber || "—"}</p>
+                )}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Department</Label>

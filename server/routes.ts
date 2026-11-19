@@ -1325,26 +1325,13 @@ export async function registerRoutes(
         continue;
       }
 
-      let nextLocationId: string | null = null;
-      let nextDepartmentId: string | null = null;
-
-      if (keepCompatible) {
-        if (existing.locationId) {
-          const loc = await storage.getLocation(existing.locationId);
-          if (loc) {
-            const locCompanyIds = await storage.getLocationCompanyIds(loc.id);
-            const merged = new Set([
-              ...(loc.companyId ? [loc.companyId] : []),
-              ...locCompanyIds,
-            ]);
-            if (merged.has(companyId)) nextLocationId = existing.locationId;
-          }
-        }
-        if (existing.departmentId) {
-          const dept = await storage.getDepartment(existing.departmentId);
-          if (dept && (!dept.companyId || dept.companyId === companyId)) nextDepartmentId = existing.departmentId;
-        }
-      }
+      // Changing an employee's company NEVER clears their department or location
+      // — those assignments are preserved as-is (an admin changes them
+      // separately if needed). Previously an incompatible department/location was
+      // nulled on a company change, which silently wiped assignments.
+      const nextLocationId: string | null = existing.locationId ?? null;
+      const nextDepartmentId: string | null = existing.departmentId ?? null;
+      void keepCompatible; // retained for API compatibility; no longer clears anything
 
       const result = await storage.updateUser(uid, {
         companyId,
@@ -3745,6 +3732,25 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Invalid day-of-week bonuses", errors: parsedBonuses.error.flatten() });
       }
       data.dayOfWeekBonuses = parsedBonuses.data;
+    }
+    // Clock # (employee number): numeric, and unique across employees so an
+    // import can always resolve it to one person. Empty clears it.
+    if (data.employeeNumber !== undefined) {
+      const trimmed = (data.employeeNumber ?? "").trim();
+      if (trimmed === "") {
+        data.employeeNumber = null;
+      } else if (!/^\d+$/.test(trimmed)) {
+        return res.status(400).json({ message: "Clock # must be a number.", field: "employeeNumber" });
+      } else {
+        const clash = await db
+          .select({ userId: userEmploymentProfiles.userId })
+          .from(userEmploymentProfiles)
+          .where(eq(userEmploymentProfiles.employeeNumber, trimmed));
+        if (clash.some((c) => c.userId !== String(req.params.userId))) {
+          return res.status(409).json({ message: `Clock # ${trimmed} is already used by another employee.`, field: "employeeNumber" });
+        }
+        data.employeeNumber = trimmed;
+      }
     }
     const payTypeChanged = data.payType !== undefined && data.payType !== before?.payType;
     const rateTouched =
