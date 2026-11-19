@@ -834,13 +834,11 @@ function BulkAssignDivisionDialog({
 }) {
   const { toast } = useToast();
   const [companyId, setCompanyId] = useState("");
-  const [keepCompatible, setKeepCompatible] = useState(false);
   const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
 
   useEffect(() => {
     if (!open) {
       setCompanyId("");
-      setKeepCompatible(false);
     }
   }, [open]);
 
@@ -849,7 +847,6 @@ function BulkAssignDivisionDialog({
       const res = await apiRequest("POST", "/api/users/bulk-assign-division", {
         userIds,
         companyId,
-        keepCompatible,
       });
       return res.json();
     },
@@ -906,22 +903,10 @@ function BulkAssignDivisionDialog({
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-start gap-3 rounded-md border p-3">
-            <Checkbox
-              id="keep-compatible"
-              checked={keepCompatible}
-              onCheckedChange={(v) => setKeepCompatible(v === true)}
-              data-testid="checkbox-keep-compatible"
-            />
-            <div className="space-y-1">
-              <Label htmlFor="keep-compatible" className="cursor-pointer">
-                Keep existing department & location if compatible
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                When unchecked, department and location are cleared. When checked, they're kept only if they belong to the new company.
-              </p>
-            </div>
-          </div>
+          <p className="text-xs text-muted-foreground rounded-md border p-3">
+            The employee's department, location, and all other details are kept —
+            only their company changes.
+          </p>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-bulk">
