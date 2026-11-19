@@ -1812,6 +1812,9 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   // intended clock-out time. Like time_correction it needs the requested time
   // routed through approval (otherwise the backend defaults to "now").
   const isForgottenClockOut = exception.type === "forgotten_clock_out";
+  // forgotten_clock_in adds the missing clock-IN to a punch — mirror of
+  // forgotten_clock_out. Only the clock-in time is applied (via correctedTime).
+  const isForgottenClockIn = exception.type === "forgotten_clock_in";
   const isRemoval = exception.type === "punch_removal";
   const isOverlap = exception.type === "punch_overlap";
   // A "missing punch" correction: the employee enters the real time(s) they
@@ -1823,7 +1826,9 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
   // employee's requested time(s) through approval. The manager can edit
   // (counter-approve) those times — they pre-fill with whatever the employee
   // requested, or empty when the request didn't include any.
-  const isEditableTimeType = isTimeCorrection || isForgottenClockOut || isMissingPunch;
+  const isEditableTimeType = isTimeCorrection || isForgottenClockOut || isForgottenClockIn || isMissingPunch;
+  const showInInput = isTimeCorrection || isMissingPunch || isForgottenClockIn;
+  const showOutInput = isTimeCorrection || isMissingPunch || isForgottenClockOut;
   const [editReqIn, setEditReqIn] = useState(timeInfo.reqIn);
   const [editReqOut, setEditReqOut] = useState(timeInfo.reqOut);
   // True when the manager's approved times differ from what the employee asked.
@@ -1855,6 +1860,14 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
           throw new Error("Enter a corrected clock-out time before approving.");
         }
         body.correctedTime = outIso;
+      } else if (isForgottenClockIn) {
+        // Mirror of forgotten_clock_out: only the clock-in is applied, routed
+        // through correctedTime (the backend's forgotten_clock_in path reads it).
+        const inIso = timeOnDateToISO(exception.exceptionDate, editReqIn);
+        if (!inIso) {
+          throw new Error("Enter a corrected clock-in time before approving.");
+        }
+        body.correctedTime = inIso;
       } else if (isMissingPunch) {
         // Send whatever time(s) the employee entered (one or both). The backend
         // infers in vs out by time order and pairs with any existing punch, so
@@ -1895,7 +1908,8 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
     approveMutation.isPending ||
     denyMutation.isPending ||
     (isTimeCorrection && !editReqIn && !editReqOut) ||
-    (isForgottenClockOut && !editReqOut);
+    (isForgottenClockOut && !editReqOut) ||
+    (isForgottenClockIn && !editReqIn);
 
   return (
     <Card data-testid={`card-exception-request-${exception.id}`}>
@@ -1976,8 +1990,8 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
                     Approve times {timeInfo.reqIn || timeInfo.reqOut ? "(edit to counter)" : "(employee left blank)"}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    {(isTimeCorrection || isMissingPunch) && (
-                      <div>
+                    {showInInput && (
+                      <div className={showOutInput ? "" : "col-span-2"}>
                         <label className="text-[10px] uppercase font-bold text-muted-foreground" htmlFor={`input-corrected-in-${exception.id}`}>
                           Clock In
                         </label>
@@ -1990,18 +2004,20 @@ function ExceptionCard({ exception }: { exception: EnrichedException }) {
                         />
                       </div>
                     )}
-                    <div className={isTimeCorrection || isMissingPunch ? "" : "col-span-2"}>
-                      <label className="text-[10px] uppercase font-bold text-muted-foreground" htmlFor={`input-corrected-out-${exception.id}`}>
-                        Clock Out
-                      </label>
-                      <Input
-                        id={`input-corrected-out-${exception.id}`}
-                        type="time"
-                        value={editReqOut}
-                        onChange={(e) => setEditReqOut(e.target.value)}
-                        data-testid={`input-corrected-out-${exception.id}`}
-                      />
-                    </div>
+                    {showOutInput && (
+                      <div className={showInInput ? "" : "col-span-2"}>
+                        <label className="text-[10px] uppercase font-bold text-muted-foreground" htmlFor={`input-corrected-out-${exception.id}`}>
+                          Clock Out
+                        </label>
+                        <Input
+                          id={`input-corrected-out-${exception.id}`}
+                          type="time"
+                          value={editReqOut}
+                          onChange={(e) => setEditReqOut(e.target.value)}
+                          data-testid={`input-corrected-out-${exception.id}`}
+                        />
+                      </div>
+                    )}
                   </div>
                   {isCounterApproval && (
                     <p className="text-[11px] text-amber-700 dark:text-amber-400" data-testid={`text-counter-approve-note-${exception.id}`}>
