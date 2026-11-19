@@ -52,6 +52,11 @@ export const companies = pgTable("companies", {
   email: varchar("email", { length: 200 }),
   timezone: varchar("timezone", { length: 50 }).default("America/New_York"),
   isActive: boolean("is_active").default(true).notNull(),
+  // When true, this company is a PAYING company only (a payroll/paying entity like
+  // BCM that no one operationally works for). It is hidden from the "working
+  // company" pickers but still offered as a Paying Company. Default false so
+  // existing companies keep appearing everywhere.
+  payingCompanyOnly: boolean("paying_company_only").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

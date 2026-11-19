@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -33,6 +34,7 @@ interface CompanyForm {
   address: string;
   latitude: number | null;
   longitude: number | null;
+  payingCompanyOnly: boolean;
 }
 
 const emptyForm = (): CompanyForm => ({
@@ -44,6 +46,7 @@ const emptyForm = (): CompanyForm => ({
   address: "",
   latitude: null,
   longitude: null,
+  payingCompanyOnly: false,
 });
 
 export function CompaniesManager() {
@@ -76,6 +79,7 @@ export function CompaniesManager() {
       address: company.address || "",
       latitude: company.latitude ?? null,
       longitude: company.longitude ?? null,
+      payingCompanyOnly: company.payingCompanyOnly ?? false,
     });
     setDialogOpen(true);
   };
@@ -312,6 +316,21 @@ export function CompaniesManager() {
                     })
                   }
                   testId="input-company-address"
+                />
+              </div>
+              <div className="flex items-start justify-between gap-3 rounded-md border p-3">
+                <div className="space-y-0.5">
+                  <Label htmlFor="company-paying-only">Paying company only</Label>
+                  <p className="text-xs text-muted-foreground">
+                    A payroll/paying entity nobody operationally works for (e.g. BCM).
+                    Hidden from the "working company" pickers; still offered as a Paying Company.
+                  </p>
+                </div>
+                <Switch
+                  id="company-paying-only"
+                  checked={form.payingCompanyOnly}
+                  onCheckedChange={(v) => setForm({ ...form, payingCompanyOnly: v === true })}
+                  data-testid="switch-company-paying-only"
                 />
               </div>
             </div>
