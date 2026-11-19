@@ -892,7 +892,7 @@ function BulkAssignDivisionDialog({
                 <SelectValue placeholder="Select a company" />
               </SelectTrigger>
               <SelectContent>
-                {divisions.map((d) => (
+                {divisions.filter((d) => !d.payingCompanyOnly).map((d) => (
                   <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                 ))}
                 <PermissionedAddNewItem
@@ -3409,7 +3409,7 @@ function EmployeeProfile({
                     <SelectValue placeholder="Select company" />
                   </SelectTrigger>
                   <SelectContent>
-                    {(divisions || []).map((d) => (
+                    {(divisions || []).filter((d) => !d.payingCompanyOnly).map((d) => (
                       <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                     ))}
                     <PermissionedAddNewItem

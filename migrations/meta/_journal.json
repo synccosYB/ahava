@@ -624,6 +624,13 @@
       "when": 1780500900000,
       "tag": "0088_employee_payroll_processor",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1780501000000,
+      "tag": "0089_company_paying_only",
+      "breakpoints": true
     }
   ]
 }
