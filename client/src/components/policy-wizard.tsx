@@ -151,6 +151,7 @@ function getRuleFieldsForType(policyTypeKey: string): RuleFieldDef[] {
         { key: "roundingIntervalMinutes", label: "Rounding Interval", type: "number", description: "Round clock times to this interval (in minutes) using the method above. Set to 1 for no effective rounding. Ignored when the method is None.", defaultValue: 15, min: 1, max: 60, showWhen: (r) => r?.roundingRule !== "none" },
         { key: "requireBreakAfterHours", label: "Break Required After", type: "number", description: "Require a break after this many hours worked", defaultValue: 6, min: 1, max: 12 },
         { key: "breakDurationMinutes", label: "Break Duration", type: "number", description: "Minimum break duration in minutes", defaultValue: 30, min: 5, max: 60 },
+        { key: "lunchDeductionEnabled", label: "Lunch Deduction (45-min)", type: "boolean", description: "When ON, an employee marked 'Lunch Required' who works straight through (or forgets to clock back in) is docked a flat 45 minutes. Turn OFF to stop that deduction for everyone — a clocked-out lunch is still paid up to 45 min and an over-hour break still starts a new shift. Does not change anyone's Lunch Required setting.", defaultValue: true },
         {
           key: "allowedPunchSources",
           label: "Allowed Punch Methods",

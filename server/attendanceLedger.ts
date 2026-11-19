@@ -125,6 +125,8 @@ interface EmployeeContext {
   maxShiftHours: number;
   /** Lunch rules apply to this employee's days (per-employee toggle). */
   requireLunchBreak: boolean;
+  /** Global switch: when false, the 45-min lunch deduction is off for everyone. */
+  lunchDeductionEnabled: boolean;
   /** A shift must be at least this long to owe a lunch (for the fine guard). */
   breakThresholdHours: number;
 }
@@ -145,6 +147,8 @@ async function resolveEmployeeContext(
     scheduledDays: schedules.filter((s) => s.isActive).map((s) => s.dayOfWeek),
     maxShiftHours: rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours,
     requireLunchBreak: !!profile?.requireLunchBreak,
+    // Default on unless the attendance rule explicitly turns it off.
+    lunchDeductionEnabled: (rules as { lunchDeductionEnabled?: boolean }).lunchDeductionEnabled !== false,
     breakThresholdHours: rules.requireBreakAfterHours ?? DEFAULT_ATTENDANCE_RULES.requireBreakAfterHours,
   };
 }
@@ -227,7 +231,10 @@ function computeRawDay(
       }));
     dayHours = computeLunchAdjustedHours(lunchPunches, dayHours, {
       breakThresholdHours: ctx.breakThresholdHours,
-      applyFine: ctx.requireLunchBreak,
+      // Fine only when the employee is lunch-required AND the global deduction
+      // switch is on. The paid-break rules inside computeLunchAdjustedHours apply
+      // regardless, so turning this off never removes paid break time.
+      applyFine: ctx.requireLunchBreak && ctx.lunchDeductionEnabled,
     });
   }
 
