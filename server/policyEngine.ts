@@ -540,6 +540,13 @@ export const DEFAULT_ATTENDANCE_RULES = {
   maxShiftApprovalHours: 16,
   requireBreakAfterHours: 6,
   breakDurationMinutes: 30,
+  // Global switch for the lunch DEDUCTION (the flat 45-min "no proper lunch"
+  // fine). Default true = current behavior: an employee marked "Lunch Required"
+  // who works straight through (or forgets to clock back in) is docked 45 min.
+  // Set false to turn the deduction OFF for everyone while keeping the paid-break
+  // rules (a clocked-out lunch is still paid up to 45 min, over an hour still
+  // starts a new shift). Does not change any employee's "Lunch Required" flag.
+  lunchDeductionEnabled: true,
   // Punch-integrity (task #450): when false (default), the shared validator
   // rejects future-dated clock-in/out times. Set true to permit them.
   allowFuturePunches: false,
