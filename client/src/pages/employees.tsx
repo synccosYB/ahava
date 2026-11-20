@@ -707,7 +707,11 @@ export default function EmployeesPage() {
                         />
                       </TableCell>
                       <TableCell className="font-medium" data-testid={`text-employee-name-${emp.id}`}>
-                        {emp.firstName} {emp.lastName}
+                        {/* When sorted by last name, show "Last, First" so the column
+                            reads in the sorted order; otherwise "First Last". */}
+                        {sortField === "last_name" && emp.lastName
+                          ? `${emp.lastName}, ${emp.firstName}`
+                          : `${emp.firstName} ${emp.lastName}`}
                       </TableCell>
                       <TableCell className="font-mono text-sm" data-testid={`text-employee-clock-number-${emp.id}`}>
                         {clockNumberByUser.get(emp.id) || "—"}
