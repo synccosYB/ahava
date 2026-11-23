@@ -17,6 +17,9 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/page-header";
 import { useToast } from "@/hooks/use-toast";
+import {
+  usePeriodRange, PeriodPicker, PeriodStepper, formatRangeLabel,
+} from "@/components/period-picker";
 import { Download, Filter, ArrowUpDown, ArrowUp, ArrowDown, Send, AlertCircle, Wrench, MessageSquare, Lock, Unlock, Trash2, CalendarDays } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { EmptyState } from "@/components/empty-state";
@@ -80,16 +83,18 @@ function toTimeInputValue(value: string | Date | null | undefined): string {
 }
 
 export default function MyAttendance() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
 
-  const getDefaultStartDate = () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().split("T")[0];
-  };
-
-  const [startDate, setStartDate] = useState(getDefaultStartDate());
-  const [endDate, setEndDate] = useState(new Date().toISOString().split("T")[0]);
+  // The same period presets a reviewer gets on the Time Sheet Review page and
+  // on an employee's Review Time Sheet tab — this week, the work and payroll
+  // periods, past week/month/3 months, this year, last 12 months, or dates
+  // picked by hand — so what you see of your own attendance matches what your
+  // manager sees of it. "Past month" keeps the page's old default window.
+  const periodState = usePeriodRange(
+    `ahava.myAttendance.period.${user?.id ?? "anon"}`,
+    "past_month",
+  );
+  const { start: startDate, end: endDate } = periodState.range;
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [fixDialog, setFixDialog] = useState<FixDialogState>({
@@ -362,30 +367,14 @@ export default function MyAttendance() {
       <Card data-testid="card-date-filter">
         <CardContent className="pt-6">
           <div className="flex items-end gap-4 flex-wrap">
-            <div className="space-y-1">
-              <Label htmlFor="start-date" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Start Date</Label>
-              <Input
-                id="start-date"
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                data-testid="input-start-date"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="end-date" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">End Date</Label>
-              <Input
-                id="end-date"
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                data-testid="input-end-date"
-              />
-            </div>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Filter className="h-4 w-4" />
-              <span>Showing {formatDate(startDate)} to {formatDate(endDate)}</span>
-            </div>
+            <PeriodPicker state={periodState} idPrefix="my-attendance-period" />
+            <PeriodStepper state={periodState} idPrefix="my-attendance-period" />
+            {!periodState.navigable && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground pb-1">
+                <Filter className="h-4 w-4" />
+                <span data-testid="text-my-attendance-range">{formatRangeLabel(periodState.range)}</span>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
