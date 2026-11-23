@@ -193,30 +193,81 @@ export function EmployeeTimesheetTable({
     );
   }
 
+  const EXPORT_HEADERS = ["Date", "Day", "Clock In", "Clock Out", "Break (min)", "Total Hours", "Overtime", "Source", "Status"];
+
+  // One row per day. An EMPTY day (no clock-in and no clock-out) shows only the
+  // date + day, every other column blank — never a placeholder dash (a stray
+  // em-dash is also what broke the file's encoding in Excel).
+  const exportRows = (): string[][] =>
+    data.entries.map((e) => {
+      if (!e.clockIn && !e.clockOut) {
+        return [e.date, e.dayOfWeek, "", "", "", "", "", "", ""];
+      }
+      return [
+        e.date,
+        e.dayOfWeek,
+        e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "",
+        e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "",
+        String(e.breakMinutes || 0),
+        e.totalHours != null ? formatHoursMinutes(e.totalHours) : "",
+        formatHoursMinutes(e.overtimeHours || 0),
+        formatSources(e.sources),
+        timesheetStatusLabel(e),
+      ];
+    });
+
+  const exportTotalsRow = (): string[] =>
+    ["Totals", "", "", "", "", formatHoursMinutes(data.totals.totalHours), formatHoursMinutes(data.totals.overtimeHours), "", `${data.totals.daysWorked} days worked`];
+
+  const baseFileName = () =>
+    (exportFileName || `timesheet-${data.employeeName.replace(/\s+/g, "_")}-${startDate}-${endDate}.csv`).replace(/\.csv$/i, "");
+
   const exportCSV = () => {
-    const headers = ["Date", "Day", "Clock In", "Clock Out", "Break (min)", "Total Hours", "Overtime", "Source", "Status"];
-    const rows = data.entries.map((e) => [
-      e.date,
-      e.dayOfWeek,
-      e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "—",
-      e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "—",
-      String(e.breakMinutes || 0),
-      e.totalHours != null ? formatHoursMinutes(e.totalHours) : "—",
-      formatHoursMinutes(e.overtimeHours || 0),
-      formatSources(e.sources),
-      timesheetStatusLabel(e),
-    ]);
-    const totalsRow = ["Totals", "", "", "", "", formatHoursMinutes(data.totals.totalHours), formatHoursMinutes(data.totals.overtimeHours), "", `${data.totals.daysWorked} days worked`];
-    const csv = [headers, ...rows, totalsRow]
+    const csv = [EXPORT_HEADERS, ...exportRows(), exportTotalsRow()]
       .map((row) => row.map((c) => /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(","))
       .join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
+    // Lead with a UTF-8 BOM so Excel reads the file as UTF-8 (otherwise it falls
+    // back to a legacy codepage and mangles any non-ASCII character).
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = exportFileName || `timesheet-${data.employeeName.replace(/\s+/g, "_")}-${startDate}-${endDate}.csv`;
+    a.download = `${baseFileName()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // "Download PDF" via the browser's print-to-PDF (no extra dependency): open a
+  // clean, print-styled copy of the timesheet and trigger print; the person picks
+  // "Save as PDF" as the destination.
+  const exportPDF = () => {
+    const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
+    const bodyRows = exportRows()
+      .map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`)
+      .join("");
+    const totals = exportTotalsRow();
+    const title = `Timesheet — ${data.employeeName}`;
+    const period = `${startDate} to ${endDate}`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(baseFileName())}</title>
+      <style>
+        body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#111}
+        h1{font-size:18px;margin:0 0 2px} .sub{color:#555;font-size:12px;margin:0 0 16px}
+        table{border-collapse:collapse;width:100%;font-size:12px}
+        th,td{border:1px solid #ccc;padding:5px 8px;text-align:left}
+        th{background:#f3f4f6} tfoot td{font-weight:bold;background:#fafafa}
+        @media print{@page{margin:14mm}}
+      </style></head><body>
+      <h1>${esc(title)}</h1><p class="sub">${esc(period)}</p>
+      <table><thead><tr>${EXPORT_HEADERS.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+      <tfoot><tr>${totals.map((c) => `<td>${esc(c)}</td>`).join("")}</tr></tfoot></table>
+      <script>window.onload=function(){window.print();}</script>
+      </body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
   };
 
   return (
@@ -263,15 +314,26 @@ export function EmployeeTimesheetTable({
         <div className="flex items-center gap-2 flex-wrap">
           {navSlot}
           {showExport && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={exportCSV}
-              disabled={!data.entries.length}
-              data-testid="button-timesheet-export-csv"
-            >
-              <Download className="h-4 w-4 mr-2" /> Export CSV
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={exportCSV}
+                disabled={!data.entries.length}
+                data-testid="button-timesheet-export-csv"
+              >
+                <Download className="h-4 w-4 mr-2" /> Export CSV
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={exportPDF}
+                disabled={!data.entries.length}
+                data-testid="button-timesheet-export-pdf"
+              >
+                <Download className="h-4 w-4 mr-2" /> Download PDF
+              </Button>
+            </>
           )}
         </div>
       </div>
