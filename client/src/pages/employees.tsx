@@ -2918,6 +2918,7 @@ function EmployeeProfile({
     overnightShiftsAllowed: false,
     useDevicePunchDirection: false,
     requireLunchBreak: false,
+    geofenceExempt: false,
   });
 
   useEffect(() => {
@@ -2934,6 +2935,7 @@ function EmployeeProfile({
         overnightShiftsAllowed: profile.overnightShiftsAllowed ?? false,
         useDevicePunchDirection: profile.useDevicePunchDirection ?? false,
         requireLunchBreak: profile.requireLunchBreak ?? false,
+        geofenceExempt: profile.geofenceExempt ?? false,
       });
     }
   }, [profile, editEmployment]);
@@ -2951,6 +2953,7 @@ function EmployeeProfile({
       overnightShiftsAllowed: boolean;
       useDevicePunchDirection: boolean;
       requireLunchBreak: boolean;
+      geofenceExempt: boolean;
     }) => {
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
     },
@@ -3613,6 +3616,7 @@ function EmployeeProfile({
                           overnightShiftsAllowed: profile.overnightShiftsAllowed ?? false,
                           useDevicePunchDirection: profile.useDevicePunchDirection ?? false,
                           requireLunchBreak: profile.requireLunchBreak ?? false,
+                          geofenceExempt: profile.geofenceExempt ?? false,
                         });
                       }
                     }}
@@ -3635,6 +3639,7 @@ function EmployeeProfile({
                         overnightShiftsAllowed: employmentForm.overnightShiftsAllowed,
                         useDevicePunchDirection: employmentForm.useDevicePunchDirection,
                         requireLunchBreak: employmentForm.requireLunchBreak,
+                        geofenceExempt: employmentForm.geofenceExempt,
                       })
                     }
                     disabled={employmentMutation.isPending || !profile}
@@ -3801,6 +3806,22 @@ function EmployeeProfile({
                     {(editEmployment ? employmentForm.requireLunchBreak : (profile?.requireLunchBreak ?? false))
                       ? "Lunch paid within the hour; 45-min fine if no proper lunch"
                       : "No lunch rule applied"}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Clock in from anywhere (skip geofence)</Label>
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={editEmployment ? employmentForm.geofenceExempt : (profile?.geofenceExempt ?? false)}
+                    onCheckedChange={(v) => setEmploymentForm((f) => ({ ...f, geofenceExempt: v }))}
+                    disabled={!editEmployment || profileLoading || !profile}
+                    data-testid="switch-profile-geofence-exempt"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {(editEmployment ? employmentForm.geofenceExempt : (profile?.geofenceExempt ?? false))
+                      ? "Can clock in/out from their phone anywhere — location still recorded, off-site punches flagged"
+                      : "Must be inside the location's geofence to clock in from a phone"}
                   </span>
                 </div>
               </div>

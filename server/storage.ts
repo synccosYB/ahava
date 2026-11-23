@@ -233,6 +233,8 @@ export interface ClockInOptions {
   kioskDeviceId?: string;
   punchLatitude?: number | null;
   punchLongitude?: number | null;
+  /** True when the clock-in GPS was outside the employee's geofence (badge only). */
+  clockInOffSite?: boolean;
   /**
    * The day (YYYY-MM-DD) to file this punch under, in the employee's local
    * timezone. Callers compute it from the location tz (workDateForEmployee) so
@@ -408,7 +410,7 @@ export interface IStorage {
   updateAttendanceRecord(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
 
   clockIn(userId: string, source?: string, roundedTime?: Date, opts?: ClockInOptions): Promise<PunchLog>;
-  clockOut(userId: string, at?: Date): Promise<PunchLog | undefined>;
+  clockOut(userId: string, at?: Date, opts?: { latitude?: number | null; longitude?: number | null; offSite?: boolean }): Promise<PunchLog | undefined>;
   startBreak(userId: string): Promise<BreakActionResult>;
   endBreak(userId: string): Promise<BreakActionResult>;
   closeOpenPunch(id: string, record: Partial<InsertPunchLog>): Promise<PunchLog | undefined>;
@@ -1580,6 +1582,7 @@ export class DatabaseStorage implements IStorage {
           ...(opts?.kioskDeviceId ? { kioskDeviceId: opts.kioskDeviceId } : {}),
           ...(opts?.punchLatitude != null ? { punchLatitude: opts.punchLatitude } : {}),
           ...(opts?.punchLongitude != null ? { punchLongitude: opts.punchLongitude } : {}),
+          ...(opts?.clockInOffSite ? { clockInOffSite: true } : {}),
           approved: true,
         }).returning();
         return punchLogToLegacy(record);
@@ -1676,7 +1679,11 @@ export class DatabaseStorage implements IStorage {
     return updated ? punchLogToLegacy(updated) : undefined;
   }
 
-  async clockOut(userId: string, at?: Date): Promise<PunchLog | undefined> {
+  async clockOut(
+    userId: string,
+    at?: Date,
+    opts?: { latitude?: number | null; longitude?: number | null; offSite?: boolean },
+  ): Promise<PunchLog | undefined> {
     // The day's overtime/complete status is derived through THE single pay engine
     // (resolvePayCalcPolicy + splitDailyHours) so this path never disagrees with
     // enforceClockOut, the timesheet, reports or payroll. There is NO hard-coded
@@ -1729,7 +1736,12 @@ export class DatabaseStorage implements IStorage {
 
       const [updated] = await tx
         .update(punchLogs)
-        .set({ clockOut: now, roundedClockOut: now, hoursWorked, status })
+        .set({
+          clockOut: now, roundedClockOut: now, hoursWorked, status,
+          ...(opts?.latitude != null ? { clockOutLatitude: opts.latitude } : {}),
+          ...(opts?.longitude != null ? { clockOutLongitude: opts.longitude } : {}),
+          ...(opts?.offSite ? { clockOutOffSite: true } : {}),
+        })
         .where(eq(punchLogs.id, current.id))
         .returning();
       return updated ? { punch: punchLogToLegacy(updated), inApprovalBand } : undefined;

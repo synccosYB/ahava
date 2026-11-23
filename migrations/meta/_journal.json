@@ -631,6 +631,13 @@
       "when": 1780501000000,
       "tag": "0089_company_paying_only",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1780501100000,
+      "tag": "0090_per_employee_geofence",
+      "breakpoints": true
     }
   ]
 }
