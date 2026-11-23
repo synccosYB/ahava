@@ -72,3 +72,33 @@ test("an employee well under the threshold is not warned", async (t) => {
   const alerts = await db.select().from(systemAlerts).where(eq(systemAlerts.employeeId, id));
   assert.equal(alerts.length, 0, "no warning under the threshold");
 });
+
+test("the warning lead margin is configurable on the operational company", async (t) => {
+  // 39:40 sits UNDER the default 39:45 warn point (lead 15) but OVER a 39:30
+  // warn point (lead 30), so widening the company's lead to 30 is what makes
+  // this employee warn — proving the stored setting drives the warn point.
+  const op = await storage.getOperationalCompany();
+  assert.ok(op, "operational company exists");
+  const originalLead = op!.overtimeWarningLeadMinutes ?? 15;
+
+  const id = await makeEmployee("lead");
+  t.after(async () => {
+    await storage.updateCompany(op!.id, { overtimeWarningLeadMinutes: originalLead }).catch(() => {});
+    await cleanupEmployee(id);
+  });
+
+  await addHoursToday(id, 39.67); // 39h 40m
+
+  // Default lead (15 → warn at 39:45): 39:40 is under, so no warning.
+  await storage.updateCompany(op!.id, { overtimeWarningLeadMinutes: 15 });
+  await runApproachingOvertimeWarnings();
+  let alerts = await db.select().from(systemAlerts).where(eq(systemAlerts.employeeId, id));
+  assert.equal(alerts.length, 0, "with a 15-min lead, 39:40 is not yet warned");
+
+  // Widen to 30 (→ warn at 39:30): now 39:40 crosses the warn point.
+  await storage.updateCompany(op!.id, { overtimeWarningLeadMinutes: 30 });
+  await runApproachingOvertimeWarnings();
+  alerts = await db.select().from(systemAlerts).where(eq(systemAlerts.employeeId, id));
+  assert.equal(alerts.length, 1, "with a 30-min lead, 39:40 is warned");
+  assert.equal((alerts[0].details as any).leadMinutes, 30, "alert records the configured lead");
+});

@@ -222,10 +222,79 @@ function AutoLogoutCard() {
   );
 }
 
+function OvertimeWarningCard() {
+  const { toast } = useToast();
+  const { data } = useQuery<{ overtimeWarningLeadMinutes: number }>({
+    queryKey: ["/api/settings/session"],
+    queryFn: async () => {
+      const r = await fetch("/api/settings/session", { credentials: "include" });
+      return r.ok ? r.json() : { overtimeWarningLeadMinutes: 15 };
+    },
+  });
+  const [minutes, setMinutes] = useState<string>("");
+  useEffect(() => {
+    if (data) setMinutes(String(data.overtimeWarningLeadMinutes ?? 15));
+  }, [data]);
+
+  const save = useMutation({
+    mutationFn: async (value: number) => {
+      await apiRequest("PUT", "/api/settings/session", { overtimeWarningLeadMinutes: value });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/session"] });
+      toast({ title: "Overtime warning saved" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const parsed = Math.max(1, Math.min(120, parseInt(minutes || "15", 10) || 15));
+  const current = data?.overtimeWarningLeadMinutes ?? 15;
+  return (
+    <Card data-testid="card-overtime-warning">
+      <CardHeader>
+        <CardTitle className="text-base">Overtime warning</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          Email admins and the employee's department manager, and raise an in-app
+          alert, when an employee's running weekly hours come within this many
+          minutes of their weekly overtime threshold — a heads-up <span className="font-medium">before</span> overtime
+          is incurred. For a 40-hour threshold, 15 minutes warns at 39:45. Fires at most once per employee per week.
+        </p>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="ot-warning-lead" className="text-sm">Minutes before overtime</Label>
+          <Input
+            id="ot-warning-lead"
+            type="number"
+            min={1}
+            max={120}
+            value={minutes}
+            onChange={(e) => setMinutes(e.target.value)}
+            className="w-24"
+            data-testid="input-ot-warning-lead"
+          />
+          <Button
+            size="sm"
+            onClick={() => save.mutate(parsed)}
+            disabled={save.isPending || String(parsed) === String(current)}
+            data-testid="button-save-ot-warning-lead"
+          >
+            {save.isPending ? "Saving…" : "Save"}
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Warns {parsed} min before the weekly overtime threshold
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function GeneralSection() {
   return (
     <div className="space-y-6">
       <AutoLogoutCard />
+      <OvertimeWarningCard />
       <CompaniesManager />
     </div>
   );

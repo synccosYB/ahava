@@ -70,6 +70,7 @@ const typeLabels: Record<string, string> = {
   missing_clock_out: "Missing Clock-Out",
   late_clock_in: "Late Clock-In",
   overtime_threshold: "Overtime Threshold",
+  overtime_warning: "Overtime Warning",
   no_show: "No Show",
   repeated_exception: "Repeated Exception",
   review_due: "Performance Review Due",
@@ -229,6 +230,7 @@ export default function AlertsPage() {
               <SelectItem value="missing_clock_out">Missing Clock-Out</SelectItem>
               <SelectItem value="late_clock_in">Late Clock-In</SelectItem>
               <SelectItem value="overtime_threshold">Overtime Threshold</SelectItem>
+              <SelectItem value="overtime_warning">Overtime Warning</SelectItem>
               <SelectItem value="no_show">No Show</SelectItem>
               <SelectItem value="missing_document">Missing Document</SelectItem>
               <SelectItem value="certification_expiring">Certification Expiring</SelectItem>

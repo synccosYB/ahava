@@ -2713,21 +2713,37 @@ export async function registerRoutes(
   // Session settings every signed-in client needs (idle auto-logout). The global
   // timeout lives on the operational company; the per-user opt-out comes from the
   // user record (served on /api/auth/user).
+  // Global settings stored on the operational company, so the client needn't
+  // know its id: the idle auto-logout timeout and the approaching-overtime
+  // warning lead margin.
   app.get("/api/settings/session", requireAuth, async (_req, res) => {
     const op = await storage.getOperationalCompany();
-    res.json({ idleLogoutMinutes: op?.idleLogoutMinutes ?? 0 });
+    res.json({
+      idleLogoutMinutes: op?.idleLogoutMinutes ?? 0,
+      overtimeWarningLeadMinutes: op?.overtimeWarningLeadMinutes ?? 15,
+    });
   });
 
-  // Admin sets the global idle auto-logout (minutes; 0 = off) on the operational
-  // company, without needing to know its id.
+  // Admin updates the global settings above. Both fields are optional; only the
+  // ones provided are changed. idleLogoutMinutes: 0 = off. overtimeWarningLeadMinutes:
+  // minutes below the weekly OT threshold at which the warning fires.
   app.put("/api/settings/session", requireAuth, requirePermission("company.edit"), async (req, res) => {
-    const schema = z.object({ idleLogoutMinutes: z.number().int().min(0).max(1440) });
+    const schema = z.object({
+      idleLogoutMinutes: z.number().int().min(0).max(1440).optional(),
+      overtimeWarningLeadMinutes: z.number().int().min(1).max(120).optional(),
+    });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return badRequestFromZod(res, parsed, "Invalid session settings");
     const op = await storage.getOperationalCompany();
     if (!op) return res.status(404).json({ message: "No operational company configured" });
-    await storage.updateCompany(op.id, { idleLogoutMinutes: parsed.data.idleLogoutMinutes });
-    res.json({ idleLogoutMinutes: parsed.data.idleLogoutMinutes });
+    const patch: { idleLogoutMinutes?: number; overtimeWarningLeadMinutes?: number } = {};
+    if (parsed.data.idleLogoutMinutes !== undefined) patch.idleLogoutMinutes = parsed.data.idleLogoutMinutes;
+    if (parsed.data.overtimeWarningLeadMinutes !== undefined) patch.overtimeWarningLeadMinutes = parsed.data.overtimeWarningLeadMinutes;
+    const updated = await storage.updateCompany(op.id, patch);
+    res.json({
+      idleLogoutMinutes: updated?.idleLogoutMinutes ?? op.idleLogoutMinutes ?? 0,
+      overtimeWarningLeadMinutes: updated?.overtimeWarningLeadMinutes ?? op.overtimeWarningLeadMinutes ?? 15,
+    });
   });
 
   app.patch("/api/companies/:id", requireAuth, requirePermission("company.edit"), async (req, res) => {

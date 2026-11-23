@@ -62,6 +62,11 @@ export const companies = pgTable("companies", {
   // Applies to everyone in the company except admins who opted out on their
   // profile. Default 0 so deploying changes nothing until an admin turns it on.
   idleLogoutMinutes: integer("idle_logout_minutes").default(0).notNull(),
+  // Lead margin (minutes) for the "approaching weekly overtime" warning: the
+  // heads-up fires when an employee's running weekly hours reach their weekly
+  // OT threshold MINUS this many minutes (e.g. 15 → 39:45 for a 40h threshold).
+  // Set on Rules & Controls → General. Default 15.
+  overtimeWarningLeadMinutes: integer("overtime_warning_lead_minutes").default(15).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
