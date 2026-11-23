@@ -21,14 +21,16 @@ import { storage } from "../storage";
 
 test("idle auto-logout: company setting round-trips and admin can opt out", async (t) => {
   const stamp = Date.now().toString(36);
-  // The operational company is a global singleton (getOperationalCompany). Read
-  // its current timeout so we can assert the round-trip and restore it after.
-  const op = await storage.getOperationalCompany();
-  assert.ok(op, "an operational company exists in the seeded DB");
-  const originalMinutes = op!.idleLogoutMinutes ?? 0;
+  // The operational company is a global singleton (getOperationalCompany). The
+  // seed creates no company, so on a clean CI database we create one; on a
+  // populated DB we reuse and restore it. `createdCompany` tracks which.
+  let op = await storage.getOperationalCompany();
+  const createdCompany = !op;
+  if (!op) op = await storage.createCompany({ name: "Ahava Medical Center" });
+  const originalMinutes = op.idleLogoutMinutes ?? 0;
 
   const admin = await storage.createUser({
-    firstName: "IdleAdmin", lastName: stamp, role: "admin", companyId: op!.id,
+    firstName: "IdleAdmin", lastName: stamp, role: "admin", companyId: op.id,
   });
 
   const app = express();
@@ -42,9 +44,10 @@ test("idle auto-logout: company setting round-trips and admin can opt out", asyn
 
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    // Restore the operational company's original timeout so we don't leak state.
-    await storage.updateCompany(op!.id, { idleLogoutMinutes: originalMinutes }).catch(() => {});
     await db.delete(users).where(inArray(users.id, [admin.id])).catch(() => {});
+    // Restore or remove the operational company so we don't leak state.
+    if (createdCompany) await db.delete(companies).where(eq(companies.id, op.id)).catch(() => {});
+    else await storage.updateCompany(op.id, { idleLogoutMinutes: originalMinutes }).catch(() => {});
   });
 
   // --- Company-wide setting: PUT then GET reflect the new value. ---
