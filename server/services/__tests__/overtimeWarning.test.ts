@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
 import { db } from "../../db";
 import { storage } from "../../storage";
-import { users, punchLogs, systemAlerts, companies } from "@shared/schema";
+import { users, punchLogs, systemAlerts, userEmploymentProfiles, companies } from "@shared/schema";
 import { runApproachingOvertimeWarnings } from "../overtimeWarning";
 
 const stamp = `otw-${Date.now().toString(36)}`;
@@ -28,6 +28,7 @@ async function makeEmployee(suffix: string) {
 async function cleanupEmployee(id: string) {
   await db.delete(systemAlerts).where(eq(systemAlerts.employeeId, id)).catch(() => {});
   await db.delete(punchLogs).where(eq(punchLogs.employeeId, id)).catch(() => {});
+  await db.delete(userEmploymentProfiles).where(eq(userEmploymentProfiles.userId, id)).catch(() => {});
   await db.delete(users).where(eq(users.id, id)).catch(() => {});
 }
 
@@ -81,6 +82,30 @@ test("an employee well under the threshold is not warned", async (t) => {
   await runApproachingOvertimeWarnings();
   const alerts = await db.select().from(systemAlerts).where(eq(systemAlerts.employeeId, id));
   assert.equal(alerts.length, 0, "no warning under the threshold");
+});
+
+test("a per-employee 'never warn' override excludes an otherwise-warned employee", async (t) => {
+  // Two employees both past the 39:45 warn point. One is opted out on their
+  // employment profile (overtimeWarningEnabled = false); the other is left on
+  // the default. Only the default one should be warned.
+  const optedOut = await makeEmployee("optout");
+  const normal = await makeEmployee("optin");
+  t.after(() => Promise.all([cleanupEmployee(optedOut), cleanupEmployee(normal)]));
+
+  await db.insert(userEmploymentProfiles).values({
+    userId: optedOut, payType: "hourly", hourlyRate: 15, overtimeWarningEnabled: false,
+  });
+
+  await addHoursToday(optedOut, 39.83);
+  await addHoursToday(normal, 39.83);
+
+  await runApproachingOvertimeWarnings();
+
+  const optedOutAlerts = await db.select().from(systemAlerts).where(eq(systemAlerts.employeeId, optedOut));
+  assert.equal(optedOutAlerts.length, 0, "the opted-out employee is not warned");
+
+  const normalAlerts = await db.select().from(systemAlerts).where(eq(systemAlerts.employeeId, normal));
+  assert.equal(normalAlerts.length, 1, "the default employee is still warned (so the run did fire)");
 });
 
 test("the warning lead margin is configurable on the operational company", async (t) => {

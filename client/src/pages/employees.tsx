@@ -2919,6 +2919,7 @@ function EmployeeProfile({
     useDevicePunchDirection: false,
     requireLunchBreak: false,
     geofenceExempt: false,
+    overtimeWarningMode: "default" as "default" | "on" | "off",
   });
 
   useEffect(() => {
@@ -2936,6 +2937,10 @@ function EmployeeProfile({
         useDevicePunchDirection: profile.useDevicePunchDirection ?? false,
         requireLunchBreak: profile.requireLunchBreak ?? false,
         geofenceExempt: profile.geofenceExempt ?? false,
+        overtimeWarningMode:
+          profile.overtimeWarningEnabled === true ? "on"
+          : profile.overtimeWarningEnabled === false ? "off"
+          : "default",
       });
     }
   }, [profile, editEmployment]);
@@ -2954,6 +2959,7 @@ function EmployeeProfile({
       useDevicePunchDirection: boolean;
       requireLunchBreak: boolean;
       geofenceExempt: boolean;
+      overtimeWarningEnabled: boolean | null;
     }) => {
       await apiRequest("PATCH", `/api/employment-profiles/${userId}`, data);
     },
@@ -3617,6 +3623,10 @@ function EmployeeProfile({
                           useDevicePunchDirection: profile.useDevicePunchDirection ?? false,
                           requireLunchBreak: profile.requireLunchBreak ?? false,
                           geofenceExempt: profile.geofenceExempt ?? false,
+                          overtimeWarningMode:
+                            profile.overtimeWarningEnabled === true ? "on"
+                            : profile.overtimeWarningEnabled === false ? "off"
+                            : "default",
                         });
                       }
                     }}
@@ -3640,6 +3650,10 @@ function EmployeeProfile({
                         useDevicePunchDirection: employmentForm.useDevicePunchDirection,
                         requireLunchBreak: employmentForm.requireLunchBreak,
                         geofenceExempt: employmentForm.geofenceExempt,
+                        overtimeWarningEnabled:
+                          employmentForm.overtimeWarningMode === "on" ? true
+                          : employmentForm.overtimeWarningMode === "off" ? false
+                          : null,
                       })
                     }
                     disabled={employmentMutation.isPending || !profile}
@@ -3824,6 +3838,41 @@ function EmployeeProfile({
                       : "Must be inside the location's geofence to clock in from a phone"}
                   </span>
                 </div>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Overtime warning</Label>
+                {(() => {
+                  const currentMode =
+                    profile?.overtimeWarningEnabled === true ? "on"
+                    : profile?.overtimeWarningEnabled === false ? "off"
+                    : "default";
+                  const mode = editEmployment ? employmentForm.overtimeWarningMode : currentMode;
+                  return (
+                    <div className="space-y-1 pt-1">
+                      <Select
+                        value={mode}
+                        onValueChange={(v) => setEmploymentForm((f) => ({ ...f, overtimeWarningMode: v as "default" | "on" | "off" }))}
+                        disabled={!editEmployment || profileLoading || !profile}
+                      >
+                        <SelectTrigger className="w-full" data-testid="select-profile-overtime-warning">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Follow overtime policy (default)</SelectItem>
+                          <SelectItem value="on">Always warn</SelectItem>
+                          <SelectItem value="off">Never warn</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <span className="text-sm text-muted-foreground">
+                        {mode === "on"
+                          ? "Always notify admins + their manager as they near weekly overtime (40h assumed if no policy threshold)"
+                          : mode === "off"
+                          ? "Never send this employee's approaching-overtime warning"
+                          : "Warn only when their pay policy auto-calculates weekly overtime"}
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Hire Date</Label>

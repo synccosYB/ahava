@@ -392,6 +392,13 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // out and forgot to clock back in) is docked a flat 45-minute lunch on a shift
   // long enough to owe one.
   requireLunchBreak: boolean("require_lunch_break").default(false).notNull(),
+  // Per-employee control over the "approaching weekly overtime" warning, on top
+  // of the policy. NULL (default) = follow the policy (warn when the employee's
+  // effective policy auto-calculates weekly OT). TRUE = always warn this employee
+  // (enroll even if their policy doesn't auto-calc weekly OT — a 40h threshold is
+  // assumed when the policy sets none). FALSE = never warn this employee. Lets an
+  // admin manage the warning roster per person without touching shared policies.
+  overtimeWarningEnabled: boolean("overtime_warning_enabled"),
   // Per-employee day-of-week bonuses, applied ON TOP of any policy bonuses (they
   // are additive, not a replacement). Each entry: a day (0=Sunday … 6=Saturday),
   // a minimum-hours threshold to qualify, and either extra money ($) or extra

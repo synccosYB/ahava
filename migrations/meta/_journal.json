@@ -652,6 +652,13 @@
       "when": 1780501300000,
       "tag": "0092_overtime_warning_lead",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1780501400000,
+      "tag": "0093_overtime_warning_per_employee",
+      "breakpoints": true
     }
   ]
 }

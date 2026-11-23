@@ -3847,6 +3847,7 @@ export async function registerRoutes(
         "overnightShiftsAllowed",
         "useDevicePunchDirection",
         "requireLunchBreak",
+        "overtimeWarningEnabled",
         "hireDate",
         "terminationDate",
       ] as const;
