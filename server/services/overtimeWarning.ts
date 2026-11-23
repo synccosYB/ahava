@@ -22,9 +22,19 @@ import type { User } from "@shared/schema";
 
 const WARNING_TYPE = "overtime_warning";
 
-function leadMinutes(): number {
-  const raw = Number(process.env.OVERTIME_WARNING_LEAD_MINUTES);
-  return Number.isFinite(raw) && raw > 0 ? raw : 15;
+const DEFAULT_LEAD_MINUTES = 15;
+
+/**
+ * The warning lead margin, in minutes. Configured on the operational company
+ * (Rules & Controls → General); falls back to the OVERTIME_WARNING_LEAD_MINUTES
+ * env var and finally 15 when no company value is set.
+ */
+async function resolveLeadMinutes(): Promise<number> {
+  const op = await storage.getOperationalCompany();
+  const stored = op?.overtimeWarningLeadMinutes;
+  if (typeof stored === "number" && Number.isFinite(stored) && stored > 0) return stored;
+  const env = Number(process.env.OVERTIME_WARNING_LEAD_MINUTES);
+  return Number.isFinite(env) && env > 0 ? env : DEFAULT_LEAD_MINUTES;
 }
 
 function fmtHoursMinutes(hours: number): string {
@@ -96,7 +106,8 @@ export interface OvertimeWarningResult {
 
 export async function runApproachingOvertimeWarnings(now: Date = new Date()): Promise<OvertimeWarningResult> {
   const today = now.toISOString().split("T")[0];
-  const lead = leadMinutes() / 60;
+  const leadMin = await resolveLeadMinutes();
+  const lead = leadMin / 60;
   const allUsers = await storage.getAllUsers();
   const owners = await ownerEmails(allUsers);
 
@@ -147,7 +158,7 @@ export async function runApproachingOvertimeWarnings(now: Date = new Date()): Pr
         weekStart,
         weeklyHours: weekly,
         threshold,
-        leadMinutes: leadMinutes(),
+        leadMinutes: leadMin,
         policyName: attendancePolicy?.policyName || "Default",
       },
     });
