@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sadiger Charity Boxes</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700&family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><div class="logo">S</div><div><b>SADIGER</b><small>givetosadiger.org</small></div></div>
+    <a class="nav" href="#dashboard" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</a>
+    <a class="nav" href="#boxes" data-view="boxes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/></svg>Box Holders</a>
+    <a class="nav" href="#receipts" data-view="receipts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>Receipts</a>
+    <a class="nav" href="#io" data-view="io"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/></svg>Import / Export</a>
+    <a class="nav" href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Settings</a>
+    <div class="foot">
+      <span class="me" id="meEmail"></span>
+      <form method="post" action="/logout"><button type="submit">Sign out</button></form>
+    </div>
+  </aside>
+
+  <div>
+    <nav class="mobile-nav">
+      <a class="nav" href="#dashboard" data-view="dashboard">Dashboard</a>
+      <a class="nav" href="#boxes" data-view="boxes">Box Holders</a>
+      <a class="nav" href="#receipts" data-view="receipts">Receipts</a>
+      <a class="nav" href="#io" data-view="io">Import / Export</a>
+      <a class="nav" href="#settings" data-view="settings">Settings</a>
+    </nav>
+    <main>
+      <div class="alert warn" id="setupWarn" hidden></div>
+
+      <!-- DASHBOARD -->
+      <section class="view" id="dashboard">
+        <div class="top">
+          <div><h1>Charity Boxes</h1><p>Where the Sadiger charity boxes stand today.</p></div>
+          <div class="filters">
+            <button class="btn" data-action="new-holder">+ New box holder</button>
+            <a class="btn gold" href="#boxes">Record a pickup</a>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="k">Boxes out</div><div class="v" id="sBoxes">–</div><div class="s">in homes now</div></div>
+          <div class="stat"><div class="k">Collected this year</div><div class="v" id="sYear">–</div><div class="s" id="sYearLbl"></div></div>
+          <div class="stat"><div class="k">Due for a visit</div><div class="v" id="sDue" style="color:var(--amber)">–</div><div class="s" id="sDueLbl"></div></div>
+          <div class="stat"><div class="k">Receipts this year</div><div class="v" id="sRec">–</div><div class="s">tax-deductible</div></div>
+        </div>
+        <div class="grid2">
+          <div class="card route">
+            <div class="card-h"><h3>Visits to make</h3><span class="note" style="margin:0">Longest-waiting first</span></div>
+            <ul id="dueList"></ul>
+          </div>
+          <div class="card route">
+            <div class="card-h"><h3>Recent pickups</h3><a class="note" style="margin:0" href="#receipts">All receipts →</a></div>
+            <ul id="recentList"></ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- BOXES -->
+      <section class="view" id="boxes">
+        <div class="top">
+          <div><h1>Box Holders</h1><p>Everyone who has a charity box at home. Click a name to edit or see their history.</p></div>
+          <div class="filters"><a class="btn" href="#io">⇪ Import from Excel</a><button class="btn primary" data-action="new-holder">+ New box holder</button></div>
+        </div>
+        <div class="card">
+          <div class="card-h">
+            <input class="search" id="q" type="search" placeholder="Search name, address, phone or box #">
+            <div class="filters" id="filters">
+              <button class="chip on" data-f="all">All</button>
+              <button class="chip" data-f="over">Overdue</button>
+              <button class="chip" data-f="due">Due soon</button>
+              <button class="chip" data-f="ok">Up to date</button>
+              <button class="chip" data-f="inactive">Returned boxes</button>
+            </div>
+          </div>
+          <div class="tablewrap"><table>
+            <thead><tr><th>Box #</th><th>Name</th><th class="hide-m">Address</th><th class="hide-m">Contact</th><th class="hide-m">Box given</th><th>Last emptied</th><th class="num">This year</th><th></th></tr></thead>
+            <tbody id="boxRows"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <!-- RECEIPTS -->
+      <section class="view" id="receipts">
+        <div class="top">
+          <div><h1>Receipts</h1><p>Every pickup creates a numbered tax receipt. Click a receipt number to open the PDF.</p></div>
+          <div class="filters">
+            <select class="yearsel" id="recYear"></select>
+            <button class="btn" data-action="export-year">⇩ Excel</button>
+            <button class="btn" data-action="email-statements">Email year-end statements</button>
+          </div>
+        </div>
+        <div class="card"><div class="tablewrap"><table>
+          <thead><tr><th>Receipt #</th><th>Date</th><th>Donor</th><th class="hide-m">Box #</th><th class="num">Amount</th><th>Email</th><th></th></tr></thead>
+          <tbody id="recRows"></tbody>
+        </table></div></div>
+      </section>
+
+      <!-- IMPORT / EXPORT -->
+      <section class="view" id="io">
+        <div class="top"><div><h1>Import / Export</h1><p>Load the congregation list from Excel, download reports, and send the monthly report to Israel.</p></div></div>
+        <div class="io">
+          <div class="card">
+            <h3>Import box holders</h3>
+            <p class="note">Upload an Excel (.xlsx) or CSV file with one row per family. Columns: First Name, Last Name, Address, City, State, ZIP, Phone, Email, Box #, Date Given. If a box number (or name and address) already exists, that person is updated instead of added twice.</p>
+            <label class="drop" for="impFile"><b>Choose an Excel file</b><span class="note">.xlsx or .csv</span></label>
+            <input type="file" id="impFile" accept=".xlsx,.csv" hidden>
+            <div class="formactions"><a class="btn sm" href="/api/import/template">⇩ Download blank template</a></div>
+            <div id="impResult"></div>
+          </div>
+          <div class="card">
+            <h3>Export to Excel</h3>
+            <label for="expWhat">What to export</label>
+            <select id="expWhat">
+              <option value="month">Monthly collections report</option>
+              <option value="year">All receipts for a year</option>
+              <option value="holders">All box holders</option>
+            </select>
+            <div id="expMonthWrap"><label for="expMonth">Month</label><input type="month" id="expMonth"></div>
+            <div id="expYearWrap" hidden><label for="expYear">Year</label><input type="number" id="expYear" min="2020" max="2100"></div>
+            <div class="formactions"><button class="btn primary" data-action="export">⇩ Download Excel</button></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h3>Monthly report to Israel</h3>
+            <div class="filters"><input type="month" id="sendMonth" class="yearsel"><button class="btn gold sm" data-action="send-report">Send report now</button></div>
+          </div>
+          <form id="reportForm" style="padding:4px 20px 18px">
+            <label class="toggle"><input type="checkbox" name="report_auto"> Automatically email last month's Excel report on the 1st of each month</label>
+            <div class="row">
+              <div><label>Send to (administration in Israel)</label><input name="israel_email" type="text" placeholder="office@…"></div>
+              <div><label>CC (optional)</label><input name="report_cc" type="text" placeholder="e.g. treasurer@…"></div>
+            </div>
+            <div class="formactions"><button class="btn primary sm" type="submit">Save</button><span class="note" id="nextAuto" style="margin:0"></span></div>
+          </form>
+          <div class="tablewrap"><table>
+            <thead><tr><th>Report</th><th>Sent</th><th>To</th><th class="num">Pickups</th><th class="num">Total</th><th>Status</th></tr></thead>
+            <tbody id="sentRows"></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="view" id="settings">
+        <div class="top"><div><h1>Settings</h1><p>This information prints on every receipt.</p></div></div>
+        <form id="settingsForm" class="settings">
+          <div class="card">
+            <h3 style="margin:14px 0 4px">Organization</h3>
+            <label>Name shown on receipts</label><input name="org_name" required>
+            <label>Legal name (exactly as registered with the IRS)</label><input name="legal_name" placeholder="If different from the name above">
+            <div class="row"><div><label>EIN (US tax ID)</label><input name="ein" placeholder="XX-XXXXXXX"></div>
+              <div><label>Tax status</label><select name="tax_status"><option>501(c)(3) public charity</option><option>501(c)(3) church / religious organization</option></select></div></div>
+            <label>US mailing address</label><input name="address" placeholder="Street, City, State ZIP">
+            <div class="row"><div><label>Phone</label><input name="phone"></div><div><label>Email (donors reply here)</label><input name="email" type="text"></div></div>
+            <label>Website</label><input name="website">
+          </div>
+          <div class="card">
+            <h3 style="margin:14px 0 4px">Receipts &amp; visits</h3>
+            <div class="row"><div><label>Signer name</label><input name="signer_name"></div><div><label>Signer title</label><input name="signer_title"></div></div>
+            <label>Thank-you line on receipts</label><input name="thank_you">
+            <label>First receipt number each year</label><input name="receipt_start" inputmode="numeric">
+            <p class="note" style="margin-top:4px">Receipts are numbered YEAR-0001, YEAR-0002… Only used the first time a receipt is issued in a new year.</p>
+            <div class="row"><div><label>"Due soon" after (days)</label><input name="due_soon_days" inputmode="numeric"></div><div><label>"Overdue" after (days)</label><input name="overdue_days" inputmode="numeric"></div></div>
+            <div class="formactions"><button class="btn primary" type="submit">Save settings</button></div>
+          </div>
+        </form>
+        <div class="settings" style="margin-top:18px">
+          <div class="card">
+            <h3 style="margin:14px 0 4px">Logo &amp; signature</h3>
+            <p class="note">PNG or JPG, under 1 MB. Used on the PDF receipts.</p>
+            <label>Logo</label><img id="logoPrev" class="imgprev" alt="" hidden>
+            <div class="filters"><input type="file" accept="image/png,image/jpeg" data-image="logo"><button class="btn sm danger" data-action="clear-image" data-kind="logo">Remove</button></div>
+            <label>Signature</label><img id="signaturePrev" class="imgprev" alt="" hidden>
+            <div class="filters"><input type="file" accept="image/png,image/jpeg" data-image="signature"><button class="btn sm danger" data-action="clear-image" data-kind="signature">Remove</button></div>
+          </div>
+          <div class="card users">
+            <h3 style="margin:14px 0 4px">People who can sign in</h3>
+            <ul id="userList"></ul>
+            <form id="userForm">
+              <div class="row"><div><label>Name</label><input name="name"></div><div><label>Email</label><input name="email" type="email" required></div></div>
+              <label>Temporary password (10+ characters)</label><input name="password" type="text" minlength="10" required>
+              <div class="formactions"><button class="btn sm" type="submit">Add person</button></div>
+            </form>
+            <form id="pwForm" class="history">
+              <h4>Change my password</h4>
+              <div class="row"><div><label>Current password</label><input name="current" type="password" required></div><div><label>New password</label><input name="next" type="password" minlength="10" required></div></div>
+              <div class="formactions"><button class="btn sm" type="submit">Change password</button></div>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- Pickup modal -->
+<div class="backdrop" id="pickup">
+  <div class="modal">
+    <div class="card-h"><h3 id="pTitle">Record pickup</h3><button class="x" data-action="close" aria-label="Close">×</button></div>
+    <form class="modal-body" id="pickupForm">
+      <div>
+        <div class="note" style="margin:0" id="pWho"></div>
+        <label for="pAmt">Amount counted ($)</label>
+        <input class="amount" id="pAmt" name="amount" type="number" min="0.01" step="0.01" placeholder="0.00" required>
+        <div class="row">
+          <div><label for="pDate">Date emptied</label><input type="date" id="pDate" name="collected_on" required></div>
+          <div><label for="pBy">Counted by</label><input id="pBy" name="counted_by"></div>
+        </div>
+        <label for="pNote">Note (optional, not printed on receipt)</label><textarea id="pNote" name="note" rows="2" placeholder="e.g. box replaced, foreign coins removed"></textarea>
+        <label class="toggle"><input type="checkbox" id="pEmail" name="send_email"> <span id="pEmailLbl">Email the receipt</span></label>
+        <div class="formactions">
+          <button class="btn gold" type="submit" id="pSave">Save &amp; issue receipt</button>
+          <button class="btn" type="button" data-action="close">Cancel</button>
+        </div>
+      </div>
+      <div>
+        <div class="note" style="margin:0 0 8px">Receipt preview</div>
+        <div class="receipt" id="rPreview"></div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Holder modal -->
+<div class="backdrop" id="holder">
+  <div class="modal" style="max-width:640px">
+    <div class="card-h"><h3 id="hTitle">New box holder</h3><button class="x" data-action="close" aria-label="Close">×</button></div>
+    <form class="formgrid" id="holderForm">
+      <div class="row"><div><label>First name</label><input name="first_name" required></div><div><label>Last name</label><input name="last_name"></div></div>
+      <label>Street address</label><input name="address" placeholder="123 Main St, Apt 4">
+      <div class="row"><div><label>City</label><input name="city"></div><div class="row"><div><label>State</label><input name="state" maxlength="2" placeholder="NY"></div><div><label>ZIP</label><input name="zip"></div></div></div>
+      <div class="row"><div><label>Phone</label><input name="phone" type="tel"></div><div><label>Email (receipts go here)</label><input name="email" type="email"></div></div>
+      <div class="row"><div><label>Box #</label><input name="box_no"></div><div><label>Date box given</label><input type="date" name="date_given"></div></div>
+      <label>Notes</label><textarea name="notes" rows="2"></textarea>
+      <div class="formactions">
+        <button class="btn primary" type="submit">Save</button>
+        <button class="btn" type="button" data-action="close">Cancel</button>
+        <span class="spacer"></span>
+        <select class="yearsel" id="hStmtYear" hidden></select>
+        <button class="btn sm" type="button" data-action="holder-statement" hidden id="hStmt">Year statement</button>
+        <button class="btn sm danger" type="button" data-action="holder-active" hidden id="hActive">Box returned</button>
+      </div>
+      <div class="history" id="hHistory" hidden></div>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/assets/app.js"></script>
+</body>
+</html>

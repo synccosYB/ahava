@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Sadiger</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700&family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div class="login">
+  <form class="card" method="post" action="/login">
+    <div class="brand"><div class="logo">S</div><div><b>SADIGER</b><small>givetosadiger.org</small></div></div>
+    <h1 style="font-size:24px;margin-bottom:4px">Sign in</h1>
+    <p class="note" style="margin-top:0">Charity box program, staff only.</p>
+    <div id="err" class="alert err" hidden></div>
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form>
+</div>
+<script src="/assets/login.js"></script>
+</body>
+</html>
