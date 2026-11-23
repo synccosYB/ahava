@@ -156,8 +156,79 @@ export default function RulesControlsPage() {
   );
 }
 
+function AutoLogoutCard() {
+  const { toast } = useToast();
+  const { data } = useQuery<{ idleLogoutMinutes: number }>({
+    queryKey: ["/api/settings/session"],
+    queryFn: async () => {
+      const r = await fetch("/api/settings/session", { credentials: "include" });
+      return r.ok ? r.json() : { idleLogoutMinutes: 0 };
+    },
+  });
+  const [minutes, setMinutes] = useState<string>("");
+  useEffect(() => {
+    if (data) setMinutes(String(data.idleLogoutMinutes ?? 0));
+  }, [data]);
+
+  const save = useMutation({
+    mutationFn: async (value: number) => {
+      await apiRequest("PUT", "/api/settings/session", { idleLogoutMinutes: value });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/session"] });
+      toast({ title: "Auto-logout saved" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const parsed = Math.max(0, Math.min(1440, parseInt(minutes || "0", 10) || 0));
+  return (
+    <Card data-testid="card-auto-logout">
+      <CardHeader>
+        <CardTitle className="text-base">Auto sign-out when idle</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          Sign everyone out after this many minutes with no activity (a 60-second
+          "stay signed in?" warning shows first). <span className="font-medium">0 = off.</span>{" "}
+          Admins can turn it off for themselves on their Profile. The wall time-clock is unaffected.
+        </p>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="idle-minutes" className="text-sm">Minutes of inactivity</Label>
+          <Input
+            id="idle-minutes"
+            type="number"
+            min={0}
+            max={1440}
+            value={minutes}
+            onChange={(e) => setMinutes(e.target.value)}
+            className="w-24"
+            data-testid="input-idle-minutes"
+          />
+          <Button
+            size="sm"
+            onClick={() => save.mutate(parsed)}
+            disabled={save.isPending || String(parsed) === String(data?.idleLogoutMinutes ?? 0)}
+            data-testid="button-save-idle-minutes"
+          >
+            {save.isPending ? "Saving…" : "Save"}
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            {parsed === 0 ? "Auto-logout is off" : `Signs out after ${parsed} min idle`}
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function GeneralSection() {
-  return <CompaniesManager />;
+  return (
+    <div className="space-y-6">
+      <AutoLogoutCard />
+      <CompaniesManager />
+    </div>
+  );
 }
 
 const COMMON_TIMEZONES = [

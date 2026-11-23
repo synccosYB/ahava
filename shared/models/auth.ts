@@ -57,6 +57,11 @@ export const companies = pgTable("companies", {
   // company" pickers but still offered as a Paying Company. Default false so
   // existing companies keep appearing everywhere.
   payingCompanyOnly: boolean("paying_company_only").default(false).notNull(),
+  // Global idle auto-logout: sign a user out after this many minutes with no
+  // activity (a 60s "stay signed in?" warning fires first). 0 = disabled.
+  // Applies to everyone in the company except admins who opted out on their
+  // profile. Default 0 so deploying changes nothing until an admin turns it on.
+  idleLogoutMinutes: integer("idle_logout_minutes").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -170,6 +175,10 @@ export const users = pgTable("users", {
   lockedByUserId: varchar("locked_by_user_id"),
   lockedByRank: integer("locked_by_rank"),
   lockedAt: timestamp("locked_at"),
+  // Per-admin opt-out from the global idle auto-logout. Only admins may set it
+  // (via their own Profile); everyone else is always subject to the global
+  // timeout. Default false = subject to auto-logout.
+  idleLogoutExempt: boolean("idle_logout_exempt").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
