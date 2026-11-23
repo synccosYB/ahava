@@ -23,6 +23,9 @@ import type { User } from "@shared/schema";
 const WARNING_TYPE = "overtime_warning";
 
 const DEFAULT_LEAD_MINUTES = 15;
+// Assumed weekly OT threshold (hours) for an employee force-enrolled in the
+// warning (overtimeWarningEnabled = true) whose policy sets no weekly threshold.
+const DEFAULT_WEEKLY_OT_THRESHOLD = 40;
 
 /**
  * The warning lead margin, in minutes. Configured on the operational company
@@ -111,6 +114,13 @@ export async function runApproachingOvertimeWarnings(now: Date = new Date()): Pr
   const allUsers = await storage.getAllUsers();
   const owners = await ownerEmails(allUsers);
 
+  // Per-employee overtime-warning override, keyed by user id:
+  //   true  = always warn, false = never warn, null/undefined = follow policy.
+  const overrideByUser = new Map<string, boolean | null>();
+  for (const p of await storage.getAllEmploymentProfiles()) {
+    overrideByUser.set(p.userId, p.overtimeWarningEnabled ?? null);
+  }
+
   // Existing warnings this run, for weekly dedup (keyed on employee + weekStart).
   const existing = await storage.getAllSystemAlerts({ type: WARNING_TYPE });
   const alreadyWarned = new Set(
@@ -121,10 +131,22 @@ export async function runApproachingOvertimeWarnings(now: Date = new Date()): Pr
 
   for (const user of allUsers) {
     if (user.deactivatedAt) continue;
+
+    // Per-employee override wins over the policy: FALSE never warns; TRUE always
+    // warns (even when the policy doesn't auto-calc weekly OT — a 40h threshold is
+    // assumed when the policy sets none); NULL follows the policy as before.
+    const override = overrideByUser.get(user.id) ?? null;
+    if (override === false) continue;
+
     const policy = await resolvePayCalcPolicy(user);
-    if (!policy.autoCalculateOT || !policy.weeklyOvertimeEnabled) continue;
-    const threshold = policy.otThresholdWeekly;
-    if (!threshold || threshold <= 0) continue;
+    let threshold = policy.otThresholdWeekly;
+    if (override === true) {
+      if (!threshold || threshold <= 0) threshold = DEFAULT_WEEKLY_OT_THRESHOLD;
+    } else {
+      // Default behaviour: only employees whose policy auto-calculates weekly OT.
+      if (!policy.autoCalculateOT || !policy.weeklyOvertimeEnabled) continue;
+      if (!threshold || threshold <= 0) continue;
+    }
     const warnAt = threshold - lead;
     if (warnAt <= 0) continue;
 
