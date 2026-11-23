@@ -378,6 +378,13 @@ export const userEmploymentProfiles = pgTable("user_employment_profiles", {
   // forgotten punch no longer flips the direction of every punch after it. Turn
   // on only for people who reliably press In/Out at the clock.
   useDevicePunchDirection: boolean("use_device_punch_direction").default(false).notNull(),
+  // Per-employee geofence exemption. Default false. When true, this employee may
+  // clock in/out from their phone from ANYWHERE — the self-service geofence radius
+  // check no longer blocks them. Their GPS location is still recorded on each
+  // punch, and a punch taken outside the geofence is flagged "off-site" for the
+  // reviewer (a quiet badge, not a pending approval). For staff who legitimately
+  // work off-site / odd hours.
+  geofenceExempt: boolean("geofence_exempt").default(false).notNull(),
   // Whether this employee is REQUIRED to clock out and back in for lunch.
   // Default false. When true, the payroll ledger applies the lunch rules: a lunch
   // taken by clocking out and back within the hour is paid (up to 45 min); an
@@ -490,6 +497,14 @@ export const punchLogs = pgTable("punch_logs", {
   kioskDeviceId: varchar("kiosk_device_id"),
   punchLatitude: real("punch_latitude"),
   punchLongitude: real("punch_longitude"),
+  // Clock-OUT GPS (the clock-in coords are punchLatitude/punchLongitude above).
+  clockOutLatitude: real("clock_out_latitude"),
+  clockOutLongitude: real("clock_out_longitude"),
+  // "Off-site" markers: true when that punch's GPS was outside the employee's
+  // geofence radius (set for geofence-exempt / overridden punches). Drives the
+  // reviewer's off-site badge + map link; does not block anything.
+  clockInOffSite: boolean("clock_in_off_site").default(false).notNull(),
+  clockOutOffSite: boolean("clock_out_off_site").default(false).notNull(),
   approved: boolean("approved").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [

@@ -4485,12 +4485,19 @@ export async function registerRoutes(
       // wall fingerprint clock and on-site kiosk are physical proof of presence
       // and are exempt (they punch through their own paths / sources). A manager
       // or admin can override for a stuck employee by passing overrideGeofence.
+      // Per-employee geofence exemption: an exempt employee may clock in from
+      // anywhere (not distance-blocked), but their GPS is still recorded and an
+      // out-of-area punch is marked "off-site" (a quiet badge, no pending item).
+      const clockInProfile = await storage.getEmploymentProfile(userId);
+      const geofenceExempt = !!clockInProfile?.geofenceExempt;
       const physicalSource = source === "kiosk" || source === "biometric";
       const canOverrideGeofence =
         (user.role === "manager" || user.role === "admin") && req.body?.overrideGeofence === true;
-      if (!physicalSource && !canOverrideGeofence) {
+      let clockInOffSite = false;
+      if (!physicalSource) {
         const geoEval = await evaluateClockInGeofence(userId, punchLatitude, punchLongitude);
-        if (geoEval.required && !geoEval.withinRadius) {
+        const outside = geoEval.required && !geoEval.withinRadius;
+        if (outside && !canOverrideGeofence && !geofenceExempt) {
           await recordGeofenceBlockedAttempt({
             userId,
             workDate: now.toISOString().split("T")[0],
@@ -4506,6 +4513,7 @@ export async function registerRoutes(
             nearestDistanceMeters: geoEval.nearestDistanceMeters,
           });
         }
+        clockInOffSite = outside;
       }
 
       // File the punch under the location-local day (not the UTC date) so an
@@ -4514,20 +4522,23 @@ export async function registerRoutes(
       const record = await storage.clockIn(userId, source, enforcement.roundedTime, {
         punchLatitude,
         punchLongitude,
+        clockInOffSite,
         workDate: localWorkDate(now, clockInTz),
       });
 
-      // Geofencing never blocks the punch; it only raises a manager-facing
-      // exception when the clock-in is outside the allowed radius (or required
-      // but the device shared no location).
-      await flagClockInGeofence({
-        userId,
-        punchLogId: record.id,
-        workDate: record.workDate,
-        punchTime: record.clockIn ?? now,
-        punchLatitude,
-        punchLongitude,
-      });
+      // For an EXEMPT employee the off-site punch carries only the quiet badge set
+      // above. For everyone else, keep the manager-facing geofence exception (it
+      // fires for an out-of-area punch that got through via a manager override).
+      if (!geofenceExempt) {
+        await flagClockInGeofence({
+          userId,
+          punchLogId: record.id,
+          workDate: record.workDate,
+          punchTime: record.clockIn ?? now,
+          punchLatitude,
+          punchLongitude,
+        });
+      }
 
       if (enforcement.alerts.length > 0) {
         await createPolicyAlerts(enforcement.alerts);
@@ -4620,6 +4631,16 @@ export async function registerRoutes(
         return res.status(400).json({ message: integrity.reason });
       }
 
+      // Record WHERE the clock-out happened and flag it "off-site" when outside
+      // the geofence. Clock-out never blocks (only clock-in does); this is purely
+      // the location record + badge. Physical clocks are always on-site.
+      const { latitude: outLat, longitude: outLng } = parsePunchCoords(req.body);
+      let clockOutOffSite = false;
+      if (source !== "kiosk" && source !== "biometric") {
+        const outEval = await evaluateClockInGeofence(userId, outLat, outLng);
+        clockOutOffSite = outEval.required && !outEval.withinRadius;
+      }
+
       const record = await storage.closeOpenPunch(current.id, {
         clockOut: now,
         roundedClockOut: enforcement.roundedTime,
@@ -4629,6 +4650,9 @@ export async function registerRoutes(
         // clocking out mid-break never leaves an orphaned open break.
         breakMinutes,
         breakStartedAt: null,
+        ...(outLat != null ? { clockOutLatitude: outLat } : {}),
+        ...(outLng != null ? { clockOutLongitude: outLng } : {}),
+        ...(clockOutOffSite ? { clockOutOffSite: true } : {}),
       });
 
       // closeOpenPunch only updates a punch that is still open, so a second
@@ -5010,6 +5034,13 @@ export async function registerRoutes(
           source: p.source,
           locationNames: empLocNames,
           timezone: tzByEmployee.get(p.employeeId) ?? null,
+          // Geofence: where the punch happened + whether it was outside the radius.
+          offSiteIn: p.clockInOffSite ?? false,
+          offSiteOut: p.clockOutOffSite ?? false,
+          latIn: p.punchLatitude ?? null,
+          lngIn: p.punchLongitude ?? null,
+          latOut: p.clockOutLatitude ?? null,
+          lngOut: p.clockOutLongitude ?? null,
         };
       });
 

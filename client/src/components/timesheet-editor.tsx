@@ -36,7 +36,38 @@ type Punch = {
   source: string | null;
   locationNames: string[];
   timezone?: string | null;
+  // Geofence: whether each punch was outside the radius, and where it happened.
+  offSiteIn?: boolean;
+  offSiteOut?: boolean;
+  latIn?: number | null;
+  lngIn?: number | null;
+  latOut?: number | null;
+  lngOut?: number | null;
 };
+
+// A small "Off-site" badge with a Google Maps link to where the punch happened.
+function OffSiteBadge({ lat, lng }: { lat?: number | null; lng?: number | null }) {
+  const hasCoords = typeof lat === "number" && typeof lng === "number";
+  return (
+    <span className="inline-flex items-center gap-1 ml-1 align-middle" data-testid="badge-off-site">
+      <Badge variant="outline" className="border-amber-400 text-amber-700 dark:text-amber-300 text-[10px] px-1 py-0">
+        Off-site
+      </Badge>
+      {hasCoords && (
+        <a
+          href={`https://www.google.com/maps?q=${lat},${lng}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[10px] text-blue-600 dark:text-blue-400 underline"
+          title={`Clocked at ${lat}, ${lng}`}
+          data-testid="link-off-site-map"
+        >
+          map
+        </a>
+      )}
+    </span>
+  );
+}
 
 // A punch entered by hand (admin/manager, or loaded by the punch importer)
 // rather than coming from the time clock ("biometric"/"kiosk"). Shown with a
@@ -442,7 +473,10 @@ export function TimesheetEditor({
                     {(p.status === "missing_clockin" || (!!p.clockOut && !p.clockIn)) ? (
                       <span className="text-destructive font-medium">Missing</span>
                     ) : (
-                      <ClockTimeCell iso={p.clockIn} timezone={p.timezone} mark={marks[p.id]?.clockIn} />
+                      <span className="inline-flex items-center">
+                        <ClockTimeCell iso={p.clockIn} timezone={p.timezone} mark={marks[p.id]?.clockIn} />
+                        {p.offSiteIn && <OffSiteBadge lat={p.latIn} lng={p.lngIn} />}
+                      </span>
                     )}
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">
@@ -453,6 +487,7 @@ export function TimesheetEditor({
                     ) : (
                       <span className="inline-flex items-center gap-1">
                         <ClockTimeCell iso={p.clockOut} timezone={p.timezone} mark={marks[p.id]?.clockOut} />
+                        {p.offSiteOut && <OffSiteBadge lat={p.latOut} lng={p.lngOut} />}
                         {p.status === "pending_approval" && (
                           <span className="text-[10px] text-amber-600 dark:text-amber-400" title="Long shift (13–16h) awaiting approval">⏳ pending</span>
                         )}
