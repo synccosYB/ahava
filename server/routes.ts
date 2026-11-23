@@ -1289,6 +1289,8 @@ export async function registerRoutes(
     lastName: z.string().trim().min(1).optional(),
     email: optionalUserEmail,
     phone: optionalUserPhone,
+    // Per-admin opt-out from the global idle auto-logout.
+    idleLogoutExempt: z.boolean().optional(),
   });
 
   const bulkAssignDivisionSchema = z.object({
@@ -1698,6 +1700,7 @@ export async function registerRoutes(
     if (parsed.data.lastName !== undefined) identityPatch.lastName = parsed.data.lastName;
     if (parsed.data.email !== undefined) identityPatch.email = parsed.data.email;
     if (parsed.data.phone !== undefined) identityPatch.phone = parsed.data.phone;
+    if (parsed.data.idleLogoutExempt !== undefined) identityPatch.idleLogoutExempt = parsed.data.idleLogoutExempt;
 
     const updated = await storage.updateUser(String(req.params.id), {
       companyId: next.companyId,
@@ -2705,6 +2708,26 @@ export async function registerRoutes(
     if (tzError) return res.status(400).json(tzError);
     const company = await storage.createCompany(parsed.data);
     res.status(201).json(company);
+  });
+
+  // Session settings every signed-in client needs (idle auto-logout). The global
+  // timeout lives on the operational company; the per-user opt-out comes from the
+  // user record (served on /api/auth/user).
+  app.get("/api/settings/session", requireAuth, async (_req, res) => {
+    const op = await storage.getOperationalCompany();
+    res.json({ idleLogoutMinutes: op?.idleLogoutMinutes ?? 0 });
+  });
+
+  // Admin sets the global idle auto-logout (minutes; 0 = off) on the operational
+  // company, without needing to know its id.
+  app.put("/api/settings/session", requireAuth, requirePermission("company.edit"), async (req, res) => {
+    const schema = z.object({ idleLogoutMinutes: z.number().int().min(0).max(1440) });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return badRequestFromZod(res, parsed, "Invalid session settings");
+    const op = await storage.getOperationalCompany();
+    if (!op) return res.status(404).json({ message: "No operational company configured" });
+    await storage.updateCompany(op.id, { idleLogoutMinutes: parsed.data.idleLogoutMinutes });
+    res.json({ idleLogoutMinutes: parsed.data.idleLogoutMinutes });
   });
 
   app.patch("/api/companies/:id", requireAuth, requirePermission("company.edit"), async (req, res) => {

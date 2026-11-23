@@ -43,6 +43,7 @@ import ReconciliationPage from "@/pages/reconciliation";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
 import { ActiveCompanyProvider } from "@/hooks/use-active-company";
+import { IdleLogout } from "@/components/idle-logout";
 
 function AuthenticatedRouter() {
   return (
@@ -201,6 +202,9 @@ function AppContent() {
 
   return (
     <ActiveCompanyProvider>
+      {/* Idle auto-logout for the authenticated app shell only (the kiosk route
+          lives outside AppContent, so it is never affected). */}
+      <IdleLogout />
       <AuthenticatedRouter />
     </ActiveCompanyProvider>
   );

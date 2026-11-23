@@ -15,8 +15,10 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/page-header";
-import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Timer, CheckCircle2, Circle, Sparkles } from "lucide-react";
+import { AlertCircle, Building2, MapPin, Layers, Briefcase, CalendarDays, Clock, Timer, CheckCircle2, Circle, Sparkles, LogOut } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -429,6 +431,63 @@ function MyOnboardingCard() {
   );
 }
 
+function AutoLogoutExemptCard() {
+  const { user } = useAuth();
+  const { toast } = useToast();
+
+  const mutation = useMutation({
+    mutationFn: async (next: boolean) =>
+      apiRequest("PATCH", `/api/users/${user!.id}`, { idleLogoutExempt: next }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      toast({ title: "Saved", description: "Your auto-logout preference was updated." });
+    },
+    onError: (e: unknown) =>
+      toast({
+        title: "Failed to update preference",
+        description: e instanceof Error ? e.message : "Unknown error",
+        variant: "destructive",
+      }),
+  });
+
+  // Only admins may opt themselves out of the idle auto-logout.
+  if (!user || user.role !== "admin") return null;
+
+  const exempt = !!(user as unknown as { idleLogoutExempt?: boolean }).idleLogoutExempt;
+
+  return (
+    <Card data-testid="card-auto-logout-exempt">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <LogOut className="h-4 w-4 text-muted-foreground" />
+          Auto-Logout
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-0.5">
+            <Label htmlFor="idle-logout-exempt" className="text-sm font-medium">
+              Keep me signed in (disable auto-logout)
+            </Label>
+            <p className="text-xs text-muted-foreground max-w-prose">
+              When on, the company's inactivity timeout won't sign you out. This
+              applies to your account only; everyone else still follows the
+              company auto-logout setting.
+            </p>
+          </div>
+          <Switch
+            id="idle-logout-exempt"
+            checked={exempt}
+            disabled={mutation.isPending}
+            onCheckedChange={(next) => mutation.mutate(next)}
+            data-testid="switch-idle-logout-exempt"
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ProfilePage() {
   const { user } = useAuth();
   const [location] = useLocation();
@@ -566,6 +625,8 @@ export default function ProfilePage() {
       </Card>
 
       <BiometricLoginCard />
+
+      <AutoLogoutExemptCard />
 
       <PtoAnniversaryHistoryCard userId={user?.id ?? null} />
 

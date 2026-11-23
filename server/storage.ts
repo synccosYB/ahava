@@ -2736,7 +2736,16 @@ export class DatabaseStorage implements IStorage {
   // payees, never operational). Falls back to the first active company, then any
   // company, so a rename can't orphan new hires.
   async getOperationalCompany(): Promise<Company | undefined> {
-    const all = await db.select().from(companies);
+    // Order by creation (then id) so resolution is STABLE: the same company wins
+    // on every call, even across an UPDATE that shifts physical row order. Without
+    // this, a read and a write of the operational company (e.g. the global idle
+    // auto-logout setting) could resolve to different rows when more than one
+    // candidate exists. In production there's a single "Ahava Medical" company,
+    // so the oldest-first tiebreaker only matters defensively.
+    const all = await db
+      .select()
+      .from(companies)
+      .orderBy(asc(companies.createdAt), asc(companies.id));
     return (
       all.find((c) => /ahava\s*medical/i.test(c.name || "")) ??
       all.find((c) => c.isActive) ??
