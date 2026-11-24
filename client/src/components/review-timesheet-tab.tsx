@@ -166,6 +166,7 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
           endDate={displayed.end}
           showExport
           showEmployeeName
+          editable
           navSlot={periodNav}
           exportFileName={`timesheet-${displayed.start}-to-${displayed.end}`}
         />
