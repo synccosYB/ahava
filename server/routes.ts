@@ -19,6 +19,7 @@ import { loadPolicyResolutionContext, getEffectivePolicy, getApplicablePolicies,
 import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeWeeklyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
+import { buildPayrollReport } from "./services/payrollReport";
 import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, summarizeLedger, recomputeLedger } from "./attendanceLedger";
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
@@ -11798,6 +11799,109 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error exporting payroll CSV:", error);
       handleRouteError(res, error, "Failed to export payroll CSV");
+    }
+  });
+
+  // Read-only payroll report (JSON) for on-screen viewing — the same per-employee
+  // data the CSVs are built from, so "View report" / "View detailed report" match
+  // the exported files exactly. No side effects (does NOT mark the batch exported).
+  app.get("/api/payroll/exports/:id/report", requireAuth, requirePermission("payroll.view_all"), async (req: any, res) => {
+    try {
+      const exp = await storage.getPayrollExport(String(req.params.id));
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+      const report = await buildPayrollReport(String(req.params.id), { includeSuperAdmin: isSuperAdmin(req) });
+      if (!report) return res.status(404).json({ message: "Payroll export not found" });
+      res.json({
+        startDate: exp.startDate,
+        endDate: exp.endDate,
+        employees: report.employees,
+      });
+    } catch (error) {
+      console.error("Error building payroll report:", error);
+      handleRouteError(res, error, "Failed to build payroll report");
+    }
+  });
+
+  // Summary CSV: one line PER EMPLOYEE (totals only — no daily breakdown). Same
+  // columns the user reviews on the Paid Totals row. Marks the batch exported and
+  // writes the same audit/ledger trail as the detailed export, so either export is
+  // a first-class payroll handoff.
+  app.post("/api/payroll/exports/:id/export-csv-summary", requireAuth, requirePermission("payroll.export"), async (req: any, res) => {
+    try {
+      const exp = await storage.getPayrollExport(String(req.params.id));
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+      if (exp.status === "locked") {
+        return res.status(400).json({ message: "Cannot export a locked payroll batch. Reopen it first." });
+      }
+
+      const report = await buildPayrollReport(String(req.params.id), { includeSuperAdmin: isSuperAdmin(req) });
+      if (!report) return res.status(404).json({ message: "Payroll export not found" });
+
+      const escapeCSV = (val: string): string => `"${val.replace(/"/g, '""')}"`;
+      const formatAmountCurrency = (val: number): string => {
+        const parts = val.toFixed(2).split(".");
+        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        return `"$${parts.join(".")}"`;
+      };
+      const formatHoursVal = (val: number): string => val.toFixed(2);
+      const formatDateHeader = (dateStr: string): string => {
+        const [y, m, d] = dateStr.split("-").map((p) => parseInt(p, 10));
+        const dt = new Date(Date.UTC(y, m - 1, d));
+        const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        return `${days[dt.getUTCDay()]}, ${String(m).padStart(2, "0")}/${String(d).padStart(2, "0")}/${y}`;
+      };
+
+      let csv = `Pay Period: ${formatDateHeader(exp.startDate)} - ${formatDateHeader(exp.endDate)}\n`;
+      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Amount,Pay Type,Department,Paid Hours,Bonus Amount\n";
+      for (const e of report.employees) {
+        const bonusCell = e.totalBonusAmount > 0 ? formatAmountCurrency(e.totalBonusAmount) : "";
+        csv += `${escapeCSV(e.employeeName)},${escapeCSV(e.taxClassification)},${escapeCSV(e.payrollCompany)},${escapeCSV(e.payee)},${escapeCSV(e.payeeMemo)},${formatAmountCurrency(e.totalAmount)},${escapeCSV(e.payType)},${escapeCSV(e.department)},${formatHoursVal(e.totalPaidHours)},${bonusCell}\n`;
+      }
+
+      const overlapping = await storage.getOverlappingPayrollExports(exp.startDate, exp.endDate, exp.companyId || undefined);
+      const previousExports = overlapping.filter((o) => o.id !== exp.id);
+      if (previousExports.length > 0) {
+        res.setHeader("X-Payroll-Overlap-Warning", `Warning: Re-exporting data that overlaps with ${previousExports.length} previous export(s)`);
+      }
+
+      const adminUser = req.authUser as User;
+      await storage.updatePayrollExport(exp.id, { status: "exported", exportedAt: new Date(), exportedBy: adminUser.id });
+
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "payroll_export",
+        targetId: exp.id,
+        action: "payroll_export.exported",
+        newValue: { status: "exported", employeeCount: report.employees.length, format: "summary" },
+        ...auditCtx,
+      });
+
+      const ledgerCtx = getLedgerContext(req);
+      await Promise.all(
+        report.employees.map((e) =>
+          writeLedgerEntry({
+            category: "payroll",
+            eventType: "payroll_exported",
+            employeeId: e.employeeId,
+            actorUserId: adminUser.id,
+            entityType: "payroll_export",
+            entityId: exp.id,
+            beforeValue: null,
+            afterValue: { status: "exported" },
+            context: { startDate: exp.startDate, endDate: exp.endDate, format: "summary" },
+            source: "admin",
+            ...ledgerCtx,
+          }),
+        ),
+      );
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename="payroll_summary_${exp.startDate}_to_${exp.endDate}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error("Error exporting payroll summary CSV:", error);
+      handleRouteError(res, error, "Failed to export payroll summary CSV");
     }
   });
 
