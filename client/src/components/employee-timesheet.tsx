@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,12 +16,27 @@ import { formatHoursMinutes, formatDate, formatTime12InTz } from "@/lib/utils";
 
 export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "confirmation" | "none";
 
+// One worked shift within a day. A day with a lunch gap longer than an hour is
+// shown as two (or more) of these — a separate line per shift, same date.
+export type TimesheetSegment = {
+  clockIn: string | null;
+  clockOut: string | null;
+  breakMinutes: number;
+  hours: number;
+  clockInPunchId: string | null;
+  clockOutPunchId: string | null;
+};
+
 export type TimesheetEntry = {
   date: string;
   dayOfWeek: string;
   clockIn: string | null;
   clockOut: string | null;
   breakMinutes: number;
+  // Per-shift breakdown. Present when the day has completed punches; the table
+  // shows a line per shift when there is more than one (a >1h lunch splits the
+  // day). Absent/one → the single day row is shown.
+  segments?: TimesheetSegment[];
   totalHours: number | null;
   // Worked hours for REFERENCE (attendance-only employees paid per day): shown
   // muted, not counted toward pay. null when totalHours is the pay basis.
@@ -353,41 +368,78 @@ export function EmployeeTimesheetTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.entries.map((e) => (
-              <TableRow key={e.date} data-testid={`row-timesheet-${e.date}`}>
-                <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
-                <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
-                  {e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "—"}
-                </TableCell>
-                <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
-                  {e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "—"}
-                </TableCell>
-                <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
-                <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>
-                  {e.totalHours != null ? (
-                    formatHoursMinutes(e.totalHours)
-                  ) : e.referenceHours != null ? (
-                    <span className="font-normal text-muted-foreground" title="For reference — paid per day, not per hour">
-                      ({formatHoursMinutes(e.referenceHours)})
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </TableCell>
-                <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-ot-${e.date}`}>
-                  {e.overtimeHours > 0 ? (
-                    <span className="text-amber-600 font-semibold">{formatHoursMinutes(e.overtimeHours)}</span>
-                  ) : "—"}
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground" data-testid={`text-timesheet-source-${e.date}`}>
-                  {formatSources(e.sources)}
-                </TableCell>
-                <TableCell data-testid={`badge-timesheet-status-${e.date}`}>
-                  <TimesheetStatusBadge entry={e} />
-                </TableCell>
-              </TableRow>
-            ))}
+            {data.entries.map((e) => {
+              const isRefDay = e.totalHours == null && e.referenceHours != null;
+              const hoursCell = (hours: number | null) =>
+                hours == null ? "—"
+                : isRefDay ? (
+                  <span className="font-normal text-muted-foreground" title="For reference — paid per day, not per hour">
+                    ({formatHoursMinutes(hours)})
+                  </span>
+                ) : formatHoursMinutes(hours);
+              // A day where the person clocked out and back in with a gap over an
+              // hour is shown as one line per shift (same date). A shorter lunch
+              // stays a single row with the break. The day's overtime, source and
+              // status sit on the first shift line; the totals are unchanged.
+              const shifts = e.segments && e.segments.length > 1 ? e.segments : null;
+              if (!shifts) {
+                return (
+                  <TableRow key={e.date} data-testid={`row-timesheet-${e.date}`}>
+                    <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
+                    <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
+                      {e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "—"}
+                    </TableCell>
+                    <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
+                      {e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "—"}
+                    </TableCell>
+                    <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
+                    <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>
+                      {hoursCell(e.totalHours ?? e.referenceHours ?? null)}
+                    </TableCell>
+                    <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-ot-${e.date}`}>
+                      {e.overtimeHours > 0 ? (
+                        <span className="text-amber-600 font-semibold">{formatHoursMinutes(e.overtimeHours)}</span>
+                      ) : "—"}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground" data-testid={`text-timesheet-source-${e.date}`}>
+                      {formatSources(e.sources)}
+                    </TableCell>
+                    <TableCell data-testid={`badge-timesheet-status-${e.date}`}>
+                      <TimesheetStatusBadge entry={e} />
+                    </TableCell>
+                  </TableRow>
+                );
+              }
+              return (
+                <Fragment key={e.date}>
+                  {shifts.map((seg, i) => (
+                    <TableRow key={`${e.date}-shift-${i}`} data-testid={`row-timesheet-${e.date}-shift-${i}`}>
+                      <TableCell className="text-sm font-medium">
+                        {formatDate(e.date)}
+                        {i > 0 && <span className="ml-1 text-[10px] uppercase tracking-wide text-muted-foreground">shift {i + 1}</span>}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{i === 0 ? e.dayOfWeek : ""}</TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        {seg.clockIn ? formatTime12InTz(seg.clockIn, data.timezone) : "—"}
+                      </TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        {seg.clockOut ? formatTime12InTz(seg.clockOut, data.timezone) : "—"}
+                      </TableCell>
+                      <TableCell className="text-sm tabular-nums">{seg.breakMinutes ? `${seg.breakMinutes} min` : "—"}</TableCell>
+                      <TableCell className="text-sm font-semibold tabular-nums">{hoursCell(seg.hours)}</TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        {i === 0 && e.overtimeHours > 0 ? (
+                          <span className="text-amber-600 font-semibold">{formatHoursMinutes(e.overtimeHours)}</span>
+                        ) : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{i === 0 ? formatSources(e.sources) : ""}</TableCell>
+                      <TableCell>{i === 0 ? <TimesheetStatusBadge entry={e} /> : null}</TableCell>
+                    </TableRow>
+                  ))}
+                </Fragment>
+              );
+            })}
             <TableRow className="bg-muted/40 font-semibold" data-testid="row-timesheet-totals">
               <TableCell colSpan={5} className="text-right text-sm uppercase tracking-wider">Totals</TableCell>
               <TableCell className="text-sm tabular-nums" data-testid="text-timesheet-total-hours">
