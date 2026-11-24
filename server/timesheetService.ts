@@ -17,6 +17,9 @@ export type TimesheetStatus =
   // daily "present" marker, hours are not counted, and a day with any punch is
   // never a missing/open punch. Rendered as "Attendance captured".
   | "confirmation"
+  // A single day whose build threw — surfaced as a flagged row so one bad
+  // legacy record can never blank the whole timesheet (the server logs which).
+  | "error"
   | "none";
 
 // One worked shift within a day. A day where the employee clocked out and back
@@ -231,6 +234,7 @@ export async function buildEmployeeTimesheet(
   for (let cursor = new Date(start); cursor <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
     const dateStr = cursor.toISOString().split("T")[0];
     const dayOfWeek = DAY_NAMES[cursor.getUTCDay()];
+    try {
     const datePunches = punchesByDate.get(dateStr) || [];
     const ptoForDay = approvedTimeOff.filter((r) => {
       const effectiveEnd = r.status === "partially_approved" && r.approvedEndDate ? r.approvedEndDate : r.endDate;
@@ -439,6 +443,31 @@ export async function buildEmployeeTimesheet(
         referenceHours: null,
         overtimeHours: 0,
         status: "none",
+        ptoType: null,
+        bonusAmount: 0,
+        sources: [],
+      });
+    }
+    } catch (dayErr) {
+      // One malformed day must NEVER blank the whole timesheet. Log it with the
+      // employee + date + punch ids (so the bad record can be found and cleaned
+      // up), then surface that single day as a flagged "error" row and carry on.
+      const dayPunchIds = (punchesByDate.get(dateStr) || []).map((p) => p.id);
+      console.error(
+        `[timesheet] failed to build day ${dateStr} for employee ${employee.id} ` +
+        `(punch ids: ${dayPunchIds.join(", ") || "none"}):`,
+        dayErr,
+      );
+      entries.push({
+        date: dateStr,
+        dayOfWeek,
+        clockIn: null,
+        clockOut: null,
+        breakMinutes: 0,
+        totalHours: null,
+        referenceHours: null,
+        overtimeHours: 0,
+        status: "error",
         ptoType: null,
         bonusAmount: 0,
         sources: [],

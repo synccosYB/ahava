@@ -52,7 +52,7 @@ type RawPunch = {
   source: string | null;
 };
 
-export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "confirmation" | "none";
+export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "confirmation" | "error" | "none";
 
 // One worked shift within a day. A day with a lunch gap longer than an hour is
 // shown as two (or more) of these — a separate line per shift, same date.
@@ -826,6 +826,7 @@ function timesheetStatusLabel(e: TimesheetEntry): string {
     case "missing_punch": return "Missing Punch";
     case "confirmation": return "Attendance captured";
     case "pto": return e.ptoType ? `PTO (${e.ptoType.replace(/_/g, " ")})` : "PTO";
+    case "error": return "Couldn't load — needs review";
     default: return "—";
   }
 }
@@ -845,6 +846,8 @@ function TimesheetStatusBadge({ entry }: { entry: TimesheetEntry }) {
       return <Badge variant="outline" className="border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{label}</Badge>;
     case "pto":
       return <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-950/40 dark:text-blue-300">{label}</Badge>;
+    case "error":
+      return <Badge variant="destructive" className="gap-1"><AlertCircle className="h-3 w-3" />{label}</Badge>;
     default:
       return <span className="text-xs text-muted-foreground">—</span>;
   }
