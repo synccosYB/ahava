@@ -23,6 +23,9 @@ import { DollarSign, Plus, Download, Lock, AlertTriangle, Loader2, FileText, Che
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { usePermissions } from "@/hooks/use-permissions";
 import { currentPayrollPeriod, shiftBiweekly, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
 import type { PayrollExport, PayrollBatchRecord } from "@shared/schema";
@@ -37,6 +40,24 @@ type EnrichedPayrollExport = PayrollExport & {
 };
 
 type EnrichedBatchRecord = PayrollBatchRecord & { employeeName: string };
+
+type ReportFormat = "detailed" | "summary";
+
+// One employee's rolled-up totals (the summary "report" = one line per employee).
+type SummaryEmployee = {
+  employeeId: string;
+  employeeName: string;
+  taxClassification: string;
+  payrollCompany: string;
+  payee: string;
+  payeeMemo: string;
+  department: string;
+  payType: string;
+  totalAmount: number;
+  totalPaidHours: number;
+  totalBonusAmount: number;
+};
+type SummaryReport = { startDate: string; endDate: string; employees: SummaryEmployee[] };
 
 type DriftFieldChange = {
   field: string;
@@ -68,9 +89,10 @@ type PayrollDriftResult = {
 export default function PayrollPrepPage() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [reExportWarning, setReExportWarning] = useState<string | null>(null);
+  const [reExportWarning, setReExportWarning] = useState<{ id: string; format: ReportFormat } | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [detailBatchId, setDetailBatchId] = useState<string | null>(null);
+  const [summaryBatchId, setSummaryBatchId] = useState<string | null>(null);
   const [driftResults, setDriftResults] = useState<Record<string, PayrollDriftResult>>({});
   const [checkingDriftId, setCheckingDriftId] = useState<string | null>(null);
   const [autoCheckingIds, setAutoCheckingIds] = useState<Set<string>>(new Set());
@@ -91,7 +113,13 @@ export default function PayrollPrepPage() {
     enabled: !!detailBatchId,
   });
 
+  const { data: summaryReport, isLoading: isSummaryLoading } = useQuery<SummaryReport>({
+    queryKey: ["/api/payroll/exports", summaryBatchId, "report"],
+    enabled: !!summaryBatchId,
+  });
+
   const detailBatch = detailBatchId ? batches.find((b) => b.id === detailBatchId) : null;
+  const summaryBatch = summaryBatchId ? batches.find((b) => b.id === summaryBatchId) : null;
 
   const sortedDetailRecords = [...detailRecords].sort((a, b) => {
     const nameCmp = a.employeeName.localeCompare(b.employeeName);
@@ -251,33 +279,35 @@ export default function PayrollPrepPage() {
     });
   };
 
-  const exportBatch = (id: string) => {
+  const exportBatch = (id: string, format: ReportFormat) => {
     const batch = batches.find((b) => b.id === id);
     if (batch?.status === "exported") {
-      setReExportWarning(id);
+      setReExportWarning({ id, format });
       return;
     }
-    doExport(id);
+    doExport(id, format);
   };
 
-  const doExport = async (id: string) => {
+  const doExport = async (id: string, format: ReportFormat) => {
     setReExportWarning(null);
     setExportingId(id);
     const batch = batches.find((b) => b.id === id);
+    const endpoint = format === "summary" ? "export-csv-summary" : "export-csv";
+    const fileTag = format === "summary" ? "summary_" : "";
 
     try {
-      const response = await apiRequest("POST", `/api/payroll/exports/${id}/export-csv`);
+      const response = await apiRequest("POST", `/api/payroll/exports/${id}/${endpoint}`);
       const csvText = await response.text();
       const blob = new Blob([csvText], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `payroll_${batch?.startDate}_to_${batch?.endDate}.csv`;
+      a.download = `payroll_${fileTag}${batch?.startDate}_to_${batch?.endDate}.csv`;
       a.click();
       URL.revokeObjectURL(url);
 
       queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
-      toast({ title: "Payroll data exported" });
+      toast({ title: format === "summary" ? "Summary report exported" : "Detailed report exported" });
     } catch {
       toast({ title: "Export failed", description: "Unable to generate payroll CSV. Please try again.", variant: "destructive" });
     } finally {
@@ -454,14 +484,38 @@ export default function PayrollPrepPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-1">
-                        <Button variant="outline" size="sm" onClick={() => setDetailBatchId(batch.id)} data-testid={`button-view-${batch.id}`}>
-                          <Eye className="h-3 w-3 mr-1" /> View
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm" data-testid={`button-view-${batch.id}`}>
+                              <Eye className="h-3 w-3 mr-1" /> View <ChevronDown className="h-3 w-3 ml-1" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setSummaryBatchId(batch.id)} data-testid={`menu-view-report-${batch.id}`}>
+                              Report <span className="ml-1 text-xs text-muted-foreground">(totals)</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setDetailBatchId(batch.id)} data-testid={`menu-view-detailed-${batch.id}`}>
+                              Detailed report <span className="ml-1 text-xs text-muted-foreground">(daily)</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                         {batch.status !== "locked" && (
-                          <Button variant="outline" size="sm" onClick={() => exportBatch(batch.id)} disabled={exportingId === batch.id} data-testid={`button-export-${batch.id}`}>
-                            {exportingId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
-                            Export
-                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="outline" size="sm" disabled={exportingId === batch.id} data-testid={`button-export-${batch.id}`}>
+                                {exportingId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Download className="h-3 w-3 mr-1" />}
+                                Export <ChevronDown className="h-3 w-3 ml-1" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => exportBatch(batch.id, "summary")} data-testid={`menu-export-report-${batch.id}`}>
+                                Report <span className="ml-1 text-xs text-muted-foreground">(totals)</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => exportBatch(batch.id, "detailed")} data-testid={`menu-export-detailed-${batch.id}`}>
+                                Detailed report <span className="ml-1 text-xs text-muted-foreground">(daily)</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         )}
                         {batch.status === "draft" && (
                           <Button variant="outline" size="sm" onClick={() => setDeleteBatch(batch)} data-testid={`button-rebuild-${batch.id}`}>
@@ -616,6 +670,75 @@ export default function PayrollPrepPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={!!summaryBatchId} onOpenChange={(open) => !open && setSummaryBatchId(null)}>
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto" data-testid="dialog-batch-summary">
+          <DialogHeader>
+            <DialogTitle>
+              Payroll Report{summaryBatch ? `: ${formatDateRange(summaryBatch.startDate, summaryBatch.endDate)}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              One line per employee — totals only, no daily breakdown.
+            </DialogDescription>
+          </DialogHeader>
+          {isSummaryLoading ? (
+            <div className="space-y-2 py-4">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          ) : !summaryReport || summaryReport.employees.length === 0 ? (
+            <EmptyState icon={FileText} title="No records in this batch" />
+          ) : (
+            <div className="overflow-x-auto">
+              <Table data-testid="table-batch-summary">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Employee Name</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Tax Classification</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Payroll Company</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Payee</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Memo</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Pay Type</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Paid Hours</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Bonus</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Amount</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {summaryReport.employees.map((e) => (
+                    <TableRow key={e.employeeId} data-testid={`row-summary-${e.employeeId}`}>
+                      <TableCell className="font-medium">{e.employeeName}</TableCell>
+                      <TableCell>{e.taxClassification}</TableCell>
+                      <TableCell>{e.payrollCompany || "—"}</TableCell>
+                      <TableCell>{e.payee || "—"}</TableCell>
+                      <TableCell className="max-w-[160px] truncate" title={e.payeeMemo}>{e.payeeMemo || "—"}</TableCell>
+                      <TableCell>{e.payType || "—"}</TableCell>
+                      <TableCell>{e.department || "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums">{e.totalPaidHours.toFixed(2)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{e.totalBonusAmount > 0 ? formatCurrency(e.totalBonusAmount) : "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-medium">{formatCurrency(e.totalAmount)}</TableCell>
+                    </TableRow>
+                  ))}
+                  <TableRow className="border-t-2 font-semibold">
+                    <TableCell colSpan={7}>Totals — {summaryReport.employees.length} employee{summaryReport.employees.length === 1 ? "" : "s"}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {summaryReport.employees.reduce((s, e) => s + e.totalPaidHours, 0).toFixed(2)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(summaryReport.employees.reduce((s, e) => s + e.totalBonusAmount, 0))}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(summaryReport.employees.reduce((s, e) => s + e.totalAmount, 0))}
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!driftReviewId} onOpenChange={(open) => !open && setDriftReviewId(null)}>
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto" data-testid="dialog-drift-review">
           <DialogHeader>
@@ -740,7 +863,7 @@ export default function PayrollPrepPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel data-testid="button-cancel-reexport">Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => reExportWarning && doExport(reExportWarning)} data-testid="button-confirm-reexport">
+            <AlertDialogAction onClick={() => reExportWarning && doExport(reExportWarning.id, reExportWarning.format)} data-testid="button-confirm-reexport">
               Re-Export
             </AlertDialogAction>
           </AlertDialogFooter>
