@@ -46,8 +46,8 @@ import {
   type PayCalcPolicy,
 } from "./payrollEngine";
 import { getEffectivePolicy, DEFAULT_ATTENDANCE_RULES, loadPolicyResolutionContext, type PolicyResolutionContext } from "./policyEngine";
-import { MISSING_CLOCKOUT_STATUS, openPunchExceedsMaxShift } from "./punchHours";
-import { computeLunchAdjustedHours, type LunchDayPunch } from "./services/lunchBreak";
+import { MISSING_CLOCKOUT_STATUS } from "./punchHours";
+import { workedDayHours } from "./workedHours";
 
 /**
  * The in-memory shape of a computed ledger day (before persistence). Mirrors the
@@ -78,27 +78,6 @@ export interface LedgerTotals {
   overtimeCombined: number;
   ptoHours: number;
   daysWorked: number;
-}
-
-/**
- * Canonical per-punch worked hours — IDENTICAL to timesheetService.punchWorkedHours
- * and the SQL in storage.getDailyHoursByDateRange: prefer the persisted,
- * break-deducted `hours_worked`; for a still-open punch fall back to a live,
- * break-deducted compute from the rounded clock-in. Keeping this rule in one
- * shape across every surface is what stops break/rounding drift.
- */
-function punchWorkedHours(p: PunchLog, now: Date, maxShiftHours: number): number {
-  // Forgotten punch-out (marked, or still open past the max shift): unverified,
-  // contributes no hours until a manager sets the real clock-out.
-  if (p.status === MISSING_CLOCKOUT_STATUS) return 0;
-  if (p.hoursWorked != null) return p.hoursWorked;
-  if (!p.clockIn) return 0;
-  if (openPunchExceedsMaxShift(p, now, maxShiftHours)) return 0;
-  const start = new Date(p.roundedClockIn ?? p.clockIn).getTime();
-  const end = p.clockOut ? new Date(p.roundedClockOut ?? p.clockOut).getTime() : now.getTime();
-  if (!(end > start)) return 0;
-  const breakMs = (p.breakMinutes || 0) * 60 * 1000;
-  return Math.max(0, (end - start - breakMs) / (1000 * 60 * 60));
 }
 
 function dayOfWeekUTC(dateStr: string): number {
@@ -191,13 +170,12 @@ function computeRawDay(
   ctx: EmployeeContext,
   now: Date,
 ): RawDay {
-  let dayHours = 0;
+  const dayHours = workedDayHours(dayPunches, now, ctx);
   let hasOpenPunch = false;
   let workedPunchCount = 0;
   for (const p of dayPunches) {
     if (!p.clockIn) continue;
     workedPunchCount++;
-    dayHours += punchWorkedHours(p, now, ctx.maxShiftHours);
     // A marked missing-clock-out punch is NOT "open" (it has been set aside for
     // manager review) — only a genuinely in-progress punch counts as open.
     if (
@@ -206,36 +184,6 @@ function computeRawDay(
     ) {
       hasOpenPunch = true;
     }
-  }
-
-  // Lunch rules apply to EVERYONE: a break taken by clocking out and back in
-  // within the hour is PAID up to 45 min (the time counts, it is not deducted),
-  // and a break over an hour starts a new shift (unpaid). The flat no-lunch FINE
-  // is docked ONLY for lunch-required employees — by default no one is required,
-  // so a straight-through shift is never shortened.
-  // See services/lunchBreak.computeLunchAdjustedHours.
-  if (workedPunchCount > 0) {
-    const lunchPunches: LunchDayPunch[] = dayPunches
-      .filter((p) => p.clockIn)
-      .map((p) => ({
-        clockIn: new Date(p.roundedClockIn ?? (p.clockIn as Date)),
-        // A missing-clock-out punch's clock-out is only a placeholder — treat it
-        // as having no real clock-out (its clock-in still bounds the day's span).
-        clockOut:
-          p.clockOut && p.status !== MISSING_CLOCKOUT_STATUS
-            ? new Date(p.roundedClockOut ?? p.clockOut)
-            : null,
-        openInProgress:
-          p.status !== MISSING_CLOCKOUT_STATUS &&
-          (p.status === "in-progress" || (!p.clockOut && p.hoursWorked == null)),
-      }));
-    dayHours = computeLunchAdjustedHours(lunchPunches, dayHours, {
-      breakThresholdHours: ctx.breakThresholdHours,
-      // Fine only when the employee is lunch-required AND the global deduction
-      // switch is on. The paid-break rules inside computeLunchAdjustedHours apply
-      // regardless, so turning this off never removes paid break time.
-      applyFine: ctx.requireLunchBreak && ctx.lunchDeductionEnabled,
-    });
   }
 
   return {

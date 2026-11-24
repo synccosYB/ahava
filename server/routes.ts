@@ -8586,8 +8586,8 @@ export async function registerRoutes(
       );
       for (const m of filtered) {
         const r = rollup.get(m.id);
-        m.todayHours = Math.round((r?.todayHours ?? 0) * 10) / 10;
-        m.weekHours = Math.round((r?.weekHours ?? 0) * 10) / 10;
+        m.todayHours = Math.round((r?.todayHours ?? 0) * 100) / 100;
+        m.weekHours = Math.round((r?.weekHours ?? 0) * 100) / 100;
       }
       filtered.sort((a, b) => {
         const primary = sortKey === "today"
@@ -8606,8 +8606,8 @@ export async function registerRoutes(
       );
       for (const m of pageMembers) {
         const memberLedger = ledgerByMember.get(m.id) || [];
-        m.todayHours = Math.round((memberLedger.find(d => d.workDate === today)?.totalHours ?? 0) * 10) / 10;
-        m.weekHours = Math.round(summarizeLedger(memberLedger).totalHours * 10) / 10;
+        m.todayHours = Math.round((memberLedger.find(d => d.workDate === today)?.totalHours ?? 0) * 100) / 100;
+        m.weekHours = Math.round(summarizeLedger(memberLedger).totalHours * 100) / 100;
       }
     } else {
       filtered.sort((a, b) => {
@@ -8626,8 +8626,8 @@ export async function registerRoutes(
       );
       for (const m of pageMembers) {
         const memberLedger = ledgerByMember.get(m.id) || [];
-        m.todayHours = Math.round((memberLedger.find(d => d.workDate === today)?.totalHours ?? 0) * 10) / 10;
-        m.weekHours = Math.round(summarizeLedger(memberLedger).totalHours * 10) / 10;
+        m.todayHours = Math.round((memberLedger.find(d => d.workDate === today)?.totalHours ?? 0) * 100) / 100;
+        m.weekHours = Math.round(summarizeLedger(memberLedger).totalHours * 100) / 100;
       }
     }
 
@@ -9560,9 +9560,9 @@ export async function registerRoutes(
           payrollCompany: payrollCompanyByUser.get(u.id) || "",
           department: deptOf(u),
           daysWorked,
-          totalHours: Math.round(totalHours * 10) / 10,
-          avgHoursPerDay: Math.round(avg * 10) / 10,
-          overtime: Math.round(overtime * 10) / 10,
+          totalHours: Math.round(totalHours * 100) / 100,
+          avgHoursPerDay: Math.round(avg * 100) / 100,
+          overtime: Math.round(overtime * 100) / 100,
         };
       });
       return res.json({ category, columns, rows });
@@ -9591,10 +9591,10 @@ export async function registerRoutes(
         taxClassification: taxByUser.get(u.id) || "W-2",
         payrollCompany: payrollCompanyByUser.get(u.id) || "",
         department: deptOf(u),
-        totalHours: Math.round(totalHours * 10) / 10,
+        totalHours: Math.round(totalHours * 100) / 100,
         daysWorked,
         daysOff,
-        overtime: Math.round(overtime * 10) / 10,
+        overtime: Math.round(overtime * 100) / 100,
       };
     });
 
