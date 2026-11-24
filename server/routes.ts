@@ -5102,11 +5102,15 @@ export async function registerRoutes(
       try {
         const actor = req.authUser as User;
         const punchId = String(req.params.id);
-        const { clockIn, clockOut, reason, workDate } = req.body as {
+        const { clockIn, clockOut, reason, workDate, routeBackpay } = req.body as {
           clockIn?: string | null;
           clockOut?: string | null;
           reason?: string;
           workDate?: string;
+          // When the punch is in an already-paid (finalized) batch, an approver
+          // can set this to apply the edit anyway and route the pay difference to
+          // the NEXT payroll as back-pay, instead of being hard-blocked.
+          routeBackpay?: boolean;
         };
 
         if (workDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(workDate))) {
@@ -5165,16 +5169,29 @@ export async function registerRoutes(
         }
         const finalizedExports = [...finalizedById.values()];
         if (finalizedExports.length > 0) {
-          return res.status(409).json({
-            message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before editing the punch.`,
-            code: "PAYROLL_FINALIZED",
-            payrollExports: finalizedExports.map((e) => ({
-              id: e.id,
-              startDate: e.startDate,
-              endDate: e.endDate,
-              status: e.status,
-            })),
-          });
+          // Already-paid week. By default this is hard-blocked (changing paid
+          // hours would silently desync payroll). An approver can instead opt to
+          // apply the edit AND route the pay difference to the NEXT payroll as a
+          // pending back-pay item — the finalized batch itself is left untouched.
+          const editorPerms = await resolveUserPermissions(actor.id);
+          const mayRouteBackpay =
+            editorPerms.has("attendance.approve_corrections") || editorPerms.has("system.super_admin");
+          if (!routeBackpay || !mayRouteBackpay) {
+            return res.status(409).json({
+              message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before editing the punch${mayRouteBackpay ? ", or send the difference to the next payroll as back-pay" : ""}.`,
+              code: "PAYROLL_FINALIZED",
+              // Tells the UI whether to offer the "send to next payroll as back-pay"
+              // path (only approvers may) instead of only "reopen the batch".
+              canRouteBackpay: mayRouteBackpay,
+              payrollExports: finalizedExports.map((e) => ({
+                id: e.id,
+                startDate: e.startDate,
+                endDate: e.endDate,
+                status: e.status,
+              })),
+            });
+          }
+          // else: fall through — apply the edit, then route back-pay below.
         }
 
         const attendancePolicy = await getEffectivePolicy(
@@ -5367,7 +5384,31 @@ export async function registerRoutes(
           ...getLedgerContext(req),
         });
 
-        res.json(punchLogToApiResponse(updated));
+        // If this edit touched an already-paid (finalized) batch and the approver
+        // chose the back-pay route, queue the pay difference for the NEXT payroll
+        // as a PENDING back-pay item (admin approves it in Payroll Prep). The
+        // finalized batch is never mutated. Best-effort: the edit is already
+        // committed, so a routing failure is surfaced, not rolled back.
+        let backpayItems: Awaited<ReturnType<typeof routeBackpayForCorrection>> = [];
+        let backpayError = false;
+        if (finalizedExports.length > 0 && routeBackpay) {
+          try {
+            backpayItems = await routeBackpayForCorrection({
+              employee: employeeUser,
+              workDate: updated?.workDate ?? existing.workDate,
+              sourceExports: finalizedExports,
+              attendanceExceptionId: null,
+              punchLogId: punchId,
+              requestedBy: actor.id,
+              reasonPrefix: "Admin edited a punch after payroll was sent",
+            });
+          } catch (e) {
+            backpayError = true;
+            console.error("Back-pay routing failed after a finalized-punch edit:", e);
+          }
+        }
+
+        res.json({ ...punchLogToApiResponse(updated), backpayItems, backpayError });
       } catch (error) {
         console.error("Error editing punch:", error);
         handleRouteError(res, error, "Failed to edit punch");
