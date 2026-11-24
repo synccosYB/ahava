@@ -288,6 +288,18 @@ export function EmployeeTimesheetTable({
     for (const p of punchData?.punches ?? []) m.set(p.id, p);
     return m;
   }, [punchData]);
+  // Raw punches keyed by work date — used to make a missing-punch day (which has
+  // no completed pair, so no segment) editable: the day's one open/missing punch
+  // is bound to the row so the reviewer can fill in the side that's blank.
+  const punchesByDate = useMemo(() => {
+    const m = new Map<string, RawPunch[]>();
+    for (const p of punchData?.punches ?? []) {
+      const arr = m.get(p.workDate) ?? [];
+      arr.push(p);
+      m.set(p.workDate, arr);
+    }
+    return m;
+  }, [punchData]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/attendance/timesheet"] });
@@ -323,6 +335,9 @@ export function EmployeeTimesheetTable({
     const nextIso = fromLocalInput(localValue);
     const curIso = field === "in" ? punch.clockIn : punch.clockOut;
     if (nextIso === curIso) return; // no change
+    // Editing the clock-IN's date moves the shift to that day (the work date
+    // follows the clock-in). A time-only change keeps the same work date.
+    const workDate = field === "in" && localValue ? localValue.split("T")[0] : punch.workDate;
     if (!originals.current.has(punchId)) {
       originals.current.set(punchId, { clockIn: punch.clockIn, clockOut: punch.clockOut, workDate: punch.workDate });
       setEditCount((c) => c + 1);
@@ -331,7 +346,7 @@ export function EmployeeTimesheetTable({
       id: punchId,
       clockIn: field === "in" ? nextIso : punch.clockIn,
       clockOut: field === "out" ? nextIso : punch.clockOut,
-      workDate: punch.workDate,
+      workDate,
       reason: "Inline edit on Time Sheet Review",
     });
   };
@@ -634,16 +649,19 @@ export function EmployeeTimesheetTable({
                     ({formatHoursMinutes(hours)})
                   </span>
                 ) : formatHoursMinutes(hours);
-              // Per-shift actions (Split / Delete) for a single-punch shift.
-              const actionsCell = (seg?: TimesheetSegment) => {
+              // The single backing punch for a shift (when the shift is one punch
+              // pair), so Split/Delete can target it.
+              const segPunch = (seg?: TimesheetSegment): RawPunch | undefined =>
+                seg && seg.clockInPunchId && seg.clockInPunchId === seg.clockOutPunchId
+                  ? punchById.get(seg.clockInPunchId) : undefined;
+              // Per-row actions (Split / Delete) for a given punch.
+              const actionsCellFor = (p?: RawPunch) => {
                 if (!canEdit) return null;
-                const single = seg && seg.clockInPunchId && seg.clockInPunchId === seg.clockOutPunchId;
-                const p = single ? punchById.get(seg!.clockInPunchId!) : undefined;
                 return (
                   <TableCell className="text-right">
                     {p && (
                       <div className="flex items-center justify-end gap-1">
-                        {p.clockIn && p.clockOut && (
+                        {p.clockIn && p.clockOut && p.status !== "missing_clockout" && (
                           <Button size="icon" variant="ghost" className="h-7 w-7" title="Split: the clock-out is really a new clock-in" onClick={() => openSplit(p)} data-testid={`button-split-${p.id}`}>
                             <Scissors className="h-3.5 w-3.5" />
                           </Button>
@@ -665,17 +683,39 @@ export function EmployeeTimesheetTable({
               const shifts = e.segments && e.segments.length > 1 ? e.segments : null;
               if (!shifts) {
                 const seg0 = e.segments && e.segments.length === 1 ? e.segments[0] : undefined;
-                const inIso = seg0 ? seg0.clockIn : e.clockIn;
-                const outIso = seg0 ? seg0.clockOut : e.clockOut;
+                let inIso = seg0 ? seg0.clockIn : e.clockIn;
+                let outIso = seg0 ? seg0.clockOut : e.clockOut;
+                let inPunchId = seg0?.clockInPunchId ?? null;
+                let outPunchId = seg0?.clockOutPunchId ?? null;
+                let rowPunch = segPunch(seg0);
+                // A missing / in-progress day has no completed pair (no segment).
+                // Bind the row to the day's open/missing punch so the blank side
+                // can be filled in — which completes the shift.
+                if (canEdit && !seg0 && (e.status === "missing_punch" || e.status === "in_progress")) {
+                  const dayPunches = punchesByDate.get(e.date) ?? [];
+                  const mp = dayPunches.find((p) =>
+                    p.status === "missing_clockout" || p.status === "missing_clockin" ||
+                    (!!p.clockIn && !p.clockOut) || (!!p.clockOut && !p.clockIn),
+                  ) ?? (dayPunches.length === 1 ? dayPunches[0] : undefined);
+                  if (mp) {
+                    const missingOut = mp.status === "missing_clockout" || (!!mp.clockIn && !mp.clockOut);
+                    const missingIn = mp.status === "missing_clockin" || (!!mp.clockOut && !mp.clockIn);
+                    inIso = missingIn ? null : mp.clockIn;
+                    outIso = missingOut ? null : mp.clockOut;
+                    inPunchId = mp.id;
+                    outPunchId = mp.id;
+                    rowPunch = mp;
+                  }
+                }
                 return (
                   <TableRow key={e.date} data-testid={`row-timesheet-${e.date}`}>
                     <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
                     <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
-                      <EditableClockCell iso={inIso} timezone={data.timezone} punchId={canEdit ? (seg0?.clockInPunchId ?? null) : null} field="in" onSave={saveClock} />
+                      <EditableClockCell iso={inIso} timezone={data.timezone} punchId={canEdit ? inPunchId : null} field="in" onSave={saveClock} missingLabel={inPunchId ? "Set" : undefined} />
                     </TableCell>
                     <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
-                      <EditableClockCell iso={outIso} timezone={data.timezone} punchId={canEdit ? (seg0?.clockOutPunchId ?? null) : null} field="out" onSave={saveClock} />
+                      <EditableClockCell iso={outIso} timezone={data.timezone} punchId={canEdit ? outPunchId : null} field="out" onSave={saveClock} missingLabel={outPunchId ? "Set" : undefined} />
                     </TableCell>
                     <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
                     <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>
@@ -692,7 +732,7 @@ export function EmployeeTimesheetTable({
                     <TableCell data-testid={`badge-timesheet-status-${e.date}`}>
                       <TimesheetStatusBadge entry={e} />
                     </TableCell>
-                    {actionsCell(seg0)}
+                    {actionsCellFor(rowPunch)}
                   </TableRow>
                 );
               }
@@ -720,7 +760,7 @@ export function EmployeeTimesheetTable({
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{i === 0 ? formatSources(e.sources) : ""}</TableCell>
                       <TableCell>{i === 0 ? <TimesheetStatusBadge entry={e} /> : null}</TableCell>
-                      {actionsCell(seg)}
+                      {actionsCellFor(segPunch(seg))}
                     </TableRow>
                   ))}
                 </Fragment>
