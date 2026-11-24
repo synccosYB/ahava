@@ -54,6 +54,11 @@ test("a short lunch (<= 60 min) stays one shift, folded into the break", async (
   assert.ok(e, "the day has an entry");
   assert.equal(e!.segments?.length, 1, "one shift (the lunch is folded in)");
   assert.equal(e!.segments?.[0].breakMinutes, 30, "the 30-min lunch is the shift's break");
+  // The break carries its out/in times (for the Break Start / Break End columns).
+  assert.equal(e!.segments?.[0].breaks?.length, 1, "one folded break interval");
+  assert.equal(e!.segments?.[0].breaks?.[0].minutes, 30, "break interval is 30 min");
+  assert.equal(e!.segments?.[0].breaks?.[0].start.slice(11, 16), "12:00", "break starts at the noon clock-out");
+  assert.equal(e!.segments?.[0].breaks?.[0].end.slice(11, 16), "12:30", "break ends at the 12:30 clock-in");
 });
 
 test("a long lunch (> 60 min) splits the day into two shifts, same date", async (t) => {
