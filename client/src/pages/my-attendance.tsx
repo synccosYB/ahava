@@ -25,6 +25,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { EmptyState } from "@/components/empty-state";
 import { CorrectionStatusBadge } from "@/components/correction-status-badge";
 import { formatExceptionTypeLabel } from "@/lib/exceptionLabels";
+import type { TimesheetResponse } from "@/components/employee-timesheet";
 import type { AttendanceRecord, AttendanceException } from "@shared/schema";
 import { parseExceptionTimeInfo } from "@/lib/exceptionTimeInfo";
 import {
@@ -237,18 +238,24 @@ export default function MyAttendance() {
     });
   }, [records, sortKey, sortDir]);
 
-  const stats = useMemo(() => {
-    if (!records || records.length === 0) return { totalHours: 0, daysWorked: 0, dailyAvg: 0 };
-    const completedRecords = records.filter((r) => r.totalHours != null);
-    const totalHours = completedRecords.reduce((sum, r) => sum + (r.totalHours || 0), 0);
-    const daysWorked = new Set(completedRecords.map((r) => r.workDate)).size;
-    const dailyAvg = daysWorked > 0 ? totalHours / daysWorked : 0;
-    return {
-      totalHours: Math.round(totalHours * 10) / 10,
-      daysWorked,
-      dailyAvg: Math.round(dailyAvg * 10) / 10,
-    };
-  }, [records]);
+  // Reuse the same ledger-backed response as Review Time Sheet. Raw punches
+  // cannot determine paid lunch, worked days, or confirmation-only attendance.
+  const { data: summary, isLoading: summaryLoading, isError: summaryError } = useQuery<TimesheetResponse>({
+    queryKey: ["/api/attendance/timesheet", user?.id, startDate, endDate],
+    queryFn: async () => {
+      const params = new URLSearchParams({ startDate, endDate });
+      const res = await fetch(`/api/attendance/timesheet/${user!.id}?${params.toString()}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load attendance totals");
+      return res.json();
+    },
+    enabled: isAuthenticated && !!user?.id && !!startDate && !!endDate && startDate <= endDate,
+    staleTime: 0,
+  });
+  const stats = {
+    totalHours: summary?.totals.totalHours ?? 0,
+    daysWorked: summary?.totals.daysWorked ?? 0,
+    dailyAvg: summary?.totals.daysWorked ? summary.totals.totalHours / summary.totals.daysWorked : 0,
+  };
 
   const exportCSV = () => {
     if (!records || records.length === 0) return;
@@ -384,10 +391,15 @@ export default function MyAttendance() {
           <CardTitle className="text-base">Summary</CardTitle>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {summaryLoading ? (
             <div className="grid grid-cols-3 gap-4">
               {[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}
             </div>
+          ) : summaryError ? (
+            <Alert variant="destructive" data-testid="alert-attendance-totals-error">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>Failed to load attendance totals. Please try again.</AlertDescription>
+            </Alert>
           ) : (
             <div className="grid grid-cols-3 gap-4 text-center">
               <div data-testid="stat-total-hours">

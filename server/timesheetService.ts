@@ -1,5 +1,6 @@
 import type { PunchLog, TimeOffRequest, User } from "@shared/schema";
 import { storage } from "./storage";
+import { punchWorkedHours } from "./workedHours";
 import { DEFAULT_ATTENDANCE_RULES, getEffectivePolicy } from "./policyEngine";
 import { resolvePayCalcPolicy } from "./payrollEngine";
 import { getLedgerForEmployee, summarizeLedger, type LedgerDay } from "./attendanceLedger";
@@ -103,24 +104,6 @@ const SHIFT_SPLIT_THRESHOLD_MIN = 60;
  * `storage.getDailyHoursByDateRange`, so no surface can drift on break
  * deductions or rounding.
  */
-function punchWorkedHours(
-  p: PunchLog,
-  now: Date,
-  maxShiftHours: number = DEFAULT_ATTENDANCE_RULES.maxShiftHours,
-): number {
-  // Forgotten punch-out (marked, or still open past the max shift): unverified,
-  // contributes no hours until a manager sets the real clock-out.
-  if (p.status === MISSING_CLOCKOUT_STATUS) return 0;
-  if (p.hoursWorked != null) return p.hoursWorked;
-  if (!p.clockIn) return 0;
-  if (openPunchExceedsMaxShift(p, now, maxShiftHours)) return 0;
-  const start = new Date(p.roundedClockIn ?? p.clockIn).getTime();
-  const end = p.clockOut ? new Date(p.roundedClockOut ?? p.clockOut).getTime() : now.getTime();
-  if (!(end > start)) return 0;
-  const breakMs = (p.breakMinutes || 0) * 60 * 1000;
-  return Math.max(0, (end - start - breakMs) / (1000 * 60 * 60));
-}
-
 /**
  * Worked hours for a single day's punches (break-deducted, via punchWorkedHours).
  */

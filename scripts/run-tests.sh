@@ -8,6 +8,11 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Every suite is a separate process. Release idle test connections promptly so
+# suites without an explicit pool.end() do not each wait the production 30s.
+# Respect an explicit override; this does not change the application default.
+export DB_IDLE_TIMEOUT_MS="${DB_IDLE_TIMEOUT_MS:-500}"
+
 # Exclude dependencies and generated caches at *any* depth. Replit workspaces
 # can contain nested node_modules (e.g. artifacts/mockup-sandbox/node_modules)
 # and .cache/.bun copies of dependency source tests; those are not Ahava tests.

@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { workedDayHours } from "./workedHours";
 import {
   type User,
   type UpsertUser,
@@ -3264,16 +3265,30 @@ export class DatabaseStorage implements IStorage {
         lte(punchLogs.workDate, endDate)
       ));
 
-    let total = 0;
-    for (const r of records) {
-      if (r.hoursWorked) {
-        total += r.hoursWorked;
-      } else if (r.clockIn) {
-        const end = r.clockOut ? new Date(r.clockOut) : new Date();
-        total += (end.getTime() - new Date(r.clockIn).getTime()) / (1000 * 60 * 60);
-      }
+    if (records.length === 0) return 0;
+    const employee = await this.getUser(userId);
+    const [attendancePolicy, profile] = await Promise.all([
+      employee ? getEffectivePolicy(employee.companyId, userId, "attendance", employee) : undefined,
+      this.getEmploymentProfile(userId),
+    ]);
+    const rules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+    const byDate = new Map<string, PunchLog[]>();
+    for (const record of records) {
+      const day = byDate.get(record.workDate) || [];
+      day.push(record);
+      byDate.set(record.workDate, day);
     }
-    return total;
+    const now = new Date();
+    let total = 0;
+    for (const day of byDate.values()) {
+      total += workedDayHours(day, now, {
+        maxShiftHours: rules.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours,
+        requireLunchBreak: !!profile?.requireLunchBreak,
+        lunchDeductionEnabled: rules.lunchDeductionEnabled !== false,
+        breakThresholdHours: rules.requireBreakAfterHours ?? DEFAULT_ATTENDANCE_RULES.requireBreakAfterHours,
+      }, true);
+    }
+    return Math.round(total * 100) / 100;
   }
 
   async computeTimeOffBalance(userId: string): Promise<{ vacation: number; sick: number; personal: number }> {
