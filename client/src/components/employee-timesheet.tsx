@@ -21,7 +21,7 @@ import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, Pencil } f
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/empty-state";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, isApiError } from "@/lib/queryClient";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useToast } from "@/hooks/use-toast";
 import { formatHoursMinutes, formatDate, formatTime12InTz } from "@/lib/utils";
@@ -51,6 +51,13 @@ type RawPunch = {
   clockOut: string | null;
   status: string | null;
   source: string | null;
+};
+
+// A punch edit submission. `routeBackpay` is set only on the resend that opts to
+// apply an edit to an already-paid week and queue the difference as back-pay.
+type EditVars = {
+  id: string; clockIn: string | null; clockOut: string | null;
+  workDate: string; reason: string; routeBackpay?: boolean;
 };
 
 export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "confirmation" | "error" | "none";
@@ -370,15 +377,46 @@ export function EmployeeTimesheetTable({
     setEditReason("");
   };
 
+  // When an edit lands on an already-paid (finalized) week, the server blocks it
+  // (409 PAYROLL_FINALIZED). If the approver may route back-pay, we offer to apply
+  // the edit anyway and send the pay difference to the NEXT payroll — that resend
+  // carries routeBackpay:true. The already-sent payroll is never changed.
+  const [backpayPrompt, setBackpayPrompt] = useState<{ vars: EditVars; message: string } | null>(null);
+
   const editMutation = useMutation({
-    mutationFn: async (vars: { id: string; clockIn: string | null; clockOut: string | null; workDate: string; reason: string }) => {
+    mutationFn: async (vars: EditVars) => {
       const res = await apiRequest("PATCH", `/api/attendance/punches/${vars.id}`, {
         clockIn: vars.clockIn, clockOut: vars.clockOut, workDate: vars.workDate, reason: vars.reason,
+        ...(vars.routeBackpay ? { routeBackpay: true } : {}),
       });
       return res.json();
     },
-    onSuccess: () => { toast({ title: "Punch updated" }); invalidate(); setEditPunch(null); },
-    onError: (err: any) => toast({ title: "Could not save punch", description: err?.message ?? "Please try again.", variant: "destructive" }),
+    onSuccess: (data: any, vars: EditVars) => {
+      invalidate();
+      setEditPunch(null);
+      setBackpayPrompt(null);
+      if (vars.routeBackpay) {
+        const n = Array.isArray(data?.backpayItems) ? data.backpayItems.length : 0;
+        toast(n > 0
+          ? { title: "Saved — back-pay queued", description: "Approve it in Payroll Prep → Back-pay review to include it in the next payroll run." }
+          : { title: "Saved", description: "No back-pay was needed — there was no pay difference for the already-paid week.", variant: "destructive" });
+      } else {
+        toast({ title: "Punch updated" });
+      }
+    },
+    onError: (err: any, vars: EditVars) => {
+      if (isApiError(err) && err.code === "PAYROLL_FINALIZED") {
+        const payload = (err.payload ?? {}) as { canRouteBackpay?: boolean; message?: string };
+        if (payload.canRouteBackpay && !vars.routeBackpay) {
+          // Offer the back-pay route instead of a dead-end error.
+          setBackpayPrompt({ vars, message: payload.message ?? "This week was already sent to payroll." });
+          return;
+        }
+        toast({ title: "Punch is in finalized payroll", description: payload.message ?? err.message, variant: "destructive" });
+        return;
+      }
+      toast({ title: "Could not save punch", description: err?.message ?? "Please try again.", variant: "destructive" });
+    },
   });
   const submitEdit = () => {
     if (!editPunch) return;
@@ -914,6 +952,30 @@ export function EmployeeTimesheetTable({
             <Button variant="outline" onClick={() => setDeleteTarget(null)} data-testid="button-timesheet-cancel-delete">Cancel</Button>
             <Button variant="destructive" onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)} disabled={deleteMutation.isPending} data-testid="button-timesheet-confirm-delete">
               {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!backpayPrompt} onOpenChange={(open) => { if (!open) setBackpayPrompt(null); }}>
+        <AlertDialogContent data-testid="dialog-timesheet-backpay">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Send to next payroll as back-pay?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {backpayPrompt?.message}{" "}
+              This week was already sent to payroll. Applying this change will <strong>not</strong> alter
+              the payroll already sent — instead the pay difference is queued as a <strong>pending back-pay</strong> item.
+              Approve it in <strong>Payroll Prep → Back-pay review</strong> and it rides the next payroll run.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button variant="outline" onClick={() => setBackpayPrompt(null)} data-testid="button-timesheet-cancel-backpay">Cancel</Button>
+            <Button
+              onClick={() => backpayPrompt && editMutation.mutate({ ...backpayPrompt.vars, routeBackpay: true })}
+              disabled={editMutation.isPending}
+              data-testid="button-timesheet-confirm-backpay"
+            >
+              {editMutation.isPending ? "Saving…" : "Save & queue back-pay"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
