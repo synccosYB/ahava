@@ -1,20 +1,69 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Download, CalendarDays, AlertCircle } from "lucide-react";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, RotateCcw } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { EmptyState } from "@/components/empty-state";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { usePermissions } from "@/hooks/use-permissions";
+import { useToast } from "@/hooks/use-toast";
 import { formatHoursMinutes, formatDate, formatTime12InTz } from "@/lib/utils";
 
+// ISO <-> <input type="datetime-local"> in the viewer's local (clinic Eastern)
+// time, matching the app-wide punch-edit dialogs.
+function toLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function fromLocalInput(value: string): string | null {
+  if (!value) return null;
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+// Raw punch, for the editable surface (ids + both clock times so a single-field
+// inline edit can send the whole punch and revert can restore it).
+type RawPunch = {
+  id: string;
+  workDate: string;
+  clockIn: string | null;
+  clockOut: string | null;
+  status: string | null;
+  source: string | null;
+};
+
 export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "confirmation" | "none";
+
+// One worked shift within a day. A day with a lunch gap longer than an hour is
+// shown as two (or more) of these — a separate line per shift, same date.
+export type TimesheetSegment = {
+  clockIn: string | null;
+  clockOut: string | null;
+  breakMinutes: number;
+  hours: number;
+  clockInPunchId: string | null;
+  clockOutPunchId: string | null;
+};
 
 export type TimesheetEntry = {
   date: string;
@@ -22,6 +71,10 @@ export type TimesheetEntry = {
   clockIn: string | null;
   clockOut: string | null;
   breakMinutes: number;
+  // Per-shift breakdown. Present when the day has completed punches; the table
+  // shows a line per shift when there is more than one (a >1h lunch splits the
+  // day). Absent/one → the single day row is shown.
+  segments?: TimesheetSegment[];
   totalHours: number | null;
   // Worked hours for REFERENCE (attendance-only employees paid per day): shown
   // muted, not counted toward pay. null when totalHours is the pay basis.
@@ -41,6 +94,54 @@ export type TimesheetEntry = {
 
 function formatMoney(n: number): string {
   return Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`;
+}
+
+// A clock-in/out cell that edits in place and saves instantly. Click the time to
+// turn it into a datetime-local field; Enter or blur commits (and writes), Escape
+// cancels. Falls back to plain text when there's no backing punch to edit.
+function EditableClockCell({
+  iso, timezone, punchId, field, onSave, missingLabel,
+}: {
+  iso: string | null;
+  timezone?: string | null;
+  punchId: string | null;
+  field: "in" | "out";
+  onSave: (punchId: string, field: "in" | "out", local: string) => void;
+  missingLabel?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const shown = iso ? formatTime12InTz(iso, timezone) : (missingLabel ?? "—");
+  if (!punchId) return <>{shown}</>;
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className="tabular-nums underline decoration-dotted decoration-muted-foreground/50 underline-offset-2 hover:text-primary"
+        onClick={() => { setDraft(toLocalInput(iso)); setEditing(true); }}
+        title="Click to edit — saves instantly"
+        data-testid={`edit-clock-${field}-${punchId}`}
+      >
+        {shown}
+      </button>
+    );
+  }
+  const commit = () => { setEditing(false); onSave(punchId, field, draft); };
+  return (
+    <input
+      type="datetime-local"
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
+        else if (e.key === "Escape") { setEditing(false); }
+      }}
+      className="h-8 rounded border border-input bg-background px-2 text-sm"
+      data-testid={`input-clock-${field}-${punchId}`}
+    />
+  );
 }
 
 function formatSources(sources: TimesheetEntry["sources"]): string {
@@ -133,6 +234,7 @@ export function EmployeeTimesheetTable({
   exportFileName,
   showEmployeeName = false,
   navSlot,
+  editable = false,
 }: {
   employeeId: string;
   startDate: string;
@@ -145,6 +247,10 @@ export function EmployeeTimesheetTable({
   // Period navigation (◀ / ▶ / Current + range label) rendered INSIDE the
   // summary bar, so the totals and the controls that change them share one spot.
   navSlot?: ReactNode;
+  // When true (Time Sheet Review), clock-in/out are edited inline — they save
+  // instantly, with a per-employee "Revert" that undoes this session's edits
+  // until the row is closed, plus Add / Split / Delete. Needs attendance.edit.
+  editable?: boolean;
 }) {
   const { data, isLoading, isError } = useQuery<TimesheetResponse>({
     queryKey: ["/api/attendance/timesheet", employeeId, startDate, endDate],
@@ -158,6 +264,167 @@ export function EmployeeTimesheetTable({
     },
     enabled: !!employeeId && !!startDate && !!endDate && startDate <= endDate,
   });
+
+  // ── Inline editing (Time Sheet Review only) ──────────────────────────────
+  const { has } = usePermissions();
+  const { toast } = useToast();
+  const canEdit = editable && has("attendance.edit");
+  const canDelete = editable && has("attendance.delete");
+
+  // Raw punches back the editable clock cells: a single-field inline edit sends
+  // the whole punch, and Revert restores it. Only fetched when editing.
+  const { data: punchData } = useQuery<{ punches: RawPunch[] }>({
+    queryKey: ["/api/attendance/punches", employeeId, startDate, endDate],
+    queryFn: async () => {
+      const p = new URLSearchParams({ employeeId, startDate, endDate });
+      const res = await fetch(`/api/attendance/punches?${p.toString()}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load punches");
+      return res.json();
+    },
+    enabled: canEdit && !!employeeId && !!startDate && !!endDate,
+  });
+  const punchById = useMemo(() => {
+    const m = new Map<string, RawPunch>();
+    for (const p of punchData?.punches ?? []) m.set(p.id, p);
+    return m;
+  }, [punchData]);
+  // Raw punches keyed by work date — used to make a missing-punch day (which has
+  // no completed pair, so no segment) editable: the day's one open/missing punch
+  // is bound to the row so the reviewer can fill in the side that's blank.
+  const punchesByDate = useMemo(() => {
+    const m = new Map<string, RawPunch[]>();
+    for (const p of punchData?.punches ?? []) {
+      const arr = m.get(p.workDate) ?? [];
+      arr.push(p);
+      m.set(p.workDate, arr);
+    }
+    return m;
+  }, [punchData]);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/attendance/timesheet"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/attendance/punches"] });
+  };
+
+  // Revert: the ORIGINAL state of every punch edited since this employee's row
+  // was opened. Cleared when the employee or range changes (and discarded on
+  // unmount) — so leaving the employee makes the edits permanent.
+  const originals = useRef<Map<string, { clockIn: string | null; clockOut: string | null; workDate: string }>>(new Map());
+  const [editCount, setEditCount] = useState(0);
+  useEffect(() => {
+    originals.current = new Map();
+    setEditCount(0);
+  }, [employeeId, startDate, endDate]);
+
+  const editMutation = useMutation({
+    mutationFn: async (vars: { id: string; clockIn: string | null; clockOut: string | null; workDate: string; reason: string }) => {
+      const res = await apiRequest("PATCH", `/api/attendance/punches/${vars.id}`, {
+        clockIn: vars.clockIn, clockOut: vars.clockOut, workDate: vars.workDate, reason: vars.reason,
+      });
+      return res.json();
+    },
+    onSuccess: () => invalidate(),
+    onError: (err: any) => toast({ title: "Could not save punch", description: err?.message ?? "Please try again.", variant: "destructive" }),
+  });
+
+  // Instant save of one clock field. Captures the punch's original state (once)
+  // for Revert, then writes the change immediately.
+  const saveClock = (punchId: string, field: "in" | "out", localValue: string) => {
+    const punch = punchById.get(punchId);
+    if (!punch) return;
+    const nextIso = fromLocalInput(localValue);
+    const curIso = field === "in" ? punch.clockIn : punch.clockOut;
+    if (nextIso === curIso) return; // no change
+    // Editing the clock-IN's date moves the shift to that day (the work date
+    // follows the clock-in). A time-only change keeps the same work date.
+    const workDate = field === "in" && localValue ? localValue.split("T")[0] : punch.workDate;
+    if (!originals.current.has(punchId)) {
+      originals.current.set(punchId, { clockIn: punch.clockIn, clockOut: punch.clockOut, workDate: punch.workDate });
+      setEditCount((c) => c + 1);
+    }
+    editMutation.mutate({
+      id: punchId,
+      clockIn: field === "in" ? nextIso : punch.clockIn,
+      clockOut: field === "out" ? nextIso : punch.clockOut,
+      workDate,
+      reason: "Inline edit on Time Sheet Review",
+    });
+  };
+
+  const revertMutation = useMutation({
+    mutationFn: async () => {
+      const entries = Array.from(originals.current.entries());
+      for (const [id, orig] of entries) {
+        await apiRequest("PATCH", `/api/attendance/punches/${id}`, {
+          clockIn: orig.clockIn, clockOut: orig.clockOut, workDate: orig.workDate,
+          reason: "Reverted inline edits on Time Sheet Review",
+        });
+      }
+    },
+    onSuccess: () => {
+      originals.current = new Map();
+      setEditCount(0);
+      invalidate();
+      toast({ title: "Changes reverted", description: "This employee's clock edits were undone." });
+    },
+    onError: (err: any) => toast({ title: "Could not revert", description: err?.message ?? "Please try again.", variant: "destructive" }),
+  });
+
+  // Add / Delete / Split — the less-common repairs, kept as compact controls.
+  const [addOpen, setAddOpen] = useState(false);
+  const [addIn, setAddIn] = useState("");
+  const [addOut, setAddOut] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; date: string } | null>(null);
+  const [splitTarget, setSplitTarget] = useState<RawPunch | null>(null);
+  const [splitDay1Out, setSplitDay1Out] = useState("");
+  const [splitNewIn, setSplitNewIn] = useState("");
+  const [splitNewOut, setSplitNewOut] = useState("");
+
+  const addMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/attendance/punches`, {
+        employeeId, clockIn: fromLocalInput(addIn), clockOut: fromLocalInput(addOut), reason: "Added on Time Sheet Review",
+      });
+      return res.json();
+    },
+    onSuccess: () => { toast({ title: "Punch added" }); invalidate(); setAddOpen(false); },
+    onError: (err: any) => toast({ title: "Could not add punch", description: err?.message ?? "Please try again.", variant: "destructive" }),
+  });
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/attendance/punches/${id}`, { reason: "Deleted on Time Sheet Review" });
+      return res.json();
+    },
+    onSuccess: () => { toast({ title: "Punch deleted" }); invalidate(); setDeleteTarget(null); },
+    onError: (err: any) => toast({ title: "Could not delete punch", description: err?.message ?? "Please try again.", variant: "destructive" }),
+  });
+  const splitMutation = useMutation({
+    mutationFn: async () => {
+      if (!splitTarget) return;
+      await apiRequest("PATCH", `/api/attendance/punches/${splitTarget.id}`, {
+        clockOut: fromLocalInput(splitDay1Out), reason: "Split shift: set the real clock-out for the first shift",
+      });
+      await apiRequest("POST", `/api/attendance/punches`, {
+        employeeId, clockIn: fromLocalInput(splitNewIn), clockOut: fromLocalInput(splitNewOut),
+        reason: "Split shift: moved the absorbed punch to its own shift",
+      });
+    },
+    onSuccess: () => { toast({ title: "Shift split" }); invalidate(); setSplitTarget(null); },
+    onError: (err: any) => toast({ title: "Could not split shift", description: err?.message ?? "Please try again.", variant: "destructive" }),
+  });
+  const openAdd = () => {
+    const d = new Date(); d.setDate(d.getDate() - 1);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    setAddIn(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T09:00`);
+    setAddOut(""); setAddOpen(true);
+  };
+  const openSplit = (p: RawPunch) => {
+    setSplitTarget(p);
+    const inDate = toLocalInput(p.clockIn).split("T")[0];
+    setSplitDay1Out(inDate ? `${inDate}T17:00` : "");
+    setSplitNewIn(toLocalInput(p.clockOut));
+    setSplitNewOut("");
+  };
 
   if (isLoading) {
     return (
@@ -313,6 +580,25 @@ export function EmployeeTimesheetTable({
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {navSlot}
+          {canEdit && (
+            <>
+              {editCount > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => revertMutation.mutate()}
+                  disabled={revertMutation.isPending}
+                  title="Undo the clock edits you've made on this employee. Once you close this employee, the changes are permanent."
+                  data-testid="button-timesheet-revert"
+                >
+                  <RotateCcw className="h-4 w-4 mr-2" /> {revertMutation.isPending ? "Reverting…" : `Revert (${editCount})`}
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={openAdd} data-testid="button-timesheet-add-punch">
+                <Plus className="h-4 w-4 mr-2" /> Add punch
+              </Button>
+            </>
+          )}
           {showExport && (
             <>
               <Button
@@ -350,44 +636,136 @@ export function EmployeeTimesheetTable({
               <TableHead className="text-xs font-medium uppercase tracking-wider">Overtime</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Source</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Status</TableHead>
+              {canEdit && <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Actions</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.entries.map((e) => (
-              <TableRow key={e.date} data-testid={`row-timesheet-${e.date}`}>
-                <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
-                <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
-                  {e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "—"}
-                </TableCell>
-                <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
-                  {e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "—"}
-                </TableCell>
-                <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
-                <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>
-                  {e.totalHours != null ? (
-                    formatHoursMinutes(e.totalHours)
-                  ) : e.referenceHours != null ? (
-                    <span className="font-normal text-muted-foreground" title="For reference — paid per day, not per hour">
-                      ({formatHoursMinutes(e.referenceHours)})
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </TableCell>
-                <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-ot-${e.date}`}>
-                  {e.overtimeHours > 0 ? (
-                    <span className="text-amber-600 font-semibold">{formatHoursMinutes(e.overtimeHours)}</span>
-                  ) : "—"}
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground" data-testid={`text-timesheet-source-${e.date}`}>
-                  {formatSources(e.sources)}
-                </TableCell>
-                <TableCell data-testid={`badge-timesheet-status-${e.date}`}>
-                  <TimesheetStatusBadge entry={e} />
-                </TableCell>
-              </TableRow>
-            ))}
+            {data.entries.map((e) => {
+              const isRefDay = e.totalHours == null && e.referenceHours != null;
+              const hoursCell = (hours: number | null) =>
+                hours == null ? "—"
+                : isRefDay ? (
+                  <span className="font-normal text-muted-foreground" title="For reference — paid per day, not per hour">
+                    ({formatHoursMinutes(hours)})
+                  </span>
+                ) : formatHoursMinutes(hours);
+              // The single backing punch for a shift (when the shift is one punch
+              // pair), so Split/Delete can target it.
+              const segPunch = (seg?: TimesheetSegment): RawPunch | undefined =>
+                seg && seg.clockInPunchId && seg.clockInPunchId === seg.clockOutPunchId
+                  ? punchById.get(seg.clockInPunchId) : undefined;
+              // Per-row actions (Split / Delete) for a given punch.
+              const actionsCellFor = (p?: RawPunch) => {
+                if (!canEdit) return null;
+                return (
+                  <TableCell className="text-right">
+                    {p && (
+                      <div className="flex items-center justify-end gap-1">
+                        {p.clockIn && p.clockOut && p.status !== "missing_clockout" && (
+                          <Button size="icon" variant="ghost" className="h-7 w-7" title="Split: the clock-out is really a new clock-in" onClick={() => openSplit(p)} data-testid={`button-split-${p.id}`}>
+                            <Scissors className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        {canDelete && (
+                          <Button size="icon" variant="ghost" className="h-7 w-7" title="Delete this punch" onClick={() => setDeleteTarget({ id: p.id, date: e.date })} data-testid={`button-delete-${p.id}`}>
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </TableCell>
+                );
+              };
+              // A day where the person clocked out and back in with a gap over an
+              // hour is shown as one line per shift (same date). A shorter lunch
+              // stays a single row with the break. The day's overtime, source and
+              // status sit on the first shift line; the totals are unchanged.
+              const shifts = e.segments && e.segments.length > 1 ? e.segments : null;
+              if (!shifts) {
+                const seg0 = e.segments && e.segments.length === 1 ? e.segments[0] : undefined;
+                let inIso = seg0 ? seg0.clockIn : e.clockIn;
+                let outIso = seg0 ? seg0.clockOut : e.clockOut;
+                let inPunchId = seg0?.clockInPunchId ?? null;
+                let outPunchId = seg0?.clockOutPunchId ?? null;
+                let rowPunch = segPunch(seg0);
+                // A missing / in-progress day has no completed pair (no segment).
+                // Bind the row to the day's open/missing punch so the blank side
+                // can be filled in — which completes the shift.
+                if (canEdit && !seg0 && (e.status === "missing_punch" || e.status === "in_progress")) {
+                  const dayPunches = punchesByDate.get(e.date) ?? [];
+                  const mp = dayPunches.find((p) =>
+                    p.status === "missing_clockout" || p.status === "missing_clockin" ||
+                    (!!p.clockIn && !p.clockOut) || (!!p.clockOut && !p.clockIn),
+                  ) ?? (dayPunches.length === 1 ? dayPunches[0] : undefined);
+                  if (mp) {
+                    const missingOut = mp.status === "missing_clockout" || (!!mp.clockIn && !mp.clockOut);
+                    const missingIn = mp.status === "missing_clockin" || (!!mp.clockOut && !mp.clockIn);
+                    inIso = missingIn ? null : mp.clockIn;
+                    outIso = missingOut ? null : mp.clockOut;
+                    inPunchId = mp.id;
+                    outPunchId = mp.id;
+                    rowPunch = mp;
+                  }
+                }
+                return (
+                  <TableRow key={e.date} data-testid={`row-timesheet-${e.date}`}>
+                    <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
+                    <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
+                      <EditableClockCell iso={inIso} timezone={data.timezone} punchId={canEdit ? inPunchId : null} field="in" onSave={saveClock} missingLabel={inPunchId ? "Set" : undefined} />
+                    </TableCell>
+                    <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
+                      <EditableClockCell iso={outIso} timezone={data.timezone} punchId={canEdit ? outPunchId : null} field="out" onSave={saveClock} missingLabel={outPunchId ? "Set" : undefined} />
+                    </TableCell>
+                    <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
+                    <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>
+                      {hoursCell(e.totalHours ?? e.referenceHours ?? null)}
+                    </TableCell>
+                    <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-ot-${e.date}`}>
+                      {e.overtimeHours > 0 ? (
+                        <span className="text-amber-600 font-semibold">{formatHoursMinutes(e.overtimeHours)}</span>
+                      ) : "—"}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground" data-testid={`text-timesheet-source-${e.date}`}>
+                      {formatSources(e.sources)}
+                    </TableCell>
+                    <TableCell data-testid={`badge-timesheet-status-${e.date}`}>
+                      <TimesheetStatusBadge entry={e} />
+                    </TableCell>
+                    {actionsCellFor(rowPunch)}
+                  </TableRow>
+                );
+              }
+              return (
+                <Fragment key={e.date}>
+                  {shifts.map((seg, i) => (
+                    <TableRow key={`${e.date}-shift-${i}`} data-testid={`row-timesheet-${e.date}-shift-${i}`}>
+                      <TableCell className="text-sm font-medium">
+                        {formatDate(e.date)}
+                        {i > 0 && <span className="ml-1 text-[10px] uppercase tracking-wide text-muted-foreground">shift {i + 1}</span>}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{i === 0 ? e.dayOfWeek : ""}</TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        <EditableClockCell iso={seg.clockIn} timezone={data.timezone} punchId={canEdit ? seg.clockInPunchId : null} field="in" onSave={saveClock} />
+                      </TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        <EditableClockCell iso={seg.clockOut} timezone={data.timezone} punchId={canEdit ? seg.clockOutPunchId : null} field="out" onSave={saveClock} />
+                      </TableCell>
+                      <TableCell className="text-sm tabular-nums">{seg.breakMinutes ? `${seg.breakMinutes} min` : "—"}</TableCell>
+                      <TableCell className="text-sm font-semibold tabular-nums">{hoursCell(seg.hours)}</TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        {i === 0 && e.overtimeHours > 0 ? (
+                          <span className="text-amber-600 font-semibold">{formatHoursMinutes(e.overtimeHours)}</span>
+                        ) : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{i === 0 ? formatSources(e.sources) : ""}</TableCell>
+                      <TableCell>{i === 0 ? <TimesheetStatusBadge entry={e} /> : null}</TableCell>
+                      {actionsCellFor(segPunch(seg))}
+                    </TableRow>
+                  ))}
+                </Fragment>
+              );
+            })}
             <TableRow className="bg-muted/40 font-semibold" data-testid="row-timesheet-totals">
               <TableCell colSpan={5} className="text-right text-sm uppercase tracking-wider">Totals</TableCell>
               <TableCell className="text-sm tabular-nums" data-testid="text-timesheet-total-hours">
@@ -400,6 +778,7 @@ export function EmployeeTimesheetTable({
               <TableCell className="text-sm" data-testid="text-timesheet-days-worked">
                 {data.totals.daysWorked} day{data.totals.daysWorked === 1 ? "" : "s"} worked
               </TableCell>
+              {canEdit && <TableCell />}
             </TableRow>
           </TableBody>
         </Table>
@@ -413,6 +792,90 @@ export function EmployeeTimesheetTable({
         time-report formula: max(0, total hours &minus; days worked &times; 8h),
         so this number matches the Reports → Time report for the same range.
       </p>
+      {canEdit && (
+        <p className="text-xs text-muted-foreground" data-testid="text-timesheet-edit-hint">
+          Click a clock-in or clock-out to edit it — changes save instantly. Use
+          <span className="font-medium"> Revert</span> to undo this employee's edits;
+          once you close the employee, the edits are permanent.
+        </p>
+      )}
+
+      {/* Add punch */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent data-testid="dialog-timesheet-add-punch">
+          <DialogHeader>
+            <DialogTitle>Add punch</DialogTitle>
+            <DialogDescription>Enter a clock-in, a clock-out, or both. Leave one empty to record a missing punch on that side.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label htmlFor="ts-add-in">Clock In</Label>
+              <Input id="ts-add-in" type="datetime-local" value={addIn} onChange={(ev) => setAddIn(ev.target.value)} data-testid="input-timesheet-add-in" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ts-add-out">Clock Out</Label>
+              <Input id="ts-add-out" type="datetime-local" value={addOut} onChange={(ev) => setAddOut(ev.target.value)} data-testid="input-timesheet-add-out" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddOpen(false)} data-testid="button-timesheet-cancel-add">Cancel</Button>
+            <Button onClick={() => addMutation.mutate()} disabled={addMutation.isPending || (!addIn && !addOut)} data-testid="button-timesheet-save-add">
+              {addMutation.isPending ? "Adding…" : "Add punch"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Split shift */}
+      <Dialog open={!!splitTarget} onOpenChange={(open) => { if (!open) setSplitTarget(null); }}>
+        <DialogContent data-testid="dialog-timesheet-split-punch">
+          <DialogHeader>
+            <DialogTitle>Split shift</DialogTitle>
+            <DialogDescription>
+              Use this when a punch-out was missed and the next clock-in got absorbed into the same shift. Set the real
+              clock-out for the first shift; the second punch becomes its own shift.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label htmlFor="ts-split-day1out">Real clock-out for the first shift</Label>
+              <Input id="ts-split-day1out" type="datetime-local" value={splitDay1Out} onChange={(ev) => setSplitDay1Out(ev.target.value)} data-testid="input-timesheet-split-day1out" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ts-split-newin">New shift — clock-in</Label>
+              <Input id="ts-split-newin" type="datetime-local" value={splitNewIn} onChange={(ev) => setSplitNewIn(ev.target.value)} data-testid="input-timesheet-split-newin" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ts-split-newout">New shift — clock-out (optional)</Label>
+              <Input id="ts-split-newout" type="datetime-local" value={splitNewOut} onChange={(ev) => setSplitNewOut(ev.target.value)} data-testid="input-timesheet-split-newout" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSplitTarget(null)} data-testid="button-timesheet-cancel-split">Cancel</Button>
+            <Button onClick={() => splitMutation.mutate()} disabled={splitMutation.isPending || !splitDay1Out || !splitNewIn} data-testid="button-timesheet-save-split">
+              {splitMutation.isPending ? "Splitting…" : "Split shift"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete punch */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent data-testid="dialog-timesheet-delete-punch">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this punch?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget ? `This permanently removes the punch on ${formatDate(deleteTarget.date)}. This cannot be undone.` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} data-testid="button-timesheet-cancel-delete">Cancel</Button>
+            <Button variant="destructive" onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)} disabled={deleteMutation.isPending} data-testid="button-timesheet-confirm-delete">
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

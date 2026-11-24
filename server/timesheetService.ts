@@ -18,12 +18,36 @@ export type TimesheetStatus =
   | "confirmation"
   | "none";
 
+// One worked shift within a day. A day where the employee clocked out and back
+// in with a gap LONGER than SHIFT_SPLIT_THRESHOLD_MIN is shown as two (or more)
+// of these — a separate line per shift, same date — instead of a single row
+// with a long break. A shorter gap (an ordinary lunch) stays folded into one
+// shift's `breakMinutes`. Display only: the day's totalHours/overtime/pay (which
+// come from the ledger) are unchanged whether or not the day is shown split.
+export interface TimesheetSegment {
+  clockIn: string | null;
+  clockOut: string | null;
+  // Short gaps (<= threshold) folded into this shift, in minutes.
+  breakMinutes: number;
+  // Worked hours for this shift (sum of its punch pairs). Reference value for
+  // attendance-only employees; for everyone else the shifts sum to the day.
+  hours: number;
+  // The punch records whose clock-in / clock-out bound this shift, so the inline
+  // editor can edit the right punch when the day is shown as separate shifts.
+  clockInPunchId: string | null;
+  clockOutPunchId: string | null;
+}
+
 export interface TimesheetEntry {
   date: string;
   dayOfWeek: string;
   clockIn: string | null;
   clockOut: string | null;
   breakMinutes: number;
+  // Per-shift breakdown of the day (see TimesheetSegment). Present only when the
+  // day has at least one completed punch pair; the UI shows separate lines when
+  // there is more than one shift, and otherwise renders the single day row.
+  segments?: TimesheetSegment[];
   totalHours: number | null;
   // Worked hours shown for REFERENCE only when totalHours is not the pay basis
   // (attendance/confirmation-only employees are paid per day, not per hour). The
@@ -64,6 +88,11 @@ export interface TimesheetResult {
 }
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// A gap between clocking out and back in that exceeds this many minutes splits
+// the day into separate shifts (a new line, same date); a shorter gap is an
+// ordinary lunch, folded into the shift's break. 60 min per the Ahava rule.
+const SHIFT_SPLIT_THRESHOLD_MIN = 60;
 
 /**
  * Single per-punch worked-hours input, shared by the timesheet and the time
@@ -297,6 +326,63 @@ export async function buildEmployeeTimesheet(
       }
       breakMin += Math.round(gapMinutes);
 
+      // Per-shift segments: group the day's completed punch pairs into shifts,
+      // starting a NEW shift whenever the gap from the previous punch-out to the
+      // next punch-in exceeds the split threshold (an ordinary lunch stays folded
+      // into the shift's break). Each segment carries the punch ids that bound it
+      // so the inline editor can target the right punch. Display only — the day's
+      // ledger hours/OT/pay are unchanged.
+      const completedPairs = datePunches
+        .filter((p) => p.clockIn && p.clockOut && p.status !== MISSING_CLOCKOUT_STATUS)
+        .map((p) => ({
+          id: p.id,
+          inMs: new Date(p.clockIn as unknown as string).getTime(),
+          inIso: new Date(p.clockIn as unknown as string).toISOString(),
+          outIso: new Date(p.clockOut as unknown as string).toISOString(),
+          hours: punchWorkedHours(p, now, maxShiftHours),
+        }))
+        .sort((a, b) => a.inMs - b.inMs);
+
+      let segments: TimesheetSegment[] | undefined;
+      if (completedPairs.length > 0) {
+        segments = [];
+        let cur: {
+          clockInIso: string; clockOutIso: string; breakMin: number; hours: number;
+          inId: string; outId: string; lastOutMs: number;
+        } | null = null;
+        for (const pair of completedPairs) {
+          const outMs = new Date(pair.outIso).getTime();
+          if (cur && pair.inMs - cur.lastOutMs <= SHIFT_SPLIT_THRESHOLD_MIN * 60000) {
+            // Short gap → same shift: fold the lunch into this shift's break.
+            const gap = pair.inMs - cur.lastOutMs;
+            if (gap > 0) cur.breakMin += Math.round(gap / 60000);
+            cur.clockOutIso = pair.outIso;
+            cur.outId = pair.id;
+            cur.hours += pair.hours;
+            cur.lastOutMs = outMs;
+          } else {
+            if (cur) {
+              segments.push({
+                clockIn: cur.clockInIso, clockOut: cur.clockOutIso,
+                breakMinutes: cur.breakMin, hours: Math.round(cur.hours * 100) / 100,
+                clockInPunchId: cur.inId, clockOutPunchId: cur.outId,
+              });
+            }
+            cur = {
+              clockInIso: pair.inIso, clockOutIso: pair.outIso, breakMin: 0, hours: pair.hours,
+              inId: pair.id, outId: pair.id, lastOutMs: outMs,
+            };
+          }
+        }
+        if (cur) {
+          segments.push({
+            clockIn: cur.clockInIso, clockOut: cur.clockOutIso,
+            breakMinutes: cur.breakMin, hours: Math.round(cur.hours * 100) / 100,
+            clockInPunchId: cur.inId, clockOutPunchId: cur.outId,
+          });
+        }
+      }
+
       // Hours + combined overtime come straight from the ledger row for this
       // day (the materialized engine split). Fall back to the raw worked-hours
       // sum only for a zero/edge day the ledger doesn't persist a row for.
@@ -340,6 +426,7 @@ export async function buildEmployeeTimesheet(
         ptoType: null,
         bonusAmount: Math.round(dayBonus * 100) / 100,
         sources: sourcesForDay,
+        ...(segments && segments.length > 0 ? { segments } : {}),
       };
       entries.push(entry);
     } else if (ptoForDay.length > 0) {

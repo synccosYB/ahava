@@ -19,12 +19,10 @@ import {
 import { EmptyState } from "@/components/empty-state";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
 import { EmployeeReviewRules } from "@/components/employee-review-rules";
-import { TimesheetEditor } from "@/components/timesheet-editor";
 import { WorkDateBackfillCard } from "@/components/workdate-backfill-card";
 import { OverlongShiftReconcileCard } from "@/components/overlong-shift-reconcile-card";
 import { TodaysClockOutsCard } from "@/components/todays-clockouts-card";
 import { LongShiftApprovalsCard } from "@/components/long-shift-approvals-card";
-import { usePermissions } from "@/hooks/use-permissions";
 import { FileText, Loader2, ChevronRight, ChevronDown, CalendarRange, RefreshCw, Save, CalendarDays } from "lucide-react";
 import { formatHoursMinutes, formatDate } from "@/lib/utils";
 import { formatRangeLabel } from "@/lib/payroll-week";
@@ -125,8 +123,6 @@ function DateField({ label, value, onChange, testId }: {
 export default function TimeSheetReviewPage() {
   const { toast } = useToast();
   const { user } = useAuth();
-  const { has } = usePermissions();
-  const canEdit = has("attendance.edit");
 
   const initial = useMemo(() => loadPrefs(user?.id), [user?.id]);
   const [period, setPeriod] = useState<Period>(initial.period);
@@ -378,15 +374,9 @@ export default function TimeSheetReviewPage() {
                                   startDate={range.start}
                                   endDate={range.end}
                                   showExport
+                                  editable
                                   exportFileName={`timesheet-${r.employeeName.replace(/\s+/g, "_")}-${range.start}-to-${range.end}`}
                                 />
-                                {canEdit && (
-                                  <TimesheetEditor
-                                    employeeId={r.id}
-                                    startDate={range.start}
-                                    endDate={range.end}
-                                  />
-                                )}
                               </div>
                             </TableCell>
                           </TableRow>
