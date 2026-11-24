@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, RotateCcw } from "lucide-react";
+import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, Pencil } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { EmptyState } from "@/components/empty-state";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -94,54 +94,6 @@ export type TimesheetEntry = {
 
 function formatMoney(n: number): string {
   return Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`;
-}
-
-// A clock-in/out cell that edits in place and saves instantly. Click the time to
-// turn it into a datetime-local field; Enter or blur commits (and writes), Escape
-// cancels. Falls back to plain text when there's no backing punch to edit.
-function EditableClockCell({
-  iso, timezone, punchId, field, onSave, missingLabel,
-}: {
-  iso: string | null;
-  timezone?: string | null;
-  punchId: string | null;
-  field: "in" | "out";
-  onSave: (punchId: string, field: "in" | "out", local: string) => void;
-  missingLabel?: string;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-  const shown = iso ? formatTime12InTz(iso, timezone) : (missingLabel ?? "—");
-  if (!punchId) return <>{shown}</>;
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        className="tabular-nums underline decoration-dotted decoration-muted-foreground/50 underline-offset-2 hover:text-primary"
-        onClick={() => { setDraft(toLocalInput(iso)); setEditing(true); }}
-        title="Click to edit — saves instantly"
-        data-testid={`edit-clock-${field}-${punchId}`}
-      >
-        {shown}
-      </button>
-    );
-  }
-  const commit = () => { setEditing(false); onSave(punchId, field, draft); };
-  return (
-    <input
-      type="datetime-local"
-      autoFocus
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") { e.preventDefault(); commit(); }
-        else if (e.key === "Escape") { setEditing(false); }
-      }}
-      className="h-8 rounded border border-input bg-background px-2 text-sm"
-      data-testid={`input-clock-${field}-${punchId}`}
-    />
-  );
 }
 
 function formatSources(sources: TimesheetEntry["sources"]): string {
@@ -247,9 +199,9 @@ export function EmployeeTimesheetTable({
   // Period navigation (◀ / ▶ / Current + range label) rendered INSIDE the
   // summary bar, so the totals and the controls that change them share one spot.
   navSlot?: ReactNode;
-  // When true (Time Sheet Review), clock-in/out are edited inline — they save
-  // instantly, with a per-employee "Revert" that undoes this session's edits
-  // until the row is closed, plus Add / Split / Delete. Needs attendance.edit.
+  // When true, each row gets a pencil that opens one popup to edit that day's
+  // clock-in, clock-out and work date, plus Add / Split / Delete. Needs
+  // attendance.edit (delete needs attendance.delete).
   editable?: boolean;
 }) {
   const { data, isLoading, isError } = useQuery<TimesheetResponse>({
@@ -306,15 +258,22 @@ export function EmployeeTimesheetTable({
     queryClient.invalidateQueries({ queryKey: ["/api/attendance/punches"] });
   };
 
-  // Revert: the ORIGINAL state of every punch edited since this employee's row
-  // was opened. Cleared when the employee or range changes (and discarded on
-  // unmount) — so leaving the employee makes the edits permanent.
-  const originals = useRef<Map<string, { clockIn: string | null; clockOut: string | null; workDate: string }>>(new Map());
-  const [editCount, setEditCount] = useState(0);
-  useEffect(() => {
-    originals.current = new Map();
-    setEditCount(0);
-  }, [employeeId, startDate, endDate]);
+  // Edit dialog — a pencil on each row opens one popup to edit that day's
+  // clock-in, clock-out AND work date (plus an optional reason), all in one place.
+  const [editPunch, setEditPunch] = useState<RawPunch | null>(null);
+  const [editIn, setEditIn] = useState("");
+  const [editOut, setEditOut] = useState("");
+  const [editWorkDate, setEditWorkDate] = useState("");
+  const [editReason, setEditReason] = useState("");
+  const openEdit = (p: RawPunch) => {
+    setEditPunch(p);
+    setEditIn(toLocalInput(p.clockIn));
+    // A missing clock-out carries only a placeholder; start it empty so the real
+    // time is entered rather than the placeholder edited.
+    setEditOut(p.status === "missing_clockout" ? "" : toLocalInput(p.clockOut));
+    setEditWorkDate(p.workDate);
+    setEditReason("");
+  };
 
   const editMutation = useMutation({
     mutationFn: async (vars: { id: string; clockIn: string | null; clockOut: string | null; workDate: string; reason: string }) => {
@@ -323,52 +282,19 @@ export function EmployeeTimesheetTable({
       });
       return res.json();
     },
-    onSuccess: () => invalidate(),
+    onSuccess: () => { toast({ title: "Punch updated" }); invalidate(); setEditPunch(null); },
     onError: (err: any) => toast({ title: "Could not save punch", description: err?.message ?? "Please try again.", variant: "destructive" }),
   });
-
-  // Instant save of one clock field. Captures the punch's original state (once)
-  // for Revert, then writes the change immediately.
-  const saveClock = (punchId: string, field: "in" | "out", localValue: string) => {
-    const punch = punchById.get(punchId);
-    if (!punch) return;
-    const nextIso = fromLocalInput(localValue);
-    const curIso = field === "in" ? punch.clockIn : punch.clockOut;
-    if (nextIso === curIso) return; // no change
-    // Editing the clock-IN's date moves the shift to that day (the work date
-    // follows the clock-in). A time-only change keeps the same work date.
-    const workDate = field === "in" && localValue ? localValue.split("T")[0] : punch.workDate;
-    if (!originals.current.has(punchId)) {
-      originals.current.set(punchId, { clockIn: punch.clockIn, clockOut: punch.clockOut, workDate: punch.workDate });
-      setEditCount((c) => c + 1);
-    }
+  const submitEdit = () => {
+    if (!editPunch) return;
     editMutation.mutate({
-      id: punchId,
-      clockIn: field === "in" ? nextIso : punch.clockIn,
-      clockOut: field === "out" ? nextIso : punch.clockOut,
-      workDate,
-      reason: "Inline edit on Time Sheet Review",
+      id: editPunch.id,
+      clockIn: fromLocalInput(editIn),
+      clockOut: fromLocalInput(editOut),
+      workDate: editWorkDate,
+      reason: editReason.trim(),
     });
   };
-
-  const revertMutation = useMutation({
-    mutationFn: async () => {
-      const entries = Array.from(originals.current.entries());
-      for (const [id, orig] of entries) {
-        await apiRequest("PATCH", `/api/attendance/punches/${id}`, {
-          clockIn: orig.clockIn, clockOut: orig.clockOut, workDate: orig.workDate,
-          reason: "Reverted inline edits on Time Sheet Review",
-        });
-      }
-    },
-    onSuccess: () => {
-      originals.current = new Map();
-      setEditCount(0);
-      invalidate();
-      toast({ title: "Changes reverted", description: "This employee's clock edits were undone." });
-    },
-    onError: (err: any) => toast({ title: "Could not revert", description: err?.message ?? "Please try again.", variant: "destructive" }),
-  });
 
   // Add / Delete / Split — the less-common repairs, kept as compact controls.
   const [addOpen, setAddOpen] = useState(false);
@@ -581,23 +507,9 @@ export function EmployeeTimesheetTable({
         <div className="flex items-center gap-2 flex-wrap">
           {navSlot}
           {canEdit && (
-            <>
-              {editCount > 0 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => revertMutation.mutate()}
-                  disabled={revertMutation.isPending}
-                  title="Undo the clock edits you've made on this employee. Once you close this employee, the changes are permanent."
-                  data-testid="button-timesheet-revert"
-                >
-                  <RotateCcw className="h-4 w-4 mr-2" /> {revertMutation.isPending ? "Reverting…" : `Revert (${editCount})`}
-                </Button>
-              )}
-              <Button variant="outline" size="sm" onClick={openAdd} data-testid="button-timesheet-add-punch">
-                <Plus className="h-4 w-4 mr-2" /> Add punch
-              </Button>
-            </>
+            <Button variant="outline" size="sm" onClick={openAdd} data-testid="button-timesheet-add-punch">
+              <Plus className="h-4 w-4 mr-2" /> Add punch
+            </Button>
           )}
           {showExport && (
             <>
@@ -654,13 +566,16 @@ export function EmployeeTimesheetTable({
               const segPunch = (seg?: TimesheetSegment): RawPunch | undefined =>
                 seg && seg.clockInPunchId && seg.clockInPunchId === seg.clockOutPunchId
                   ? punchById.get(seg.clockInPunchId) : undefined;
-              // Per-row actions (Split / Delete) for a given punch.
+              // Per-row actions: Edit (pencil → popup) + Split / Delete.
               const actionsCellFor = (p?: RawPunch) => {
                 if (!canEdit) return null;
                 return (
                   <TableCell className="text-right">
                     {p && (
                       <div className="flex items-center justify-end gap-1">
+                        <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit this day's clock & work date" onClick={() => openEdit(p)} data-testid={`button-edit-${p.id}`}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
                         {p.clockIn && p.clockOut && p.status !== "missing_clockout" && (
                           <Button size="icon" variant="ghost" className="h-7 w-7" title="Split: the clock-out is really a new clock-in" onClick={() => openSplit(p)} data-testid={`button-split-${p.id}`}>
                             <Scissors className="h-3.5 w-3.5" />
@@ -683,39 +598,26 @@ export function EmployeeTimesheetTable({
               const shifts = e.segments && e.segments.length > 1 ? e.segments : null;
               if (!shifts) {
                 const seg0 = e.segments && e.segments.length === 1 ? e.segments[0] : undefined;
-                let inIso = seg0 ? seg0.clockIn : e.clockIn;
-                let outIso = seg0 ? seg0.clockOut : e.clockOut;
-                let inPunchId = seg0?.clockInPunchId ?? null;
-                let outPunchId = seg0?.clockOutPunchId ?? null;
+                // The punch this row's pencil edits: the single shift's punch, or
+                // (for a missing / in-progress day, which has no segment) the day's
+                // one open/missing punch.
                 let rowPunch = segPunch(seg0);
-                // A missing / in-progress day has no completed pair (no segment).
-                // Bind the row to the day's open/missing punch so the blank side
-                // can be filled in — which completes the shift.
-                if (canEdit && !seg0 && (e.status === "missing_punch" || e.status === "in_progress")) {
+                if (canEdit && !rowPunch && (e.status === "missing_punch" || e.status === "in_progress")) {
                   const dayPunches = punchesByDate.get(e.date) ?? [];
-                  const mp = dayPunches.find((p) =>
+                  rowPunch = dayPunches.find((p) =>
                     p.status === "missing_clockout" || p.status === "missing_clockin" ||
                     (!!p.clockIn && !p.clockOut) || (!!p.clockOut && !p.clockIn),
                   ) ?? (dayPunches.length === 1 ? dayPunches[0] : undefined);
-                  if (mp) {
-                    const missingOut = mp.status === "missing_clockout" || (!!mp.clockIn && !mp.clockOut);
-                    const missingIn = mp.status === "missing_clockin" || (!!mp.clockOut && !mp.clockIn);
-                    inIso = missingIn ? null : mp.clockIn;
-                    outIso = missingOut ? null : mp.clockOut;
-                    inPunchId = mp.id;
-                    outPunchId = mp.id;
-                    rowPunch = mp;
-                  }
                 }
                 return (
                   <TableRow key={e.date} data-testid={`row-timesheet-${e.date}`}>
                     <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
                     <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
-                      <EditableClockCell iso={inIso} timezone={data.timezone} punchId={canEdit ? inPunchId : null} field="in" onSave={saveClock} missingLabel={inPunchId ? "Set" : undefined} />
+                      {e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "—"}
                     </TableCell>
                     <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
-                      <EditableClockCell iso={outIso} timezone={data.timezone} punchId={canEdit ? outPunchId : null} field="out" onSave={saveClock} missingLabel={outPunchId ? "Set" : undefined} />
+                      {e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "—"}
                     </TableCell>
                     <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
                     <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>
@@ -746,10 +648,10 @@ export function EmployeeTimesheetTable({
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{i === 0 ? e.dayOfWeek : ""}</TableCell>
                       <TableCell className="text-sm tabular-nums">
-                        <EditableClockCell iso={seg.clockIn} timezone={data.timezone} punchId={canEdit ? seg.clockInPunchId : null} field="in" onSave={saveClock} />
+                        {seg.clockIn ? formatTime12InTz(seg.clockIn, data.timezone) : "—"}
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">
-                        <EditableClockCell iso={seg.clockOut} timezone={data.timezone} punchId={canEdit ? seg.clockOutPunchId : null} field="out" onSave={saveClock} />
+                        {seg.clockOut ? formatTime12InTz(seg.clockOut, data.timezone) : "—"}
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">{seg.breakMinutes ? `${seg.breakMinutes} min` : "—"}</TableCell>
                       <TableCell className="text-sm font-semibold tabular-nums">{hoursCell(seg.hours)}</TableCell>
@@ -794,11 +696,47 @@ export function EmployeeTimesheetTable({
       </p>
       {canEdit && (
         <p className="text-xs text-muted-foreground" data-testid="text-timesheet-edit-hint">
-          Click a clock-in or clock-out to edit it — changes save instantly. Use
-          <span className="font-medium"> Revert</span> to undo this employee's edits;
-          once you close the employee, the edits are permanent.
+          Use the <span className="font-medium">pencil</span> on a row to edit that day's clock-in,
+          clock-out and work date.
         </p>
       )}
+
+      {/* Edit day's clock */}
+      <Dialog open={!!editPunch} onOpenChange={(open) => { if (!open) setEditPunch(null); }}>
+        <DialogContent data-testid="dialog-timesheet-edit-punch">
+          <DialogHeader>
+            <DialogTitle>Edit clock</DialogTitle>
+            <DialogDescription>{editPunch ? formatDate(editPunch.workDate) : ""}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label htmlFor="ts-edit-workdate">Work date</Label>
+              <Input id="ts-edit-workdate" type="date" value={editWorkDate} onChange={(ev) => setEditWorkDate(ev.target.value)} data-testid="input-timesheet-edit-workdate" />
+              <p className="text-xs text-muted-foreground">The day this shift is counted on. Change it to move a shift that landed on the wrong day.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ts-edit-in">Clock In</Label>
+              <Input id="ts-edit-in" type="datetime-local" value={editIn} onChange={(ev) => setEditIn(ev.target.value)} data-testid="input-timesheet-edit-in" />
+              <p className="text-xs text-muted-foreground">Leave empty to keep it a missing punch (clock-out only).</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ts-edit-out">Clock Out</Label>
+              <Input id="ts-edit-out" type="datetime-local" value={editOut} onChange={(ev) => setEditOut(ev.target.value)} data-testid="input-timesheet-edit-out" />
+              <p className="text-xs text-muted-foreground">Leave empty to mark the shift still in progress (or a missing punch).</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ts-edit-reason">Reason (optional)</Label>
+              <Textarea id="ts-edit-reason" value={editReason} onChange={(ev) => setEditReason(ev.target.value)} placeholder="Why is this punch being changed?" data-testid="input-timesheet-edit-reason" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditPunch(null)} data-testid="button-timesheet-cancel-edit">Cancel</Button>
+            <Button onClick={submitEdit} disabled={editMutation.isPending} data-testid="button-timesheet-save-edit">
+              {editMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add punch */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
