@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, Pencil } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -63,7 +64,20 @@ export type TimesheetSegment = {
   hours: number;
   clockInPunchId: string | null;
   clockOutPunchId: string | null;
+  // Break out/in times for breaks taken by clocking out and back in (folded
+  // short gaps). Empty when the break was only a duration (break button) / none.
+  breaks?: { start: string; end: string; minutes: number }[];
 };
+
+// Punch edit history (from /api/attendance/punch-change-marks), keyed by punch id.
+type PunchFieldChange = { field: "clockIn" | "clockOut" | "workDate"; from: string | null; to: string | null };
+type PunchEditEvent = { at: string; by: string; reason: string | null; changes: PunchFieldChange[] };
+type PunchMark = {
+  clockIn?: { from: string | null; to: string | null; by: string; at: string };
+  clockOut?: { from: string | null; to: string | null; by: string; at: string };
+  edits: PunchEditEvent[];
+};
+type PunchMarks = Record<string, PunchMark>;
 
 export type TimesheetEntry = {
   date: string;
@@ -178,6 +192,72 @@ export function EmployeeTimesheetCard({ userId }: { userId: string }) {
   );
 }
 
+function formatEditWhen(at: string): string {
+  const d = new Date(at);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+function fmtTimeOrNone(iso: string | null, tz?: string | null): string {
+  return iso ? formatTime12InTz(iso, tz) : "(none)";
+}
+
+// A clock time that turns BLUE when the backing punch's that-side was edited, and
+// on hover shows the full edit history (old → new, by whom, when, and why).
+function EditedTime({ iso, tz, mark, field }: {
+  iso: string | null; tz?: string | null; mark?: PunchMark; field: "clockIn" | "clockOut";
+}) {
+  const display = iso ? formatTime12InTz(iso, tz) : "—";
+  const fieldMark = field === "clockIn" ? mark?.clockIn : mark?.clockOut;
+  if (!fieldMark) return <>{display}</>;
+  const history = (mark?.edits ?? []).filter((e) => e.changes.some((c) => c.field === field));
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="text-blue-600 dark:text-blue-400 underline decoration-dotted underline-offset-2 cursor-help" data-testid={`edited-${field}`}>
+          {display}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        <div className="text-xs font-semibold mb-1">Edited · {history.length} change{history.length === 1 ? "" : "s"}</div>
+        <div className="space-y-1.5">
+          {history.map((e, i) => {
+            const c = e.changes.find((ch) => ch.field === field)!;
+            return (
+              <div key={i} className="text-xs">
+                <div className="tabular-nums">{fmtTimeOrNone(c.from, tz)} → <span className="font-medium">{fmtTimeOrNone(c.to, tz)}</span></div>
+                <div className="text-muted-foreground">by {e.by} · {formatEditWhen(e.at)}{e.reason ? ` · "${e.reason}"` : ""}</div>
+              </div>
+            );
+          })}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+// Break Start / Break End cell contents for a shift: real out/in times when the
+// break was a clock-out-and-back-in (folded gap), else the bare duration.
+function breakStartEnd(
+  breaks: TimesheetSegment["breaks"], fallbackMinutes: number, tz?: string | null,
+): { start: ReactNode; end: ReactNode } {
+  if (breaks && breaks.length > 0) {
+    const first = breaks[0];
+    const title = breaks.map((b) => `${formatTime12InTz(b.start, tz)}–${formatTime12InTz(b.end, tz)} (${b.minutes}m)`).join(", ");
+    const extra = breaks.length > 1 ? <span className="ml-1 text-[10px] text-muted-foreground">+{breaks.length - 1}</span> : null;
+    return {
+      start: <span className="tabular-nums" title={title}>{formatTime12InTz(first.start, tz)}{extra}</span>,
+      end: <span className="tabular-nums" title={title}>{formatTime12InTz(first.end, tz)}</span>,
+    };
+  }
+  if (fallbackMinutes > 0) {
+    return {
+      start: <span className="text-muted-foreground" title="Break recorded as a duration (no clock-out/in times)">{fallbackMinutes} min</span>,
+      end: <span className="text-muted-foreground">—</span>,
+    };
+  }
+  return { start: <>—</>, end: <>—</> };
+}
+
 export function EmployeeTimesheetTable({
   employeeId,
   startDate,
@@ -253,9 +333,24 @@ export function EmployeeTimesheetTable({
     return m;
   }, [punchData]);
 
+  // Edit history for the employee's punches — drives the blue "edited" highlight
+  // and the hover showing who/when/old→new/reason (full history per time).
+  const { data: marksData } = useQuery<{ marks: PunchMarks }>({
+    queryKey: ["/api/attendance/punch-change-marks", employeeId],
+    queryFn: async () => {
+      const p = new URLSearchParams({ employeeId });
+      const res = await fetch(`/api/attendance/punch-change-marks?${p.toString()}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load punch changes");
+      return res.json();
+    },
+    enabled: canEdit && !!employeeId,
+  });
+  const marks = marksData?.marks ?? {};
+
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/attendance/timesheet"] });
     queryClient.invalidateQueries({ queryKey: ["/api/attendance/punches"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/attendance/punch-change-marks"] });
   };
 
   // Edit dialog — a pencil on each row opens one popup to edit that day's
@@ -543,7 +638,8 @@ export function EmployeeTimesheetTable({
               <TableHead className="text-xs font-medium uppercase tracking-wider">Day</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Clock In</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Clock Out</TableHead>
-              <TableHead className="text-xs font-medium uppercase tracking-wider">Break</TableHead>
+              <TableHead className="text-xs font-medium uppercase tracking-wider">Break Start</TableHead>
+              <TableHead className="text-xs font-medium uppercase tracking-wider">Break End</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Total Hours</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Overtime</TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wider">Source</TableHead>
@@ -609,17 +705,21 @@ export function EmployeeTimesheetTable({
                     (!!p.clockIn && !p.clockOut) || (!!p.clockOut && !p.clockIn),
                   ) ?? (dayPunches.length === 1 ? dayPunches[0] : undefined);
                 }
+                const inPunchId = seg0?.clockInPunchId ?? rowPunch?.id ?? null;
+                const outPunchId = seg0?.clockOutPunchId ?? rowPunch?.id ?? null;
+                const bk = breakStartEnd(seg0?.breaks, e.breakMinutes, data.timezone);
                 return (
                   <TableRow key={e.date} data-testid={`row-timesheet-${e.date}`}>
                     <TableCell className="text-sm font-medium">{formatDate(e.date)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{e.dayOfWeek}</TableCell>
                     <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-in-${e.date}`}>
-                      {e.clockIn ? formatTime12InTz(e.clockIn, data.timezone) : "—"}
+                      <EditedTime iso={e.clockIn} tz={data.timezone} mark={inPunchId ? marks[inPunchId] : undefined} field="clockIn" />
                     </TableCell>
                     <TableCell className="text-sm tabular-nums" data-testid={`text-timesheet-out-${e.date}`}>
-                      {e.clockOut ? formatTime12InTz(e.clockOut, data.timezone) : "—"}
+                      <EditedTime iso={e.clockOut} tz={data.timezone} mark={outPunchId ? marks[outPunchId] : undefined} field="clockOut" />
                     </TableCell>
-                    <TableCell className="text-sm tabular-nums">{e.breakMinutes ? `${e.breakMinutes} min` : "—"}</TableCell>
+                    <TableCell className="text-sm tabular-nums">{bk.start}</TableCell>
+                    <TableCell className="text-sm tabular-nums">{bk.end}</TableCell>
                     <TableCell className="text-sm font-semibold tabular-nums" data-testid={`text-timesheet-hours-${e.date}`}>
                       {hoursCell(e.totalHours ?? e.referenceHours ?? null)}
                     </TableCell>
@@ -640,7 +740,9 @@ export function EmployeeTimesheetTable({
               }
               return (
                 <Fragment key={e.date}>
-                  {shifts.map((seg, i) => (
+                  {shifts.map((seg, i) => {
+                    const bk = breakStartEnd(seg.breaks, seg.breakMinutes, data.timezone);
+                    return (
                     <TableRow key={`${e.date}-shift-${i}`} data-testid={`row-timesheet-${e.date}-shift-${i}`}>
                       <TableCell className="text-sm font-medium">
                         {formatDate(e.date)}
@@ -648,12 +750,13 @@ export function EmployeeTimesheetTable({
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{i === 0 ? e.dayOfWeek : ""}</TableCell>
                       <TableCell className="text-sm tabular-nums">
-                        {seg.clockIn ? formatTime12InTz(seg.clockIn, data.timezone) : "—"}
+                        <EditedTime iso={seg.clockIn} tz={data.timezone} mark={seg.clockInPunchId ? marks[seg.clockInPunchId] : undefined} field="clockIn" />
                       </TableCell>
                       <TableCell className="text-sm tabular-nums">
-                        {seg.clockOut ? formatTime12InTz(seg.clockOut, data.timezone) : "—"}
+                        <EditedTime iso={seg.clockOut} tz={data.timezone} mark={seg.clockOutPunchId ? marks[seg.clockOutPunchId] : undefined} field="clockOut" />
                       </TableCell>
-                      <TableCell className="text-sm tabular-nums">{seg.breakMinutes ? `${seg.breakMinutes} min` : "—"}</TableCell>
+                      <TableCell className="text-sm tabular-nums">{bk.start}</TableCell>
+                      <TableCell className="text-sm tabular-nums">{bk.end}</TableCell>
                       <TableCell className="text-sm font-semibold tabular-nums">{hoursCell(seg.hours)}</TableCell>
                       <TableCell className="text-sm tabular-nums">
                         {i === 0 && e.overtimeHours > 0 ? (
@@ -664,12 +767,13 @@ export function EmployeeTimesheetTable({
                       <TableCell>{i === 0 ? <TimesheetStatusBadge entry={e} /> : null}</TableCell>
                       {actionsCellFor(segPunch(seg))}
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </Fragment>
               );
             })}
             <TableRow className="bg-muted/40 font-semibold" data-testid="row-timesheet-totals">
-              <TableCell colSpan={5} className="text-right text-sm uppercase tracking-wider">Totals</TableCell>
+              <TableCell colSpan={6} className="text-right text-sm uppercase tracking-wider">Totals</TableCell>
               <TableCell className="text-sm tabular-nums" data-testid="text-timesheet-total-hours">
                 {formatHoursMinutes(data.totals.totalHours)}
               </TableCell>

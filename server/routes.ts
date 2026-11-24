@@ -3409,7 +3409,12 @@ export async function registerRoutes(
       });
 
       type Mark = { from: string | null; to: string | null; by: string; at: string | Date | null };
-      const marks: Record<string, { clockIn?: Mark; clockOut?: Mark }> = {};
+      type FieldChange = { field: "clockIn" | "clockOut" | "workDate"; from: string | null; to: string | null };
+      // One edit event = one audit row: who/when/why plus every field it changed.
+      type EditEvent = { at: string | Date | null; by: string; reason: string | null; changes: FieldChange[] };
+      // Per punch: the LATEST change to each field (drives the "edited" highlight)
+      // plus the FULL chronological edit history (newest-first) for the hover.
+      const marks: Record<string, { clockIn?: Mark; clockOut?: Mark; edits: EditEvent[] }> = {};
       const actorNameCache = new Map<string, string>();
       const resolveActor = async (id: string | null | undefined): Promise<string> => {
         if (!id) return "System";
@@ -3427,12 +3432,23 @@ export async function registerRoutes(
         if (!punchId) continue;
         const o = (l.oldValue as any) || {};
         const n = (l.newValue as any) || {};
-        const entry = marks[punchId] ?? (marks[punchId] = {});
-        if (!entry.clockIn && String(o.clockIn ?? "") !== String(n.clockIn ?? "")) {
-          entry.clockIn = { from: o.clockIn ?? null, to: n.clockIn ?? null, by: await resolveActor(l.actorUserId), at: l.createdAt };
+        const entry = marks[punchId] ?? (marks[punchId] = { edits: [] });
+        const changes: FieldChange[] = [];
+        if (String(o.clockIn ?? "") !== String(n.clockIn ?? "")) changes.push({ field: "clockIn", from: o.clockIn ?? null, to: n.clockIn ?? null });
+        if (String(o.clockOut ?? "") !== String(n.clockOut ?? "")) changes.push({ field: "clockOut", from: o.clockOut ?? null, to: n.clockOut ?? null });
+        if (String(o.workDate ?? "") !== String(n.workDate ?? "")) changes.push({ field: "workDate", from: o.workDate ?? null, to: n.workDate ?? null });
+        if (changes.length === 0) continue;
+        const by = await resolveActor(l.actorUserId);
+        const reason = ((l.context as any)?.reason as string | null) ?? null;
+        // Logs are newest-first, so the first time we see a field is its latest edit.
+        entry.edits.push({ at: l.createdAt, by, reason, changes });
+        if (!entry.clockIn) {
+          const c = changes.find((ch) => ch.field === "clockIn");
+          if (c) entry.clockIn = { from: c.from, to: c.to, by, at: l.createdAt };
         }
-        if (!entry.clockOut && String(o.clockOut ?? "") !== String(n.clockOut ?? "")) {
-          entry.clockOut = { from: o.clockOut ?? null, to: n.clockOut ?? null, by: await resolveActor(l.actorUserId), at: l.createdAt };
+        if (!entry.clockOut) {
+          const c = changes.find((ch) => ch.field === "clockOut");
+          if (c) entry.clockOut = { from: c.from, to: c.to, by, at: l.createdAt };
         }
       }
 

@@ -40,6 +40,11 @@ export interface TimesheetSegment {
   // editor can edit the right punch when the day is shown as separate shifts.
   clockInPunchId: string | null;
   clockOutPunchId: string | null;
+  // In-shift breaks taken by clocking OUT and back IN (a folded gap <= threshold):
+  // the clock-out time that BEGAN the break and the clock-in time that ENDED it.
+  // Empty when the only break was recorded as a bare duration (the in-app break
+  // button, which stores no times) or when there was no break.
+  breaks: { start: string; end: string; minutes: number }[];
 }
 
 export interface TimesheetEntry {
@@ -335,29 +340,37 @@ export async function buildEmployeeTimesheet(
         segments = [];
         let cur: {
           clockInIso: string; clockOutIso: string; breakMin: number; hours: number;
-          inId: string; outId: string; lastOutMs: number;
+          inId: string; outId: string; lastOutMs: number; lastOutIso: string;
+          breaks: { start: string; end: string; minutes: number }[];
         } | null = null;
         for (const pair of completedPairs) {
           const outMs = new Date(pair.outIso).getTime();
           if (cur && pair.inMs - cur.lastOutMs <= SHIFT_SPLIT_THRESHOLD_MIN * 60000) {
-            // Short gap → same shift: fold the lunch into this shift's break.
+            // Short gap → same shift: fold the lunch into this shift's break AND
+            // record WHEN it happened (clock-out that began it → clock-in that
+            // ended it) so the timesheet can show Break Start / Break End times.
             const gap = pair.inMs - cur.lastOutMs;
-            if (gap > 0) cur.breakMin += Math.round(gap / 60000);
+            if (gap > 0) {
+              const minutes = Math.round(gap / 60000);
+              cur.breakMin += minutes;
+              cur.breaks.push({ start: cur.lastOutIso, end: pair.inIso, minutes });
+            }
             cur.clockOutIso = pair.outIso;
             cur.outId = pair.id;
             cur.hours += pair.hours;
             cur.lastOutMs = outMs;
+            cur.lastOutIso = pair.outIso;
           } else {
             if (cur) {
               segments.push({
                 clockIn: cur.clockInIso, clockOut: cur.clockOutIso,
                 breakMinutes: cur.breakMin, hours: Math.round(cur.hours * 100) / 100,
-                clockInPunchId: cur.inId, clockOutPunchId: cur.outId,
+                clockInPunchId: cur.inId, clockOutPunchId: cur.outId, breaks: cur.breaks,
               });
             }
             cur = {
               clockInIso: pair.inIso, clockOutIso: pair.outIso, breakMin: 0, hours: pair.hours,
-              inId: pair.id, outId: pair.id, lastOutMs: outMs,
+              inId: pair.id, outId: pair.id, lastOutMs: outMs, lastOutIso: pair.outIso, breaks: [],
             };
           }
         }
@@ -365,7 +378,7 @@ export async function buildEmployeeTimesheet(
           segments.push({
             clockIn: cur.clockInIso, clockOut: cur.clockOutIso,
             breakMinutes: cur.breakMin, hours: Math.round(cur.hours * 100) / 100,
-            clockInPunchId: cur.inId, clockOutPunchId: cur.outId,
+            clockInPunchId: cur.inId, clockOutPunchId: cur.outId, breaks: cur.breaks,
           });
         }
       }
