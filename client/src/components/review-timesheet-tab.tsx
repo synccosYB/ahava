@@ -9,10 +9,9 @@ import {
 } from "@/components/ui/select";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ChevronLeft, ChevronRight, Pencil, Check, CalendarClock, CalendarDays, Send } from "lucide-react";
+import { ChevronLeft, ChevronRight, CalendarClock, CalendarDays, Send } from "lucide-react";
 import { EmployeeTimesheetTable } from "@/components/employee-timesheet";
 import { EmployeeReviewRules } from "@/components/employee-review-rules";
-import { TimesheetEditor } from "@/components/timesheet-editor";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -71,7 +70,6 @@ function DateField({ label, value, onChange, testId }: {
 export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
   const { has } = usePermissions();
   const { user: currentUser } = useAuth();
-  const canEdit = has("attendance.edit");
   const canSendPayroll = has("payroll.manage");
 
   const [period, setPeriod] = useState<Period>(() => loadPeriod(currentUser?.id));
@@ -81,7 +79,6 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
   // current). A step is one week for "this_week" and one 14-day pay period for
   // the work/payroll periods.
   const [offset, setOffset] = useState(0);
-  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     setPeriod(loadPeriod(currentUser?.id));
@@ -139,16 +136,6 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <CardTitle>Review Time Sheet</CardTitle>
-            {canEdit && (
-              <Button
-                variant={editing ? "default" : "outline"}
-                size="sm"
-                onClick={() => setEditing((v) => !v)}
-                data-testid="button-timesheet-edit-toggle"
-              >
-                {editing ? (<><Check className="h-4 w-4 mr-1" /> Done</>) : (<><Pencil className="h-4 w-4 mr-1" /> Edit</>)}
-              </Button>
-            )}
             {canSendPayroll && <SendToPayrollControl employeeId={employeeId} range={displayed} />}
           </div>
           <div className="flex items-end gap-2 flex-wrap">
@@ -182,15 +169,6 @@ export function ReviewTimeSheetTab({ employeeId }: { employeeId: string }) {
           navSlot={periodNav}
           exportFileName={`timesheet-${displayed.start}-to-${displayed.end}`}
         />
-        {editing && canEdit && (
-          <div className="mt-4">
-            <TimesheetEditor
-              employeeId={employeeId}
-              startDate={displayed.start}
-              endDate={displayed.end}
-            />
-          </div>
-        )}
       </CardContent>
     </Card>
   );
