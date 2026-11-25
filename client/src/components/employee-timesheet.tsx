@@ -508,7 +508,10 @@ export function EmployeeTimesheetTable({
     );
   }
 
-  if (hasNoPunches) {
+  // A read-only viewer with no punches gets the plain empty state. But an editor
+  // must still be able to add the FIRST punch, so when editing we fall through to
+  // the normal view (summary bar + Add punch + the add dialog) even with no data.
+  if (hasNoPunches && (!canEdit || !data)) {
     return (
       <EmptyState
         icon={CalendarDays}
@@ -686,7 +689,14 @@ export function EmployeeTimesheetTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.entries.map((e) => {
+            {hasNoPunches && (
+              <TableRow data-testid="row-timesheet-empty-editable">
+                <TableCell colSpan={canEdit ? 11 : 10} className="text-center text-sm text-muted-foreground py-8">
+                  No punches recorded for this period yet — use <strong>Add punch</strong> above to record one.
+                </TableCell>
+              </TableRow>
+            )}
+            {!hasNoPunches && data.entries.map((e) => {
               const isRefDay = e.totalHours == null && e.referenceHours != null;
               const hoursCell = (hours: number | null) =>
                 hours == null ? "—"
@@ -810,6 +820,7 @@ export function EmployeeTimesheetTable({
                 </Fragment>
               );
             })}
+            {!hasNoPunches && (
             <TableRow className="bg-muted/40 font-semibold" data-testid="row-timesheet-totals">
               <TableCell colSpan={6} className="text-right text-sm uppercase tracking-wider">Totals</TableCell>
               <TableCell className="text-sm tabular-nums" data-testid="text-timesheet-total-hours">
@@ -824,6 +835,7 @@ export function EmployeeTimesheetTable({
               </TableCell>
               {canEdit && <TableCell />}
             </TableRow>
+            )}
           </TableBody>
         </Table>
       </div>
