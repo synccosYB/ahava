@@ -710,6 +710,27 @@ export function EmployeeTimesheetTable({
               const segPunch = (seg?: TimesheetSegment): RawPunch | undefined =>
                 seg && seg.clockInPunchId && seg.clockInPunchId === seg.clockOutPunchId
                   ? punchById.get(seg.clockInPunchId) : undefined;
+              // The punch a row's PENCIL edits. A completed day must always be
+              // editable, even when its shift spans several punch pairs (a short
+              // lunch) — in which case segPunch() can't pick one punch. Fall back
+              // to the shift's clock-in punch, then the day's open/missing punch,
+              // then any punch on the day, so the pencil never disappears after an
+              // edit turns a day into a multi-punch shape.
+              const editPunchFor = (seg: TimesheetSegment | undefined, date: string): RawPunch | undefined => {
+                const sp = segPunch(seg);
+                if (sp) return sp;
+                const byShiftIn = seg?.clockInPunchId ? punchById.get(seg.clockInPunchId) : undefined;
+                if (byShiftIn) return byShiftIn;
+                const dayPunches = punchesByDate.get(date) ?? [];
+                return (
+                  dayPunches.find((p) =>
+                    p.status === "missing_clockout" || p.status === "missing_clockin" ||
+                    (!!p.clockIn && !p.clockOut) || (!!p.clockOut && !p.clockIn),
+                  )
+                  ?? dayPunches.find((p) => !!p.clockIn && !!p.clockOut)
+                  ?? dayPunches[0]
+                );
+              };
               // Per-row actions: Edit (pencil → popup) + Split / Delete.
               const actionsCellFor = (p?: RawPunch) => {
                 if (!canEdit) return null;
@@ -742,17 +763,10 @@ export function EmployeeTimesheetTable({
               const shifts = e.segments && e.segments.length > 1 ? e.segments : null;
               if (!shifts) {
                 const seg0 = e.segments && e.segments.length === 1 ? e.segments[0] : undefined;
-                // The punch this row's pencil edits: the single shift's punch, or
-                // (for a missing / in-progress day, which has no segment) the day's
-                // one open/missing punch.
-                let rowPunch = segPunch(seg0);
-                if (canEdit && !rowPunch && (e.status === "missing_punch" || e.status === "in_progress")) {
-                  const dayPunches = punchesByDate.get(e.date) ?? [];
-                  rowPunch = dayPunches.find((p) =>
-                    p.status === "missing_clockout" || p.status === "missing_clockin" ||
-                    (!!p.clockIn && !p.clockOut) || (!!p.clockOut && !p.clockIn),
-                  ) ?? (dayPunches.length === 1 ? dayPunches[0] : undefined);
-                }
+                // The punch this row's pencil edits — always resolved for an
+                // editable day that has any punch (see editPunchFor), so the
+                // pencil never vanishes after an edit.
+                const rowPunch = canEdit ? editPunchFor(seg0, e.date) : undefined;
                 const inPunchId = seg0?.clockInPunchId ?? rowPunch?.id ?? null;
                 const outPunchId = seg0?.clockOutPunchId ?? rowPunch?.id ?? null;
                 const bk = breakStartEnd(seg0?.breaks, e.breakMinutes, data.timezone);
@@ -813,7 +827,7 @@ export function EmployeeTimesheetTable({
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{i === 0 ? formatSources(e.sources) : ""}</TableCell>
                       <TableCell>{i === 0 ? <TimesheetStatusBadge entry={e} /> : null}</TableCell>
-                      {actionsCellFor(segPunch(seg))}
+                      {actionsCellFor(canEdit ? editPunchFor(seg, e.date) : undefined)}
                     </TableRow>
                     );
                   })}
