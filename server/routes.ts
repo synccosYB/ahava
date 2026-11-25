@@ -5505,11 +5505,15 @@ export async function registerRoutes(
     async (req: any, res) => {
       try {
         const actor = req.authUser as User;
-        const { employeeId, clockIn, clockOut, reason } = req.body as {
+        const { employeeId, clockIn, clockOut, reason, routeBackpay } = req.body as {
           employeeId?: string;
           clockIn?: string | null;
           clockOut?: string | null;
           reason?: string;
+          // When the date falls in an already-paid (finalized) batch, an approver
+          // can set this to add the punch anyway and route its hours to the NEXT
+          // payroll as back-pay, instead of being hard-blocked.
+          routeBackpay?: boolean;
         };
 
         if (!employeeId) {
@@ -5544,19 +5548,28 @@ export async function registerRoutes(
         const tzForWorkDate = await resolveEmployeeTimezone(employeeId);
         const workDate = localWorkDate((newClockIn ?? newClockOut) as Date, tzForWorkDate);
 
-        // Block adding a punch inside an already-finalized payroll period.
+        // Adding a punch inside an already-finalized payroll period is blocked by
+        // default. An approver can instead add it AND route its hours to the NEXT
+        // payroll as a pending back-pay item — the finalized batch is left as-is.
         const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
         if (finalizedExports.length > 0) {
-          return res.status(409).json({
-            message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before adding a punch.`,
-            code: "PAYROLL_FINALIZED",
-            payrollExports: finalizedExports.map((e) => ({
-              id: e.id,
-              startDate: e.startDate,
-              endDate: e.endDate,
-              status: e.status,
-            })),
-          });
+          const editorPerms = await resolveUserPermissions(actor.id);
+          const mayRouteBackpay =
+            editorPerms.has("attendance.approve_corrections") || editorPerms.has("system.super_admin");
+          if (!routeBackpay || !mayRouteBackpay) {
+            return res.status(409).json({
+              message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before adding a punch${mayRouteBackpay ? ", or send it to the next payroll as back-pay" : ""}.`,
+              code: "PAYROLL_FINALIZED",
+              canRouteBackpay: mayRouteBackpay,
+              payrollExports: finalizedExports.map((e) => ({
+                id: e.id,
+                startDate: e.startDate,
+                endDate: e.endDate,
+                status: e.status,
+              })),
+            });
+          }
+          // else: fall through — create the punch, then route back-pay below.
         }
 
         const attendancePolicy = await getEffectivePolicy(
@@ -5804,7 +5817,29 @@ export async function registerRoutes(
           ...getLedgerContext(req),
         });
 
-        res.status(201).json(punchLogToApiResponse(created));
+        // If this punch was added onto an already-paid (finalized) week and the
+        // approver chose the back-pay route, queue its hours for the NEXT payroll
+        // as a pending back-pay item. The finalized batch is never mutated.
+        let backpayItems: Awaited<ReturnType<typeof routeBackpayForCorrection>> = [];
+        let backpayError = false;
+        if (finalizedExports.length > 0 && routeBackpay) {
+          try {
+            backpayItems = await routeBackpayForCorrection({
+              employee: employeeUser,
+              workDate,
+              sourceExports: finalizedExports,
+              attendanceExceptionId: null,
+              punchLogId: created.id,
+              requestedBy: actor.id,
+              reasonPrefix: "Admin added a punch after payroll was sent",
+            });
+          } catch (e) {
+            backpayError = true;
+            console.error("Back-pay routing failed after adding a finalized-date punch:", e);
+          }
+        }
+
+        res.status(201).json({ ...punchLogToApiResponse(created), backpayItems, backpayError });
       } catch (error) {
         console.error("Error creating punch:", error);
         handleRouteError(res, error, "Failed to create punch");

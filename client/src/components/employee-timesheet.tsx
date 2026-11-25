@@ -446,15 +446,44 @@ export function EmployeeTimesheetTable({
   const [splitNewIn, setSplitNewIn] = useState("");
   const [splitNewOut, setSplitNewOut] = useState("");
 
+  // Adding a punch onto an already-paid (finalized) week is blocked by the server
+  // (409 PAYROLL_FINALIZED). If the approver may route back-pay, we offer to add it
+  // anyway and send its hours to the NEXT payroll — that resend carries routeBackpay.
+  const [addBackpayPrompt, setAddBackpayPrompt] = useState<{ message: string } | null>(null);
   const addMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (vars: { routeBackpay?: boolean } = {}) => {
       const res = await apiRequest("POST", `/api/attendance/punches`, {
-        employeeId, clockIn: fromLocalInput(addIn), clockOut: fromLocalInput(addOut), reason: "Added on Time Sheet Review",
+        employeeId, clockIn: fromLocalInput(addIn), clockOut: fromLocalInput(addOut),
+        reason: "Added on Time Sheet Review",
+        ...(vars.routeBackpay ? { routeBackpay: true } : {}),
       });
       return res.json();
     },
-    onSuccess: () => { toast({ title: "Punch added" }); invalidate(); setAddOpen(false); },
-    onError: (err: any) => toast({ title: "Could not add punch", description: err?.message ?? "Please try again.", variant: "destructive" }),
+    onSuccess: (data: any, vars: { routeBackpay?: boolean } = {}) => {
+      invalidate();
+      setAddOpen(false);
+      setAddBackpayPrompt(null);
+      if (vars.routeBackpay) {
+        const n = Array.isArray(data?.backpayItems) ? data.backpayItems.length : 0;
+        toast(n > 0
+          ? { title: "Added — back-pay queued", description: "Approve it in Payroll Prep → Back-pay review to include it in the next payroll run." }
+          : { title: "Added", description: "No back-pay was needed — there was no pay difference for the already-paid week.", variant: "destructive" });
+      } else {
+        toast({ title: "Punch added" });
+      }
+    },
+    onError: (err: any, vars: { routeBackpay?: boolean } = {}) => {
+      if (isApiError(err) && err.code === "PAYROLL_FINALIZED") {
+        const payload = (err.payload ?? {}) as { canRouteBackpay?: boolean; message?: string };
+        if (payload.canRouteBackpay && !vars.routeBackpay) {
+          setAddBackpayPrompt({ message: payload.message ?? "This date was already sent to payroll." });
+          return;
+        }
+        toast({ title: "Date is in finalized payroll", description: payload.message ?? err.message, variant: "destructive" });
+        return;
+      }
+      toast({ title: "Could not add punch", description: err?.message ?? "Please try again.", variant: "destructive" });
+    },
   });
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -945,7 +974,7 @@ export function EmployeeTimesheetTable({
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)} data-testid="button-timesheet-cancel-add">Cancel</Button>
-            <Button onClick={() => addMutation.mutate()} disabled={addMutation.isPending || (!addIn && !addOut)} data-testid="button-timesheet-save-add">
+            <Button onClick={() => addMutation.mutate({})} disabled={addMutation.isPending || (!addIn && !addOut)} data-testid="button-timesheet-save-add">
               {addMutation.isPending ? "Adding…" : "Add punch"}
             </Button>
           </DialogFooter>
@@ -1022,6 +1051,30 @@ export function EmployeeTimesheetTable({
               data-testid="button-timesheet-confirm-backpay"
             >
               {editMutation.isPending ? "Saving…" : "Save & queue back-pay"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!addBackpayPrompt} onOpenChange={(open) => { if (!open) setAddBackpayPrompt(null); }}>
+        <AlertDialogContent data-testid="dialog-timesheet-add-backpay">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Add to next payroll as back-pay?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {addBackpayPrompt?.message}{" "}
+              That week was already sent to payroll. Adding this punch will <strong>not</strong> change
+              the payroll already sent — instead its hours are queued as a <strong>pending back-pay</strong> item.
+              Approve it in <strong>Payroll Prep → Back-pay review</strong> and it rides the next payroll run.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button variant="outline" onClick={() => setAddBackpayPrompt(null)} data-testid="button-timesheet-cancel-add-backpay">Cancel</Button>
+            <Button
+              onClick={() => addMutation.mutate({ routeBackpay: true })}
+              disabled={addMutation.isPending}
+              data-testid="button-timesheet-confirm-add-backpay"
+            >
+              {addMutation.isPending ? "Adding…" : "Add & queue back-pay"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
