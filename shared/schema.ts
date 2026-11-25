@@ -1288,15 +1288,65 @@ export const payrollExports = pgTable("payroll_exports", {
   lockedBy: varchar("locked_by").references(() => users.id),
   reopenedAt: timestamp("reopened_at"),
   reopenedBy: varchar("reopened_by").references(() => users.id),
+  // "Send to Payroll Company" (replaces Lock): when the per-company reports were
+  // handed off. After this, a timesheet edit to the period becomes an Adjustment.
+  sentToPayrollAt: timestamp("sent_to_payroll_at"),
+  sentToPayrollBy: varchar("sent_to_payroll_by").references(() => users.id),
+  // How many times this batch's report has been generated (export/re-export).
+  // 0 = never exported. Bumped each time a report file set is produced.
+  exportVersion: integer("export_version").default(0).notNull(),
+  // Set true when an approved adjustment is folded into an already-exported
+  // batch; cleared on re-export. Drives the "changed — re-export needed" flag.
+  changedSinceExport: boolean("changed_since_export").default(false).notNull(),
+  // The work location(s) this batch covers (empty = all locations).
+  locationIds: jsonb("location_ids").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
   notes: text("notes"),
   recordCount: integer("record_count").default(0),
   createdAt: timestamp("created_at").defaultNow(),
   createdBy: varchar("created_by").references(() => users.id),
 });
 
+// A log of every report file set generated for a batch, so the admin can see
+// "Exported ×2" with the change captured in the second export (auditable).
+export const payrollExportVersions = pgTable("payroll_export_versions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  payrollExportId: varchar("payroll_export_id").notNull().references(() => payrollExports.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  // "detailed" | "summary" | "company" (the per-payroll-company handoff set).
+  kind: varchar("kind", { length: 20 }).notNull(),
+  note: text("note"),
+  recordCount: integer("record_count").default(0),
+  generatedAt: timestamp("generated_at").defaultNow(),
+  generatedBy: varchar("generated_by").references(() => users.id),
+}, (t) => ({
+  exportIdx: index("payroll_export_versions_export_idx").on(t.payrollExportId),
+}));
+
+export const insertPayrollExportVersionSchema = createInsertSchema(payrollExportVersions).omit({
+  id: true,
+  generatedAt: true,
+});
+export type InsertPayrollExportVersion = z.infer<typeof insertPayrollExportVersionSchema>;
+export type PayrollExportVersion = typeof payrollExportVersions.$inferSelect;
+
+// Saved batch defaults (org-wide singleton, keyed by scope). Remembers which
+// location(s) the admin usually batches and whether each payroll company gets
+// one combined report across locations or a separate report per location.
+export const payrollBatchDefaults = pgTable("payroll_batch_defaults", {
+  scope: varchar("scope").primaryKey().default("global"),
+  locationIds: jsonb("location_ids").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+  reportSplitByLocation: boolean("report_split_by_location").default(false).notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  updatedBy: varchar("updated_by").references(() => users.id),
+});
+export type PayrollBatchDefaults = typeof payrollBatchDefaults.$inferSelect;
+
 export const insertPayrollExportSchema = createInsertSchema(payrollExports).omit({
   id: true,
   createdAt: true,
+}).extend({
+  // jsonb + $type<string[]> needs an explicit zod type for inserts/updates.
+  locationIds: z.array(z.string()).optional(),
 });
 export type InsertPayrollExport = z.infer<typeof insertPayrollExportSchema>;
 export type PayrollExport = typeof payrollExports.$inferSelect;
@@ -1394,6 +1444,21 @@ export const payrollAdjustments = pgTable("payroll_adjustments", {
   adjustmentDate: date("adjustment_date").notNull(),
   reason: text("reason").notNull(),
   status: varchar("status", { length: 20 }).default("pending").notNull(),
+  // What raised this adjustment:
+  //   backpay          — a correction to an already-PAID day (pay delta)
+  //   held_back_fixed  — a held-back missing-punch day, now fixed, from a sent period
+  //   edit_after_sent  — any other timesheet edit to an already-sent period
+  kind: varchar("kind", { length: 24 }).default("edit_after_sent").notNull(),
+  // Who raised it (admin | manager | employee). A manager edit always lands here
+  // for admin approval; an admin edit is routed inline from the timesheet.
+  createdByRole: varchar("created_by_role", { length: 20 }),
+  createdBy: varchar("created_by").references(() => users.id),
+  // The admin's routing decision (null until decided):
+  //   add_to_sent  — fold into THIS already-sent period and re-export
+  //   next_period  — pay it in the next period that gets processed
+  routeChoice: varchar("route_choice", { length: 20 }),
+  // The export the adjustment was ultimately applied to (audit trail).
+  routedToExportId: varchar("routed_to_export_id").references(() => payrollExports.id),
   reviewedBy: varchar("reviewed_by").references(() => users.id),
   reviewedAt: timestamp("reviewed_at"),
   createdAt: timestamp("created_at").defaultNow(),
