@@ -94,6 +94,9 @@ export interface TimesheetResult {
   // attendance/confirmation-only — for them the review UI emphasizes DAYS worked
   // over hours (hours aren't the pay basis).
   emphasizeDays: boolean;
+  // True when a long date range skipped the weekly-overtime ledger for speed:
+  // day/total hours are exact but the OT split is omitted. The UI notes this.
+  coarseHours?: boolean;
 }
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -198,21 +201,34 @@ export async function buildEmployeeTimesheet(
   const confirmationOnly = await storage.isClockConfirmationOnly(employee.id);
   const attendancePolicy = await getEffectivePolicy(employee.companyId, employee.id, "attendance", employee);
   const maxShiftHours = attendancePolicy?.rules?.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
-  // The recompute-through ledger runs ONCE here, outside the per-day guard
-  // below. It re-reads/recomputes and persists this employee's ledger rows, so a
-  // single corrupt ledger/policy/schedule row for one employee could throw and
-  // 500 the whole timesheet (while a clean employee loads fine). Degrade
-  // gracefully instead: on failure, use an empty ledger — each day then falls
-  // back to direct hour computation in the guarded loop (computeDayHours), the
-  // same philosophy as the per-day hardening.
+  // The recompute-through ledger (weekly-aware OT split + persistence) runs ONCE
+  // here, outside the per-day guard below. It is a payroll-accuracy mechanism for
+  // pay periods; for a LONG browsing range (e.g. "Past 3 months", "This year",
+  // "Last 12 months") rebuilding + persisting every day in one request is heavy
+  // and can time out for employees with dense data. So:
+  //   • short ranges (pay periods / a month) → full ledger (exact OT, as before);
+  //   • long ranges → SKIP it and compute each day's hours directly in the loop
+  //     (computeDayHours). Hours stay correct; the OT split is omitted for the
+  //     overview (payroll always uses the exact pay-period path). `coarseHours`
+  //     is returned so the UI can say so.
+  // On failure (a corrupt ledger/policy/schedule row for one employee) we also
+  // fall back to direct per-day computation rather than 500 the whole sheet.
+  const LEDGER_RANGE_MAX_DAYS = 45;
+  const rangeDays =
+    Math.round(
+      (new Date(endDate + "T00:00:00Z").getTime() - new Date(startDate + "T00:00:00Z").getTime()) / 86_400_000,
+    ) + 1;
   let ledgerDays: LedgerDay[] = [];
-  try {
-    ledgerDays = await getLedgerForEmployee(employee, startDate, endDate, now);
-  } catch (err) {
-    console.error(
-      `[timesheet] ledger build failed for employee ${employee.id} ${startDate}..${endDate}; falling back to per-day computation:`,
-      err,
-    );
+  let ledgerSkipped = rangeDays > LEDGER_RANGE_MAX_DAYS;
+  if (!ledgerSkipped) {
+    try {
+      ledgerDays = await getLedgerForEmployee(employee, startDate, endDate, now);
+    } catch (err) {
+      console.error(
+        `[timesheet] ledger build failed for employee ${employee.id} ${startDate}..${endDate}; falling back to per-day computation:`,
+        err,
+      );
+    }
   }
   const ledgerByDate = new Map<string, LedgerDay>(ledgerDays.map((d) => [d.workDate, d]));
 
@@ -250,6 +266,12 @@ export async function buildEmployeeTimesheet(
   const end = new Date(endDate + "T00:00:00Z");
 
   const entries: TimesheetEntry[] = [];
+  // Running totals summed straight from the per-day rows. Used when the ledger
+  // is absent (long range skipped, or a failed build) so the totals row always
+  // matches the visible day hours instead of showing 0.
+  let coarseTotalHours = 0;
+  let coarseOvertime = 0;
+  const coarseDaysWorked = new Set<string>();
 
   for (let cursor = new Date(start); cursor <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
     const dateStr = cursor.toISOString().split("T")[0];
@@ -423,6 +445,14 @@ export async function buildEmployeeTimesheet(
       const dayBonus = evaluateDayOfWeekBonusesCombined(dateStr, roundedHours, payrollRules, employeeBonuses).bonusAmount;
       totalBonus += dayBonus;
 
+      // Accumulate the display totals from each worked day (for the ledger-absent
+      // path). Attendance-only days don't count toward pay totals.
+      if (!confirmationOnly) {
+        coarseTotalHours += roundedHours;
+        if (!inProgress) coarseOvertime += dayOvertime;
+        if (roundedHours > 0) coarseDaysWorked.add(dateStr);
+      }
+
       const entry: TimesheetEntry = {
         date: dateStr,
         dayOfWeek,
@@ -509,13 +539,16 @@ export async function buildEmployeeTimesheet(
   // OT+double-time already includes weekly overtime — no separate weekly pass is
   // needed here, and per-day rows + totals stay in lockstep with reports/payroll.
   const ledgerTotals = summarizeLedger(ledgerDays);
+  // Use the per-day sums whenever the ledger isn't available (long range skipped,
+  // or an empty/failed build) so the totals never read 0 against non-zero rows.
+  const useCoarse = ledgerSkipped || ledgerDays.length === 0;
 
   // For an attendance-only employee hours aren't counted, so the ledger's
   // hours-based "days worked" is 0. Count days PRESENT instead (every
   // "Attendance captured" day) so the summary reflects attendance, not hours.
   const daysWorked = confirmationOnly
     ? entries.filter((e) => e.status === "confirmation").length
-    : ledgerTotals.daysWorked;
+    : useCoarse ? coarseDaysWorked.size : ledgerTotals.daysWorked;
 
   return {
     otThresholdDaily: otThreshold,
@@ -526,11 +559,15 @@ export async function buildEmployeeTimesheet(
       // total to tenths (1/10 h) made it read up to ~3 min higher than the sum of
       // the visible days and than actual pay (e.g. an 8h02m day nets 7h17m but the
       // total showed 7h18m), so the totals row never added up.
-      totalHours: Math.round(ledgerTotals.totalHours * 100) / 100,
-      overtimeHours: Math.round(ledgerTotals.overtimeCombined * 100) / 100,
+      totalHours: Math.round((useCoarse ? coarseTotalHours : ledgerTotals.totalHours) * 100) / 100,
+      overtimeHours: Math.round((useCoarse ? coarseOvertime : ledgerTotals.overtimeCombined) * 100) / 100,
       daysWorked,
       totalBonus: Math.round(totalBonus * 100) / 100,
     },
     emphasizeDays: confirmationOnly || employeeProfile?.payType === "daily",
+    // True only when the heavy ledger was intentionally skipped for a long range
+    // (hours exact, OT split omitted) — the UI shows a note. Not set for a failed
+    // build, which is an error path, not a user-chosen overview.
+    coarseHours: ledgerSkipped,
   };
 }

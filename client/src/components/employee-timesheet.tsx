@@ -144,6 +144,9 @@ export type TimesheetResponse = {
   // When true (per-day / attendance-only employees), the summary emphasizes DAYS
   // worked over hours. Absent on older responses → treated as false.
   emphasizeDays?: boolean;
+  // When true, a long date range skipped the weekly-overtime ledger for speed:
+  // hours are exact but the overtime split is omitted on this overview.
+  coarseHours?: boolean;
   // Business/location timezone so clock-in/out render in the medical center's
   // wall-clock time, not the viewer's device timezone.
   timezone?: string | null;
@@ -919,15 +922,23 @@ export function EmployeeTimesheetTable({
           </TableBody>
         </Table>
       </div>
-      <p
-        className="text-xs text-muted-foreground"
-        data-testid="text-timesheet-overtime-basis"
-      >
-        Daily overtime per row is calculated against the {data.otThresholdDaily}h
-        daily threshold. Total overtime in the totals row uses the aggregate
-        time-report formula: max(0, total hours &minus; days worked &times; 8h),
-        so this number matches the Reports → Time report for the same range.
-      </p>
+      {data.coarseHours ? (
+        <p className="text-xs text-amber-600" data-testid="text-timesheet-coarse-note">
+          This is a long-range overview — hours are exact, but the overtime split
+          is not computed here (it shows 0). Open a specific pay period, or
+          Payroll Prep, for exact overtime.
+        </p>
+      ) : (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid="text-timesheet-overtime-basis"
+        >
+          Daily overtime per row is calculated against the {data.otThresholdDaily}h
+          daily threshold. Total overtime in the totals row uses the aggregate
+          time-report formula: max(0, total hours &minus; days worked &times; 8h),
+          so this number matches the Reports → Time report for the same range.
+        </p>
+      )}
       {canEdit && (
         <p className="text-xs text-muted-foreground" data-testid="text-timesheet-edit-hint">
           Use the <span className="font-medium">pencil</span> on a row to edit that day's clock-in,
