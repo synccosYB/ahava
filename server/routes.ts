@@ -5252,15 +5252,21 @@ export async function registerRoutes(
           // apply the edit AND route the pay difference to the NEXT payroll as a
           // pending back-pay item — the finalized batch itself is left untouched.
           const editorPerms = await resolveUserPermissions(actor.id);
-          const mayRouteBackpay =
+          // Any editor who reached this handler may QUEUE the change as a pending
+          // adjustment (it is paid only after ADMIN approval in Payroll Prep →
+          // Adjustments). Approvers additionally get to pick where it lands when
+          // they approve; a non-approver (e.g. a manager) just routes it to the
+          // admin for that decision.
+          const isApprover =
             editorPerms.has("attendance.approve_corrections") || editorPerms.has("system.super_admin");
-          if (!routeBackpay || !mayRouteBackpay) {
+          if (!routeBackpay) {
             return res.status(409).json({
-              message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before editing the punch${mayRouteBackpay ? ", or send the difference to the next payroll as back-pay" : ""}.`,
+              message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). ${isApprover ? "Queue the change as an adjustment (you choose where it's paid in Payroll Prep → Adjustments), or reopen the batch." : "Your change will be sent to the admin for approval (Payroll Prep → Adjustments)."}`,
               code: "PAYROLL_FINALIZED",
-              // Tells the UI whether to offer the "send to next payroll as back-pay"
-              // path (only approvers may) instead of only "reopen the batch".
-              canRouteBackpay: mayRouteBackpay,
+              // Any editor may now queue a pending adjustment; isApprover tells the
+              // UI whether to say "you'll choose the route" vs "sent to admin".
+              canRouteBackpay: true,
+              isApprover,
               payrollExports: finalizedExports.map((e) => ({
                 id: e.id,
                 startDate: e.startDate,
@@ -5554,13 +5560,18 @@ export async function registerRoutes(
         const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
         if (finalizedExports.length > 0) {
           const editorPerms = await resolveUserPermissions(actor.id);
-          const mayRouteBackpay =
+          // Same as the edit path: any editor may QUEUE the added day as a pending
+          // adjustment (paid only after ADMIN approval in Payroll Prep →
+          // Adjustments). Approvers pick the route on approval; others route it to
+          // the admin.
+          const isApprover =
             editorPerms.has("attendance.approve_corrections") || editorPerms.has("system.super_admin");
-          if (!routeBackpay || !mayRouteBackpay) {
+          if (!routeBackpay) {
             return res.status(409).json({
-              message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before adding a punch${mayRouteBackpay ? ", or send it to the next payroll as back-pay" : ""}.`,
+              message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). ${isApprover ? "Queue it as an adjustment (you choose where it's paid in Payroll Prep → Adjustments), or reopen the batch." : "Your added day will be sent to the admin for approval (Payroll Prep → Adjustments)."}`,
               code: "PAYROLL_FINALIZED",
-              canRouteBackpay: mayRouteBackpay,
+              canRouteBackpay: true,
+              isApprover,
               payrollExports: finalizedExports.map((e) => ({
                 id: e.id,
                 startDate: e.startDate,
