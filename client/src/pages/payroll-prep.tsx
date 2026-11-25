@@ -103,7 +103,6 @@ export default function PayrollPrepPage() {
   const [checkingDriftId, setCheckingDriftId] = useState<string | null>(null);
   const [autoCheckingIds, setAutoCheckingIds] = useState<Set<string>>(new Set());
   const [driftReviewId, setDriftReviewId] = useState<string | null>(null);
-  const [lockDriftConfirm, setLockDriftConfirm] = useState<{ id: string; result: PayrollDriftResult } | null>(null);
   const [form, setForm] = useState({
     periodStart: "",
     periodEnd: "",
@@ -214,30 +213,6 @@ export default function PayrollPrepPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batches]);
-
-  const lockMutation = useMutation({
-    mutationFn: async ({ id, acknowledgeDrift }: { id: string; acknowledgeDrift: boolean }) => {
-      const res = await apiRequest("POST", `/api/payroll/exports/${id}/lock`, { acknowledgeDrift });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
-      setLockDriftConfirm(null);
-      toast({ title: "Batch locked" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Failed to lock batch", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const handleLock = async (id: string) => {
-    const result = await checkDrift(id);
-    if (result && result.driftStatus === "changed") {
-      setLockDriftConfirm({ id, result });
-      return;
-    }
-    lockMutation.mutate({ id, acknowledgeDrift: false });
-  };
 
   const reopenMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -884,45 +859,6 @@ export default function PayrollPrepPage() {
           )}
         </DialogContent>
       </Dialog>
-
-      <AlertDialog open={!!lockDriftConfirm} onOpenChange={(open) => !open && setLockDriftConfirm(null)}>
-        <AlertDialogContent data-testid="dialog-lock-drift-warning">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-red-500" />
-              Lock a Drifted Batch?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {lockDriftConfirm?.result.changedCount} record(s) no longer match the current source
-              data. Locking will permanently freeze the originally exported figures for this period.
-              Review the changes first if you're unsure.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-lock-drift">Cancel</AlertDialogCancel>
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (lockDriftConfirm) {
-                  setDriftReviewId(lockDriftConfirm.id);
-                  setLockDriftConfirm(null);
-                }
-              }}
-              data-testid="button-review-lock-drift"
-            >
-              <Eye className="h-3 w-3 mr-1" /> Review changes
-            </Button>
-            <AlertDialogAction
-              onClick={() => lockDriftConfirm && lockMutation.mutate({ id: lockDriftConfirm.id, acknowledgeDrift: true })}
-              disabled={lockMutation.isPending}
-              data-testid="button-confirm-lock-drift"
-            >
-              {lockMutation.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-              Lock Anyway
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       <AlertDialog open={!!reExportWarning} onOpenChange={() => setReExportWarning(null)}>
         <AlertDialogContent data-testid="dialog-reexport-warning">
