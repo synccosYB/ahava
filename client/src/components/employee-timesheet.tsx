@@ -58,6 +58,9 @@ type RawPunch = {
 type EditVars = {
   id: string; clockIn: string | null; clockOut: string | null;
   workDate: string; reason: string; routeBackpay?: boolean;
+  // When an approver picks the route inline at edit time: the queued adjustment
+  // is approved with this route immediately (no trip to the Adjustments box).
+  routeChoice?: "next_period" | "add_to_sent";
 };
 
 export type TimesheetStatus = "complete" | "in_progress" | "missing_punch" | "overtime" | "pto" | "confirmation" | "error" | "none";
@@ -389,17 +392,31 @@ export function EmployeeTimesheetTable({
         clockIn: vars.clockIn, clockOut: vars.clockOut, workDate: vars.workDate, reason: vars.reason,
         ...(vars.routeBackpay ? { routeBackpay: true } : {}),
       });
-      return res.json();
+      const data = await res.json();
+      // Approver picked the route inline → approve the queued item(s) with it now.
+      if (vars.routeChoice && Array.isArray(data?.backpayItems)) {
+        for (const it of data.backpayItems) {
+          await apiRequest("POST", `/api/payroll/backpay/${it.id}/approve`, { routeChoice: vars.routeChoice });
+        }
+      }
+      return data;
     },
     onSuccess: (data: any, vars: EditVars) => {
       invalidate();
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
       setEditPunch(null);
       setBackpayPrompt(null);
       if (vars.routeBackpay) {
         const n = Array.isArray(data?.backpayItems) ? data.backpayItems.length : 0;
-        toast(n > 0
-          ? { title: "Saved — adjustment queued", description: "Approve it in Payroll Prep → Adjustments to choose where it's paid." }
-          : { title: "Saved", description: "No back-pay was needed — there was no pay difference for the already-paid week.", variant: "destructive" });
+        if (n === 0) {
+          toast({ title: "Saved", description: "No back-pay was needed — there was no pay difference for the already-paid week.", variant: "destructive" });
+        } else if (vars.routeChoice === "add_to_sent") {
+          toast({ title: "Saved — folded into the sent report", description: "Re-export that batch in Payroll Prep to include the change." });
+        } else if (vars.routeChoice === "next_period") {
+          toast({ title: "Saved — added to the next payroll", description: "It rides the next batch you process." });
+        } else {
+          toast({ title: "Saved — adjustment queued", description: "Approve it in Payroll Prep → Adjustments to choose where it's paid." });
+        }
       } else {
         toast({ title: "Punch updated" });
       }
@@ -451,28 +468,41 @@ export function EmployeeTimesheetTable({
   // anyway and send its hours to the NEXT payroll — that resend carries routeBackpay.
   const [addBackpayPrompt, setAddBackpayPrompt] = useState<{ message: string; isApprover: boolean } | null>(null);
   const addMutation = useMutation({
-    mutationFn: async (vars: { routeBackpay?: boolean } = {}) => {
+    mutationFn: async (vars: { routeBackpay?: boolean; routeChoice?: "next_period" | "add_to_sent" } = {}) => {
       const res = await apiRequest("POST", `/api/attendance/punches`, {
         employeeId, clockIn: fromLocalInput(addIn), clockOut: fromLocalInput(addOut),
         reason: "Added on Time Sheet Review",
         ...(vars.routeBackpay ? { routeBackpay: true } : {}),
       });
-      return res.json();
+      const data = await res.json();
+      if (vars.routeChoice && Array.isArray(data?.backpayItems)) {
+        for (const it of data.backpayItems) {
+          await apiRequest("POST", `/api/payroll/backpay/${it.id}/approve`, { routeChoice: vars.routeChoice });
+        }
+      }
+      return data;
     },
-    onSuccess: (data: any, vars: { routeBackpay?: boolean } = {}) => {
+    onSuccess: (data: any, vars: { routeBackpay?: boolean; routeChoice?: "next_period" | "add_to_sent" } = {}) => {
       invalidate();
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
       setAddOpen(false);
       setAddBackpayPrompt(null);
       if (vars.routeBackpay) {
         const n = Array.isArray(data?.backpayItems) ? data.backpayItems.length : 0;
-        toast(n > 0
-          ? { title: "Added — adjustment queued", description: "Approve it in Payroll Prep → Adjustments to choose where it's paid." }
-          : { title: "Added", description: "No back-pay was needed — there was no pay difference for the already-paid week.", variant: "destructive" });
+        if (n === 0) {
+          toast({ title: "Added", description: "No back-pay was needed — there was no pay difference for the already-paid week.", variant: "destructive" });
+        } else if (vars.routeChoice === "add_to_sent") {
+          toast({ title: "Added — folded into the sent report", description: "Re-export that batch in Payroll Prep to include it." });
+        } else if (vars.routeChoice === "next_period") {
+          toast({ title: "Added — added to the next payroll", description: "It rides the next batch you process." });
+        } else {
+          toast({ title: "Added — adjustment queued", description: "Approve it in Payroll Prep → Adjustments to choose where it's paid." });
+        }
       } else {
         toast({ title: "Punch added" });
       }
     },
-    onError: (err: any, vars: { routeBackpay?: boolean } = {}) => {
+    onError: (err: any, vars: { routeBackpay?: boolean; routeChoice?: "next_period" | "add_to_sent" } = {}) => {
       if (isApiError(err) && err.code === "PAYROLL_FINALIZED") {
         const payload = (err.payload ?? {}) as { canRouteBackpay?: boolean; message?: string; isApprover?: boolean };
         if (payload.canRouteBackpay && !vars.routeBackpay) {
@@ -1039,21 +1069,41 @@ export function EmployeeTimesheetTable({
             <AlertDialogDescription>
               {backpayPrompt?.message}{" "}
               This period was already sent to payroll, so this change will <strong>not</strong> alter the
-              payroll already sent — it is queued as a <strong>pending adjustment</strong>.{" "}
+              payroll already sent.{" "}
               {backpayPrompt?.isApprover
-                ? <>Approve it in <strong>Payroll Prep → Adjustments</strong>, where you choose whether it folds into the already-sent report or rides the next payroll.</>
-                : <>The admin will see it in <strong>Payroll Prep → Adjustments</strong> and decide how it's paid.</>}
+                ? <>Choose where it's paid: fold it into the <strong>already-sent report</strong> (re-export that batch to include it), or add it to the <strong>next payroll</strong> you process.</>
+                : <>It is queued as a <strong>pending adjustment</strong>; the admin will see it in <strong>Payroll Prep → Adjustments</strong> and decide how it's paid.</>}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <Button variant="outline" onClick={() => setBackpayPrompt(null)} data-testid="button-timesheet-cancel-backpay">Cancel</Button>
-            <Button
-              onClick={() => backpayPrompt && editMutation.mutate({ ...backpayPrompt.vars, routeBackpay: true })}
-              disabled={editMutation.isPending}
-              data-testid="button-timesheet-confirm-backpay"
-            >
-              {editMutation.isPending ? "Saving…" : backpayPrompt?.isApprover ? "Save & queue adjustment" : "Save & send to admin"}
-            </Button>
+            {backpayPrompt?.isApprover ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => backpayPrompt && editMutation.mutate({ ...backpayPrompt.vars, routeBackpay: true, routeChoice: "add_to_sent" })}
+                  disabled={editMutation.isPending}
+                  data-testid="button-timesheet-backpay-add-to-sent"
+                >
+                  Add to sent report
+                </Button>
+                <Button
+                  onClick={() => backpayPrompt && editMutation.mutate({ ...backpayPrompt.vars, routeBackpay: true, routeChoice: "next_period" })}
+                  disabled={editMutation.isPending}
+                  data-testid="button-timesheet-backpay-next"
+                >
+                  {editMutation.isPending ? "Saving…" : "Add to next payroll"}
+                </Button>
+              </>
+            ) : (
+              <Button
+                onClick={() => backpayPrompt && editMutation.mutate({ ...backpayPrompt.vars, routeBackpay: true })}
+                disabled={editMutation.isPending}
+                data-testid="button-timesheet-confirm-backpay"
+              >
+                {editMutation.isPending ? "Saving…" : "Save & send to admin"}
+              </Button>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1065,21 +1115,41 @@ export function EmployeeTimesheetTable({
             <AlertDialogDescription>
               {addBackpayPrompt?.message}{" "}
               This period was already sent to payroll, so adding this will <strong>not</strong> change the
-              payroll already sent — it is queued as a <strong>pending adjustment</strong>.{" "}
+              payroll already sent.{" "}
               {addBackpayPrompt?.isApprover
-                ? <>Approve it in <strong>Payroll Prep → Adjustments</strong>, where you choose whether it folds into the already-sent report or rides the next payroll.</>
-                : <>The admin will see it in <strong>Payroll Prep → Adjustments</strong> and decide how it's paid.</>}
+                ? <>Choose where it's paid: fold it into the <strong>already-sent report</strong> (re-export that batch to include it), or add it to the <strong>next payroll</strong> you process.</>
+                : <>It is queued as a <strong>pending adjustment</strong>; the admin will see it in <strong>Payroll Prep → Adjustments</strong> and decide how it's paid.</>}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <Button variant="outline" onClick={() => setAddBackpayPrompt(null)} data-testid="button-timesheet-cancel-add-backpay">Cancel</Button>
-            <Button
-              onClick={() => addMutation.mutate({ routeBackpay: true })}
-              disabled={addMutation.isPending}
-              data-testid="button-timesheet-confirm-add-backpay"
-            >
-              {addMutation.isPending ? "Adding…" : addBackpayPrompt?.isApprover ? "Add & queue adjustment" : "Add & send to admin"}
-            </Button>
+            {addBackpayPrompt?.isApprover ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => addMutation.mutate({ routeBackpay: true, routeChoice: "add_to_sent" })}
+                  disabled={addMutation.isPending}
+                  data-testid="button-timesheet-add-backpay-add-to-sent"
+                >
+                  Add to sent report
+                </Button>
+                <Button
+                  onClick={() => addMutation.mutate({ routeBackpay: true, routeChoice: "next_period" })}
+                  disabled={addMutation.isPending}
+                  data-testid="button-timesheet-add-backpay-next"
+                >
+                  {addMutation.isPending ? "Adding…" : "Add to next payroll"}
+                </Button>
+              </>
+            ) : (
+              <Button
+                onClick={() => addMutation.mutate({ routeBackpay: true })}
+                disabled={addMutation.isPending}
+                data-testid="button-timesheet-confirm-add-backpay"
+              >
+                {addMutation.isPending ? "Adding…" : "Add & send to admin"}
+              </Button>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
