@@ -17,7 +17,7 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, Pencil } from "lucide-react";
+import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, Pencil, ArrowUpDown } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/empty-state";
@@ -418,6 +418,13 @@ export function EmployeeTimesheetTable({
       toast({ title: "Could not save punch", description: err?.message ?? "Please try again.", variant: "destructive" });
     },
   });
+  // Swap the two times: a clock-in becomes a clock-out and vice versa. For the
+  // common fix where a lone punch is on the wrong side (e.g. a clock-in that is
+  // really the clock-out), one click moves the time across instead of retyping.
+  const swapEditInOut = () => {
+    setEditIn(editOut);
+    setEditOut(editIn);
+  };
   const submitEdit = () => {
     if (!editPunch) return;
     editMutation.mutate({
@@ -886,6 +893,19 @@ export function EmployeeTimesheetTable({
               <Label htmlFor="ts-edit-in">Clock In</Label>
               <Input id="ts-edit-in" type="datetime-local" value={editIn} onChange={(ev) => setEditIn(ev.target.value)} data-testid="input-timesheet-edit-in" />
               <p className="text-xs text-muted-foreground">Leave empty to keep it a missing punch (clock-out only).</p>
+            </div>
+            <div className="flex justify-center -my-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={swapEditInOut}
+                data-testid="button-timesheet-swap-inout"
+                title="Swap: move the clock-in time to clock-out, and the clock-out time to clock-in"
+              >
+                <ArrowUpDown className="h-3.5 w-3.5" /> Swap in / out
+              </Button>
             </div>
             <div className="space-y-1">
               <Label htmlFor="ts-edit-out">Clock Out</Label>
