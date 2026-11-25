@@ -28,6 +28,7 @@ import {
   DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { MapPin } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { usePermissions } from "@/hooks/use-permissions";
 import { currentPayrollPeriod, shiftBiweekly, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
 import type { PayrollExport, PayrollBatchRecord } from "@shared/schema";
@@ -632,8 +633,6 @@ export default function PayrollPrepPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <BackpayReview />
-
       <PunctualityBonusReview />
 
       <Dialog open={!!detailBatchId} onOpenChange={(open) => !open && setDetailBatchId(null)}>
@@ -971,6 +970,12 @@ type ReadyForPayrollData = {
   employees: ReadyEmployee[];
   byCompany: ReadyCompany[];
 };
+type PeriodRoster = {
+  startDate: string;
+  endDate: string;
+  inactiveWithActivity: Array<{ employeeId: string; employeeName: string; deactivatedAt: string | null; dayCount: number }>;
+  activeNoWork: Array<{ employeeId: string; employeeName: string }>;
+};
 
 // "Ready for Payroll": the confirmed (Send-to-Payroll) days for a pay period that
 // are not yet in a batch, grouped by paying company. The admin generates one
@@ -1027,12 +1032,24 @@ function ReadyForPayroll() {
         ? (locations.find((l) => l.id === selectedLocationIds[0])?.name ?? "1 location")
         : `${selectedLocationIds.length} locations`;
 
+  const [tab, setTab] = useState("ready");
+
   const { data, isLoading } = useQuery<ReadyForPayrollData>({
     queryKey: ["/api/payroll/ready-for-payroll", range.start, range.end, locParam],
     queryFn: async () => {
       const p = new URLSearchParams({ startDate: range.start, endDate: range.end });
       if (locParam) p.set("locationIds", locParam);
       const res = await apiRequest("GET", `/api/payroll/ready-for-payroll?${p.toString()}`);
+      return res.json();
+    },
+  });
+
+  const { data: roster } = useQuery<PeriodRoster>({
+    queryKey: ["/api/payroll/period-roster", range.start, range.end, locParam],
+    queryFn: async () => {
+      const p = new URLSearchParams({ startDate: range.start, endDate: range.end });
+      if (locParam) p.set("locationIds", locParam);
+      const res = await apiRequest("GET", `/api/payroll/period-roster?${p.toString()}`);
       return res.json();
     },
   });
@@ -1143,6 +1160,23 @@ function ReadyForPayroll() {
           </div>
         </div>
 
+        <Tabs value={tab} onValueChange={setTab}>
+          <div className="px-4 pt-3">
+            <TabsList data-testid="ready-tabs">
+              <TabsTrigger value="ready" data-testid="tab-ready">
+                Ready{data && data.totalEmployees > 0 ? ` (${data.totalEmployees})` : ""}
+              </TabsTrigger>
+              <TabsTrigger value="inactive" data-testid="tab-inactive">
+                Inactive{roster && roster.inactiveWithActivity.length > 0 ? ` (${roster.inactiveWithActivity.length})` : ""}
+              </TabsTrigger>
+              <TabsTrigger value="didntwork" data-testid="tab-didntwork">
+                Didn't work{roster && roster.activeNoWork.length > 0 ? ` (${roster.activeNoWork.length})` : ""}
+              </TabsTrigger>
+              <TabsTrigger value="adjustments" data-testid="tab-adjustments">Adjustments</TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="ready" className="mt-2">
         {isLoading ? (
           <div className="p-6 space-y-2">
             <Skeleton className="h-8 w-full" />
@@ -1242,6 +1276,68 @@ function ReadyForPayroll() {
             </div>
           </>
         )}
+          </TabsContent>
+
+          <TabsContent value="inactive" className="mt-2">
+            {!roster || roster.inactiveWithActivity.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="text-inactive-empty">
+                No inactive employees worked in this period.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Deactivated</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Days Worked</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {roster.inactiveWithActivity.map((e) => (
+                    <TableRow key={e.employeeId} data-testid={`row-inactive-${e.employeeId}`}>
+                      <TableCell className="font-medium">{e.employeeName}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground tabular-nums">{e.deactivatedAt ? formatDate(e.deactivatedAt) : "—"}</TableCell>
+                      <TableCell className="tabular-nums text-right">{e.dayCount}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            <p className="px-4 py-2 text-xs text-muted-foreground border-t">
+              Inactive (deactivated) employees who still worked in this period — e.g. terminated mid-period. Confirm their final pay from their timesheet.
+            </p>
+          </TabsContent>
+
+          <TabsContent value="didntwork" className="mt-2">
+            {!roster || roster.activeNoWork.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="text-didntwork-empty">
+                Every active employee in scope has activity this period.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {roster.activeNoWork.map((e) => (
+                    <TableRow key={e.employeeId} data-testid={`row-didntwork-${e.employeeId}`}>
+                      <TableCell className="font-medium">{e.employeeName}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            <p className="px-4 py-2 text-xs text-muted-foreground border-t">
+              Active employees with no work in this period — e.g. on leave or time off. Shown so nobody is missed.
+            </p>
+          </TabsContent>
+
+          <TabsContent value="adjustments" className="mt-2">
+            <BackpayReview />
+          </TabsContent>
+        </Tabs>
       </CardContent>
     </Card>
   );

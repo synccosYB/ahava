@@ -10945,6 +10945,76 @@ export async function registerRoutes(
     }
   });
 
+  // Period roster buckets for Payroll Prep (scoped to period + location):
+  //   inactiveWithActivity — deactivated employees who nonetheless worked in the
+  //                          period (e.g. terminated mid-period; need final pay).
+  //   activeNoWork         — active employees with NO work in the period (e.g. on
+  //                          leave / 2 weeks off) so the admin can account for them.
+  // Admins are excluded (they aren't hourly staff on the roster).
+  app.get("/api/payroll/period-roster", requireAuth, requireAnyPermission("payroll.view_all", "payroll.manage"), async (req: any, res) => {
+    try {
+      const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+      if (!startDate || !endDate) {
+        return res.status(400).json({ message: "startDate and endDate are required." });
+      }
+      const selectedLocSet = new Set(
+        String(req.query.locationIds ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      );
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const inLocationScope = (u: User): boolean => {
+        if (selectedLocSet.size === 0) return true;
+        const locs = (u.locationIds ?? []) as string[];
+        return locs.some((l) => selectedLocSet.has(l));
+      };
+
+      // Who worked in the period: any attendance record in range, or a confirmed
+      // (Send-to-Payroll) submission.
+      const attendance = await storage.getAttendanceByDateRange(startDate, endDate);
+      const workedDays = new Map<string, Set<string>>();
+      for (const r of attendance) {
+        if (!r.clockIn) continue;
+        let set = workedDays.get(r.employeeId);
+        if (!set) { set = new Set(); workedDays.set(r.employeeId, set); }
+        set.add(r.workDate);
+      }
+      const submissions = await storage.listUnbatchedPayrollSubmissions(startDate, endDate);
+      for (const s of submissions) {
+        let set = workedDays.get(s.employeeId);
+        if (!set) { set = new Set(); workedDays.set(s.employeeId, set); }
+        set.add(s.workDate);
+      }
+
+      const name = (u: User) => `${u.firstName || ""} ${u.lastName || ""}`.trim() || "Unknown";
+      const inactiveWithActivity: Array<{ employeeId: string; employeeName: string; deactivatedAt: string | null; dayCount: number }> = [];
+      const activeNoWork: Array<{ employeeId: string; employeeName: string }> = [];
+
+      for (const u of allUsers) {
+        if (u.role === "admin") continue;            // roster is hourly staff
+        if (!inLocationScope(u)) continue;
+        const worked = workedDays.get(u.id);
+        const isInactive = !!u.deactivatedAt;
+        if (isInactive) {
+          if (worked && worked.size > 0) {
+            inactiveWithActivity.push({
+              employeeId: u.id,
+              employeeName: name(u),
+              deactivatedAt: u.deactivatedAt ? new Date(u.deactivatedAt).toISOString() : null,
+              dayCount: worked.size,
+            });
+          }
+        } else if (!worked || worked.size === 0) {
+          activeNoWork.push({ employeeId: u.id, employeeName: name(u) });
+        }
+      }
+      inactiveWithActivity.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+      activeNoWork.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+
+      res.json({ startDate, endDate, inactiveWithActivity, activeNoWork });
+    } catch (error) {
+      handleRouteError(res, error, "Failed to load period roster");
+    }
+  });
+
   app.get("/api/payroll/exports", requireAuth, requirePermission("payroll.view_all"), async (req, res) => {
     try {
       const companyId = req.query.companyId as string | undefined;
