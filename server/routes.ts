@@ -10721,6 +10721,9 @@ export async function registerRoutes(
     // When confirmedOnly, limit the batch to one paying company (Ahava or BCM),
     // so each payroll processor gets its own report. Omit for all companies.
     payrollCompanyId: z.string().optional(),
+    // Scope the batch to one or more work locations (e.g. Sumner). Empty/omitted
+    // = all locations. Stored on the export so the batch remembers its scope.
+    locationIds: z.array(z.string()).optional(),
   });
 
   // ───────────────── "Send to Payroll" (per-day confirmation) ─────────────────
@@ -10811,13 +10814,23 @@ export async function registerRoutes(
   // generating the batch report they hand to each payroll processor.
   app.get("/api/payroll/ready-for-payroll", requireAuth, requireAnyPermission("payroll.view_all", "payroll.manage"), async (req: any, res) => {
     try {
-      const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+      const { startDate, endDate } = req.query as { startDate?: string; endDate?: string; locationIds?: string };
       if (!startDate || !endDate) {
         return res.status(400).json({ message: "startDate and endDate are required." });
       }
+      // Optional work-location scope (comma-separated). Empty = all locations.
+      const selectedLocSet = new Set(
+        String(req.query.locationIds ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      );
       const subs = await storage.listUnbatchedPayrollSubmissions(startDate, endDate);
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map((u) => [u.id, u]));
+      const employeeInLocationScope = (employeeId: string): boolean => {
+        if (selectedLocSet.size === 0) return true;
+        const u = userMap.get(employeeId);
+        const locs = (u?.locationIds ?? []) as string[];
+        return locs.some((l) => selectedLocSet.has(l));
+      };
 
       // Resolve each employee's paying company once (profile → company name).
       const companyNameCache = new Map<string, string | null>();
@@ -10852,9 +10865,10 @@ export async function registerRoutes(
       const byEmployee = new Map<string, EmpRow>();
       for (const s of subs) {
         // Skip a confirmed day whose employee is no longer visible (e.g. hidden
-        // super-admin) so the rollup never leaks or crashes on a missing user.
+        // super-admin) so the rollup never leaks or crashes on a missing user,
+        // or who is outside the selected work location(s).
         const user = userMap.get(s.employeeId);
-        if (!user) continue;
+        if (!user || !employeeInLocationScope(s.employeeId)) continue;
         let row = byEmployee.get(s.employeeId);
         if (!row) {
           const pc = await resolvePayingCompany(s.employeeId);
@@ -10894,12 +10908,40 @@ export async function registerRoutes(
         startDate,
         endDate,
         totalEmployees: employees.length,
-        totalDays: subs.length,
+        totalDays: employees.reduce((sum, e) => sum + e.dayCount, 0),
         employees,
         byCompany,
       });
     } catch (error) {
       handleRouteError(res, error, "Failed to load ready-for-payroll list");
+    }
+  });
+
+  // Saved batch defaults (org-wide): the location(s) the admin usually batches
+  // and whether each payroll company gets one combined report or one per
+  // location on "Send to Payroll Company".
+  app.get("/api/payroll/batch-defaults", requireAuth, requireAnyPermission("payroll.view_all", "payroll.manage"), async (_req, res) => {
+    try {
+      res.json(await storage.getPayrollBatchDefaults());
+    } catch (error) {
+      handleRouteError(res, error, "Failed to load batch defaults");
+    }
+  });
+
+  const batchDefaultsSchema = z.object({
+    locationIds: z.array(z.string()).default([]),
+    reportSplitByLocation: z.boolean().default(false),
+  });
+  app.put("/api/payroll/batch-defaults", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const parsed = batchDefaultsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid batch defaults", errors: parsed.error.flatten() });
+      }
+      const saved = await storage.savePayrollBatchDefaults(parsed.data, (req.authUser as User).id);
+      res.json(saved);
+    } catch (error) {
+      handleRouteError(res, error, "Failed to save batch defaults");
     }
   });
 
@@ -10986,6 +11028,7 @@ export async function registerRoutes(
       const { startDate, endDate, companyId, notes } = parsed.data;
       const confirmedOnly = parsed.data.confirmedOnly === true;
       const payrollCompanyFilter = parsed.data.payrollCompanyId ?? null;
+      const selectedLocationIds = parsed.data.locationIds ?? [];
       const adminUser = req.authUser as User;
 
       if (startDate > endDate) {
@@ -10996,6 +11039,16 @@ export async function registerRoutes(
       const allAttendanceRecords = await storage.getAttendanceByDateRange(startDate, endDate);
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+      // Work-location scope (e.g. only Sumner). Empty = all locations. An
+      // employee is in scope when ANY of their locations is in the selection.
+      const selectedLocSet = new Set(selectedLocationIds);
+      const employeeInLocationScope = (employeeId: string): boolean => {
+        if (selectedLocSet.size === 0) return true;
+        const u = userMap.get(employeeId);
+        const locs = (u?.locationIds ?? []) as string[];
+        return locs.some((l) => selectedLocSet.has(l));
+      };
 
       // "Ready for Payroll" (confirmedOnly): the batch is built from ONLY the
       // (employee, day) pairs an admin confirmed via Send to Payroll and that are
@@ -11026,8 +11079,9 @@ export async function registerRoutes(
           }
           subs = filtered;
         }
-        // Only confirmed days for employees still visible to this admin.
-        subs = subs.filter((s) => userMap.has(s.employeeId));
+        // Only confirmed days for employees still visible to this admin and in
+        // the selected work location(s).
+        subs = subs.filter((s) => userMap.has(s.employeeId) && employeeInLocationScope(s.employeeId));
         confirmedKeys = new Set(subs.map((s) => `${s.employeeId}__${s.workDate}`));
         for (const s of subs) confirmedKeyToId.set(`${s.employeeId}__${s.workDate}`, s.id);
         if (confirmedKeys.size === 0) {
@@ -11037,7 +11091,7 @@ export async function registerRoutes(
 
       const attendanceRecords = confirmedKeys
         ? allAttendanceRecords.filter((r) => confirmedKeys!.has(`${r.employeeId}__${r.workDate}`))
-        : allAttendanceRecords;
+        : allAttendanceRecords.filter((r) => employeeInLocationScope(r.employeeId));
 
       const missingPunches = attendanceRecords.filter(
         r => r.clockIn && !r.clockOut && r.status !== "in-progress"
@@ -11224,6 +11278,7 @@ export async function registerRoutes(
           companyId: companyId || null,
           status: "draft",
           notes: notes || null,
+          locationIds: selectedLocationIds,
           createdBy: adminUser.id,
           recordCount: totalRecordCount,
           exportedAt: null,

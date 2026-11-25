@@ -25,7 +25,9 @@ import { PageHeader } from "@/components/page-header";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { MapPin } from "lucide-react";
 import { usePermissions } from "@/hooks/use-permissions";
 import { currentPayrollPeriod, shiftBiweekly, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
 import type { PayrollExport, PayrollBatchRecord } from "@shared/schema";
@@ -913,14 +915,58 @@ function ReadyForPayroll() {
   const { toast } = useToast();
   const { has } = usePermissions();
   const canGenerate = has("payroll.manage");
+  const canManageDefaults = has("payroll.manage");
   const [range, setRange] = useState<DateRange>(() => currentPayrollPeriod());
   const [showEmployees, setShowEmployees] = useState(false);
   const [generatingKey, setGeneratingKey] = useState<string | null>(null);
+  // Work-location scope. Empty = all locations. Seeded from the saved default.
+  const [selectedLocationIds, setSelectedLocationIds] = useState<string[]>([]);
+  const [locsInitialized, setLocsInitialized] = useState(false);
+
+  const { data: locations = [] } = useQuery<Array<{ id: string; name: string }>>({
+    queryKey: ["/api/locations"],
+  });
+  const { data: batchDefaults } = useQuery<{ locationIds: string[]; reportSplitByLocation: boolean }>({
+    queryKey: ["/api/payroll/batch-defaults"],
+  });
+  // Seed the selection from the saved default, once.
+  useEffect(() => {
+    if (!locsInitialized && batchDefaults) {
+      setSelectedLocationIds(batchDefaults.locationIds ?? []);
+      setLocsInitialized(true);
+    }
+  }, [batchDefaults, locsInitialized]);
+
+  const saveDefault = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PUT", "/api/payroll/batch-defaults", {
+        locationIds: selectedLocationIds,
+        reportSplitByLocation: batchDefaults?.reportSplitByLocation ?? false,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/batch-defaults"] });
+      toast({ title: "Saved as default", description: selectedLocationIds.length === 0 ? "All locations" : `${selectedLocationIds.length} location(s)` });
+    },
+    onError: (err: Error) => toast({ title: "Could not save default", description: err.message, variant: "destructive" }),
+  });
+
+  const locParam = selectedLocationIds.join(",");
+  const toggleLocation = (id: string) =>
+    setSelectedLocationIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const locationLabel =
+    selectedLocationIds.length === 0
+      ? "All locations"
+      : selectedLocationIds.length === 1
+        ? (locations.find((l) => l.id === selectedLocationIds[0])?.name ?? "1 location")
+        : `${selectedLocationIds.length} locations`;
 
   const { data, isLoading } = useQuery<ReadyForPayrollData>({
-    queryKey: ["/api/payroll/ready-for-payroll", range.start, range.end],
+    queryKey: ["/api/payroll/ready-for-payroll", range.start, range.end, locParam],
     queryFn: async () => {
       const p = new URLSearchParams({ startDate: range.start, endDate: range.end });
+      if (locParam) p.set("locationIds", locParam);
       const res = await apiRequest("GET", `/api/payroll/ready-for-payroll?${p.toString()}`);
       return res.json();
     },
@@ -934,6 +980,7 @@ function ReadyForPayroll() {
         confirmedOnly: true,
         payrollCompanyId: company.payrollCompanyId ?? undefined,
         companyId: company.payrollCompanyId ?? undefined,
+        locationIds: selectedLocationIds,
         notes: company.payrollCompanyName ? `Confirmed days · ${company.payrollCompanyName}` : "Confirmed days",
       });
       return res.json();
@@ -968,21 +1015,66 @@ function ReadyForPayroll() {
               Confirmed days not yet batched. Generate a report per paying company to send to payroll.
             </p>
           </div>
-          <div className="flex items-center gap-1" data-testid="ready-period-nav">
-            <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(-1)} aria-label="Previous pay period" data-testid="button-ready-prev">
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <span className="text-sm font-medium text-center whitespace-nowrap px-1" data-testid="text-ready-period">
-              {formatRangeLabel(range)}{isCurrent ? " · current" : ""}
-            </span>
-            <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(1)} disabled={isCurrent} aria-label="Next pay period" data-testid="button-ready-next">
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-            {!isCurrent && (
-              <Button variant="secondary" size="sm" className="h-8" onClick={goCurrent} data-testid="button-ready-current">
-                <CalendarClock className="h-4 w-4 mr-1" /> Current
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8" data-testid="button-ready-locations">
+                    <MapPin className="h-4 w-4 mr-1" /> {locationLabel} <ChevronDown className="h-3 w-3 ml-1" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Work locations</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem
+                    checked={selectedLocationIds.length === 0}
+                    onCheckedChange={() => setSelectedLocationIds([])}
+                    data-testid="menu-location-all"
+                  >
+                    All locations
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuSeparator />
+                  {locations.map((l) => (
+                    <DropdownMenuCheckboxItem
+                      key={l.id}
+                      checked={selectedLocationIds.includes(l.id)}
+                      onCheckedChange={() => toggleLocation(l.id)}
+                      onSelect={(e) => e.preventDefault()}
+                      data-testid={`menu-location-${l.id}`}
+                    >
+                      {l.name}
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                  {canManageDefaults && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onSelect={(e) => { e.preventDefault(); saveDefault.mutate(); }}
+                        data-testid="menu-location-save-default"
+                      >
+                        {saveDefault.isPending ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5 mr-2" />}
+                        Save as default
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <div className="flex items-center gap-1" data-testid="ready-period-nav">
+              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(-1)} aria-label="Previous pay period" data-testid="button-ready-prev">
+                <ChevronLeft className="h-4 w-4" />
               </Button>
-            )}
+              <span className="text-sm font-medium text-center whitespace-nowrap px-1" data-testid="text-ready-period">
+                {formatRangeLabel(range)}{isCurrent ? " · current" : ""}
+              </span>
+              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(1)} disabled={isCurrent} aria-label="Next pay period" data-testid="button-ready-next">
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              {!isCurrent && (
+                <Button variant="secondary" size="sm" className="h-8" onClick={goCurrent} data-testid="button-ready-current">
+                  <CalendarClock className="h-4 w-4 mr-1" /> Current
+                </Button>
+              )}
+            </div>
           </div>
         </div>
 
