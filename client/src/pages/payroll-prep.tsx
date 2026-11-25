@@ -1364,6 +1364,7 @@ type BackpayItemRow = {
   id: string; employeeName: string; workDate: string; reason: string;
   regularHours: number; overtimeHours: number; doubleTimeHours: number;
   hourlyRate: number | null; overtimeMultiplier: number | null; doubleTimeMultiplier: number | null;
+  sourcePayrollExportId: string | null;
 };
 
 function BackpayReview() {
@@ -1377,19 +1378,32 @@ function BackpayReview() {
   });
 
   const decideMutation = useMutation({
-    mutationFn: async ({ id, decision }: { id: string; decision: "approve" | "reject" }) => {
-      await apiRequest("POST", `/api/payroll/backpay/${id}/${decision}`);
+    mutationFn: async ({ id, decision, routeChoice }: { id: string; decision: "approve" | "reject"; routeChoice?: "next_period" | "add_to_sent" }) => {
+      await apiRequest("POST", `/api/payroll/backpay/${id}/${decision}`, decision === "approve" ? { routeChoice: routeChoice ?? "next_period" } : undefined);
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["/api/payroll/backpay/pending"] });
-      toast({ title: vars.decision === "approve" ? "Back-pay approved" : "Back-pay rejected" });
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      toast({
+        title: vars.decision === "reject"
+          ? "Adjustment denied"
+          : vars.routeChoice === "add_to_sent"
+            ? "Added to the sent report — re-export it to include the change"
+            : "Approved — will ride the next payroll",
+      });
     },
     onError: (error: any) => {
       toast({ title: "Could not save decision", description: error?.message || "Please try again.", variant: "destructive" });
     },
   });
 
-  if (!isLoading && items.length === 0) return null;
+  if (!isLoading && items.length === 0) {
+    return (
+      <div className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="text-adjustments-empty">
+        Nothing waiting for approval. Corrections to already-sent periods (and manager edits) show up here for you to approve or deny.
+      </div>
+    );
+  }
 
   const estimate = (it: BackpayItemRow) => {
     const rate = it.hourlyRate ?? 0;
@@ -1409,9 +1423,9 @@ function BackpayReview() {
     <Card data-testid="card-backpay-review">
       <CardContent className="p-0">
         <div className="px-4 py-3 border-b">
-          <h3 className="text-sm font-semibold">Back-Pay — Pending Admin Approval</h3>
+          <h3 className="text-sm font-semibold">Adjustments — Pending Admin Approval</h3>
           <p className="text-xs text-muted-foreground">
-            Corrections to days that were already paid. Approve to carry the difference into the next payroll batch (a negative amount is a claw-back), or reject.
+            Corrections to days in an already-sent period (a late/added day, a fixed missing punch, or a manager's edit). Approve into the next payroll, or fold it back into the already-sent report; a negative amount is a claw-back. Deny to drop it.
           </p>
         </div>
         {isLoading ? (
@@ -1438,15 +1452,42 @@ function BackpayReview() {
                   <TableCell className="text-right tabular-nums" data-testid={`text-backpay-amount-${it.id}`}>{formatCurrency(estimate(it))}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex gap-2 justify-end">
-                      <Button size="sm" variant="outline" disabled={decideMutation.isPending}
-                        onClick={() => decideMutation.mutate({ id: it.id, decision: "approve" })}
-                        data-testid={`button-backpay-approve-${it.id}`}>
-                        <CheckCircle className="h-3 w-3 mr-1" /> Approve
-                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button size="sm" disabled={decideMutation.isPending} data-testid={`button-backpay-approve-${it.id}`}>
+                            <CheckCircle className="h-3 w-3 mr-1" /> Approve <ChevronDown className="h-3 w-3 ml-1" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-64">
+                          <DropdownMenuItem
+                            onClick={() => decideMutation.mutate({ id: it.id, decision: "approve", routeChoice: "next_period" })}
+                            data-testid={`menu-backpay-next-${it.id}`}
+                          >
+                            <ArrowRight className="h-3.5 w-3.5 mr-2" />
+                            <div>
+                              <div className="text-sm">Add to next payroll</div>
+                              <div className="text-xs text-muted-foreground">Rides the next batch you process</div>
+                            </div>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={!it.sourcePayrollExportId}
+                            onClick={() => decideMutation.mutate({ id: it.id, decision: "approve", routeChoice: "add_to_sent" })}
+                            data-testid={`menu-backpay-sent-${it.id}`}
+                          >
+                            <RefreshCw className="h-3.5 w-3.5 mr-2" />
+                            <div>
+                              <div className="text-sm">Add to the already-sent report</div>
+                              <div className="text-xs text-muted-foreground">
+                                {it.sourcePayrollExportId ? "Folds into that batch — re-export to include it" : "No source batch for this item"}
+                              </div>
+                            </div>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <Button size="sm" variant="outline" disabled={decideMutation.isPending}
                         onClick={() => decideMutation.mutate({ id: it.id, decision: "reject" })}
                         data-testid={`button-backpay-reject-${it.id}`}>
-                        <XCircle className="h-3 w-3 mr-1" /> Reject
+                        <XCircle className="h-3 w-3 mr-1" /> Deny
                       </Button>
                     </div>
                   </TableCell>

@@ -12562,7 +12562,13 @@ export async function registerRoutes(
   });
 
   // Admin-only FINAL approval of a back-pay item (status-guarded against a stale
-  // list). Approved items are carried into the next payroll batch.
+  // list). The admin picks where the money goes:
+  //   next_period  — (default) ride the NEXT payroll batch (the proven path).
+  //   add_to_sent  — fold it into the SOURCE batch that already covered the day
+  //                  (when that batch was exported but not yet truly sent): adds a
+  //                  labeled back-pay record to that export and flags it "changed —
+  //                  re-export", so re-sending produces the next version WITH the
+  //                  change. Not allowed once the source batch is locked.
   app.post("/api/payroll/backpay/:id/approve", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
       const item = await storage.getPayrollBackpayItem(String(req.params.id));
@@ -12571,13 +12577,77 @@ export async function registerRoutes(
         throw new RouteConflictError("This back-pay item was already handled by someone else.");
       }
       const adminUser = req.authUser as User;
+      const routeChoice = req.body?.routeChoice === "add_to_sent" ? "add_to_sent" : "next_period";
+      const reviewNotes = typeof req.body?.reviewNotes === "string" ? req.body.reviewNotes : item.reviewNotes;
+
+      if (routeChoice === "add_to_sent") {
+        const sourceId = item.sourcePayrollExportId;
+        if (!sourceId) {
+          return res.status(400).json({ message: "This item has no source batch to add to. Use 'next period' instead." });
+        }
+        const sourceExp = await storage.getPayrollExport(sourceId);
+        if (!sourceExp) {
+          return res.status(400).json({ message: "The source batch no longer exists. Use 'next period' instead." });
+        }
+        if (sourceExp.status === "locked") {
+          return res.status(400).json({ message: "The source batch is locked. Reopen it first, or route this to the next period." });
+        }
+        const profile = await storage.getEmploymentProfile(item.employeeId);
+        const company = profile?.payrollCompanyId ? await storage.getCompany(profile.payrollCompanyId) : null;
+        // Add the back-pay delta as a labeled record on the SOURCE export, mirroring
+        // how the batch generator carries an approved item as a "backpay" line.
+        await storage.createPayrollBatchRecord({
+          payrollExportId: sourceId,
+          employeeId: item.employeeId,
+          punchLogId: item.punchLogId,
+          timeOffRequestId: null,
+          recordType: "backpay",
+          workDate: item.workDate,
+          regularHours: item.regularHours,
+          overtimeHours: item.overtimeHours,
+          doubleTimeHours: item.doubleTimeHours,
+          ptoHours: 0,
+          overtimeMultiplier: item.overtimeMultiplier,
+          doubleTimeMultiplier: item.doubleTimeMultiplier,
+          hourlyRate: item.hourlyRate,
+          payrollCompanyId: profile?.payrollCompanyId ?? null,
+          payrollCompanyName: company?.name ?? null,
+          bonusAmount: 0,
+          bonusHours: 0,
+          hasIssues: false,
+          issueDescription: item.reason,
+        });
+        const updated = await storage.updatePayrollBackpayItem(item.id, {
+          status: "paid",
+          approvedBy: adminUser.id,
+          approvedAt: new Date(),
+          paidInExportId: sourceId,
+          paidAt: new Date(),
+          reviewNotes,
+        });
+        // Flag the source batch as changed so the admin re-exports (→ next version).
+        await storage.updatePayrollExport(sourceId, { changedSinceExport: true });
+
+        const auditCtx = getAuditContext(req);
+        await writeAuditLog({
+          actorUserId: adminUser.id,
+          targetType: "payroll_backpay_item",
+          targetId: item.id,
+          action: "payroll_backpay.approved_add_to_sent",
+          newValue: { status: "paid", sourceExportId: sourceId, employeeId: item.employeeId, workDate: item.workDate },
+          ...auditCtx,
+        });
+        return res.json({ ...updated, routedTo: "add_to_sent", sourceExportId: sourceId });
+      }
+
+      // next_period (default): rides the next batch via the generator.
       const updated = await storage.updatePayrollBackpayItem(item.id, {
         status: "approved",
         approvedBy: adminUser.id,
         approvedAt: new Date(),
-        reviewNotes: typeof req.body?.reviewNotes === "string" ? req.body.reviewNotes : item.reviewNotes,
+        reviewNotes,
       });
-      res.json(updated);
+      res.json({ ...updated, routedTo: "next_period" });
     } catch (error) {
       console.error("Error approving back-pay item:", error);
       handleRouteError(res, error, "Failed to approve back-pay item");
