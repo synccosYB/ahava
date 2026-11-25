@@ -11767,6 +11767,12 @@ export async function registerRoutes(
         return val.toFixed(2);
       };
 
+      // Pay rate cell: "$23.00" (hourly), blank when unknown / not rate-based.
+      const formatRate = (val: number): string => {
+        if (!val || val <= 0) return "";
+        return formatAmountCurrency(val);
+      };
+
       // Identify which punch logs in this batch's range were created/updated via an approved correction.
       const approvedExceptionsForBatch = await db
         .select({ punchLogId: attendanceExceptions.punchLogId })
@@ -11779,7 +11785,7 @@ export async function registerRoutes(
         approvedExceptionsForBatch.map(e => e.punchLogId).filter(Boolean) as string[]
       );
 
-      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; payee: string; payeeMemo: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
+      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; payee: string; payeeMemo: string; amount: number; payType: string; department: string; paidHours: number; payRate: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
       const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
@@ -11848,6 +11854,7 @@ export async function registerRoutes(
           existing.amount += amount;
           existing.paidHours += totalHours;
           existing.bonusAmount += bonusAmount;
+          if (hourlyRate > existing.payRate) existing.payRate = hourlyRate;
           if (trimmedBonusDesc) existing.bonusDescriptions.push(trimmedBonusDesc);
           if (payType === "Holiday") existing.payType = "Holiday";
           if (recCorrected) existing.wasCorrected = true;
@@ -11864,6 +11871,7 @@ export async function registerRoutes(
             payType,
             department,
             paidHours: totalHours,
+            payRate: hourlyRate,
             dateWorked: formatDateWorked(r.workDate),
             sortDate: r.workDate,
             wasCorrected: recCorrected,
@@ -11881,7 +11889,7 @@ export async function registerRoutes(
       }
 
       let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
-      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
+      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Pay Rate,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
 
       for (const [, dayMap] of employeeRecords) {
         const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
@@ -11892,7 +11900,7 @@ export async function registerRoutes(
         for (const row of rows) {
           const bonusAmtCell = row.bonusAmount > 0 ? formatAmountCurrency(row.bonusAmount) : "";
           const bonusDescCell = row.bonusDescriptions.length > 0 ? escapeCSV(row.bonusDescriptions.join("; ")) : "";
-          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${escapeCSV(row.payee)},${escapeCSV(row.payeeMemo)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
+          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${escapeCSV(row.payee)},${escapeCSV(row.payeeMemo)},${formatRate(row.payRate)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
           totalAmount += row.amount;
           totalPaidHours += row.paidHours;
           totalBonusAmount += row.bonusAmount;
@@ -11903,8 +11911,10 @@ export async function registerRoutes(
         const payrollCompany = rows[0].payrollCompany;
         const payee = rows[0].payee;
         const payeeMemo = rows[0].payeeMemo;
+        // Employee-level rate: the highest rate across the days (one rate for most).
+        const empRate = rows.reduce((mx, r) => Math.max(mx, r.payRate), 0);
         const totalBonusCell = totalBonusAmount > 0 ? formatAmountCurrency(totalBonusAmount) : "";
-        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${escapeCSV(payee)},${escapeCSV(payeeMemo)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${escapeCSV(payee)},${escapeCSV(payeeMemo)},${formatRate(empRate)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
       }
 
       const adminUser = req.authUser as User;
@@ -11998,6 +12008,7 @@ export async function registerRoutes(
         return `"$${parts.join(".")}"`;
       };
       const formatHoursVal = (val: number): string => val.toFixed(2);
+      const formatRate = (val: number): string => (!val || val <= 0 ? "" : formatAmountCurrency(val));
       const formatDateHeader = (dateStr: string): string => {
         const [y, m, d] = dateStr.split("-").map((p) => parseInt(p, 10));
         const dt = new Date(Date.UTC(y, m - 1, d));
@@ -12006,10 +12017,10 @@ export async function registerRoutes(
       };
 
       let csv = `Pay Period: ${formatDateHeader(exp.startDate)} - ${formatDateHeader(exp.endDate)}\n`;
-      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Amount,Pay Type,Department,Paid Hours,Bonus Amount\n";
+      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Pay Rate,Amount,Pay Type,Department,Paid Hours,Bonus Amount\n";
       for (const e of report.employees) {
         const bonusCell = e.totalBonusAmount > 0 ? formatAmountCurrency(e.totalBonusAmount) : "";
-        csv += `${escapeCSV(e.employeeName)},${escapeCSV(e.taxClassification)},${escapeCSV(e.payrollCompany)},${escapeCSV(e.payee)},${escapeCSV(e.payeeMemo)},${formatAmountCurrency(e.totalAmount)},${escapeCSV(e.payType)},${escapeCSV(e.department)},${formatHoursVal(e.totalPaidHours)},${bonusCell}\n`;
+        csv += `${escapeCSV(e.employeeName)},${escapeCSV(e.taxClassification)},${escapeCSV(e.payrollCompany)},${escapeCSV(e.payee)},${escapeCSV(e.payeeMemo)},${formatRate(e.payRate)},${formatAmountCurrency(e.totalAmount)},${escapeCSV(e.payType)},${escapeCSV(e.department)},${formatHoursVal(e.totalPaidHours)},${bonusCell}\n`;
       }
 
       const overlapping = await storage.getOverlappingPayrollExports(exp.startDate, exp.endDate, exp.companyId || undefined);

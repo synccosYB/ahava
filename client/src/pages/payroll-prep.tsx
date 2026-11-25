@@ -53,6 +53,7 @@ type SummaryEmployee = {
   payeeMemo: string;
   department: string;
   payType: string;
+  payRate: number;
   totalAmount: number;
   totalPaidHours: number;
   totalBonusAmount: number;
@@ -599,6 +600,7 @@ export default function PayrollPrepPage() {
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Payroll Company</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Rate</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Regular</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">OT</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">PTO</TableHead>
@@ -619,6 +621,9 @@ export default function PayrollPrepPage() {
                       </TableCell>
                       <TableCell className="tabular-nums" data-testid={`text-record-date-${r.id}`}>{formatDate(r.workDate)}</TableCell>
                       <TableCell><Badge variant="outline">{formatRecordType(r.recordType)}</Badge></TableCell>
+                      <TableCell className="tabular-nums text-right" data-testid={`text-record-rate-${r.id}`}>
+                        {r.hourlyRate ? `${formatCurrency(r.hourlyRate)}/hr` : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
                       <TableCell className="tabular-nums text-right">{formatHoursMinutes(r.regularHours || 0)}</TableCell>
                       <TableCell className="tabular-nums text-right">
                         <span className={(r.overtimeHours || 0) > 0 ? "text-amber-500 font-bold" : ""}>
@@ -657,7 +662,7 @@ export default function PayrollPrepPage() {
                   );
                 })}
                 <TableRow className="font-medium border-t-2" data-testid="row-batch-detail-totals">
-                  <TableCell colSpan={4}>Totals</TableCell>
+                  <TableCell colSpan={5}>Totals</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-regular">{formatHoursMinutes(detailTotals.regular)}</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-overtime">{formatHoursMinutes(detailTotals.overtime)}</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-pto">{formatHoursMinutes(detailTotals.pto)}</TableCell>
@@ -700,6 +705,7 @@ export default function PayrollPrepPage() {
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Memo</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Pay Type</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Pay Rate</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Paid Hours</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Bonus</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Amount</TableHead>
@@ -715,6 +721,7 @@ export default function PayrollPrepPage() {
                       <TableCell className="max-w-[160px] truncate" title={e.payeeMemo}>{e.payeeMemo || "—"}</TableCell>
                       <TableCell>{e.payType || "—"}</TableCell>
                       <TableCell>{e.department || "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums">{e.payRate > 0 ? `${formatCurrency(e.payRate)}/hr` : "—"}</TableCell>
                       <TableCell className="text-right tabular-nums">{e.totalPaidHours.toFixed(2)}</TableCell>
                       <TableCell className="text-right tabular-nums">{e.totalBonusAmount > 0 ? formatCurrency(e.totalBonusAmount) : "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-medium">{formatCurrency(e.totalAmount)}</TableCell>
@@ -722,6 +729,7 @@ export default function PayrollPrepPage() {
                   ))}
                   <TableRow className="border-t-2 font-semibold">
                     <TableCell colSpan={7}>Totals — {summaryReport.employees.length} employee{summaryReport.employees.length === 1 ? "" : "s"}</TableCell>
+                    <TableCell />
                     <TableCell className="text-right tabular-nums">
                       {summaryReport.employees.reduce((s, e) => s + e.totalPaidHours, 0).toFixed(2)}
                     </TableCell>

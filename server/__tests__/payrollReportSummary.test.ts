@@ -88,4 +88,8 @@ test("summary totals equal the sum of the daily rows, with display fields and sa
   assert.equal(me!.payeeMemo, "memo text");
   assert.equal(me!.department, `${stamp} Dept`);
   assert.equal(me!.payType, "Regular", "no schedule set → all days Regular");
+
+  // --- pay rate column: employee-level rate + per-day rate ---
+  assert.equal(me!.payRate, RATE, "employee pay rate = frozen hourly rate");
+  assert.ok(me!.days.every((d) => d.payRate === RATE), "every day carries the frozen rate");
 });

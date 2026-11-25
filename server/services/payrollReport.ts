@@ -33,6 +33,7 @@ export type PayrollReportDay = {
   payType: string;
   department: string;
   paidHours: number;
+  payRate: number;      // frozen hourly rate used to pay this day (0 when unknown)
   dateWorked: string;   // "Mon, 11/02/2026"
   sortDate: string;     // "2026-11-02"
   wasCorrected: boolean;
@@ -52,6 +53,7 @@ export type PayrollReportEmployee = {
   payeeMemo: string;
   department: string;
   payType: string;
+  payRate: number;      // employee's hourly pay rate (0 when unknown / not hourly)
   days: PayrollReportDay[];
   totalAmount: number;
   totalPaidHours: number;
@@ -200,6 +202,7 @@ export async function buildPayrollReport(
         payType,
         department,
         paidHours: totalHours,
+        payRate: hourlyRate,
         dateWorked: formatDateWorked(r.workDate),
         sortDate: r.workDate,
         wasCorrected: recCorrected,
@@ -228,6 +231,10 @@ export async function buildPayrollReport(
       payeeMemo: first.payeeMemo,
       department: first.department,
       payType: distinctTypes.join(" / "),
+      // Employee-level rate: the highest rate seen across the days (most
+      // employees have one rate; if a rate changed mid-period the higher one is
+      // shown so the summary never understates the pay rate).
+      payRate: days.reduce((mx, d) => Math.max(mx, d.payRate), 0),
       days,
       totalAmount,
       totalPaidHours,
