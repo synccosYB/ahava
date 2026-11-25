@@ -198,7 +198,22 @@ export async function buildEmployeeTimesheet(
   const confirmationOnly = await storage.isClockConfirmationOnly(employee.id);
   const attendancePolicy = await getEffectivePolicy(employee.companyId, employee.id, "attendance", employee);
   const maxShiftHours = attendancePolicy?.rules?.maxShiftHours ?? DEFAULT_ATTENDANCE_RULES.maxShiftHours;
-  const ledgerDays = await getLedgerForEmployee(employee, startDate, endDate, now);
+  // The recompute-through ledger runs ONCE here, outside the per-day guard
+  // below. It re-reads/recomputes and persists this employee's ledger rows, so a
+  // single corrupt ledger/policy/schedule row for one employee could throw and
+  // 500 the whole timesheet (while a clean employee loads fine). Degrade
+  // gracefully instead: on failure, use an empty ledger — each day then falls
+  // back to direct hour computation in the guarded loop (computeDayHours), the
+  // same philosophy as the per-day hardening.
+  let ledgerDays: LedgerDay[] = [];
+  try {
+    ledgerDays = await getLedgerForEmployee(employee, startDate, endDate, now);
+  } catch (err) {
+    console.error(
+      `[timesheet] ledger build failed for employee ${employee.id} ${startDate}..${endDate}; falling back to per-day computation:`,
+      err,
+    );
+  }
   const ledgerByDate = new Map<string, LedgerDay>(ledgerDays.map((d) => [d.workDate, d]));
 
   // Day-of-week bonuses (e.g. a Sunday bonus) earned over the range. Uses the
