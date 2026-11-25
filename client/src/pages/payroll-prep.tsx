@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { formatHoursMinutes, formatCurrency, formatDate, formatDateRange } from "@/lib/utils";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,10 @@ import { PageHeader } from "@/components/page-header";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { MapPin } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { usePermissions } from "@/hooks/use-permissions";
 import { currentPayrollPeriod, shiftBiweekly, formatRangeLabel, type DateRange } from "@/lib/payroll-week";
 import type { PayrollExport, PayrollBatchRecord } from "@shared/schema";
@@ -53,6 +56,7 @@ type SummaryEmployee = {
   payeeMemo: string;
   department: string;
   payType: string;
+  payRate: number;
   totalAmount: number;
   totalPaidHours: number;
   totalBonusAmount: number;
@@ -91,13 +95,14 @@ export default function PayrollPrepPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reExportWarning, setReExportWarning] = useState<{ id: string; format: ReportFormat } | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
+  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [sendAdjWarn, setSendAdjWarn] = useState<{ id: string; count: number } | null>(null);
   const [detailBatchId, setDetailBatchId] = useState<string | null>(null);
   const [summaryBatchId, setSummaryBatchId] = useState<string | null>(null);
   const [driftResults, setDriftResults] = useState<Record<string, PayrollDriftResult>>({});
   const [checkingDriftId, setCheckingDriftId] = useState<string | null>(null);
   const [autoCheckingIds, setAutoCheckingIds] = useState<Set<string>>(new Set());
   const [driftReviewId, setDriftReviewId] = useState<string | null>(null);
-  const [lockDriftConfirm, setLockDriftConfirm] = useState<{ id: string; result: PayrollDriftResult } | null>(null);
   const [form, setForm] = useState({
     periodStart: "",
     periodEnd: "",
@@ -209,30 +214,6 @@ export default function PayrollPrepPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batches]);
 
-  const lockMutation = useMutation({
-    mutationFn: async ({ id, acknowledgeDrift }: { id: string; acknowledgeDrift: boolean }) => {
-      const res = await apiRequest("POST", `/api/payroll/exports/${id}/lock`, { acknowledgeDrift });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
-      setLockDriftConfirm(null);
-      toast({ title: "Batch locked" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Failed to lock batch", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const handleLock = async (id: string) => {
-    const result = await checkDrift(id);
-    if (result && result.driftStatus === "changed") {
-      setLockDriftConfirm({ id, result });
-      return;
-    }
-    lockMutation.mutate({ id, acknowledgeDrift: false });
-  };
-
   const reopenMutation = useMutation({
     mutationFn: async (id: string) => {
       const res = await apiRequest("POST", `/api/payroll/exports/${id}/reopen`);
@@ -315,10 +296,45 @@ export default function PayrollPrepPage() {
     }
   };
 
+  // "Send to Payroll Company": generate one report per payroll company (and per
+  // location when the saved default says so) and download each. Guards on pending
+  // adjustments (409) → confirm dialog to go back or send anyway.
+  const doSend = async (id: string, acknowledgeAdjustments = false) => {
+    setSendingId(id);
+    try {
+      const res = await apiRequest("POST", `/api/payroll/exports/${id}/send-to-payroll`, { acknowledgeAdjustments });
+      const data = await res.json() as { version: number; files: Array<{ filename: string; content: string }> };
+      (data.files ?? []).forEach((f, i) => {
+        setTimeout(() => {
+          const blob = new Blob([f.content], { type: "text/csv" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = f.filename;
+          a.click();
+          URL.revokeObjectURL(url);
+        }, i * 300);
+      });
+      setSendAdjWarn(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      toast({ title: "Sent to payroll company", description: `${data.files?.length ?? 0} report(s) downloaded${data.version > 1 ? ` · export v${data.version}` : ""}` });
+    } catch (err) {
+      if (isApiError(err) && err.status === 409 && (err.payload as { requiresAdjustmentAck?: boolean })?.requiresAdjustmentAck) {
+        const count = (err.payload as { pendingAdjustments?: number }).pendingAdjustments ?? 0;
+        setSendAdjWarn({ id, count });
+      } else {
+        toast({ title: "Could not send to payroll", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+      }
+    } finally {
+      setSendingId(null);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "draft": return <Badge variant="secondary">Draft</Badge>;
       case "exported": return <Badge variant="default" className="bg-green-600">Exported</Badge>;
+      case "sent": return <Badge variant="default" className="bg-blue-600"><Send className="h-3 w-3 mr-1" /> Sent to payroll</Badge>;
       case "locked": return <Badge variant="outline" className="border-amber-500 text-amber-600"><Lock className="h-3 w-3 mr-1" /> Locked</Badge>;
       default: return <Badge variant="outline">{status}</Badge>;
     }
@@ -522,12 +538,19 @@ export default function PayrollPrepPage() {
                             <RefreshCw className="h-3 w-3 mr-1" /> Rebuild
                           </Button>
                         )}
-                        {batch.status === "exported" && (
-                          <Button variant="outline" size="sm" onClick={() => handleLock(batch.id)} disabled={lockMutation.isPending || checkingDriftId === batch.id} data-testid={`button-lock-${batch.id}`}>
-                            {checkingDriftId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Lock className="h-3 w-3 mr-1" />} Lock
+                        {(batch.status === "exported" || batch.status === "sent") && (
+                          <Button
+                            variant={batch.status === "sent" ? "outline" : "default"}
+                            size="sm"
+                            onClick={() => doSend(batch.id)}
+                            disabled={sendingId === batch.id}
+                            data-testid={`button-send-payroll-${batch.id}`}
+                          >
+                            {sendingId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                            {batch.status === "sent" ? `Re-send${(batch.exportVersion ?? 0) > 0 ? ` (v${(batch.exportVersion ?? 0) + 1})` : ""}` : "Send to Payroll Company"}
                           </Button>
                         )}
-                        {batch.status === "locked" && (
+                        {(batch.status === "locked" || batch.status === "sent") && (
                           <Button variant="outline" size="sm" onClick={() => reopenMutation.mutate(batch.id)} disabled={reopenMutation.isPending} data-testid={`button-reopen-${batch.id}`}>
                             <Unlock className="h-3 w-3 mr-1" /> Reopen
                           </Button>
@@ -541,6 +564,27 @@ export default function PayrollPrepPage() {
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={!!sendAdjWarn} onOpenChange={(open) => !open && setSendAdjWarn(null)}>
+        <AlertDialogContent data-testid="dialog-send-adjustments-warning">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Adjustments waiting for approval</AlertDialogTitle>
+            <AlertDialogDescription>
+              There {sendAdjWarn?.count === 1 ? "is" : "are"} {sendAdjWarn?.count ?? 0} adjustment{sendAdjWarn?.count === 1 ? "" : "s"} in the Adjustments box still waiting for your approval.
+              You can go back and approve or deny them first, or send this batch now and leave them pending for a later payroll.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-send-adj-review">Close &amp; review</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { if (sendAdjWarn) doSend(sendAdjWarn.id, true); }}
+              data-testid="button-send-adj-anyway"
+            >
+              Send anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={!!deleteBatch} onOpenChange={(open) => !open && setDeleteBatch(null)}>
         <AlertDialogContent data-testid="dialog-rebuild-confirm">
@@ -563,8 +607,6 @@ export default function PayrollPrepPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <BackpayReview />
 
       <PunctualityBonusReview />
 
@@ -599,6 +641,7 @@ export default function PayrollPrepPage() {
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Payroll Company</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Date</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider">Type</TableHead>
+                  <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Rate</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Regular</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">OT</TableHead>
                   <TableHead className="text-xs font-medium uppercase tracking-wider text-right">PTO</TableHead>
@@ -619,6 +662,9 @@ export default function PayrollPrepPage() {
                       </TableCell>
                       <TableCell className="tabular-nums" data-testid={`text-record-date-${r.id}`}>{formatDate(r.workDate)}</TableCell>
                       <TableCell><Badge variant="outline">{formatRecordType(r.recordType)}</Badge></TableCell>
+                      <TableCell className="tabular-nums text-right" data-testid={`text-record-rate-${r.id}`}>
+                        {r.hourlyRate ? `${formatCurrency(r.hourlyRate)}/hr` : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
                       <TableCell className="tabular-nums text-right">{formatHoursMinutes(r.regularHours || 0)}</TableCell>
                       <TableCell className="tabular-nums text-right">
                         <span className={(r.overtimeHours || 0) > 0 ? "text-amber-500 font-bold" : ""}>
@@ -657,7 +703,7 @@ export default function PayrollPrepPage() {
                   );
                 })}
                 <TableRow className="font-medium border-t-2" data-testid="row-batch-detail-totals">
-                  <TableCell colSpan={4}>Totals</TableCell>
+                  <TableCell colSpan={5}>Totals</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-regular">{formatHoursMinutes(detailTotals.regular)}</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-overtime">{formatHoursMinutes(detailTotals.overtime)}</TableCell>
                   <TableCell className="tabular-nums text-right" data-testid="text-detail-total-pto">{formatHoursMinutes(detailTotals.pto)}</TableCell>
@@ -700,6 +746,7 @@ export default function PayrollPrepPage() {
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Memo</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Pay Type</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider">Department</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Pay Rate</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Paid Hours</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Bonus</TableHead>
                     <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Amount</TableHead>
@@ -715,6 +762,7 @@ export default function PayrollPrepPage() {
                       <TableCell className="max-w-[160px] truncate" title={e.payeeMemo}>{e.payeeMemo || "—"}</TableCell>
                       <TableCell>{e.payType || "—"}</TableCell>
                       <TableCell>{e.department || "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums">{e.payRate > 0 ? `${formatCurrency(e.payRate)}/hr` : "—"}</TableCell>
                       <TableCell className="text-right tabular-nums">{e.totalPaidHours.toFixed(2)}</TableCell>
                       <TableCell className="text-right tabular-nums">{e.totalBonusAmount > 0 ? formatCurrency(e.totalBonusAmount) : "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-medium">{formatCurrency(e.totalAmount)}</TableCell>
@@ -722,6 +770,7 @@ export default function PayrollPrepPage() {
                   ))}
                   <TableRow className="border-t-2 font-semibold">
                     <TableCell colSpan={7}>Totals — {summaryReport.employees.length} employee{summaryReport.employees.length === 1 ? "" : "s"}</TableCell>
+                    <TableCell />
                     <TableCell className="text-right tabular-nums">
                       {summaryReport.employees.reduce((s, e) => s + e.totalPaidHours, 0).toFixed(2)}
                     </TableCell>
@@ -811,45 +860,6 @@ export default function PayrollPrepPage() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!lockDriftConfirm} onOpenChange={(open) => !open && setLockDriftConfirm(null)}>
-        <AlertDialogContent data-testid="dialog-lock-drift-warning">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-red-500" />
-              Lock a Drifted Batch?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {lockDriftConfirm?.result.changedCount} record(s) no longer match the current source
-              data. Locking will permanently freeze the originally exported figures for this period.
-              Review the changes first if you're unsure.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-lock-drift">Cancel</AlertDialogCancel>
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (lockDriftConfirm) {
-                  setDriftReviewId(lockDriftConfirm.id);
-                  setLockDriftConfirm(null);
-                }
-              }}
-              data-testid="button-review-lock-drift"
-            >
-              <Eye className="h-3 w-3 mr-1" /> Review changes
-            </Button>
-            <AlertDialogAction
-              onClick={() => lockDriftConfirm && lockMutation.mutate({ id: lockDriftConfirm.id, acknowledgeDrift: true })}
-              disabled={lockMutation.isPending}
-              data-testid="button-confirm-lock-drift"
-            >
-              {lockMutation.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-              Lock Anyway
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       <AlertDialog open={!!reExportWarning} onOpenChange={() => setReExportWarning(null)}>
         <AlertDialogContent data-testid="dialog-reexport-warning">
           <AlertDialogHeader>
@@ -896,6 +906,12 @@ type ReadyForPayrollData = {
   employees: ReadyEmployee[];
   byCompany: ReadyCompany[];
 };
+type PeriodRoster = {
+  startDate: string;
+  endDate: string;
+  inactiveWithActivity: Array<{ employeeId: string; employeeName: string; deactivatedAt: string | null; dayCount: number }>;
+  activeNoWork: Array<{ employeeId: string; employeeName: string }>;
+};
 
 // "Ready for Payroll": the confirmed (Send-to-Payroll) days for a pay period that
 // are not yet in a batch, grouped by paying company. The admin generates one
@@ -905,15 +921,71 @@ function ReadyForPayroll() {
   const { toast } = useToast();
   const { has } = usePermissions();
   const canGenerate = has("payroll.manage");
+  const canManageDefaults = has("payroll.manage");
   const [range, setRange] = useState<DateRange>(() => currentPayrollPeriod());
   const [showEmployees, setShowEmployees] = useState(false);
   const [generatingKey, setGeneratingKey] = useState<string | null>(null);
+  // Work-location scope. Empty = all locations. Seeded from the saved default.
+  const [selectedLocationIds, setSelectedLocationIds] = useState<string[]>([]);
+  const [locsInitialized, setLocsInitialized] = useState(false);
+
+  const { data: locations = [] } = useQuery<Array<{ id: string; name: string }>>({
+    queryKey: ["/api/locations"],
+  });
+  const { data: batchDefaults } = useQuery<{ locationIds: string[]; reportSplitByLocation: boolean }>({
+    queryKey: ["/api/payroll/batch-defaults"],
+  });
+  // Seed the selection from the saved default, once.
+  useEffect(() => {
+    if (!locsInitialized && batchDefaults) {
+      setSelectedLocationIds(batchDefaults.locationIds ?? []);
+      setLocsInitialized(true);
+    }
+  }, [batchDefaults, locsInitialized]);
+
+  const saveDefault = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PUT", "/api/payroll/batch-defaults", {
+        locationIds: selectedLocationIds,
+        reportSplitByLocation: batchDefaults?.reportSplitByLocation ?? false,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/batch-defaults"] });
+      toast({ title: "Saved as default", description: selectedLocationIds.length === 0 ? "All locations" : `${selectedLocationIds.length} location(s)` });
+    },
+    onError: (err: Error) => toast({ title: "Could not save default", description: err.message, variant: "destructive" }),
+  });
+
+  const locParam = selectedLocationIds.join(",");
+  const toggleLocation = (id: string) =>
+    setSelectedLocationIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const locationLabel =
+    selectedLocationIds.length === 0
+      ? "All locations"
+      : selectedLocationIds.length === 1
+        ? (locations.find((l) => l.id === selectedLocationIds[0])?.name ?? "1 location")
+        : `${selectedLocationIds.length} locations`;
+
+  const [tab, setTab] = useState("ready");
 
   const { data, isLoading } = useQuery<ReadyForPayrollData>({
-    queryKey: ["/api/payroll/ready-for-payroll", range.start, range.end],
+    queryKey: ["/api/payroll/ready-for-payroll", range.start, range.end, locParam],
     queryFn: async () => {
       const p = new URLSearchParams({ startDate: range.start, endDate: range.end });
+      if (locParam) p.set("locationIds", locParam);
       const res = await apiRequest("GET", `/api/payroll/ready-for-payroll?${p.toString()}`);
+      return res.json();
+    },
+  });
+
+  const { data: roster } = useQuery<PeriodRoster>({
+    queryKey: ["/api/payroll/period-roster", range.start, range.end, locParam],
+    queryFn: async () => {
+      const p = new URLSearchParams({ startDate: range.start, endDate: range.end });
+      if (locParam) p.set("locationIds", locParam);
+      const res = await apiRequest("GET", `/api/payroll/period-roster?${p.toString()}`);
       return res.json();
     },
   });
@@ -926,6 +998,7 @@ function ReadyForPayroll() {
         confirmedOnly: true,
         payrollCompanyId: company.payrollCompanyId ?? undefined,
         companyId: company.payrollCompanyId ?? undefined,
+        locationIds: selectedLocationIds,
         notes: company.payrollCompanyName ? `Confirmed days · ${company.payrollCompanyName}` : "Confirmed days",
       });
       return res.json();
@@ -960,24 +1033,86 @@ function ReadyForPayroll() {
               Confirmed days not yet batched. Generate a report per paying company to send to payroll.
             </p>
           </div>
-          <div className="flex items-center gap-1" data-testid="ready-period-nav">
-            <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(-1)} aria-label="Previous pay period" data-testid="button-ready-prev">
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <span className="text-sm font-medium text-center whitespace-nowrap px-1" data-testid="text-ready-period">
-              {formatRangeLabel(range)}{isCurrent ? " · current" : ""}
-            </span>
-            <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(1)} disabled={isCurrent} aria-label="Next pay period" data-testid="button-ready-next">
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-            {!isCurrent && (
-              <Button variant="secondary" size="sm" className="h-8" onClick={goCurrent} data-testid="button-ready-current">
-                <CalendarClock className="h-4 w-4 mr-1" /> Current
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8" data-testid="button-ready-locations">
+                    <MapPin className="h-4 w-4 mr-1" /> {locationLabel} <ChevronDown className="h-3 w-3 ml-1" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Work locations</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem
+                    checked={selectedLocationIds.length === 0}
+                    onCheckedChange={() => setSelectedLocationIds([])}
+                    data-testid="menu-location-all"
+                  >
+                    All locations
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuSeparator />
+                  {locations.map((l) => (
+                    <DropdownMenuCheckboxItem
+                      key={l.id}
+                      checked={selectedLocationIds.includes(l.id)}
+                      onCheckedChange={() => toggleLocation(l.id)}
+                      onSelect={(e) => e.preventDefault()}
+                      data-testid={`menu-location-${l.id}`}
+                    >
+                      {l.name}
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                  {canManageDefaults && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onSelect={(e) => { e.preventDefault(); saveDefault.mutate(); }}
+                        data-testid="menu-location-save-default"
+                      >
+                        {saveDefault.isPending ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5 mr-2" />}
+                        Save as default
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <div className="flex items-center gap-1" data-testid="ready-period-nav">
+              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(-1)} aria-label="Previous pay period" data-testid="button-ready-prev">
+                <ChevronLeft className="h-4 w-4" />
               </Button>
-            )}
+              <span className="text-sm font-medium text-center whitespace-nowrap px-1" data-testid="text-ready-period">
+                {formatRangeLabel(range)}{isCurrent ? " · current" : ""}
+              </span>
+              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => step(1)} disabled={isCurrent} aria-label="Next pay period" data-testid="button-ready-next">
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              {!isCurrent && (
+                <Button variant="secondary" size="sm" className="h-8" onClick={goCurrent} data-testid="button-ready-current">
+                  <CalendarClock className="h-4 w-4 mr-1" /> Current
+                </Button>
+              )}
+            </div>
           </div>
         </div>
 
+        <Tabs value={tab} onValueChange={setTab}>
+          <div className="px-4 pt-3">
+            <TabsList data-testid="ready-tabs">
+              <TabsTrigger value="ready" data-testid="tab-ready">
+                Ready{data && data.totalEmployees > 0 ? ` (${data.totalEmployees})` : ""}
+              </TabsTrigger>
+              <TabsTrigger value="inactive" data-testid="tab-inactive">
+                Inactive{roster && roster.inactiveWithActivity.length > 0 ? ` (${roster.inactiveWithActivity.length})` : ""}
+              </TabsTrigger>
+              <TabsTrigger value="didntwork" data-testid="tab-didntwork">
+                Didn't work{roster && roster.activeNoWork.length > 0 ? ` (${roster.activeNoWork.length})` : ""}
+              </TabsTrigger>
+              <TabsTrigger value="adjustments" data-testid="tab-adjustments">Adjustments</TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="ready" className="mt-2">
         {isLoading ? (
           <div className="p-6 space-y-2">
             <Skeleton className="h-8 w-full" />
@@ -1077,6 +1212,68 @@ function ReadyForPayroll() {
             </div>
           </>
         )}
+          </TabsContent>
+
+          <TabsContent value="inactive" className="mt-2">
+            {!roster || roster.inactiveWithActivity.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="text-inactive-empty">
+                No inactive employees worked in this period.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Deactivated</TableHead>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider text-right">Days Worked</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {roster.inactiveWithActivity.map((e) => (
+                    <TableRow key={e.employeeId} data-testid={`row-inactive-${e.employeeId}`}>
+                      <TableCell className="font-medium">{e.employeeName}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground tabular-nums">{e.deactivatedAt ? formatDate(e.deactivatedAt) : "—"}</TableCell>
+                      <TableCell className="tabular-nums text-right">{e.dayCount}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            <p className="px-4 py-2 text-xs text-muted-foreground border-t">
+              Inactive (deactivated) employees who still worked in this period — e.g. terminated mid-period. Confirm their final pay from their timesheet.
+            </p>
+          </TabsContent>
+
+          <TabsContent value="didntwork" className="mt-2">
+            {!roster || roster.activeNoWork.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="text-didntwork-empty">
+                Every active employee in scope has activity this period.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs font-medium uppercase tracking-wider">Employee</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {roster.activeNoWork.map((e) => (
+                    <TableRow key={e.employeeId} data-testid={`row-didntwork-${e.employeeId}`}>
+                      <TableCell className="font-medium">{e.employeeName}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            <p className="px-4 py-2 text-xs text-muted-foreground border-t">
+              Active employees with no work in this period — e.g. on leave or time off. Shown so nobody is missed.
+            </p>
+          </TabsContent>
+
+          <TabsContent value="adjustments" className="mt-2">
+            <BackpayReview />
+          </TabsContent>
+        </Tabs>
       </CardContent>
     </Card>
   );
@@ -1103,6 +1300,7 @@ type BackpayItemRow = {
   id: string; employeeName: string; workDate: string; reason: string;
   regularHours: number; overtimeHours: number; doubleTimeHours: number;
   hourlyRate: number | null; overtimeMultiplier: number | null; doubleTimeMultiplier: number | null;
+  sourcePayrollExportId: string | null;
 };
 
 function BackpayReview() {
@@ -1116,19 +1314,32 @@ function BackpayReview() {
   });
 
   const decideMutation = useMutation({
-    mutationFn: async ({ id, decision }: { id: string; decision: "approve" | "reject" }) => {
-      await apiRequest("POST", `/api/payroll/backpay/${id}/${decision}`);
+    mutationFn: async ({ id, decision, routeChoice }: { id: string; decision: "approve" | "reject"; routeChoice?: "next_period" | "add_to_sent" }) => {
+      await apiRequest("POST", `/api/payroll/backpay/${id}/${decision}`, decision === "approve" ? { routeChoice: routeChoice ?? "next_period" } : undefined);
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["/api/payroll/backpay/pending"] });
-      toast({ title: vars.decision === "approve" ? "Back-pay approved" : "Back-pay rejected" });
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      toast({
+        title: vars.decision === "reject"
+          ? "Adjustment denied"
+          : vars.routeChoice === "add_to_sent"
+            ? "Added to the sent report — re-export it to include the change"
+            : "Approved — will ride the next payroll",
+      });
     },
     onError: (error: any) => {
       toast({ title: "Could not save decision", description: error?.message || "Please try again.", variant: "destructive" });
     },
   });
 
-  if (!isLoading && items.length === 0) return null;
+  if (!isLoading && items.length === 0) {
+    return (
+      <div className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="text-adjustments-empty">
+        Nothing waiting for approval. Corrections to already-sent periods (and manager edits) show up here for you to approve or deny.
+      </div>
+    );
+  }
 
   const estimate = (it: BackpayItemRow) => {
     const rate = it.hourlyRate ?? 0;
@@ -1148,9 +1359,9 @@ function BackpayReview() {
     <Card data-testid="card-backpay-review">
       <CardContent className="p-0">
         <div className="px-4 py-3 border-b">
-          <h3 className="text-sm font-semibold">Back-Pay — Pending Admin Approval</h3>
+          <h3 className="text-sm font-semibold">Adjustments — Pending Admin Approval</h3>
           <p className="text-xs text-muted-foreground">
-            Corrections to days that were already paid. Approve to carry the difference into the next payroll batch (a negative amount is a claw-back), or reject.
+            Corrections to days in an already-sent period (a late/added day, a fixed missing punch, or a manager's edit). Approve into the next payroll, or fold it back into the already-sent report; a negative amount is a claw-back. Deny to drop it.
           </p>
         </div>
         {isLoading ? (
@@ -1177,15 +1388,42 @@ function BackpayReview() {
                   <TableCell className="text-right tabular-nums" data-testid={`text-backpay-amount-${it.id}`}>{formatCurrency(estimate(it))}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex gap-2 justify-end">
-                      <Button size="sm" variant="outline" disabled={decideMutation.isPending}
-                        onClick={() => decideMutation.mutate({ id: it.id, decision: "approve" })}
-                        data-testid={`button-backpay-approve-${it.id}`}>
-                        <CheckCircle className="h-3 w-3 mr-1" /> Approve
-                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button size="sm" disabled={decideMutation.isPending} data-testid={`button-backpay-approve-${it.id}`}>
+                            <CheckCircle className="h-3 w-3 mr-1" /> Approve <ChevronDown className="h-3 w-3 ml-1" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-64">
+                          <DropdownMenuItem
+                            onClick={() => decideMutation.mutate({ id: it.id, decision: "approve", routeChoice: "next_period" })}
+                            data-testid={`menu-backpay-next-${it.id}`}
+                          >
+                            <ArrowRight className="h-3.5 w-3.5 mr-2" />
+                            <div>
+                              <div className="text-sm">Add to next payroll</div>
+                              <div className="text-xs text-muted-foreground">Rides the next batch you process</div>
+                            </div>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={!it.sourcePayrollExportId}
+                            onClick={() => decideMutation.mutate({ id: it.id, decision: "approve", routeChoice: "add_to_sent" })}
+                            data-testid={`menu-backpay-sent-${it.id}`}
+                          >
+                            <RefreshCw className="h-3.5 w-3.5 mr-2" />
+                            <div>
+                              <div className="text-sm">Add to the already-sent report</div>
+                              <div className="text-xs text-muted-foreground">
+                                {it.sourcePayrollExportId ? "Folds into that batch — re-export to include it" : "No source batch for this item"}
+                              </div>
+                            </div>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <Button size="sm" variant="outline" disabled={decideMutation.isPending}
                         onClick={() => decideMutation.mutate({ id: it.id, decision: "reject" })}
                         data-testid={`button-backpay-reject-${it.id}`}>
-                        <XCircle className="h-3 w-3 mr-1" /> Reject
+                        <XCircle className="h-3 w-3 mr-1" /> Deny
                       </Button>
                     </div>
                   </TableCell>

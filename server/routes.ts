@@ -19,7 +19,7 @@ import { loadPolicyResolutionContext, getEffectivePolicy, getApplicablePolicies,
 import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeWeeklyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
-import { buildPayrollReport } from "./services/payrollReport";
+import { buildPayrollReport, formatSummaryCsv } from "./services/payrollReport";
 import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, summarizeLedger, recomputeLedger } from "./attendanceLedger";
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
@@ -279,7 +279,7 @@ async function checkPostExportModification(punchLogId: string, modifiedBy: strin
 // tied to a finalized batch must not be silently deleted — removing it would
 // desync payroll without a paper trail (and the FK from payroll_batch_records /
 // payroll_adjustments would otherwise surface a raw DB error on delete).
-const FINALIZED_PAYROLL_STATUSES = ["exported", "locked"] as const;
+const FINALIZED_PAYROLL_STATUSES = ["exported", "locked", "sent"] as const;
 
 // Accidental double-punch guard (shared with the device ingest).
 async function punchDebounceRemainingMs(employeeId: string, now: Date): Promise<number> {
@@ -5252,15 +5252,21 @@ export async function registerRoutes(
           // apply the edit AND route the pay difference to the NEXT payroll as a
           // pending back-pay item — the finalized batch itself is left untouched.
           const editorPerms = await resolveUserPermissions(actor.id);
-          const mayRouteBackpay =
+          // Any editor who reached this handler may QUEUE the change as a pending
+          // adjustment (it is paid only after ADMIN approval in Payroll Prep →
+          // Adjustments). Approvers additionally get to pick where it lands when
+          // they approve; a non-approver (e.g. a manager) just routes it to the
+          // admin for that decision.
+          const isApprover =
             editorPerms.has("attendance.approve_corrections") || editorPerms.has("system.super_admin");
-          if (!routeBackpay || !mayRouteBackpay) {
+          if (!routeBackpay) {
             return res.status(409).json({
-              message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before editing the punch${mayRouteBackpay ? ", or send the difference to the next payroll as back-pay" : ""}.`,
+              message: `This punch is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). ${isApprover ? "Queue the change as an adjustment (you choose where it's paid in Payroll Prep → Adjustments), or reopen the batch." : "Your change will be sent to the admin for approval (Payroll Prep → Adjustments)."}`,
               code: "PAYROLL_FINALIZED",
-              // Tells the UI whether to offer the "send to next payroll as back-pay"
-              // path (only approvers may) instead of only "reopen the batch".
-              canRouteBackpay: mayRouteBackpay,
+              // Any editor may now queue a pending adjustment; isApprover tells the
+              // UI whether to say "you'll choose the route" vs "sent to admin".
+              canRouteBackpay: true,
+              isApprover,
               payrollExports: finalizedExports.map((e) => ({
                 id: e.id,
                 startDate: e.startDate,
@@ -5554,13 +5560,18 @@ export async function registerRoutes(
         const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
         if (finalizedExports.length > 0) {
           const editorPerms = await resolveUserPermissions(actor.id);
-          const mayRouteBackpay =
+          // Same as the edit path: any editor may QUEUE the added day as a pending
+          // adjustment (paid only after ADMIN approval in Payroll Prep →
+          // Adjustments). Approvers pick the route on approval; others route it to
+          // the admin.
+          const isApprover =
             editorPerms.has("attendance.approve_corrections") || editorPerms.has("system.super_admin");
-          if (!routeBackpay || !mayRouteBackpay) {
+          if (!routeBackpay) {
             return res.status(409).json({
-              message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). Reopen the affected payroll batch before adding a punch${mayRouteBackpay ? ", or send it to the next payroll as back-pay" : ""}.`,
+              message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). ${isApprover ? "Queue it as an adjustment (you choose where it's paid in Payroll Prep → Adjustments), or reopen the batch." : "Your added day will be sent to the admin for approval (Payroll Prep → Adjustments)."}`,
               code: "PAYROLL_FINALIZED",
-              canRouteBackpay: mayRouteBackpay,
+              canRouteBackpay: true,
+              isApprover,
               payrollExports: finalizedExports.map((e) => ({
                 id: e.id,
                 startDate: e.startDate,
@@ -10721,6 +10732,9 @@ export async function registerRoutes(
     // When confirmedOnly, limit the batch to one paying company (Ahava or BCM),
     // so each payroll processor gets its own report. Omit for all companies.
     payrollCompanyId: z.string().optional(),
+    // Scope the batch to one or more work locations (e.g. Sumner). Empty/omitted
+    // = all locations. Stored on the export so the batch remembers its scope.
+    locationIds: z.array(z.string()).optional(),
   });
 
   // ───────────────── "Send to Payroll" (per-day confirmation) ─────────────────
@@ -10811,13 +10825,23 @@ export async function registerRoutes(
   // generating the batch report they hand to each payroll processor.
   app.get("/api/payroll/ready-for-payroll", requireAuth, requireAnyPermission("payroll.view_all", "payroll.manage"), async (req: any, res) => {
     try {
-      const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+      const { startDate, endDate } = req.query as { startDate?: string; endDate?: string; locationIds?: string };
       if (!startDate || !endDate) {
         return res.status(400).json({ message: "startDate and endDate are required." });
       }
+      // Optional work-location scope (comma-separated). Empty = all locations.
+      const selectedLocSet = new Set(
+        String(req.query.locationIds ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      );
       const subs = await storage.listUnbatchedPayrollSubmissions(startDate, endDate);
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map((u) => [u.id, u]));
+      const employeeInLocationScope = (employeeId: string): boolean => {
+        if (selectedLocSet.size === 0) return true;
+        const u = userMap.get(employeeId);
+        const locs = (u?.locationIds ?? []) as string[];
+        return locs.some((l) => selectedLocSet.has(l));
+      };
 
       // Resolve each employee's paying company once (profile → company name).
       const companyNameCache = new Map<string, string | null>();
@@ -10852,9 +10876,10 @@ export async function registerRoutes(
       const byEmployee = new Map<string, EmpRow>();
       for (const s of subs) {
         // Skip a confirmed day whose employee is no longer visible (e.g. hidden
-        // super-admin) so the rollup never leaks or crashes on a missing user.
+        // super-admin) so the rollup never leaks or crashes on a missing user,
+        // or who is outside the selected work location(s).
         const user = userMap.get(s.employeeId);
-        if (!user) continue;
+        if (!user || !employeeInLocationScope(s.employeeId)) continue;
         let row = byEmployee.get(s.employeeId);
         if (!row) {
           const pc = await resolvePayingCompany(s.employeeId);
@@ -10894,12 +10919,110 @@ export async function registerRoutes(
         startDate,
         endDate,
         totalEmployees: employees.length,
-        totalDays: subs.length,
+        totalDays: employees.reduce((sum, e) => sum + e.dayCount, 0),
         employees,
         byCompany,
       });
     } catch (error) {
       handleRouteError(res, error, "Failed to load ready-for-payroll list");
+    }
+  });
+
+  // Saved batch defaults (org-wide): the location(s) the admin usually batches
+  // and whether each payroll company gets one combined report or one per
+  // location on "Send to Payroll Company".
+  app.get("/api/payroll/batch-defaults", requireAuth, requireAnyPermission("payroll.view_all", "payroll.manage"), async (_req, res) => {
+    try {
+      res.json(await storage.getPayrollBatchDefaults());
+    } catch (error) {
+      handleRouteError(res, error, "Failed to load batch defaults");
+    }
+  });
+
+  const batchDefaultsSchema = z.object({
+    locationIds: z.array(z.string()).default([]),
+    reportSplitByLocation: z.boolean().default(false),
+  });
+  app.put("/api/payroll/batch-defaults", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const parsed = batchDefaultsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid batch defaults", errors: parsed.error.flatten() });
+      }
+      const saved = await storage.savePayrollBatchDefaults(parsed.data, (req.authUser as User).id);
+      res.json(saved);
+    } catch (error) {
+      handleRouteError(res, error, "Failed to save batch defaults");
+    }
+  });
+
+  // Period roster buckets for Payroll Prep (scoped to period + location):
+  //   inactiveWithActivity — deactivated employees who nonetheless worked in the
+  //                          period (e.g. terminated mid-period; need final pay).
+  //   activeNoWork         — active employees with NO work in the period (e.g. on
+  //                          leave / 2 weeks off) so the admin can account for them.
+  // Admins are excluded (they aren't hourly staff on the roster).
+  app.get("/api/payroll/period-roster", requireAuth, requireAnyPermission("payroll.view_all", "payroll.manage"), async (req: any, res) => {
+    try {
+      const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+      if (!startDate || !endDate) {
+        return res.status(400).json({ message: "startDate and endDate are required." });
+      }
+      const selectedLocSet = new Set(
+        String(req.query.locationIds ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      );
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const inLocationScope = (u: User): boolean => {
+        if (selectedLocSet.size === 0) return true;
+        const locs = (u.locationIds ?? []) as string[];
+        return locs.some((l) => selectedLocSet.has(l));
+      };
+
+      // Who worked in the period: any attendance record in range, or a confirmed
+      // (Send-to-Payroll) submission.
+      const attendance = await storage.getAttendanceByDateRange(startDate, endDate);
+      const workedDays = new Map<string, Set<string>>();
+      for (const r of attendance) {
+        if (!r.clockIn) continue;
+        let set = workedDays.get(r.employeeId);
+        if (!set) { set = new Set(); workedDays.set(r.employeeId, set); }
+        set.add(r.workDate);
+      }
+      const submissions = await storage.listUnbatchedPayrollSubmissions(startDate, endDate);
+      for (const s of submissions) {
+        let set = workedDays.get(s.employeeId);
+        if (!set) { set = new Set(); workedDays.set(s.employeeId, set); }
+        set.add(s.workDate);
+      }
+
+      const name = (u: User) => `${u.firstName || ""} ${u.lastName || ""}`.trim() || "Unknown";
+      const inactiveWithActivity: Array<{ employeeId: string; employeeName: string; deactivatedAt: string | null; dayCount: number }> = [];
+      const activeNoWork: Array<{ employeeId: string; employeeName: string }> = [];
+
+      for (const u of allUsers) {
+        if (u.role === "admin") continue;            // roster is hourly staff
+        if (!inLocationScope(u)) continue;
+        const worked = workedDays.get(u.id);
+        const isInactive = !!u.deactivatedAt;
+        if (isInactive) {
+          if (worked && worked.size > 0) {
+            inactiveWithActivity.push({
+              employeeId: u.id,
+              employeeName: name(u),
+              deactivatedAt: u.deactivatedAt ? new Date(u.deactivatedAt).toISOString() : null,
+              dayCount: worked.size,
+            });
+          }
+        } else if (!worked || worked.size === 0) {
+          activeNoWork.push({ employeeId: u.id, employeeName: name(u) });
+        }
+      }
+      inactiveWithActivity.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+      activeNoWork.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+
+      res.json({ startDate, endDate, inactiveWithActivity, activeNoWork });
+    } catch (error) {
+      handleRouteError(res, error, "Failed to load period roster");
     }
   });
 
@@ -10986,6 +11109,7 @@ export async function registerRoutes(
       const { startDate, endDate, companyId, notes } = parsed.data;
       const confirmedOnly = parsed.data.confirmedOnly === true;
       const payrollCompanyFilter = parsed.data.payrollCompanyId ?? null;
+      const selectedLocationIds = parsed.data.locationIds ?? [];
       const adminUser = req.authUser as User;
 
       if (startDate > endDate) {
@@ -10996,6 +11120,16 @@ export async function registerRoutes(
       const allAttendanceRecords = await storage.getAttendanceByDateRange(startDate, endDate);
       const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
       const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+      // Work-location scope (e.g. only Sumner). Empty = all locations. An
+      // employee is in scope when ANY of their locations is in the selection.
+      const selectedLocSet = new Set(selectedLocationIds);
+      const employeeInLocationScope = (employeeId: string): boolean => {
+        if (selectedLocSet.size === 0) return true;
+        const u = userMap.get(employeeId);
+        const locs = (u?.locationIds ?? []) as string[];
+        return locs.some((l) => selectedLocSet.has(l));
+      };
 
       // "Ready for Payroll" (confirmedOnly): the batch is built from ONLY the
       // (employee, day) pairs an admin confirmed via Send to Payroll and that are
@@ -11026,8 +11160,9 @@ export async function registerRoutes(
           }
           subs = filtered;
         }
-        // Only confirmed days for employees still visible to this admin.
-        subs = subs.filter((s) => userMap.has(s.employeeId));
+        // Only confirmed days for employees still visible to this admin and in
+        // the selected work location(s).
+        subs = subs.filter((s) => userMap.has(s.employeeId) && employeeInLocationScope(s.employeeId));
         confirmedKeys = new Set(subs.map((s) => `${s.employeeId}__${s.workDate}`));
         for (const s of subs) confirmedKeyToId.set(`${s.employeeId}__${s.workDate}`, s.id);
         if (confirmedKeys.size === 0) {
@@ -11037,7 +11172,7 @@ export async function registerRoutes(
 
       const attendanceRecords = confirmedKeys
         ? allAttendanceRecords.filter((r) => confirmedKeys!.has(`${r.employeeId}__${r.workDate}`))
-        : allAttendanceRecords;
+        : allAttendanceRecords.filter((r) => employeeInLocationScope(r.employeeId));
 
       const missingPunches = attendanceRecords.filter(
         r => r.clockIn && !r.clockOut && r.status !== "in-progress"
@@ -11224,6 +11359,7 @@ export async function registerRoutes(
           companyId: companyId || null,
           status: "draft",
           notes: notes || null,
+          locationIds: selectedLocationIds,
           createdBy: adminUser.id,
           recordCount: totalRecordCount,
           exportedAt: null,
@@ -11767,6 +11903,12 @@ export async function registerRoutes(
         return val.toFixed(2);
       };
 
+      // Pay rate cell: "$23.00" (hourly), blank when unknown / not rate-based.
+      const formatRate = (val: number): string => {
+        if (!val || val <= 0) return "";
+        return formatAmountCurrency(val);
+      };
+
       // Identify which punch logs in this batch's range were created/updated via an approved correction.
       const approvedExceptionsForBatch = await db
         .select({ punchLogId: attendanceExceptions.punchLogId })
@@ -11779,7 +11921,7 @@ export async function registerRoutes(
         approvedExceptionsForBatch.map(e => e.punchLogId).filter(Boolean) as string[]
       );
 
-      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; payee: string; payeeMemo: string; amount: number; payType: string; department: string; paidHours: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
+      type DayRow = { employeeName: string; taxClassification: string; payrollCompany: string; payee: string; payeeMemo: string; amount: number; payType: string; department: string; paidHours: number; payRate: number; dateWorked: string; sortDate: string; wasCorrected: boolean; bonusAmount: number; bonusDescriptions: string[] };
       const employeeRecords = new Map<string, Map<string, DayRow>>();
 
       for (const r of records) {
@@ -11848,6 +11990,7 @@ export async function registerRoutes(
           existing.amount += amount;
           existing.paidHours += totalHours;
           existing.bonusAmount += bonusAmount;
+          if (hourlyRate > existing.payRate) existing.payRate = hourlyRate;
           if (trimmedBonusDesc) existing.bonusDescriptions.push(trimmedBonusDesc);
           if (payType === "Holiday") existing.payType = "Holiday";
           if (recCorrected) existing.wasCorrected = true;
@@ -11864,6 +12007,7 @@ export async function registerRoutes(
             payType,
             department,
             paidHours: totalHours,
+            payRate: hourlyRate,
             dateWorked: formatDateWorked(r.workDate),
             sortDate: r.workDate,
             wasCorrected: recCorrected,
@@ -11881,7 +12025,7 @@ export async function registerRoutes(
       }
 
       let csv = `Pay Period: ${formatDateWorked(exp.startDate)} - ${formatDateWorked(exp.endDate)}\n`;
-      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
+      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Pay Rate,Amount,Pay Type,Department,Paid Hours,Date Worked,Corrected,Bonus Amount,Bonus Description\n";
 
       for (const [, dayMap] of employeeRecords) {
         const rows = Array.from(dayMap.values()).sort((a, b) => a.sortDate.localeCompare(b.sortDate));
@@ -11892,7 +12036,7 @@ export async function registerRoutes(
         for (const row of rows) {
           const bonusAmtCell = row.bonusAmount > 0 ? formatAmountCurrency(row.bonusAmount) : "";
           const bonusDescCell = row.bonusDescriptions.length > 0 ? escapeCSV(row.bonusDescriptions.join("; ")) : "";
-          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${escapeCSV(row.payee)},${escapeCSV(row.payeeMemo)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
+          csv += `${escapeCSV(row.employeeName)},${escapeCSV(row.taxClassification)},${escapeCSV(row.payrollCompany)},${escapeCSV(row.payee)},${escapeCSV(row.payeeMemo)},${formatRate(row.payRate)},${formatAmountCurrency(row.amount)},${escapeCSV(row.payType)},${escapeCSV(row.department)},${formatHoursVal(row.paidHours)},${escapeCSV(row.dateWorked)},${row.wasCorrected ? "Yes" : ""},${bonusAmtCell},${bonusDescCell}\n`;
           totalAmount += row.amount;
           totalPaidHours += row.paidHours;
           totalBonusAmount += row.bonusAmount;
@@ -11903,8 +12047,10 @@ export async function registerRoutes(
         const payrollCompany = rows[0].payrollCompany;
         const payee = rows[0].payee;
         const payeeMemo = rows[0].payeeMemo;
+        // Employee-level rate: the highest rate across the days (one rate for most).
+        const empRate = rows.reduce((mx, r) => Math.max(mx, r.payRate), 0);
         const totalBonusCell = totalBonusAmount > 0 ? formatAmountCurrency(totalBonusAmount) : "";
-        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${escapeCSV(payee)},${escapeCSV(payeeMemo)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
+        csv += `${escapeCSV(empName + " - Paid Totals")},${escapeCSV(taxClass)},${escapeCSV(payrollCompany)},${escapeCSV(payee)},${escapeCSV(payeeMemo)},${formatRate(empRate)},${formatAmountCurrency(totalAmount)},,,${formatHoursVal(totalPaidHours)},,,${totalBonusCell},\n`;
       }
 
       const adminUser = req.authUser as User;
@@ -11998,6 +12144,7 @@ export async function registerRoutes(
         return `"$${parts.join(".")}"`;
       };
       const formatHoursVal = (val: number): string => val.toFixed(2);
+      const formatRate = (val: number): string => (!val || val <= 0 ? "" : formatAmountCurrency(val));
       const formatDateHeader = (dateStr: string): string => {
         const [y, m, d] = dateStr.split("-").map((p) => parseInt(p, 10));
         const dt = new Date(Date.UTC(y, m - 1, d));
@@ -12006,10 +12153,10 @@ export async function registerRoutes(
       };
 
       let csv = `Pay Period: ${formatDateHeader(exp.startDate)} - ${formatDateHeader(exp.endDate)}\n`;
-      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Amount,Pay Type,Department,Paid Hours,Bonus Amount\n";
+      csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Pay Rate,Amount,Pay Type,Department,Paid Hours,Bonus Amount\n";
       for (const e of report.employees) {
         const bonusCell = e.totalBonusAmount > 0 ? formatAmountCurrency(e.totalBonusAmount) : "";
-        csv += `${escapeCSV(e.employeeName)},${escapeCSV(e.taxClassification)},${escapeCSV(e.payrollCompany)},${escapeCSV(e.payee)},${escapeCSV(e.payeeMemo)},${formatAmountCurrency(e.totalAmount)},${escapeCSV(e.payType)},${escapeCSV(e.department)},${formatHoursVal(e.totalPaidHours)},${bonusCell}\n`;
+        csv += `${escapeCSV(e.employeeName)},${escapeCSV(e.taxClassification)},${escapeCSV(e.payrollCompany)},${escapeCSV(e.payee)},${escapeCSV(e.payeeMemo)},${formatRate(e.payRate)},${formatAmountCurrency(e.totalAmount)},${escapeCSV(e.payType)},${escapeCSV(e.department)},${formatHoursVal(e.totalPaidHours)},${bonusCell}\n`;
       }
 
       const overlapping = await storage.getOverlappingPayrollExports(exp.startDate, exp.endDate, exp.companyId || undefined);
@@ -12159,13 +12306,160 @@ export async function registerRoutes(
     }
   });
 
+  // "Send to Payroll Company" (replaces Lock): hand the batch off to the payroll
+  // processors. Produces ONE report per payroll company; when splitByLocation is
+  // on, one report per payroll company PER work location. Marks the batch "sent",
+  // bumps the export version, clears the "changed" flag, and logs the version.
+  // Returns the files as JSON so the client downloads each (no server zip dep).
+  const sendToPayrollSchema = z.object({
+    splitByLocation: z.boolean().optional(),
+    acknowledgeDrift: z.boolean().optional(),
+    acknowledgeAdjustments: z.boolean().optional(),
+  });
+  app.post("/api/payroll/exports/:id/send-to-payroll", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const exp = await storage.getPayrollExport(String(req.params.id));
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+      const parsed = sendToPayrollSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid send options", errors: parsed.error.flatten() });
+      }
+      const adminUser = req.authUser as User;
+
+      // Guard: pending adjustments waiting for admin approval. The admin can go
+      // back and approve/deny, or send anyway and leave them pending.
+      const pendingAdjustments = (await storage.getPendingPayrollAdjustments()).length;
+      if (pendingAdjustments > 0 && parsed.data.acknowledgeAdjustments !== true) {
+        return res.status(409).json({
+          message: `There ${pendingAdjustments === 1 ? "is" : "are"} ${pendingAdjustments} adjustment${pendingAdjustments === 1 ? "" : "s"} waiting for approval.`,
+          pendingAdjustments,
+          requiresAdjustmentAck: true,
+        });
+      }
+
+      const report = await buildPayrollReport(exp.id, { includeSuperAdmin: isSuperAdmin(req) });
+      if (!report) return res.status(404).json({ message: "Payroll export not found" });
+      if (report.employees.length === 0) {
+        return res.status(400).json({ message: "This batch has no records to send." });
+      }
+
+      // Resolve whether to split per location (body override, else saved default).
+      const defaults = await storage.getPayrollBatchDefaults();
+      const splitByLocation = parsed.data.splitByLocation ?? defaults.reportSplitByLocation;
+
+      // Employee → work-location name (for the per-location split). Prefer a
+      // location within the batch's scope; fall back to the employee's first.
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const userMap = new Map(allUsers.map((u) => [u.id, u]));
+      const allLocations = await storage.getAllLocations();
+      const locationNames = new Map(allLocations.map((l) => [l.id, l.name]));
+      const batchLocSet = new Set((exp.locationIds as string[] | undefined) ?? []);
+      const locationFor = (employeeId: string): { id: string; name: string } => {
+        const u = userMap.get(employeeId);
+        const locs = ((u?.locationIds ?? []) as string[]);
+        const inScope = locs.find((l) => batchLocSet.has(l));
+        const chosen = inScope ?? locs[0];
+        if (!chosen) return { id: "__none__", name: "Unassigned location" };
+        return { id: chosen, name: locationNames.get(chosen) ?? "Unknown location" };
+      };
+
+      const periodLabel = `${exp.startDate} to ${exp.endDate}`;
+      const sanitize = (s: string) => (s || "report").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "report";
+
+      // Group employees into (payroll company [+ location]) buckets.
+      type Bucket = { company: string; location: string | null; employees: typeof report.employees };
+      const buckets = new Map<string, Bucket>();
+      for (const e of report.employees) {
+        const company = e.payrollCompany || "No paying company";
+        const loc = splitByLocation ? locationFor(e.employeeId).name : null;
+        const key = `${company}__${loc ?? ""}`;
+        let b = buckets.get(key);
+        if (!b) { b = { company, location: loc, employees: [] }; buckets.set(key, b); }
+        b.employees.push(e);
+      }
+
+      const nextVersion = (exp.exportVersion ?? 0) + 1;
+      const files = Array.from(buckets.values())
+        .sort((a, b) => (a.company + (a.location ?? "")).localeCompare(b.company + (b.location ?? "")))
+        .map((b) => {
+          const title = b.location
+            ? `Payroll handoff — ${b.company} — ${b.location} (v${nextVersion})`
+            : `Payroll handoff — ${b.company} (v${nextVersion})`;
+          const namePieces = [sanitize(b.company)];
+          if (b.location) namePieces.push(sanitize(b.location));
+          namePieces.push(`${exp.startDate}_to_${exp.endDate}`);
+          if (nextVersion > 1) namePieces.push(`v${nextVersion}`);
+          return {
+            payrollCompany: b.company,
+            location: b.location,
+            filename: `payroll_${namePieces.join("_")}.csv`,
+            content: formatSummaryCsv(b.employees, periodLabel, title),
+          };
+        });
+
+      // Mark the batch sent + bump the version + clear the "changed" flag.
+      await storage.updatePayrollExport(exp.id, {
+        status: "sent",
+        sentToPayrollAt: new Date(),
+        sentToPayrollBy: adminUser.id,
+        exportedAt: exp.exportedAt ?? new Date(),
+        exportedBy: exp.exportedBy ?? adminUser.id,
+        exportVersion: nextVersion,
+        changedSinceExport: false,
+      });
+      await storage.addPayrollExportVersion({
+        payrollExportId: exp.id,
+        version: nextVersion,
+        kind: "company",
+        note: splitByLocation ? "Per payroll company, per location" : "Per payroll company",
+        recordCount: report.employees.length,
+        generatedBy: adminUser.id,
+      });
+
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "payroll_export",
+        targetId: exp.id,
+        action: "payroll_export.sent_to_payroll",
+        oldValue: { status: exp.status, exportVersion: exp.exportVersion ?? 0 },
+        newValue: { status: "sent", exportVersion: nextVersion, files: files.length, splitByLocation },
+        ...auditCtx,
+      });
+
+      const ledgerCtx = getLedgerContext(req);
+      await Promise.all(
+        report.employees.map((e) =>
+          writeLedgerEntry({
+            category: "payroll",
+            eventType: "payroll_sent_to_company",
+            employeeId: e.employeeId,
+            actorUserId: adminUser.id,
+            entityType: "payroll_export",
+            entityId: exp.id,
+            beforeValue: null,
+            afterValue: { status: "sent", version: nextVersion },
+            context: { startDate: exp.startDate, endDate: exp.endDate },
+            source: "admin",
+            ...ledgerCtx,
+          }),
+        ),
+      );
+
+      res.json({ version: nextVersion, files });
+    } catch (error) {
+      console.error("Error sending payroll to company:", error);
+      handleRouteError(res, error, "Failed to send payroll to company");
+    }
+  });
+
   app.post("/api/payroll/exports/:id/reopen", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
-      if (exp.status !== "locked" && exp.status !== "exported") {
-        return res.status(400).json({ message: "Only locked or exported batches can be reopened" });
+      if (exp.status !== "locked" && exp.status !== "exported" && exp.status !== "sent") {
+        return res.status(400).json({ message: "Only locked, exported, or sent batches can be reopened" });
       }
 
       const adminUser = req.authUser as User;
@@ -12279,7 +12573,13 @@ export async function registerRoutes(
   });
 
   // Admin-only FINAL approval of a back-pay item (status-guarded against a stale
-  // list). Approved items are carried into the next payroll batch.
+  // list). The admin picks where the money goes:
+  //   next_period  — (default) ride the NEXT payroll batch (the proven path).
+  //   add_to_sent  — fold it into the SOURCE batch that already covered the day
+  //                  (when that batch was exported but not yet truly sent): adds a
+  //                  labeled back-pay record to that export and flags it "changed —
+  //                  re-export", so re-sending produces the next version WITH the
+  //                  change. Not allowed once the source batch is locked.
   app.post("/api/payroll/backpay/:id/approve", requireAuth, requireRole("admin"), async (req: any, res) => {
     try {
       const item = await storage.getPayrollBackpayItem(String(req.params.id));
@@ -12288,13 +12588,77 @@ export async function registerRoutes(
         throw new RouteConflictError("This back-pay item was already handled by someone else.");
       }
       const adminUser = req.authUser as User;
+      const routeChoice = req.body?.routeChoice === "add_to_sent" ? "add_to_sent" : "next_period";
+      const reviewNotes = typeof req.body?.reviewNotes === "string" ? req.body.reviewNotes : item.reviewNotes;
+
+      if (routeChoice === "add_to_sent") {
+        const sourceId = item.sourcePayrollExportId;
+        if (!sourceId) {
+          return res.status(400).json({ message: "This item has no source batch to add to. Use 'next period' instead." });
+        }
+        const sourceExp = await storage.getPayrollExport(sourceId);
+        if (!sourceExp) {
+          return res.status(400).json({ message: "The source batch no longer exists. Use 'next period' instead." });
+        }
+        if (sourceExp.status === "locked") {
+          return res.status(400).json({ message: "The source batch is locked. Reopen it first, or route this to the next period." });
+        }
+        const profile = await storage.getEmploymentProfile(item.employeeId);
+        const company = profile?.payrollCompanyId ? await storage.getCompany(profile.payrollCompanyId) : null;
+        // Add the back-pay delta as a labeled record on the SOURCE export, mirroring
+        // how the batch generator carries an approved item as a "backpay" line.
+        await storage.createPayrollBatchRecord({
+          payrollExportId: sourceId,
+          employeeId: item.employeeId,
+          punchLogId: item.punchLogId,
+          timeOffRequestId: null,
+          recordType: "backpay",
+          workDate: item.workDate,
+          regularHours: item.regularHours,
+          overtimeHours: item.overtimeHours,
+          doubleTimeHours: item.doubleTimeHours,
+          ptoHours: 0,
+          overtimeMultiplier: item.overtimeMultiplier,
+          doubleTimeMultiplier: item.doubleTimeMultiplier,
+          hourlyRate: item.hourlyRate,
+          payrollCompanyId: profile?.payrollCompanyId ?? null,
+          payrollCompanyName: company?.name ?? null,
+          bonusAmount: 0,
+          bonusHours: 0,
+          hasIssues: false,
+          issueDescription: item.reason,
+        });
+        const updated = await storage.updatePayrollBackpayItem(item.id, {
+          status: "paid",
+          approvedBy: adminUser.id,
+          approvedAt: new Date(),
+          paidInExportId: sourceId,
+          paidAt: new Date(),
+          reviewNotes,
+        });
+        // Flag the source batch as changed so the admin re-exports (→ next version).
+        await storage.updatePayrollExport(sourceId, { changedSinceExport: true });
+
+        const auditCtx = getAuditContext(req);
+        await writeAuditLog({
+          actorUserId: adminUser.id,
+          targetType: "payroll_backpay_item",
+          targetId: item.id,
+          action: "payroll_backpay.approved_add_to_sent",
+          newValue: { status: "paid", sourceExportId: sourceId, employeeId: item.employeeId, workDate: item.workDate },
+          ...auditCtx,
+        });
+        return res.json({ ...updated, routedTo: "add_to_sent", sourceExportId: sourceId });
+      }
+
+      // next_period (default): rides the next batch via the generator.
       const updated = await storage.updatePayrollBackpayItem(item.id, {
         status: "approved",
         approvedBy: adminUser.id,
         approvedAt: new Date(),
-        reviewNotes: typeof req.body?.reviewNotes === "string" ? req.body.reviewNotes : item.reviewNotes,
+        reviewNotes,
       });
-      res.json(updated);
+      res.json({ ...updated, routedTo: "next_period" });
     } catch (error) {
       console.error("Error approving back-pay item:", error);
       handleRouteError(res, error, "Failed to approve back-pay item");

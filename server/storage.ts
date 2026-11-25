@@ -94,6 +94,11 @@ import {
   payrollExports,
   type PayrollExport,
   type InsertPayrollExport,
+  payrollExportVersions,
+  type PayrollExportVersion,
+  type InsertPayrollExportVersion,
+  payrollBatchDefaults,
+  type PayrollBatchDefaults,
   payrollBatchRecords,
   type PayrollBatchRecord,
   type InsertPayrollBatchRecord,
@@ -640,6 +645,14 @@ export interface IStorage {
   getOverlappingPayrollExports(startDate: string, endDate: string, companyId?: string): Promise<PayrollExport[]>;
   createPayrollExport(data: InsertPayrollExport): Promise<PayrollExport>;
   updatePayrollExport(id: string, data: Partial<InsertPayrollExport>): Promise<PayrollExport | undefined>;
+
+  // Export/send version log (auditable "Exported ×N" history).
+  addPayrollExportVersion(data: InsertPayrollExportVersion): Promise<PayrollExportVersion>;
+  getPayrollExportVersions(exportId: string): Promise<PayrollExportVersion[]>;
+
+  // Saved batch defaults (org-wide singleton): usual location(s) + report split.
+  getPayrollBatchDefaults(): Promise<{ locationIds: string[]; reportSplitByLocation: boolean }>;
+  savePayrollBatchDefaults(data: { locationIds: string[]; reportSplitByLocation: boolean }, userId: string): Promise<{ locationIds: string[]; reportSplitByLocation: boolean }>;
 
   getPayrollBatchRecords(exportId: string): Promise<PayrollBatchRecord[]>;
   createPayrollBatchRecord(data: InsertPayrollBatchRecord): Promise<PayrollBatchRecord>;
@@ -3758,6 +3771,38 @@ export class DatabaseStorage implements IStorage {
   async updatePayrollExport(id: string, data: Partial<InsertPayrollExport>): Promise<PayrollExport | undefined> {
     const [updated] = await db.update(payrollExports).set(data).where(eq(payrollExports.id, id)).returning();
     return updated;
+  }
+
+  async addPayrollExportVersion(data: InsertPayrollExportVersion): Promise<PayrollExportVersion> {
+    const [created] = await db.insert(payrollExportVersions).values(data).returning();
+    return created;
+  }
+
+  async getPayrollExportVersions(exportId: string): Promise<PayrollExportVersion[]> {
+    return db.select().from(payrollExportVersions)
+      .where(eq(payrollExportVersions.payrollExportId, exportId))
+      .orderBy(payrollExportVersions.version);
+  }
+
+  async getPayrollBatchDefaults(): Promise<{ locationIds: string[]; reportSplitByLocation: boolean }> {
+    const [row] = await db.select().from(payrollBatchDefaults).where(eq(payrollBatchDefaults.scope, "global"));
+    return {
+      locationIds: (row?.locationIds as string[] | undefined) ?? [],
+      reportSplitByLocation: row?.reportSplitByLocation ?? false,
+    };
+  }
+
+  async savePayrollBatchDefaults(
+    data: { locationIds: string[]; reportSplitByLocation: boolean },
+    userId: string,
+  ): Promise<{ locationIds: string[]; reportSplitByLocation: boolean }> {
+    await db.insert(payrollBatchDefaults)
+      .values({ scope: "global", locationIds: data.locationIds, reportSplitByLocation: data.reportSplitByLocation, updatedBy: userId, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: payrollBatchDefaults.scope,
+        set: { locationIds: data.locationIds, reportSplitByLocation: data.reportSplitByLocation, updatedBy: userId, updatedAt: new Date() },
+      });
+    return { locationIds: data.locationIds, reportSplitByLocation: data.reportSplitByLocation };
   }
 
   async getPayrollBatchRecords(exportId: string): Promise<PayrollBatchRecord[]> {
