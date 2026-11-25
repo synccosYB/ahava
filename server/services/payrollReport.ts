@@ -60,6 +60,36 @@ export type PayrollReportEmployee = {
   totalBonusAmount: number;
 };
 
+/**
+ * Format a list of report employees as the summary CSV (one line per employee,
+ * totals only) — the exact format the "Export · Report (totals)" produces, incl.
+ * the Pay Rate column. Shared by the summary export and the per-payroll-company
+ * "Send to Payroll Company" handoff so every variant stays identical.
+ */
+export function formatSummaryCsv(
+  employees: PayrollReportEmployee[],
+  periodLabel: string,
+  title?: string,
+): string {
+  const escapeCSV = (val: string): string => `"${String(val).replace(/"/g, '""')}"`;
+  const money = (val: number): string => {
+    const parts = val.toFixed(2).split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return `"$${parts.join(".")}"`;
+  };
+  const rate = (val: number): string => (!val || val <= 0 ? "" : money(val));
+  const hours = (val: number): string => val.toFixed(2);
+
+  let csv = title ? `${title}\n` : "";
+  csv += `Pay Period: ${periodLabel}\n`;
+  csv += "Employee Name,Tax Classification,Payroll Company,Payee,Memo,Pay Rate,Amount,Pay Type,Department,Paid Hours,Bonus Amount\n";
+  for (const e of employees) {
+    const bonusCell = e.totalBonusAmount > 0 ? money(e.totalBonusAmount) : "";
+    csv += `${escapeCSV(e.employeeName)},${escapeCSV(e.taxClassification)},${escapeCSV(e.payrollCompany)},${escapeCSV(e.payee)},${escapeCSV(e.payeeMemo)},${rate(e.payRate)},${money(e.totalAmount)},${escapeCSV(e.payType)},${escapeCSV(e.department)},${hours(e.totalPaidHours)},${bonusCell}\n`;
+  }
+  return csv;
+}
+
 function formatDateWorked(dateStr: string): string {
   const [y, m, d] = dateStr.split("-").map((p) => parseInt(p, 10));
   const dt = new Date(Date.UTC(y, m - 1, d));

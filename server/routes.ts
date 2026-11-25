@@ -19,7 +19,7 @@ import { loadPolicyResolutionContext, getEffectivePolicy, getApplicablePolicies,
 import { buildPayCalcPolicy, resolvePayCalcPolicy, splitDailyHours, summarizeDailyHours, computeWeeklyHours, computeGrossPay, round2, type PayCalcPolicy } from "./payrollEngine";
 import { getAllowedPunchSources, isPunchSourceAllowed, punchSourceBlockedMessage } from "@shared/punchSources";
 import { buildEmployeeTimesheet } from "./timesheetService";
-import { buildPayrollReport } from "./services/payrollReport";
+import { buildPayrollReport, formatSummaryCsv } from "./services/payrollReport";
 import { getLedgerForEmployee, getLedgerForEmployees, getPersistedHoursRollup, summarizeLedger, recomputeLedger } from "./attendanceLedger";
 import { validatePunchIntegrity, type ExistingPunchForValidation, type PunchValidationResult } from "./punchValidation";
 import { importEmployeesFromBuffer } from "./services/employeeImport";
@@ -279,7 +279,7 @@ async function checkPostExportModification(punchLogId: string, modifiedBy: strin
 // tied to a finalized batch must not be silently deleted — removing it would
 // desync payroll without a paper trail (and the FK from payroll_batch_records /
 // payroll_adjustments would otherwise surface a raw DB error on delete).
-const FINALIZED_PAYROLL_STATUSES = ["exported", "locked"] as const;
+const FINALIZED_PAYROLL_STATUSES = ["exported", "locked", "sent"] as const;
 
 // Accidental double-punch guard (shared with the device ingest).
 async function punchDebounceRemainingMs(employeeId: string, now: Date): Promise<number> {
@@ -12225,13 +12225,160 @@ export async function registerRoutes(
     }
   });
 
+  // "Send to Payroll Company" (replaces Lock): hand the batch off to the payroll
+  // processors. Produces ONE report per payroll company; when splitByLocation is
+  // on, one report per payroll company PER work location. Marks the batch "sent",
+  // bumps the export version, clears the "changed" flag, and logs the version.
+  // Returns the files as JSON so the client downloads each (no server zip dep).
+  const sendToPayrollSchema = z.object({
+    splitByLocation: z.boolean().optional(),
+    acknowledgeDrift: z.boolean().optional(),
+    acknowledgeAdjustments: z.boolean().optional(),
+  });
+  app.post("/api/payroll/exports/:id/send-to-payroll", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
+    try {
+      const exp = await storage.getPayrollExport(String(req.params.id));
+      if (!exp) return res.status(404).json({ message: "Payroll export not found" });
+      const parsed = sendToPayrollSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid send options", errors: parsed.error.flatten() });
+      }
+      const adminUser = req.authUser as User;
+
+      // Guard: pending adjustments waiting for admin approval. The admin can go
+      // back and approve/deny, or send anyway and leave them pending.
+      const pendingAdjustments = (await storage.getPendingPayrollAdjustments()).length;
+      if (pendingAdjustments > 0 && parsed.data.acknowledgeAdjustments !== true) {
+        return res.status(409).json({
+          message: `There ${pendingAdjustments === 1 ? "is" : "are"} ${pendingAdjustments} adjustment${pendingAdjustments === 1 ? "" : "s"} waiting for approval.`,
+          pendingAdjustments,
+          requiresAdjustmentAck: true,
+        });
+      }
+
+      const report = await buildPayrollReport(exp.id, { includeSuperAdmin: isSuperAdmin(req) });
+      if (!report) return res.status(404).json({ message: "Payroll export not found" });
+      if (report.employees.length === 0) {
+        return res.status(400).json({ message: "This batch has no records to send." });
+      }
+
+      // Resolve whether to split per location (body override, else saved default).
+      const defaults = await storage.getPayrollBatchDefaults();
+      const splitByLocation = parsed.data.splitByLocation ?? defaults.reportSplitByLocation;
+
+      // Employee → work-location name (for the per-location split). Prefer a
+      // location within the batch's scope; fall back to the employee's first.
+      const allUsers = hideSuperAdmin(await storage.getAllUsers(), isSuperAdmin(req));
+      const userMap = new Map(allUsers.map((u) => [u.id, u]));
+      const allLocations = await storage.getAllLocations();
+      const locationNames = new Map(allLocations.map((l) => [l.id, l.name]));
+      const batchLocSet = new Set((exp.locationIds as string[] | undefined) ?? []);
+      const locationFor = (employeeId: string): { id: string; name: string } => {
+        const u = userMap.get(employeeId);
+        const locs = ((u?.locationIds ?? []) as string[]);
+        const inScope = locs.find((l) => batchLocSet.has(l));
+        const chosen = inScope ?? locs[0];
+        if (!chosen) return { id: "__none__", name: "Unassigned location" };
+        return { id: chosen, name: locationNames.get(chosen) ?? "Unknown location" };
+      };
+
+      const periodLabel = `${exp.startDate} to ${exp.endDate}`;
+      const sanitize = (s: string) => (s || "report").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "report";
+
+      // Group employees into (payroll company [+ location]) buckets.
+      type Bucket = { company: string; location: string | null; employees: typeof report.employees };
+      const buckets = new Map<string, Bucket>();
+      for (const e of report.employees) {
+        const company = e.payrollCompany || "No paying company";
+        const loc = splitByLocation ? locationFor(e.employeeId).name : null;
+        const key = `${company}__${loc ?? ""}`;
+        let b = buckets.get(key);
+        if (!b) { b = { company, location: loc, employees: [] }; buckets.set(key, b); }
+        b.employees.push(e);
+      }
+
+      const nextVersion = (exp.exportVersion ?? 0) + 1;
+      const files = Array.from(buckets.values())
+        .sort((a, b) => (a.company + (a.location ?? "")).localeCompare(b.company + (b.location ?? "")))
+        .map((b) => {
+          const title = b.location
+            ? `Payroll handoff — ${b.company} — ${b.location} (v${nextVersion})`
+            : `Payroll handoff — ${b.company} (v${nextVersion})`;
+          const namePieces = [sanitize(b.company)];
+          if (b.location) namePieces.push(sanitize(b.location));
+          namePieces.push(`${exp.startDate}_to_${exp.endDate}`);
+          if (nextVersion > 1) namePieces.push(`v${nextVersion}`);
+          return {
+            payrollCompany: b.company,
+            location: b.location,
+            filename: `payroll_${namePieces.join("_")}.csv`,
+            content: formatSummaryCsv(b.employees, periodLabel, title),
+          };
+        });
+
+      // Mark the batch sent + bump the version + clear the "changed" flag.
+      await storage.updatePayrollExport(exp.id, {
+        status: "sent",
+        sentToPayrollAt: new Date(),
+        sentToPayrollBy: adminUser.id,
+        exportedAt: exp.exportedAt ?? new Date(),
+        exportedBy: exp.exportedBy ?? adminUser.id,
+        exportVersion: nextVersion,
+        changedSinceExport: false,
+      });
+      await storage.addPayrollExportVersion({
+        payrollExportId: exp.id,
+        version: nextVersion,
+        kind: "company",
+        note: splitByLocation ? "Per payroll company, per location" : "Per payroll company",
+        recordCount: report.employees.length,
+        generatedBy: adminUser.id,
+      });
+
+      const auditCtx = getAuditContext(req);
+      await writeAuditLog({
+        actorUserId: adminUser.id,
+        targetType: "payroll_export",
+        targetId: exp.id,
+        action: "payroll_export.sent_to_payroll",
+        oldValue: { status: exp.status, exportVersion: exp.exportVersion ?? 0 },
+        newValue: { status: "sent", exportVersion: nextVersion, files: files.length, splitByLocation },
+        ...auditCtx,
+      });
+
+      const ledgerCtx = getLedgerContext(req);
+      await Promise.all(
+        report.employees.map((e) =>
+          writeLedgerEntry({
+            category: "payroll",
+            eventType: "payroll_sent_to_company",
+            employeeId: e.employeeId,
+            actorUserId: adminUser.id,
+            entityType: "payroll_export",
+            entityId: exp.id,
+            beforeValue: null,
+            afterValue: { status: "sent", version: nextVersion },
+            context: { startDate: exp.startDate, endDate: exp.endDate },
+            source: "admin",
+            ...ledgerCtx,
+          }),
+        ),
+      );
+
+      res.json({ version: nextVersion, files });
+    } catch (error) {
+      console.error("Error sending payroll to company:", error);
+      handleRouteError(res, error, "Failed to send payroll to company");
+    }
+  });
+
   app.post("/api/payroll/exports/:id/reopen", requireAuth, requirePermission("payroll.manage"), async (req: any, res) => {
     try {
       const exp = await storage.getPayrollExport(String(req.params.id));
       if (!exp) return res.status(404).json({ message: "Payroll export not found" });
 
-      if (exp.status !== "locked" && exp.status !== "exported") {
-        return res.status(400).json({ message: "Only locked or exported batches can be reopened" });
+      if (exp.status !== "locked" && exp.status !== "exported" && exp.status !== "sent") {
+        return res.status(400).json({ message: "Only locked, exported, or sent batches can be reopened" });
       }
 
       const adminUser = req.authUser as User;

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { formatHoursMinutes, formatCurrency, formatDate, formatDateRange } from "@/lib/utils";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -94,6 +94,8 @@ export default function PayrollPrepPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reExportWarning, setReExportWarning] = useState<{ id: string; format: ReportFormat } | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
+  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [sendAdjWarn, setSendAdjWarn] = useState<{ id: string; count: number } | null>(null);
   const [detailBatchId, setDetailBatchId] = useState<string | null>(null);
   const [summaryBatchId, setSummaryBatchId] = useState<string | null>(null);
   const [driftResults, setDriftResults] = useState<Record<string, PayrollDriftResult>>({});
@@ -318,10 +320,45 @@ export default function PayrollPrepPage() {
     }
   };
 
+  // "Send to Payroll Company": generate one report per payroll company (and per
+  // location when the saved default says so) and download each. Guards on pending
+  // adjustments (409) → confirm dialog to go back or send anyway.
+  const doSend = async (id: string, acknowledgeAdjustments = false) => {
+    setSendingId(id);
+    try {
+      const res = await apiRequest("POST", `/api/payroll/exports/${id}/send-to-payroll`, { acknowledgeAdjustments });
+      const data = await res.json() as { version: number; files: Array<{ filename: string; content: string }> };
+      (data.files ?? []).forEach((f, i) => {
+        setTimeout(() => {
+          const blob = new Blob([f.content], { type: "text/csv" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = f.filename;
+          a.click();
+          URL.revokeObjectURL(url);
+        }, i * 300);
+      });
+      setSendAdjWarn(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll/exports"] });
+      toast({ title: "Sent to payroll company", description: `${data.files?.length ?? 0} report(s) downloaded${data.version > 1 ? ` · export v${data.version}` : ""}` });
+    } catch (err) {
+      if (isApiError(err) && err.status === 409 && (err.payload as { requiresAdjustmentAck?: boolean })?.requiresAdjustmentAck) {
+        const count = (err.payload as { pendingAdjustments?: number }).pendingAdjustments ?? 0;
+        setSendAdjWarn({ id, count });
+      } else {
+        toast({ title: "Could not send to payroll", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+      }
+    } finally {
+      setSendingId(null);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "draft": return <Badge variant="secondary">Draft</Badge>;
       case "exported": return <Badge variant="default" className="bg-green-600">Exported</Badge>;
+      case "sent": return <Badge variant="default" className="bg-blue-600"><Send className="h-3 w-3 mr-1" /> Sent to payroll</Badge>;
       case "locked": return <Badge variant="outline" className="border-amber-500 text-amber-600"><Lock className="h-3 w-3 mr-1" /> Locked</Badge>;
       default: return <Badge variant="outline">{status}</Badge>;
     }
@@ -525,12 +562,19 @@ export default function PayrollPrepPage() {
                             <RefreshCw className="h-3 w-3 mr-1" /> Rebuild
                           </Button>
                         )}
-                        {batch.status === "exported" && (
-                          <Button variant="outline" size="sm" onClick={() => handleLock(batch.id)} disabled={lockMutation.isPending || checkingDriftId === batch.id} data-testid={`button-lock-${batch.id}`}>
-                            {checkingDriftId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Lock className="h-3 w-3 mr-1" />} Lock
+                        {(batch.status === "exported" || batch.status === "sent") && (
+                          <Button
+                            variant={batch.status === "sent" ? "outline" : "default"}
+                            size="sm"
+                            onClick={() => doSend(batch.id)}
+                            disabled={sendingId === batch.id}
+                            data-testid={`button-send-payroll-${batch.id}`}
+                          >
+                            {sendingId === batch.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                            {batch.status === "sent" ? `Re-send${(batch.exportVersion ?? 0) > 0 ? ` (v${(batch.exportVersion ?? 0) + 1})` : ""}` : "Send to Payroll Company"}
                           </Button>
                         )}
-                        {batch.status === "locked" && (
+                        {(batch.status === "locked" || batch.status === "sent") && (
                           <Button variant="outline" size="sm" onClick={() => reopenMutation.mutate(batch.id)} disabled={reopenMutation.isPending} data-testid={`button-reopen-${batch.id}`}>
                             <Unlock className="h-3 w-3 mr-1" /> Reopen
                           </Button>
@@ -544,6 +588,27 @@ export default function PayrollPrepPage() {
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={!!sendAdjWarn} onOpenChange={(open) => !open && setSendAdjWarn(null)}>
+        <AlertDialogContent data-testid="dialog-send-adjustments-warning">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Adjustments waiting for approval</AlertDialogTitle>
+            <AlertDialogDescription>
+              There {sendAdjWarn?.count === 1 ? "is" : "are"} {sendAdjWarn?.count ?? 0} adjustment{sendAdjWarn?.count === 1 ? "" : "s"} in the Adjustments box still waiting for your approval.
+              You can go back and approve or deny them first, or send this batch now and leave them pending for a later payroll.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-send-adj-review">Close &amp; review</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { if (sendAdjWarn) doSend(sendAdjWarn.id, true); }}
+              data-testid="button-send-adj-anyway"
+            >
+              Send anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={!!deleteBatch} onOpenChange={(open) => !open && setDeleteBatch(null)}>
         <AlertDialogContent data-testid="dialog-rebuild-confirm">
