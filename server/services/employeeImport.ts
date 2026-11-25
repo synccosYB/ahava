@@ -122,6 +122,23 @@ function normalizeBaseRole(raw: string): "employee" | "manager" | "admin" | unde
   return undefined;
 }
 
+/** Access-level ordering, so an import can RAISE or keep a role but never LOWER
+ * it. Unknown/none ranks lowest, so assigning any known role to someone with no
+ * role still counts as an upgrade. */
+function roleRank(role: string | null | undefined): number {
+  switch ((role ?? "").trim().toLowerCase()) {
+    case "admin":
+    case "administrator":
+      return 3;
+    case "manager":
+      return 2;
+    case "employee":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
 /** Pay-setup cell ("Hourly"/"Daily"/"Salary") -> stored payType, or undefined. */
 function normalizePaySetup(raw: string): "hourly" | "daily" | "salary" | undefined {
   const v = raw.trim().toLowerCase();
@@ -623,6 +640,16 @@ export async function importEmployeesFromBuffer(
       resolvedBaseRole = normalizeBaseRole(baseRoleRaw);
       if (!resolvedBaseRole) warnings.push({ row: rowNum, reason: `unknown role "${baseRoleRaw}"; left unchanged` });
     }
+    // SAFETY: an import must NEVER lower an employee's access level. If the sheet
+    // names a role below the employee's current one (e.g. "Employee" for a
+    // Manager), keep the current role and record that the downgrade was blocked.
+    // This prevents the mass "role reset to Employee" a stale sheet can cause.
+    let downgradeBlocked: string | undefined;
+    if (resolvedBaseRole && existingUser?.role && roleRank(resolvedBaseRole) < roleRank(existingUser.role)) {
+      downgradeBlocked = `role downgrade blocked: sheet said "${resolvedBaseRole}", kept current "${existingUser.role}" (imports never lower access)`;
+      warnings.push({ row: rowNum, reason: downgradeBlocked });
+      resolvedBaseRole = undefined;
+    }
 
     // ---- Apply ----
     // rowActions records, in plain language, every field this row changes — used
@@ -634,6 +661,7 @@ export async function importEmployeesFromBuffer(
       if (newName && newName !== oldName) rowActions.push(`name → ${newName}`);
     }
     if (resolvedBaseRole) rowActions.push(`base role → ${resolvedBaseRole}`);
+    if (downgradeBlocked) rowActions.push(downgradeBlocked);
     if (profilePatch.payrollCompanyId && payingCompanyRaw) rowActions.push(`paying company → ${payingCompanyRaw.trim()}`);
     if (profilePatch.payrollProcessor) rowActions.push(`payroll company → ${profilePatch.payrollProcessor}`);
     if (profilePatch.taxClassification) rowActions.push(`tax → ${profilePatch.taxClassification}`);

@@ -1575,6 +1575,68 @@ export async function registerRoutes(
     },
   );
 
+  // Downloadable Excel change-log for an employee import run (preview or applied).
+  // The client posts back the summary it just received, so admins keep an exact
+  // record of what each import changed — including any blocked role downgrades.
+  app.post("/api/users/import/change-log.xlsx", requireAuth, requirePermission("users.edit"), async (req: any, res) => {
+    try {
+      const body = req.body ?? {};
+      const changes: Array<{ row?: number; employeeNumber?: string; name?: string; actions?: string[] }> =
+        Array.isArray(body.changes) ? body.changes : [];
+      const warnings: Array<{ row?: number; reason?: string }> =
+        Array.isArray(body.warnings) ? body.warnings : [];
+      const company = typeof body.company === "string" ? body.company : "";
+      const applied = body.dryRun === false || body.dryRun === "false";
+
+      const ExcelJS = (await import("exceljs")).default;
+      const wb = new ExcelJS.Workbook();
+      wb.creator = "Ahava Time & Attendance";
+      wb.created = new Date();
+
+      const meta = wb.addWorksheet("Summary");
+      meta.getColumn(1).width = 22;
+      meta.getColumn(2).width = 50;
+      meta.addRow(["Employee import change log"]).font = { bold: true, size: 14 };
+      meta.addRow(["Company", company]);
+      meta.addRow(["Type", applied ? "Applied (written)" : "Preview (not written)"]);
+      meta.addRow(["Generated", new Date().toISOString()]);
+      meta.addRow(["Employees changed", changes.length]);
+      meta.addRow(["Notes / warnings", warnings.length]);
+
+      const ws = wb.addWorksheet("Changes");
+      ws.columns = [
+        { header: "Clock #", key: "num", width: 12 },
+        { header: "Employee", key: "name", width: 28 },
+        { header: "Row", key: "row", width: 8 },
+        { header: "Change", key: "change", width: 64 },
+      ];
+      ws.getRow(1).font = { bold: true };
+      for (const c of changes) {
+        const acts = Array.isArray(c.actions) && c.actions.length ? c.actions : ["(no change)"];
+        for (const a of acts) {
+          ws.addRow({ num: c.employeeNumber ?? "", name: c.name ?? "", row: c.row ?? "", change: a });
+        }
+      }
+
+      const warn = wb.addWorksheet("Notes");
+      warn.columns = [
+        { header: "Row", key: "row", width: 8 },
+        { header: "Note", key: "reason", width: 90 },
+      ];
+      warn.getRow(1).font = { bold: true };
+      for (const w of warnings) warn.addRow({ row: w.row ?? "", reason: w.reason ?? "" });
+
+      const buf = await wb.xlsx.writeBuffer();
+      const stamp = new Date().toISOString().slice(0, 10);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="employee-import-changes_${stamp}.xlsx"`);
+      res.send(Buffer.from(buf));
+    } catch (err) {
+      console.error("Error building import change log:", err);
+      handleRouteError(res, err, "Failed to build import change log");
+    }
+  });
+
   // Bulk-import historical punches (clock in/out) from the prior time-clock
   // system. Admin-only. Idempotent: a shift whose (employee, clock-in minute)
   // already exists is skipped, so the report can be re-uploaded as each machine

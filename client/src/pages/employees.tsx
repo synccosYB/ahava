@@ -1296,6 +1296,39 @@ function ImportEmployeesDialog({
       toast({ title: "Import failed", description: err.message, variant: "destructive" }),
   });
 
+  // Download an Excel record of exactly what this import changed (or would
+  // change, for a preview) — including any blocked role downgrades.
+  const [downloadingLog, setDownloadingLog] = useState(false);
+  const downloadChangeLog = async () => {
+    if (!summary) return;
+    setDownloadingLog(true);
+    try {
+      const res = await fetch("/api/users/import/change-log.xlsx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          company: summary.company,
+          dryRun: summary.dryRun ?? false,
+          changes: summary.changes ?? [],
+          warnings: summary.warnings ?? [],
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to generate the change log");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "employee-import-changes.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      toast({ title: "Could not download change log", description: e?.message ?? "Please try again.", variant: "destructive" });
+    } finally {
+      setDownloadingLog(false);
+    }
+  };
+
   const busy = previewMutation.isPending || applyMutation.isPending;
   const isPreview = summary?.dryRun === true;
   const changeCount = summary?.changes?.length ?? 0;
@@ -1354,11 +1387,17 @@ function ImportEmployeesDialog({
             </p>
             {summary.changes && summary.changes.length > 0 && (
               <div className="rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/40">
-                <p className="font-medium text-slate-800 dark:text-slate-200">
-                  {summary.changes.length} employee
-                  {summary.changes.length === 1 ? "" : "s"}{" "}
-                  {isPreview ? "will change" : "changed"}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-medium text-slate-800 dark:text-slate-200">
+                    {summary.changes.length} employee
+                    {summary.changes.length === 1 ? "" : "s"}{" "}
+                    {isPreview ? "will change" : "changed"}
+                  </p>
+                  <Button variant="outline" size="sm" onClick={downloadChangeLog} disabled={downloadingLog} data-testid="button-import-change-log">
+                    <Download className="h-4 w-4 mr-1" />
+                    {downloadingLog ? "Preparing…" : "Download change log (Excel)"}
+                  </Button>
+                </div>
                 <ul className="mt-1 max-h-56 overflow-auto text-xs text-slate-700 dark:text-slate-300">
                   {summary.changes.slice(0, 100).map((c, i) => (
                     <li key={i} className="py-0.5">
