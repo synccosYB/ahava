@@ -25,6 +25,7 @@ import { apiRequest, queryClient, isApiError } from "@/lib/queryClient";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useToast } from "@/hooks/use-toast";
 import { formatHoursMinutes, formatDate, formatTime12InTz } from "@/lib/utils";
+import { punchSourceLabel } from "@shared/punchSources";
 
 // ISO <-> <input type="datetime-local"> in the viewer's local (clinic Eastern)
 // time, matching the app-wide punch-edit dialogs.
@@ -110,6 +111,7 @@ export type TimesheetEntry = {
   // for viewers without pay access.
   bonusAmount?: number;
   sources?: Array<{
+    source: string | null;
     kioskDeviceId: string | null;
     kioskName: string | null;
     kiosk: { id: string; name: string } | null;
@@ -117,6 +119,9 @@ export type TimesheetEntry = {
   // True when this "Missing Punch" day is a split clock-in-only + clock-out-only
   // pair that can be merged into one shift.
   canMerge?: boolean;
+  // True when the day has a real complete shift PLUS a leftover incomplete stray
+  // punch that can be removed in one click.
+  canRemoveExtra?: boolean;
 };
 
 function formatMoney(n: number): string {
@@ -125,7 +130,16 @@ function formatMoney(n: number): string {
 
 function formatSources(sources: TimesheetEntry["sources"]): string {
   if (!sources || sources.length === 0) return "—";
-  const labels = sources.map((s) => s.kiosk?.name ?? s.kioskName ?? (s.kioskDeviceId ? "Kiosk" : "Web"));
+  const labels = sources.map((s) => {
+    // Prefer the actual machine name for a kiosk / fingerprint clock.
+    if (s.kiosk?.name) return s.kiosk.name;
+    if (s.kioskName) return s.kioskName;
+    // Otherwise the capture method: "Mobile" for a phone, "Fingerprint Clock",
+    // "Web" for a browser, etc. — instead of labelling everything "Web".
+    if (s.source) return punchSourceLabel(s.source);
+    if (s.kioskDeviceId) return "Kiosk";
+    return "Web";
+  });
   return Array.from(new Set(labels)).join(", ");
 }
 
@@ -531,10 +545,14 @@ export function EmployeeTimesheetTable({
       });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       invalidate();
       setMergePrompt(null);
-      toast({ title: "Merged into one shift", description: "The split clock-in and clock-out were combined." });
+      if ((data?.removed ?? 0) > 0) {
+        toast({ title: "Removed the extra punch", description: "The leftover punch was removed; the real shift stays." });
+      } else {
+        toast({ title: "Merged into one shift", description: "The split clock-in and clock-out were combined." });
+      }
     },
     onError: (err: any, vars) => {
       if (isApiError(err) && err.code === "PAYROLL_FINALIZED") {
@@ -907,6 +925,19 @@ export function EmployeeTimesheetTable({
                             data-testid={`button-merge-${e.date}`}
                           >
                             <Combine className="h-3 w-3 mr-1" /> Merge
+                          </Button>
+                        )}
+                        {canEdit && !e.canMerge && e.canRemoveExtra && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-xs"
+                            onClick={() => mergeMutation.mutate({ workDate: e.date })}
+                            disabled={mergeMutation.isPending}
+                            title="This day has a complete shift plus a leftover extra punch — remove the extra"
+                            data-testid={`button-remove-extra-${e.date}`}
+                          >
+                            <Trash2 className="h-3 w-3 mr-1" /> Remove extra
                           </Button>
                         )}
                       </div>
