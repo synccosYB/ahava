@@ -25,6 +25,7 @@ import { apiRequest, queryClient, isApiError } from "@/lib/queryClient";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useToast } from "@/hooks/use-toast";
 import { formatHoursMinutes, formatDate, formatTime12InTz } from "@/lib/utils";
+import { punchSourceLabel } from "@shared/punchSources";
 
 // ISO <-> <input type="datetime-local"> in the viewer's local (clinic Eastern)
 // time, matching the app-wide punch-edit dialogs.
@@ -110,6 +111,7 @@ export type TimesheetEntry = {
   // for viewers without pay access.
   bonusAmount?: number;
   sources?: Array<{
+    source: string | null;
     kioskDeviceId: string | null;
     kioskName: string | null;
     kiosk: { id: string; name: string } | null;
@@ -125,7 +127,16 @@ function formatMoney(n: number): string {
 
 function formatSources(sources: TimesheetEntry["sources"]): string {
   if (!sources || sources.length === 0) return "—";
-  const labels = sources.map((s) => s.kiosk?.name ?? s.kioskName ?? (s.kioskDeviceId ? "Kiosk" : "Web"));
+  const labels = sources.map((s) => {
+    // Prefer the actual machine name for a kiosk / fingerprint clock.
+    if (s.kiosk?.name) return s.kiosk.name;
+    if (s.kioskName) return s.kioskName;
+    // Otherwise the capture method: "Mobile" for a phone, "Fingerprint Clock",
+    // "Web" for a browser, etc. — instead of labelling everything "Web".
+    if (s.source) return punchSourceLabel(s.source);
+    if (s.kioskDeviceId) return "Kiosk";
+    return "Web";
+  });
   return Array.from(new Set(labels)).join(", ");
 }
 
