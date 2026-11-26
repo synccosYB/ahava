@@ -90,7 +90,9 @@ export interface TimesheetTotals {
 }
 
 export interface TimesheetResult {
-  otThresholdDaily: number;
+  // Daily overtime threshold, or null when overtime is weekly-only (the Ahava
+  // default) — the UI note reads differently in that case.
+  otThresholdDaily: number | null;
   entries: TimesheetEntry[];
   totals: TimesheetTotals;
   // True when this employee is paid by the DAY (daily salary) or is

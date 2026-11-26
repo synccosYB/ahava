@@ -100,13 +100,14 @@ test.after(async () => {
 });
 
 test("clean export: stored regular/overtime match the recomputed split → no discrepancy", async () => {
-  // 8h punch → 8 regular, 0 overtime (threshold default 8).
-  const p1 = await makePunch("2026-01-05", 9, 17, 0);
+  // Overtime is weekly-only (default daily threshold disabled), so a single-day
+  // recompute is ALL regular regardless of length — OT is applied at the weekly
+  // level, not per day. So both days verify as all-regular.
+  const p1 = await makePunch("2026-01-05", 9, 17, 0);   // 8h → 8 reg, 0 OT
   await makeBatchRecord({ recordType: "attendance", workDate: "2026-01-05", punchLogId: p1, regularHours: 8, overtimeHours: 0 });
 
-  // 10h punch → OT split: 8 regular + 2 overtime.
-  const p2 = await makePunch("2026-01-06", 8, 18, 0);
-  await makeBatchRecord({ recordType: "attendance", workDate: "2026-01-06", punchLogId: p2, regularHours: 8, overtimeHours: 2 });
+  const p2 = await makePunch("2026-01-06", 8, 18, 0);   // 10h → 10 reg, 0 OT (no daily OT)
+  await makeBatchRecord({ recordType: "attendance", workDate: "2026-01-06", punchLogId: p2, regularHours: 10, overtimeHours: 0 });
 
   const result = await computePayrollVerification(exportId);
   assert.ok(result);
@@ -114,19 +115,20 @@ test("clean export: stored regular/overtime match the recomputed split → no di
   assert.equal(result!.discrepancyCount, 0);
 });
 
-test("drifted export: exported hours no longer match recomputed source punch", async () => {
-  // Source punch is 10h (→ 8 reg + 2 OT) but the export stored a flat 10 reg / 0 OT.
+test("drifted export: a stored DAILY-OT split no longer matches the weekly-only recompute", async () => {
+  // Source punch is 10h. Under weekly-only it recomputes to 10 reg / 0 OT, but the
+  // export stored the old daily split (8 reg + 2 OT) → that's now a drift.
   const p = await makePunch("2026-01-07", 8, 18, 0);
-  await makeBatchRecord({ recordType: "attendance", workDate: "2026-01-07", punchLogId: p, regularHours: 10, overtimeHours: 0 });
+  await makeBatchRecord({ recordType: "attendance", workDate: "2026-01-07", punchLogId: p, regularHours: 8, overtimeHours: 2 });
 
   const result = await computePayrollVerification(exportId);
   assert.ok(result);
   const d = result!.discrepancies.find((x) => x.workDate === "2026-01-07");
   assert.ok(d, "expected a discrepancy for the drifted row");
-  assert.equal(d!.computedRegular, 8);
-  assert.equal(d!.computedOvertime, 2);
-  assert.equal(d!.storedRegular, 10);
-  assert.equal(d!.storedOvertime, 0);
+  assert.equal(d!.computedRegular, 10);
+  assert.equal(d!.computedOvertime, 0);
+  assert.equal(d!.storedRegular, 8);
+  assert.equal(d!.storedOvertime, 2);
 });
 
 test("missing link: attendance record with no punch is flagged unverifiable", async () => {

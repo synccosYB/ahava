@@ -37,8 +37,13 @@ export function round2(n: number): number {
  * gets snapshotted onto payroll batch records for version-stable recompute.
  */
 export interface PayCalcPolicy {
-  /** Daily hours after which overtime begins (attendance policy). */
-  otThresholdDaily: number;
+  /**
+   * Daily hours after which DAILY overtime begins (attendance policy). `null`
+   * (the default) disables daily overtime entirely — overtime is then WEEKLY
+   * ONLY (over otThresholdWeekly). Daily double-time is nested under the daily-OT
+   * rule, so a null daily threshold also disables daily double-time.
+   */
+  otThresholdDaily: number | null;
   /**
    * Weekly hours (regular hours only, i.e. hours not already daily OT/DT) after
    * which WEEKLY overtime begins (attendance policy, default 40 — the FLSA rule).
@@ -179,6 +184,7 @@ export function splitDailyHours(
     !holidayExcludesOt &&
     policy.autoCalculateOT &&
     policy.overtimeEnabled &&
+    policy.otThresholdDaily != null &&
     hours > policy.otThresholdDaily
   ) {
     status = "overtime";
