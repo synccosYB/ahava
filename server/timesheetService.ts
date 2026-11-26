@@ -78,6 +78,9 @@ export interface TimesheetEntry {
   // True when this "Missing Punch" day is a split clock-in-only + clock-out-only
   // pair that can be merged into one shift via POST /api/attendance/punches/merge-day.
   canMerge?: boolean;
+  // True when this day has a real complete shift PLUS a leftover incomplete stray
+  // punch — the same endpoint removes the stray and keeps the real shift.
+  canRemoveExtra?: boolean;
 }
 
 export interface TimesheetTotals {
@@ -497,6 +500,9 @@ export async function buildEmployeeTimesheet(
         ...(missingPunch && !hasCompletePunch && datePunches.length >= 2 && realInCount >= 1 && realOutCount >= 1
           ? { canMerge: true }
           : {}),
+        // Offer "remove extra punch" when there's a real complete shift PLUS a
+        // leftover incomplete stray (the Nikia case) — merging isn't right here.
+        ...(missingPunch && hasCompletePunch ? { canRemoveExtra: true } : {}),
         ...(segments && segments.length > 0 ? { segments } : {}),
       };
       entries.push(entry);

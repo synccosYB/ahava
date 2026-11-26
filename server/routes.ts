@@ -5538,11 +5538,20 @@ export async function registerRoutes(
             hasCompleteShift = true;
           }
         }
-        if (hasCompleteShift) {
-          return res.status(400).json({ message: "This day already has a complete shift — edit it instead of merging." });
+        void hasCompleteShift;
+        // Classify: complete shift(s) vs leftover incomplete "stray" punches.
+        const completePunches = dayPunches.filter((p) =>
+          p.clockIn && p.clockOut &&
+          p.status !== MISSING_CLOCKOUT_STATUS && p.status !== MISSING_CLOCKIN_STATUS &&
+          (p.hoursWorked ?? 0) > 0,
+        );
+        const incompletePunches = dayPunches.filter((p) => !completePunches.includes(p));
+
+        if (completePunches.length > 0 && incompletePunches.length === 0) {
+          return res.status(400).json({ message: "This day is already a clean, complete shift — nothing to fix." });
         }
-        if (dayPunches.length < 2 || realTimes.length < 2) {
-          return res.status(400).json({ message: "Nothing to merge — this day doesn't have both a separate clock-in and clock-out to combine. Enter the missing time instead." });
+        if (completePunches.length === 0 && (dayPunches.length < 2 || realTimes.length < 2)) {
+          return res.status(400).json({ message: "Nothing to fix — this day doesn't have both a separate clock-in and clock-out to combine. Enter the missing time instead." });
         }
 
         // The shift spans the earliest real time (clock-in) to the latest (clock-out).
@@ -5578,6 +5587,47 @@ export async function registerRoutes(
           }
         }
 
+        // CASE A — a complete shift with leftover incomplete "stray" punch(es):
+        // just delete the strays and keep the real shift as-is (times are NOT
+        // merged, so a genuine second shift isn't swallowed). Removing a zero-hour
+        // stray doesn't change the day's paid hours.
+        if (completePunches.length > 0) {
+          const removedIds = incompletePunches.map((p) => p.id);
+          await db.transaction(async (tx) => {
+            for (const id of removedIds) await tx.delete(punchLogs).where(eq(punchLogs.id, id));
+          });
+          await writeAuditLog({
+            actorUserId: actor.id,
+            targetType: "punch_log",
+            targetId: completePunches[0].id,
+            action: "punch_log.removed_stray",
+            oldValue: { punchIds: dayPunches.map((p) => p.id), workDate },
+            newValue: { removed: removedIds, kept: completePunches.map((p) => p.id) },
+            ...getAuditContext(req),
+          });
+          try {
+            await getLedgerForEmployee(employeeUser, workDate, workDate);
+          } catch (e) {
+            console.error("[merge-day] ledger refresh failed:", e);
+          }
+          let strayBackpay: Awaited<ReturnType<typeof routeBackpayForCorrection>> = [];
+          let strayBackpayError = false;
+          if (finalizedExports.length > 0 && routeBackpay) {
+            try {
+              strayBackpay = await routeBackpayForCorrection({
+                employee: employeeUser, workDate, sourceExports: finalizedExports,
+                attendanceExceptionId: null, punchLogId: completePunches[0].id,
+                requestedBy: actor.id, reasonPrefix: "Removed a stray punch after payroll was sent",
+              });
+            } catch (e) {
+              strayBackpayError = true;
+              console.error("Back-pay routing failed after stray removal:", e);
+            }
+          }
+          return res.json({ ...punchLogToApiResponse(completePunches[0]), removed: removedIds.length, backpayItems: strayBackpay, backpayError: strayBackpayError });
+        }
+
+        // CASE B — no complete shift: merge the split halves into one shift.
         const attendancePolicy = await getEffectivePolicy(employeeUser.companyId, employeeUser.id, "attendance", employeeUser);
         const payrollPolicy = await getEffectivePolicy(employeeUser.companyId, employeeUser.id, "payroll", employeeUser);
         const attRules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;

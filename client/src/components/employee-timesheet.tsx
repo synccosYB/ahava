@@ -119,6 +119,9 @@ export type TimesheetEntry = {
   // True when this "Missing Punch" day is a split clock-in-only + clock-out-only
   // pair that can be merged into one shift.
   canMerge?: boolean;
+  // True when the day has a real complete shift PLUS a leftover incomplete stray
+  // punch that can be removed in one click.
+  canRemoveExtra?: boolean;
 };
 
 function formatMoney(n: number): string {
@@ -542,10 +545,14 @@ export function EmployeeTimesheetTable({
       });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       invalidate();
       setMergePrompt(null);
-      toast({ title: "Merged into one shift", description: "The split clock-in and clock-out were combined." });
+      if ((data?.removed ?? 0) > 0) {
+        toast({ title: "Removed the extra punch", description: "The leftover punch was removed; the real shift stays." });
+      } else {
+        toast({ title: "Merged into one shift", description: "The split clock-in and clock-out were combined." });
+      }
     },
     onError: (err: any, vars) => {
       if (isApiError(err) && err.code === "PAYROLL_FINALIZED") {
@@ -918,6 +925,19 @@ export function EmployeeTimesheetTable({
                             data-testid={`button-merge-${e.date}`}
                           >
                             <Combine className="h-3 w-3 mr-1" /> Merge
+                          </Button>
+                        )}
+                        {canEdit && !e.canMerge && e.canRemoveExtra && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-xs"
+                            onClick={() => mergeMutation.mutate({ workDate: e.date })}
+                            disabled={mergeMutation.isPending}
+                            title="This day has a complete shift plus a leftover extra punch — remove the extra"
+                            data-testid={`button-remove-extra-${e.date}`}
+                          >
+                            <Trash2 className="h-3 w-3 mr-1" /> Remove extra
                           </Button>
                         )}
                       </div>
