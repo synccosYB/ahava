@@ -5500,6 +5500,161 @@ export async function registerRoutes(
     },
   );
 
+  // Merge a day's split half-punches into ONE complete shift. When a clock-in is
+  // back-filled while a shift is open (or a clock-out lands on its own), a day can
+  // end up with a clock-in-only punch AND a clock-out-only punch — it reads as a
+  // "Missing Punch" with 0 hours, and editing either side hits the overlap guard
+  // because the other half is in the way. This collapses them: the earliest real
+  // clock-in + the latest real clock-out become one completed punch, and the
+  // leftover half-punch(es) are deleted. Honors the finalized-payroll guard.
+  app.post(
+    "/api/attendance/punches/merge-day",
+    requireAuth,
+    requirePermission("attendance.edit"),
+    async (req: any, res) => {
+      try {
+        const actor = req.authUser as User;
+        const { employeeId, workDate, routeBackpay } = req.body as {
+          employeeId?: string; workDate?: string; routeBackpay?: boolean;
+        };
+        if (!employeeId || !workDate || !/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
+          return res.status(400).json({ message: "employeeId and a valid workDate are required." });
+        }
+        const employeeUser = await storage.getUser(employeeId);
+        if (!employeeUser) return res.status(404).json({ message: "Employee not found" });
+
+        const dayPunches = await storage.getAttendancesForUserOnDate(employeeId, workDate);
+
+        // Gather the REAL times (a missing-clock-out punch's clock-out is only a
+        // placeholder — never a real punch-out). Detect an already-complete shift.
+        const realTimes: Date[] = [];
+        let hasCompleteShift = false;
+        for (const p of dayPunches) {
+          const ci = p.clockIn ? new Date(p.clockIn) : null;
+          const co = p.clockOut && p.status !== MISSING_CLOCKOUT_STATUS ? new Date(p.clockOut) : null;
+          if (ci && !isNaN(ci.getTime())) realTimes.push(ci);
+          if (co && !isNaN(co.getTime())) realTimes.push(co);
+          if (ci && co && !isNaN(ci.getTime()) && !isNaN(co.getTime()) && (p.hoursWorked ?? 0) > 0) {
+            hasCompleteShift = true;
+          }
+        }
+        if (hasCompleteShift) {
+          return res.status(400).json({ message: "This day already has a complete shift — edit it instead of merging." });
+        }
+        if (dayPunches.length < 2 || realTimes.length < 2) {
+          return res.status(400).json({ message: "Nothing to merge — this day doesn't have both a separate clock-in and clock-out to combine. Enter the missing time instead." });
+        }
+
+        // The shift spans the earliest real time (clock-in) to the latest (clock-out).
+        const sorted = [...realTimes].sort((a, b) => a.getTime() - b.getTime());
+        let clockIn = sorted[0];
+        let clockOut = sorted[sorted.length - 1];
+        // Overnight read (same rule as the pairing brain): a > 12h same-day span on
+        // an overnight-enabled employee crosses midnight.
+        const overnightAllowed = await storage.isOvernightShiftsAllowed(employeeId);
+        if (overnightAllowed && (clockOut.getTime() - clockIn.getTime()) / 3_600_000 > 12) {
+          clockIn = sorted[sorted.length - 1];
+          clockOut = new Date(sorted[0].getTime() + 24 * 3_600_000);
+        }
+        if (clockOut.getTime() <= clockIn.getTime()) {
+          return res.status(400).json({ message: "The times on this day don't form a valid shift (clock-out is not after clock-in)." });
+        }
+
+        // Finalized-payroll guard (mirrors the edit path): a merge that changes an
+        // already-sent period routes through the Adjustments box.
+        const finalizedExports = await findFinalizedPayrollExportsForEmployeeDate(employeeId, workDate);
+        if (finalizedExports.length > 0) {
+          const editorPerms = await resolveUserPermissions(actor.id);
+          const isApprover =
+            editorPerms.has("attendance.approve_corrections") || editorPerms.has("system.super_admin");
+          if (!routeBackpay) {
+            return res.status(409).json({
+              message: `This date is part of finalized payroll (${describeFinalizedPayroll(finalizedExports)}). ${isApprover ? "Merge it and queue the change as an adjustment (choose where it's paid in Payroll Prep → Adjustments), or reopen the batch." : "Merging will send the change to the admin for approval (Payroll Prep → Adjustments)."}`,
+              code: "PAYROLL_FINALIZED",
+              canRouteBackpay: true,
+              isApprover,
+              payrollExports: finalizedExports.map((e) => ({ id: e.id, startDate: e.startDate, endDate: e.endDate, status: e.status })),
+            });
+          }
+        }
+
+        const attendancePolicy = await getEffectivePolicy(employeeUser.companyId, employeeUser.id, "attendance", employeeUser);
+        const payrollPolicy = await getEffectivePolicy(employeeUser.companyId, employeeUser.id, "payroll", employeeUser);
+        const attRules = attendancePolicy?.rules || DEFAULT_ATTENDANCE_RULES;
+        const payrollRules = payrollPolicy?.rules || DEFAULT_PAYROLL_RULES;
+        const roundingRule = attRules.roundingRule ?? DEFAULT_ATTENDANCE_RULES.roundingRule;
+        const roundingInterval = attRules.roundingIntervalMinutes ?? DEFAULT_ATTENDANCE_RULES.roundingIntervalMinutes;
+        const roundedIn = roundTime(clockIn, roundingRule, roundingInterval);
+        const enforcement = enforceClockOut(roundedIn, clockOut, 0, attRules, payrollRules, employeeUser, attendancePolicy?.policyName);
+
+        // Keep the punch that holds the chosen clock-in (preserve its source/id);
+        // fold the rest away.
+        const keep =
+          dayPunches.find((p) => p.clockIn && new Date(p.clockIn).getTime() === clockIn.getTime()) ?? dayPunches[0];
+        const merged = await db.transaction(async (tx) => {
+          for (const p of dayPunches) {
+            if (p.id !== keep.id) {
+              await tx.delete(punchLogs).where(eq(punchLogs.id, p.id));
+            }
+          }
+          const [row] = await tx.update(punchLogs).set({
+            clockIn,
+            roundedClockIn: roundedIn,
+            clockOut,
+            roundedClockOut: enforcement.roundedTime,
+            hoursWorked: enforcement.hoursWorked,
+            status: enforcement.status,
+            workDate,
+            breakMinutes: 0,
+          }).where(eq(punchLogs.id, keep.id)).returning();
+          return row;
+        });
+
+        const auditCtx = getAuditContext(req);
+        await writeAuditLog({
+          actorUserId: actor.id,
+          targetType: "punch_log",
+          targetId: keep.id,
+          action: "punch_log.merged_day",
+          oldValue: { punchIds: dayPunches.map((p) => p.id), workDate },
+          newValue: { clockIn: merged?.clockIn, clockOut: merged?.clockOut, hoursWorked: merged?.hoursWorked, status: merged?.status },
+          ...auditCtx,
+        });
+
+        // Keep the ledger in step so hours show immediately.
+        try {
+          await getLedgerForEmployee(employeeUser, workDate, workDate);
+        } catch (e) {
+          console.error("[merge-day] ledger refresh failed:", e);
+        }
+
+        let backpayItems: Awaited<ReturnType<typeof routeBackpayForCorrection>> = [];
+        let backpayError = false;
+        if (finalizedExports.length > 0 && routeBackpay) {
+          try {
+            backpayItems = await routeBackpayForCorrection({
+              employee: employeeUser,
+              workDate,
+              sourceExports: finalizedExports,
+              attendanceExceptionId: null,
+              punchLogId: keep.id,
+              requestedBy: actor.id,
+              reasonPrefix: "Merged split punches after payroll was sent",
+            });
+          } catch (e) {
+            backpayError = true;
+            console.error("Back-pay routing failed after a merge:", e);
+          }
+        }
+
+        res.json({ ...punchLogToApiResponse(merged), backpayItems, backpayError });
+      } catch (error) {
+        console.error("Error merging day punches:", error);
+        handleRouteError(res, error, "Failed to merge the day's punches");
+      }
+    },
+  );
+
   // Directly CREATE a punch (manager/admin) — e.g. adding a forgotten/missing
   // punch from the Review Time Sheet editor. Mirrors the PATCH path: integrity
   // validation, finalized-payroll guard (by date), rounding + hours via the

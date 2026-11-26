@@ -17,7 +17,7 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, Pencil, ArrowUpDown } from "lucide-react";
+import { Download, CalendarDays, AlertCircle, Plus, Trash2, Scissors, Pencil, ArrowUpDown, Combine } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/empty-state";
@@ -114,6 +114,9 @@ export type TimesheetEntry = {
     kioskName: string | null;
     kiosk: { id: string; name: string } | null;
   }>;
+  // True when this "Missing Punch" day is a split clock-in-only + clock-out-only
+  // pair that can be merged into one shift.
+  canMerge?: boolean;
 };
 
 function formatMoney(n: number): string {
@@ -518,6 +521,34 @@ export function EmployeeTimesheetTable({
       toast({ title: "Could not add punch", description: err?.message ?? "Please try again.", variant: "destructive" });
     },
   });
+  // Merge a day's split half-punches (clock-in-only + clock-out-only) into one
+  // completed shift. Same finalized-payroll handling as edit/add.
+  const [mergePrompt, setMergePrompt] = useState<{ workDate: string; message: string; isApprover: boolean } | null>(null);
+  const mergeMutation = useMutation({
+    mutationFn: async (vars: { workDate: string; routeBackpay?: boolean }) => {
+      const res = await apiRequest("POST", `/api/attendance/punches/merge-day`, {
+        employeeId, workDate: vars.workDate, ...(vars.routeBackpay ? { routeBackpay: true } : {}),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      invalidate();
+      setMergePrompt(null);
+      toast({ title: "Merged into one shift", description: "The split clock-in and clock-out were combined." });
+    },
+    onError: (err: any, vars) => {
+      if (isApiError(err) && err.code === "PAYROLL_FINALIZED") {
+        const payload = (err.payload ?? {}) as { canRouteBackpay?: boolean; message?: string; isApprover?: boolean };
+        if (payload.canRouteBackpay && !vars.routeBackpay) {
+          setMergePrompt({ workDate: vars.workDate, message: payload.message ?? "This date was already sent to payroll.", isApprover: payload.isApprover !== false });
+          return;
+        }
+        toast({ title: "Date is in finalized payroll", description: payload.message ?? err.message, variant: "destructive" });
+        return;
+      }
+      toast({ title: "Could not merge", description: err?.message ?? "Please try again.", variant: "destructive" });
+    },
+  });
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
       const res = await apiRequest("DELETE", `/api/attendance/punches/${id}`, { reason: "Deleted on Time Sheet Review" });
@@ -863,7 +894,22 @@ export function EmployeeTimesheetTable({
                       {formatSources(e.sources)}
                     </TableCell>
                     <TableCell data-testid={`badge-timesheet-status-${e.date}`}>
-                      <TimesheetStatusBadge entry={e} />
+                      <div className="flex items-center gap-2">
+                        <TimesheetStatusBadge entry={e} />
+                        {canEdit && e.canMerge && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-xs"
+                            onClick={() => mergeMutation.mutate({ workDate: e.date })}
+                            disabled={mergeMutation.isPending}
+                            title="This day has a separate clock-in and clock-out — combine them into one shift"
+                            data-testid={`button-merge-${e.date}`}
+                          >
+                            <Combine className="h-3 w-3 mr-1" /> Merge
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                     {actionsCellFor(rowPunch)}
                   </TableRow>
@@ -1161,6 +1207,32 @@ export function EmployeeTimesheetTable({
                 {addMutation.isPending ? "Adding…" : "Add & send to admin"}
               </Button>
             )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!mergePrompt} onOpenChange={(open) => { if (!open) setMergePrompt(null); }}>
+        <AlertDialogContent data-testid="dialog-timesheet-merge-backpay">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{mergePrompt?.isApprover ? "Merge and queue as an adjustment?" : "Merge and send to the admin?"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {mergePrompt?.message}{" "}
+              This period was already sent to payroll, so merging will <strong>not</strong> change the
+              payroll already sent.{" "}
+              {mergePrompt?.isApprover
+                ? <>Choose where it's paid: fold it into the <strong>already-sent report</strong>, or add it to the <strong>next payroll</strong>.</>
+                : <>It is queued as a <strong>pending adjustment</strong> for the admin in <strong>Payroll Prep → Adjustments</strong>.</>}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button variant="outline" onClick={() => setMergePrompt(null)} data-testid="button-timesheet-cancel-merge">Cancel</Button>
+            <Button
+              onClick={() => mergePrompt && mergeMutation.mutate({ workDate: mergePrompt.workDate, routeBackpay: true })}
+              disabled={mergeMutation.isPending}
+              data-testid="button-timesheet-confirm-merge"
+            >
+              {mergeMutation.isPending ? "Merging…" : mergePrompt?.isApprover ? "Merge & queue adjustment" : "Merge & send to admin"}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
