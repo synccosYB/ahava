@@ -19,6 +19,7 @@ import { MISSING_CLOCKOUT_STATUS, MISSING_CLOCKIN_STATUS } from "../punchHours";
 const SPLIT = "2025-06-17";    // clock-in-only + clock-out-only → mergeable
 const HALF = "2025-06-18";     // clock-in-only → NOT mergeable
 const WHOLE = "2025-06-19";    // complete shift → not mergeable
+const STRAY = "2025-06-20";    // complete shift + leftover stray → canRemoveExtra
 const stamp = `merge-${Date.now().toString(36)}`;
 
 test("a split clock-in/clock-out day is flagged canMerge; a lone half and a complete day are not", async (t) => {
@@ -59,10 +60,23 @@ test("a split clock-in/clock-out day is flagged canMerge; a lone half and a comp
     hoursWorked: 8, status: "completed", source: "manager", approved: true,
   });
 
-  const result = await buildEmployeeTimesheet((await storage.getUser(emp.id))!, SPLIT, WHOLE);
+  // STRAY day: a real complete shift PLUS a leftover zero-hour stray (the Nikia case).
+  await storage.createPunchLog({
+    employeeId: emp.id, workDate: STRAY,
+    clockIn: new Date(`${STRAY}T10:12:00Z`), clockOut: new Date(`${STRAY}T16:10:00Z`),
+    hoursWorked: 5.97, status: "completed", source: "web", approved: true,
+  });
+  await db.insert(punchLogs).values({
+    employeeId: emp.id, workDate: STRAY,
+    clockIn: new Date(`${STRAY}T10:12:00Z`), clockOut: new Date(`${STRAY}T10:12:00Z`),
+    hoursWorked: 0, status: MISSING_CLOCKOUT_STATUS, source: "web",
+  } as any);
+
+  const result = await buildEmployeeTimesheet((await storage.getUser(emp.id))!, SPLIT, STRAY);
   const split = result.entries.find((e) => e.date === SPLIT)!;
   const half = result.entries.find((e) => e.date === HALF)!;
   const whole = result.entries.find((e) => e.date === WHOLE)!;
+  const stray = result.entries.find((e) => e.date === STRAY)!;
 
   assert.equal(split.status, "missing_punch", "split day reads as a missing punch");
   assert.equal(split.canMerge, true, "split day offers merge");
@@ -74,4 +88,8 @@ test("a split clock-in/clock-out day is flagged canMerge; a lone half and a comp
 
   assert.equal(whole.status, "complete", "complete day builds normally");
   assert.ok(!whole.canMerge, "a complete day is never mergeable");
+
+  // Complete shift + leftover stray (Nikia): not mergeable, but offers remove-extra.
+  assert.ok(!stray.canMerge, "a day with a complete shift is not mergeable");
+  assert.equal(stray.canRemoveExtra, true, "complete shift + stray offers remove-extra");
 });

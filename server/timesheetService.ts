@@ -74,10 +74,13 @@ export interface TimesheetEntry {
   // Source attribution: the kiosk the punch came from, when any of the
   // day's punches were captured at a registered kiosk. `null` means a
   // web/manager-entered punch (or no punches at all on that day).
-  sources: Array<{ kioskDeviceId: string | null; kioskName: string | null; kiosk: { id: string; name: string } | null }>;
+  sources: Array<{ source: string | null; kioskDeviceId: string | null; kioskName: string | null; kiosk: { id: string; name: string } | null }>;
   // True when this "Missing Punch" day is a split clock-in-only + clock-out-only
   // pair that can be merged into one shift via POST /api/attendance/punches/merge-day.
   canMerge?: boolean;
+  // True when this day has a real complete shift PLUS a leftover incomplete stray
+  // punch — the same endpoint removes the stray and keeps the real shift.
+  canRemoveExtra?: boolean;
 }
 
 export interface TimesheetTotals {
@@ -294,11 +297,15 @@ export async function buildEmployeeTimesheet(
       const seen = new Set<string>();
       const out: TimesheetEntry["sources"] = [];
       for (const p of datePunches) {
-        const key = p.kioskDeviceId ?? "__manual__";
+        // Distinguish by BOTH the capture method (web / mobile / kiosk /
+        // biometric / manager) and the specific device, so a phone punch and a
+        // browser punch don't collapse together and each clock machine shows up.
+        const key = `${p.source ?? "__manual__"}__${p.kioskDeviceId ?? ""}`;
         if (seen.has(key)) continue;
         seen.add(key);
         const name = p.kioskDeviceId ? (kioskNameById.get(p.kioskDeviceId) ?? null) : null;
         out.push({
+          source: p.source ?? null,
           kioskDeviceId: p.kioskDeviceId ?? null,
           kioskName: name,
           kiosk: p.kioskDeviceId && name ? { id: p.kioskDeviceId, name } : null,
@@ -495,6 +502,9 @@ export async function buildEmployeeTimesheet(
         ...(missingPunch && !hasCompletePunch && datePunches.length >= 2 && realInCount >= 1 && realOutCount >= 1
           ? { canMerge: true }
           : {}),
+        // Offer "remove extra punch" when there's a real complete shift PLUS a
+        // leftover incomplete stray (the Nikia case) — merging isn't right here.
+        ...(missingPunch && hasCompletePunch ? { canRemoveExtra: true } : {}),
         ...(segments && segments.length > 0 ? { segments } : {}),
       };
       entries.push(entry);
