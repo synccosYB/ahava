@@ -75,6 +75,9 @@ export interface TimesheetEntry {
   // day's punches were captured at a registered kiosk. `null` means a
   // web/manager-entered punch (or no punches at all on that day).
   sources: Array<{ kioskDeviceId: string | null; kioskName: string | null; kiosk: { id: string; name: string } | null }>;
+  // True when this "Missing Punch" day is a split clock-in-only + clock-out-only
+  // pair that can be merged into one shift via POST /api/attendance/punches/merge-day.
+  canMerge?: boolean;
 }
 
 export interface TimesheetTotals {
@@ -308,10 +311,24 @@ export async function buildEmployeeTimesheet(
       let breakMin = 0;
       let inProgress = false;
       let missingPunch = false;
+      // Merge detection: a day split into a clock-in-only + clock-out-only pair
+      // (the back-fill-while-open glitch) can be collapsed into one shift.
+      let realInCount = 0;
+      let realOutCount = 0;
+      let hasCompletePunch = false;
       for (const p of datePunches) {
         if (p.clockIn) {
+          realInCount++;
           const t = new Date(p.clockIn);
           if (!firstIn || t < firstIn) firstIn = t;
+        }
+        if (p.clockOut && p.status !== MISSING_CLOCKOUT_STATUS) realOutCount++;
+        if (
+          p.clockIn && p.clockOut &&
+          p.status !== MISSING_CLOCKOUT_STATUS && p.status !== MISSING_CLOCKIN_STATUS &&
+          (p.hoursWorked ?? 0) > 0
+        ) {
+          hasCompletePunch = true;
         }
         // A marked missing-clock-out punch carries only a PLACEHOLDER clock-out
         // (set to free the one-open-punch slot); it is not a real punch-out, so
@@ -471,6 +488,11 @@ export async function buildEmployeeTimesheet(
         ptoType: null,
         bonusAmount: Math.round(dayBonus * 100) / 100,
         sources: sourcesForDay,
+        // Offer "merge into one shift" when the day is a split clock-in-only +
+        // clock-out-only pair (no complete shift) that can be collapsed into one.
+        ...(missingPunch && !hasCompletePunch && datePunches.length >= 2 && realInCount >= 1 && realOutCount >= 1
+          ? { canMerge: true }
+          : {}),
         ...(segments && segments.length > 0 ? { segments } : {}),
       };
       entries.push(entry);
