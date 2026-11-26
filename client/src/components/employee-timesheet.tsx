@@ -148,7 +148,7 @@ export type TimesheetResponse = {
   employeeName: string;
   startDate: string;
   endDate: string;
-  otThresholdDaily: number;
+  otThresholdDaily: number | null;
   entries: TimesheetEntry[];
   totals: {
     totalHours: number;
@@ -1010,10 +1010,11 @@ export function EmployeeTimesheetTable({
           className="text-xs text-muted-foreground"
           data-testid="text-timesheet-overtime-basis"
         >
-          Daily overtime per row is calculated against the {data.otThresholdDaily}h
-          daily threshold. Total overtime in the totals row uses the aggregate
-          time-report formula: max(0, total hours &minus; days worked &times; 8h),
-          so this number matches the Reports → Time report for the same range.
+          {data.otThresholdDaily != null ? (
+            <>Daily overtime is calculated against the {data.otThresholdDaily}h daily threshold, plus weekly overtime for hours over the weekly threshold.</>
+          ) : (
+            <>Overtime is <strong>weekly</strong>: only hours over the weekly threshold (40h) count as overtime — a long single day is not overtime on its own. Overtime lands on the day(s) that pushed the week past the threshold.</>
+          )}
         </p>
       )}
       {canEdit && (

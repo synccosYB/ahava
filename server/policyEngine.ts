@@ -515,7 +515,12 @@ export const DEFAULT_ATTENDANCE_RULES = {
   // 4h12m, not a rounded 4h15m. (Per the owner — no quarter-hour rounding.)
   roundingRule: "none",
   roundingIntervalMinutes: 0,
-  otThresholdDaily: 8,
+  // Overtime is WEEKLY ONLY at Ahava: hours over 40 in the Thu–Wed workweek are
+  // overtime; a long single day is NOT overtime on its own. Daily overtime is
+  // therefore disabled by default (null). (Daily double-time is nested under the
+  // daily-OT rule, so this disables it too.) Historical batches keep their own
+  // frozen threshold, so already-paid periods are unaffected.
+  otThresholdDaily: null as number | null,
   otThresholdWeekly: 40,
   weeklyOvertimeEnabled: true,
   // Ahava payroll week runs Thursday→Wednesday, so Thursday (4) is day 1 of the

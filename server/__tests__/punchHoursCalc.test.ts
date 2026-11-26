@@ -178,8 +178,10 @@ test("getDefaultRulesForType: unknown type returns an empty object", () => {
 
 test("getDefaultRulesForType: returns a fresh copy (not the shared constant)", () => {
   const a = getDefaultRulesForType("attendance");
+  // otThresholdDaily defaults to null (overtime is weekly-only at Ahava); mutating
+  // the returned copy must not leak into the shared constant.
   (a as any).otThresholdDaily = 99;
-  assert.equal(DEFAULT_ATTENDANCE_RULES.otThresholdDaily, 8, "must not mutate the shared default");
+  assert.equal(DEFAULT_ATTENDANCE_RULES.otThresholdDaily, null, "must not mutate the shared default");
 });
 
 // --- overnight & DST / real-elapsed-time correctness ----------------------
